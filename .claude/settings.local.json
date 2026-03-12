@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:bugs.webkit.org)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:tauri.app)",
+      "WebFetch(domain:stackoverflow.com)"
+    ]
+  }
+}
