@@ -163,8 +163,7 @@ export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-hidden bg-background p-2"
-      style={{ minHeight: 0 }}
+      className="h-full overflow-hidden bg-background p-2"
     />
   );
 }

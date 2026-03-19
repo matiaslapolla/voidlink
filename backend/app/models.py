@@ -16,6 +16,7 @@ class Page(Base):
     title: Mapped[str] = mapped_column(String(255), default="Untitled")
     content: Mapped[str] = mapped_column(Text, default="")
     parent_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    workspace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

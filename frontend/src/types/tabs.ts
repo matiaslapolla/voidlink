@@ -1,3 +1,10 @@
+export interface Page {
+  id: string;
+  title: string;
+  parentId?: string | null;
+  workspaceId?: string | null;
+}
+
 export interface NotionTab {
   id: string;
   type: "notion";
@@ -22,4 +29,6 @@ export interface Workspace {
   rootDir?: string;
   tabs: Tab[];
   activeTabId: string | null;
+  splitTabId: string | null;
+  focusedPane: "left" | "right";
 }

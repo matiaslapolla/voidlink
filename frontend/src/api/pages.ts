@@ -4,6 +4,7 @@ export interface PageSummary {
   id: string;
   title: string;
   parent_id?: string | null;
+  workspace_id?: string | null;
   updated_at: string;
 }
 
@@ -12,6 +13,7 @@ export interface PageFull {
   title: string;
   content: string;
   parent_id?: string | null;
+  workspace_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -29,11 +31,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const pagesApi = {
-  list: () => request<PageSummary[]>("/api/pages"),
+  list: (workspaceId?: string) =>
+    request<PageSummary[]>(
+      `/api/pages${workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ""}`,
+    ),
 
   get: (id: string) => request<PageFull>(`/api/pages/${id}`),
 
-  create: (data: { id?: string; title?: string; content?: string; parent_id?: string } = {}) =>
+  create: (data: { id?: string; title?: string; content?: string; parent_id?: string; workspace_id?: string } = {}) =>
     request<PageFull>("/api/pages", {
       method: "POST",
       body: JSON.stringify(data),

@@ -12,6 +12,8 @@ Base.metadata.create_all(bind=engine)
 # Safe migration: add parent_id if the column doesn't exist yet
 with engine.connect() as _conn:
     _conn.execute(text("ALTER TABLE pages ADD COLUMN IF NOT EXISTS parent_id VARCHAR(36) NULL"))
+    _conn.execute(text("ALTER TABLE pages ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(36) NULL"))
+    _conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pages_workspace_id ON pages (workspace_id)"))
     _conn.commit()
 
 app = FastAPI(title="VoidLink API", version="0.1.0")

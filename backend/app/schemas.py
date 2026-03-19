@@ -8,6 +8,7 @@ class PageCreate(BaseModel):
     title: str = "Untitled"
     content: str = ""
     parent_id: str | None = None
+    workspace_id: str | None = None
 
 
 class PageUpdate(BaseModel):
@@ -20,6 +21,7 @@ class PageOut(BaseModel):
     title: str
     content: str
     parent_id: str | None = None
+    workspace_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -30,6 +32,7 @@ class PageSummary(BaseModel):
     id: str
     title: str
     parent_id: str | None = None
+    workspace_id: str | None = None
     updated_at: datetime
 
     model_config = {"from_attributes": True}

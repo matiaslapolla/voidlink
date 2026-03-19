@@ -9,13 +9,22 @@ router = APIRouter(prefix="/pages", tags=["pages"])
 
 
 @router.get("/", response_model=list[PageSummary])
-def list_pages(db: Session = Depends(get_db)):
-    return db.query(Page).order_by(Page.updated_at.desc()).all()
+def list_pages(workspace_id: str | None = None, db: Session = Depends(get_db)):
+    query = db.query(Page)
+    if workspace_id is not None:
+        # Claim orphaned pages (workspace_id = NULL) into this workspace on first encounter
+        orphans = db.query(Page).filter(Page.workspace_id.is_(None)).all()
+        for page in orphans:
+            page.workspace_id = workspace_id
+        if orphans:
+            db.commit()
+        query = query.filter(Page.workspace_id == workspace_id)
+    return query.order_by(Page.updated_at.desc()).all()
 
 
 @router.post("/", response_model=PageOut, status_code=201)
 def create_page(data: PageCreate, db: Session = Depends(get_db)):
-    kwargs = {"title": data.title, "content": data.content, "parent_id": data.parent_id}
+    kwargs = {"title": data.title, "content": data.content, "parent_id": data.parent_id, "workspace_id": data.workspace_id}
     if data.id:
         kwargs["id"] = data.id
     page = Page(**kwargs)
