@@ -6,18 +6,29 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: vi.fn(() => ({
+    clearEffects: vi.fn().mockResolvedValue(undefined),
+    setEffects: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
 describe("App", () => {
-  it("renders empty state when no pages exist", () => {
+  it("renders empty workspace state when no tabs exist", () => {
     localStorage.clear();
     render(<App />);
-    expect(screen.getByText("No page selected")).toBeInTheDocument();
+    expect(screen.getByText("Empty workspace")).toBeInTheDocument();
   });
 
-  it("renders the new page button", () => {
+  it("renders new workspace buttons", () => {
     localStorage.clear();
     render(<App />);
     expect(
-      screen.getByRole("button", { name: /new page/i }),
-    ).toBeInTheDocument();
+      screen.getAllByRole("button", { name: /new workspace/i }).length,
+    ).toBeGreaterThan(0);
   });
 });
