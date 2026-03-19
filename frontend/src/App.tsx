@@ -8,8 +8,7 @@ import { WorkspaceTopBar } from "@/components/workspaces/WorkspaceTopBar";
 import { WorkspaceTabStrip } from "@/components/tabs/WorkspaceTabStrip";
 import { NotionPane } from "@/components/notion/NotionPane";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
-import type { Page } from "@/components/notion/PageTreePanel";
-import type { Workspace, Tab, NotionTab, TerminalTab } from "@/types/tabs";
+import type { Page, Workspace, Tab, NotionTab, TerminalTab } from "@/types/tabs";
 
 // ─── Workspace state initializer ─────────────────────────────────────────────
 
@@ -22,8 +21,13 @@ function initWsState(): WsState {
   try {
     const saved = localStorage.getItem("voidlink-workspaces");
     if (saved) {
-      const workspaces = JSON.parse(saved) as Workspace[];
-      if (workspaces.length > 0) {
+      const raw = JSON.parse(saved) as Workspace[];
+      if (raw.length > 0) {
+        const workspaces = raw.map((w) => ({
+          ...w,
+          splitTabId: w.splitTabId ?? null,
+          focusedPane: w.focusedPane ?? "left" as const,
+        }));
         const savedActiveId = localStorage.getItem("voidlink-active-workspace");
         const activeWorkspaceId =
           savedActiveId && workspaces.find((w) => w.id === savedActiveId)
@@ -38,6 +42,8 @@ function initWsState(): WsState {
     name: "Main",
     tabs: [],
     activeTabId: null,
+    splitTabId: null,
+    focusedPane: "left",
   };
   return { workspaces: [ws], activeWorkspaceId: ws.id };
 }
@@ -45,19 +51,22 @@ function initWsState(): WsState {
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 function App() {
-  const [pages, setPages] = useState<Page[]>([]);
+  const [pagesMap, setPagesMap] = useState<Record<string, Page[]>>({});
   const [useApi, setUseApi] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [wsState, setWsState] = useState<WsState>(initWsState);
   const keydownRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const programmaticScroll = useRef(false);
-  const scrollDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
 
   const { workspaces, activeWorkspaceId } = wsState;
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
   const activeTab = activeWorkspace?.tabs.find(
     (t) => t.id === activeWorkspace.activeTabId,
+  ) ?? null;
+  const splitTab = activeWorkspace?.tabs.find(
+    (t) => t.id === activeWorkspace.splitTabId,
   ) ?? null;
 
   // ─── Persist workspaces ─────────────────────────────────────────────────
@@ -77,18 +86,38 @@ function App() {
 
   const addWorkspace = useCallback(
     (name: string) => {
-      const ws: Workspace = {
+      const wsId = crypto.randomUUID();
+      const pageId = crypto.randomUUID();
+      const defaultTab: NotionTab = {
         id: crypto.randomUUID(),
+        type: "notion",
+        title: "Untitled",
+        pageId,
+        pagesPanelVisible: true,
+      };
+      const ws: Workspace = {
+        id: wsId,
         name,
-        tabs: [],
-        activeTabId: null,
+        tabs: [defaultTab],
+        activeTabId: defaultTab.id,
+        splitTabId: null,
+        focusedPane: "left",
       };
       updateWsState((prev) => ({
         workspaces: [...prev.workspaces, ws],
-        activeWorkspaceId: ws.id,
+        activeWorkspaceId: wsId,
       }));
+      const defaultPage: Page = { id: pageId, title: "Untitled", workspaceId: wsId };
+      setPagesMap((prev) => {
+        const updated = [defaultPage];
+        localStorage.setItem(`voidlink-pages-${wsId}`, JSON.stringify(updated));
+        return { ...prev, [wsId]: updated };
+      });
+      if (useApi) {
+        pagesApi.create({ id: pageId, workspace_id: wsId }).catch(() => {});
+      }
     },
-    [updateWsState],
+    [updateWsState, useApi],
   );
 
   const removeWorkspace = useCallback(
@@ -101,6 +130,8 @@ function App() {
             name: "Main",
             tabs: [],
             activeTabId: null,
+            splitTabId: null,
+            focusedPane: "left",
           };
           return { workspaces: [newWs], activeWorkspaceId: newWs.id };
         }
@@ -155,11 +186,13 @@ function App() {
             };
       updateWsState((prev) => ({
         ...prev,
-        workspaces: prev.workspaces.map((w) =>
-          w.id === wsId
-            ? { ...w, tabs: [...w.tabs, tab], activeTabId: tab.id }
-            : w,
-        ),
+        workspaces: prev.workspaces.map((w) => {
+          if (w.id !== wsId) return w;
+          if (w.splitTabId && w.focusedPane === "right") {
+            return { ...w, tabs: [...w.tabs, tab], splitTabId: tab.id };
+          }
+          return { ...w, tabs: [...w.tabs, tab], activeTabId: tab.id };
+        }),
       }));
     },
     [updateWsState],
@@ -172,6 +205,15 @@ function App() {
         workspaces: prev.workspaces.map((w) => {
           if (w.id !== wsId) return w;
           const tabs = w.tabs.filter((t) => t.id !== tabId);
+          // Removing the split tab → close split
+          if (w.splitTabId === tabId) {
+            return { ...w, tabs, splitTabId: null, focusedPane: "left" as const };
+          }
+          // Removing the active tab while split is active → promote split tab
+          if (w.activeTabId === tabId && w.splitTabId) {
+            return { ...w, tabs, activeTabId: w.splitTabId, splitTabId: null, focusedPane: "left" as const };
+          }
+          // Normal case
           const activeTabId =
             w.activeTabId === tabId
               ? (tabs[tabs.length - 1]?.id ?? null)
@@ -187,9 +229,22 @@ function App() {
     (wsId: string, tabId: string) => {
       updateWsState((prev) => ({
         ...prev,
-        workspaces: prev.workspaces.map((w) =>
-          w.id === wsId ? { ...w, activeTabId: tabId } : w,
-        ),
+        workspaces: prev.workspaces.map((w) => {
+          if (w.id !== wsId) return w;
+          if (!w.splitTabId) return { ...w, activeTabId: tabId };
+          // In split mode: if clicking tab already in other pane, swap
+          if (w.focusedPane === "left" && tabId === w.splitTabId) {
+            return { ...w, activeTabId: w.splitTabId, splitTabId: w.activeTabId };
+          }
+          if (w.focusedPane === "right" && tabId === w.activeTabId) {
+            return { ...w, activeTabId: w.splitTabId, splitTabId: w.activeTabId };
+          }
+          // Assign to focused pane
+          if (w.focusedPane === "right") {
+            return { ...w, splitTabId: tabId };
+          }
+          return { ...w, activeTabId: tabId };
+        }),
       }));
     },
     [updateWsState],
@@ -214,6 +269,55 @@ function App() {
     [updateWsState],
   );
 
+  // ─── Split helpers ─────────────────────────────────────────────────────
+
+  const splitTabAction = useCallback(
+    (wsId: string, tabId: string) => {
+      updateWsState((prev) => ({
+        ...prev,
+        workspaces: prev.workspaces.map((w) => {
+          if (w.id !== wsId) return w;
+          let activeTabId = w.activeTabId;
+          if (tabId === activeTabId) {
+            // Pick a different tab for left pane
+            const idx = w.tabs.findIndex((t) => t.id === tabId);
+            const next = w.tabs[idx + 1] ?? w.tabs[idx - 1];
+            if (!next) return w; // Only 1 tab, can't split
+            activeTabId = next.id;
+          }
+          return { ...w, splitTabId: tabId, activeTabId, focusedPane: "right" as const };
+        }),
+      }));
+    },
+    [updateWsState],
+  );
+
+  const closeSplit = useCallback(
+    (wsId: string) => {
+      updateWsState((prev) => ({
+        ...prev,
+        workspaces: prev.workspaces.map((w) => {
+          if (w.id !== wsId) return w;
+          const activeTabId = w.focusedPane === "right" ? w.splitTabId ?? w.activeTabId : w.activeTabId;
+          return { ...w, activeTabId, splitTabId: null, focusedPane: "left" as const };
+        }),
+      }));
+    },
+    [updateWsState],
+  );
+
+  const setFocusedPane = useCallback(
+    (wsId: string, pane: "left" | "right") => {
+      updateWsState((prev) => ({
+        ...prev,
+        workspaces: prev.workspaces.map((w) =>
+          w.id === wsId ? { ...w, focusedPane: pane } : w,
+        ),
+      }));
+    },
+    [updateWsState],
+  );
+
   // ─── Keyboard shortcuts ──────────────────────────────────────────────────
 
   useEffect(() => {
@@ -227,32 +331,63 @@ function App() {
         return;
       }
 
-      // Cmd+W → close active tab
+      // Cmd+W → close focused pane's tab
       if (meta && e.key === "w" && !e.shiftKey) {
         e.preventDefault();
-        if (activeWorkspaceId && activeTab) {
-          removeTab(activeWorkspaceId, activeTab.id);
+        if (activeWorkspaceId && activeWorkspace) {
+          const tabToClose = activeWorkspace.splitTabId && activeWorkspace.focusedPane === "right"
+            ? activeWorkspace.splitTabId
+            : activeWorkspace.activeTabId;
+          if (tabToClose) removeTab(activeWorkspaceId, tabToClose);
         }
         return;
       }
 
-      // Cmd+[ → prev tab
+      // Cmd+\ → toggle split
+      if (meta && e.key === "\\") {
+        e.preventDefault();
+        if (activeWorkspaceId && activeWorkspace) {
+          if (activeWorkspace.splitTabId) {
+            closeSplit(activeWorkspaceId);
+          } else if (activeWorkspace.activeTabId && activeWorkspace.tabs.length > 1) {
+            splitTabAction(activeWorkspaceId, activeWorkspace.activeTabId);
+          }
+        }
+        return;
+      }
+
+      // Ctrl+Cmd+Left/Right → move focus between panes
+      if (e.ctrlKey && e.metaKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        if (activeWorkspaceId && activeWorkspace?.splitTabId) {
+          setFocusedPane(activeWorkspaceId, e.key === "ArrowLeft" ? "left" : "right");
+        }
+        return;
+      }
+
+      // Cmd+[ → prev tab in focused pane
       if (meta && e.key === "[" && !e.shiftKey) {
         e.preventDefault();
         if (activeWorkspace) {
           const tabs = activeWorkspace.tabs;
-          const idx = tabs.findIndex((t) => t.id === activeWorkspace.activeTabId);
+          const currentTabId = activeWorkspace.splitTabId && activeWorkspace.focusedPane === "right"
+            ? activeWorkspace.splitTabId
+            : activeWorkspace.activeTabId;
+          const idx = tabs.findIndex((t) => t.id === currentTabId);
           if (idx > 0) selectTab(activeWorkspaceId!, tabs[idx - 1].id);
         }
         return;
       }
 
-      // Cmd+] → next tab
+      // Cmd+] → next tab in focused pane
       if (meta && e.key === "]" && !e.shiftKey) {
         e.preventDefault();
         if (activeWorkspace) {
           const tabs = activeWorkspace.tabs;
-          const idx = tabs.findIndex((t) => t.id === activeWorkspace.activeTabId);
+          const currentTabId = activeWorkspace.splitTabId && activeWorkspace.focusedPane === "right"
+            ? activeWorkspace.splitTabId
+            : activeWorkspace.activeTabId;
+          const idx = tabs.findIndex((t) => t.id === currentTabId);
           if (idx < tabs.length - 1) selectTab(activeWorkspaceId!, tabs[idx + 1].id);
         }
         return;
@@ -290,6 +425,9 @@ function App() {
     removeTab,
     selectTab,
     selectWorkspace,
+    splitTabAction,
+    closeSplit,
+    setFocusedPane,
   ]);
 
   // ─── Scroll-to-tab when active tab changes ─────────────────────────────
@@ -312,21 +450,6 @@ function App() {
     }
   }, [activeWorkspace?.activeTabId, activeWorkspace?.tabs]);
 
-  // ─── Sync scroll position back to tab selection ───────────────────────
-
-  const handleContentScroll = useCallback(() => {
-    if (programmaticScroll.current) return;
-    if (scrollDebounce.current) clearTimeout(scrollDebounce.current);
-    scrollDebounce.current = setTimeout(() => {
-      const container = contentScrollRef.current;
-      if (!container || !activeWorkspace || !activeWorkspaceId) return;
-      const idx = Math.round(container.scrollLeft / container.clientWidth);
-      const tab = activeWorkspace.tabs[idx];
-      if (tab && tab.id !== activeWorkspace.activeTabId) {
-        selectTab(activeWorkspaceId, tab.id);
-      }
-    }, 100);
-  }, [activeWorkspace, activeWorkspaceId, selectTab]);
 
   // ─── Vibrancy / opacity on mount ─────────────────────────────────────────
 
@@ -343,98 +466,160 @@ function App() {
     }
   }, []);
 
-  // ─── Pages ───────────────────────────────────────────────────────────────
+  // ─── Pages (per-workspace) ──────────────────────────────────────────────
 
+  const getWorkspacePages = useCallback(
+    (wsId: string): Page[] => pagesMap[wsId] ?? [],
+    [pagesMap],
+  );
+
+  const persistWorkspacePages = useCallback((wsId: string, pages: Page[]) => {
+    localStorage.setItem(`voidlink-pages-${wsId}`, JSON.stringify(pages));
+  }, []);
+
+  // Migrate legacy global pages to first workspace on mount
   useEffect(() => {
-    pagesApi
-      .list()
-      .then((list) => {
-        const mapped = list.map((p) => ({
-          id: p.id,
-          title: p.title,
-          parentId: p.parent_id ?? null,
-        }));
-        setPages(mapped);
-        localStorage.setItem("voidlink-pages", JSON.stringify(mapped));
-      })
-      .catch(() => {
-        setUseApi(false);
-        const raw = localStorage.getItem("voidlink-pages");
-        if (raw) {
-          try {
-            setPages(JSON.parse(raw) as Page[]);
-          } catch {}
-        }
-      });
+    const globalPages = localStorage.getItem("voidlink-pages");
+    if (globalPages && workspaces.length > 0) {
+      const firstWsId = workspaces[0].id;
+      if (!localStorage.getItem(`voidlink-pages-${firstWsId}`)) {
+        localStorage.setItem(`voidlink-pages-${firstWsId}`, globalPages);
+        localStorage.removeItem("voidlink-pages");
+      }
+    }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleNewPage = useCallback(async (): Promise<string | null> => {
+  // Stable key — only changes when workspace IDs are added/removed, not on tab/rename mutations
+  const wsIds = workspaces.map((w) => w.id).join(",");
+
+  // Load pages for each workspace
+  useEffect(() => {
+    const ids = wsIds.split(",").filter(Boolean);
+    const loadPages = async () => {
+      const newMap: Record<string, Page[]> = {};
+      for (const wsId of ids) {
+        try {
+          const list = await pagesApi.list(wsId);
+          newMap[wsId] = list.map((p) => ({
+            id: p.id,
+            title: p.title,
+            parentId: p.parent_id ?? null,
+            workspaceId: wsId,
+          }));
+          localStorage.setItem(`voidlink-pages-${wsId}`, JSON.stringify(newMap[wsId]));
+        } catch {
+          setUseApi(false);
+          const raw = localStorage.getItem(`voidlink-pages-${wsId}`);
+          if (raw) {
+            try {
+              newMap[wsId] = JSON.parse(raw) as Page[];
+            } catch {}
+          }
+          if (!newMap[wsId]) newMap[wsId] = [];
+        }
+      }
+      setPagesMap(newMap);
+    };
+    loadPages();
+  }, [wsIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleNewPage = useCallback(async (workspaceId: string): Promise<string | null> => {
     if (useApi) {
       try {
-        const page = await pagesApi.create();
-        const newPage: Page = { id: page.id, title: page.title };
-        setPages((prev) => {
-          const updated = [...prev, newPage];
-          localStorage.setItem("voidlink-pages", JSON.stringify(updated));
-          return updated;
+        const page = await pagesApi.create({ workspace_id: workspaceId });
+        const newPage: Page = { id: page.id, title: page.title, workspaceId };
+        setPagesMap((prev) => {
+          const updated = [...(prev[workspaceId] ?? []), newPage];
+          persistWorkspacePages(workspaceId, updated);
+          return { ...prev, [workspaceId]: updated };
         });
         return page.id;
       } catch {}
     }
     const id = crypto.randomUUID();
-    const newPage: Page = { id, title: "Untitled" };
-    setPages((prev) => {
-      const updated = [...prev, newPage];
-      localStorage.setItem("voidlink-pages", JSON.stringify(updated));
-      return updated;
+    const newPage: Page = { id, title: "Untitled", workspaceId };
+    setPagesMap((prev) => {
+      const updated = [...(prev[workspaceId] ?? []), newPage];
+      persistWorkspacePages(workspaceId, updated);
+      return { ...prev, [workspaceId]: updated };
     });
     return id;
-  }, [useApi]);
+  }, [useApi, persistWorkspacePages]);
 
   const handleDeletePage = useCallback(
-    (id: string) => {
-      setPages((prev) => {
-        const updated = prev.filter((p) => p.id !== id);
-        localStorage.setItem("voidlink-pages", JSON.stringify(updated));
-        return updated;
+    (workspaceId: string, id: string) => {
+      setPagesMap((prev) => {
+        const updated = (prev[workspaceId] ?? []).filter((p) => p.id !== id);
+        persistWorkspacePages(workspaceId, updated);
+        return { ...prev, [workspaceId]: updated };
       });
       localStorage.removeItem(`voidlink-content-${id}`);
       if (useApi) pagesApi.delete(id).catch(() => {});
     },
-    [useApi],
+    [useApi, persistWorkspacePages],
   );
 
   const handleCreateChildPage = useCallback(
-    (parentId: string | null): string => {
+    (workspaceId: string, parentId: string | null): string => {
       const id = crypto.randomUUID();
-      const newPage: Page = { id, title: "Untitled", parentId };
-      setPages((prev) => {
-        const updated = [...prev, newPage];
-        localStorage.setItem("voidlink-pages", JSON.stringify(updated));
-        return updated;
+      const newPage: Page = { id, title: "Untitled", parentId, workspaceId };
+      setPagesMap((prev) => {
+        const updated = [...(prev[workspaceId] ?? []), newPage];
+        persistWorkspacePages(workspaceId, updated);
+        return { ...prev, [workspaceId]: updated };
       });
       if (useApi) {
         pagesApi
-          .create({ id, title: "Untitled", parent_id: parentId ?? undefined })
+          .create({ id, title: "Untitled", parent_id: parentId ?? undefined, workspace_id: workspaceId })
           .catch(() => {});
       }
       return id;
     },
-    [useApi],
+    [useApi, persistWorkspacePages],
   );
 
   const handlePageTitleChange = useCallback(
-    (pageId: string, title: string) => {
-      setPages((prev) => {
-        const updated = prev.map((p) => (p.id === pageId ? { ...p, title } : p));
-        localStorage.setItem("voidlink-pages", JSON.stringify(updated));
-        return updated;
+    (workspaceId: string, pageId: string, title: string) => {
+      setPagesMap((prev) => {
+        const updated = (prev[workspaceId] ?? []).map((p) =>
+          p.id === pageId ? { ...p, title } : p,
+        );
+        persistWorkspacePages(workspaceId, updated);
+        return { ...prev, [workspaceId]: updated };
       });
     },
-    [],
+    [persistWorkspacePages],
   );
 
   // ─── Render ───────────────────────────────────────────────────────────────
+
+  const renderTabContent = (tab: Tab) => {
+    if (tab.type === "notion") {
+      return (
+        <NotionPane
+          tab={tab as NotionTab}
+          pages={getWorkspacePages(activeWorkspaceId!)}
+          useApi={useApi}
+          onUpdateTab={(updates) =>
+            updateTab(activeWorkspaceId!, tab.id, updates as Partial<Tab>)
+          }
+          onNewPage={() => handleNewPage(activeWorkspaceId!)}
+          onDeletePage={(id) => handleDeletePage(activeWorkspaceId!, id)}
+          onPageTitleChange={(pid, t) => handlePageTitleChange(activeWorkspaceId!, pid, t)}
+          onCreateChildPage={(pid) => handleCreateChildPage(activeWorkspaceId!, pid)}
+        />
+      );
+    }
+    return (
+      <TerminalPane
+        tab={tab as TerminalTab}
+        onUpdateTab={(updates) =>
+          updateTab(activeWorkspaceId!, tab.id, updates as Partial<Tab>)
+        }
+        onClose={() => removeTab(activeWorkspaceId!, tab.id)}
+      />
+    );
+  };
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
@@ -470,62 +655,71 @@ function App() {
           <WorkspaceTabStrip
             tabs={activeWorkspace.tabs}
             activeTabId={activeWorkspace.activeTabId}
+            splitTabId={activeWorkspace.splitTabId}
+            focusedPane={activeWorkspace.focusedPane}
             onSelectTab={(tabId) => selectTab(activeWorkspaceId!, tabId)}
             onCloseTab={(tabId) => removeTab(activeWorkspaceId!, tabId)}
             onAddTab={(type) => addTab(activeWorkspaceId!, type)}
             onRenameTab={(tabId, title) =>
               updateTab(activeWorkspaceId!, tabId, { title } as Partial<Tab>)
             }
+            onSplitTab={(tabId) => splitTabAction(activeWorkspaceId!, tabId)}
+            onCloseSplit={() => closeSplit(activeWorkspaceId!)}
           />
         )}
 
-        {/* Content area — horizontal scroll container (niri-style) */}
-        <main
-          ref={contentScrollRef}
-          className="flex flex-1 overflow-x-auto overflow-y-hidden scrollbar-thin"
-          style={{ scrollSnapType: "x mandatory", scrollBehavior: "smooth" }}
-          onScroll={handleContentScroll}
-        >
-          {activeWorkspace?.tabs.length === 0 && (
+        {/* Content area */}
+        {activeWorkspace?.tabs.length === 0 ? (
+          <main className="flex flex-1 overflow-hidden">
             <EmptyWorkspaceState
               onAddNotion={() => addTab(activeWorkspaceId!, "notion")}
               onAddTerminal={() => addTab(activeWorkspaceId!, "terminal")}
             />
-          )}
-          {activeWorkspace?.tabs.map((tab) => (
+          </main>
+        ) : activeWorkspace?.splitTabId ? (
+          /* Split mode — two equal-width columns */
+          <div className="flex flex-1 overflow-hidden">
             <div
-              key={tab.id}
-              className="w-full h-full flex-shrink-0"
-              style={{ scrollSnapAlign: "start" }}
+              className={`flex-1 overflow-hidden ${
+                activeWorkspace.focusedPane === "left" ? "border-t-2 border-primary" : ""
+              }`}
+              onMouseDown={() => setFocusedPane(activeWorkspaceId!, "left")}
             >
-              {tab.type === "notion" ? (
-                <NotionPane
-                  tab={tab as NotionTab}
-                  pages={pages}
-                  useApi={useApi}
-                  onUpdateTab={(updates) =>
-                    updateTab(activeWorkspaceId!, tab.id, updates as Partial<Tab>)
-                  }
-                  onNewPage={handleNewPage}
-                  onDeletePage={handleDeletePage}
-                  onPageTitleChange={handlePageTitleChange}
-                  onCreateChildPage={handleCreateChildPage}
-                />
-              ) : (
-                <TerminalPane
-                  tab={tab as TerminalTab}
-                  onUpdateTab={(updates) =>
-                    updateTab(activeWorkspaceId!, tab.id, updates as Partial<Tab>)
-                  }
-                />
-              )}
+              {activeTab && renderTabContent(activeTab)}
             </div>
-          ))}
-        </main>
+            <div className="w-px bg-border flex-shrink-0" />
+            <div
+              className={`flex-1 overflow-hidden ${
+                activeWorkspace.focusedPane === "right" ? "border-t-2 border-primary" : ""
+              }`}
+              onMouseDown={() => setFocusedPane(activeWorkspaceId!, "right")}
+            >
+              {splitTab && renderTabContent(splitTab)}
+            </div>
+          </div>
+        ) : (
+          /* Single-pane mode — horizontal scroll container */
+          <main
+            ref={contentScrollRef}
+            className="flex flex-1 overflow-x-auto overflow-y-hidden scrollbar-thin"
+          >
+            {activeWorkspace?.tabs.map((tab) => (
+              <div
+                key={tab.id}
+                className="w-full h-full flex-shrink-0"
+              >
+                {renderTabContent(tab)}
+              </div>
+            ))}
+          </main>
+        )}
       </div>
       </div>
 
-      <SettingsPanel open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SettingsPanel
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+      />
     </div>
   );
 }

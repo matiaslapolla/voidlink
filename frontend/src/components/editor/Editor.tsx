@@ -10,6 +10,7 @@ import { GripVertical } from "lucide-react";
 import { EditorToolbar } from "./EditorToolbar";
 import { SlashCommand } from "./SlashCommand";
 import { NestedPageNode } from "./NestedPageNode";
+import { MarkdownPaste } from "./MarkdownPaste";
 import "./editor.css";
 
 interface EditorProps {
@@ -40,6 +41,7 @@ export function Editor({
       Focus.configure({ className: "has-focus", mode: "deepest" }),
       SlashCommand,
       NestedPageNode,
+      MarkdownPaste,
     ],
     content,
     onUpdate: ({ editor, transaction }) => {

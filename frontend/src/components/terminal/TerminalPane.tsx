@@ -10,9 +10,10 @@ import type { TerminalTab } from "@/types/tabs";
 interface TerminalPaneProps {
   tab: TerminalTab;
   onUpdateTab: (updates: Partial<TerminalTab>) => void;
+  onClose: () => void;
 }
 
-export function TerminalPane({ tab, onUpdateTab }: TerminalPaneProps) {
+export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -88,6 +89,16 @@ export function TerminalPane({ tab, onUpdateTab }: TerminalPaneProps) {
       term.write(bytes);
     });
 
+    // Listen for PTY exit — show message then close the tab
+    let exitTimeout: ReturnType<typeof setTimeout> | null = null;
+    const unlistenExit = await listen(`pty-exit:${sessionId}`, () => {
+      term.writeln("\r\n\x1b[2m[Process completed]\x1b[0m");
+      exitTimeout = setTimeout(() => {
+        sessionIdRef.current = null; // prevent double close_pty on unmount
+        onClose();
+      }, 1500);
+    });
+
     // Send input to PTY
     term.onData((data) => {
       invoke("write_pty", { sessionId, data }).catch(() => {});
@@ -109,6 +120,8 @@ export function TerminalPane({ tab, onUpdateTab }: TerminalPaneProps) {
 
     return () => {
       unlisten();
+      unlistenExit();
+      if (exitTimeout !== null) clearTimeout(exitTimeout);
       resizeObserver.disconnect();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -130,11 +143,27 @@ export function TerminalPane({ tab, onUpdateTab }: TerminalPaneProps) {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Forward horizontal wheel events to the parent <main> scroll container
+  // so trackpad swipes navigate between tabs instead of being captured by xterm.js
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        e.stopPropagation();
+        e.preventDefault();
+        const scrollParent = el.closest("main");
+        if (scrollParent) scrollParent.scrollBy({ left: e.deltaX });
+      }
+    };
+    el.addEventListener("wheel", handler, { capture: true, passive: false });
+    return () => el.removeEventListener("wheel", handler, { capture: true });
+  }, []);
+
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-hidden bg-background p-2"
-      style={{ minHeight: 0 }}
+      className="h-full overflow-hidden bg-background p-2"
     />
   );
 }

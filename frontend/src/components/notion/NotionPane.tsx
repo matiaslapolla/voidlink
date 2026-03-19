@@ -5,9 +5,6 @@ import { PageTreePanel } from "./PageTreePanel";
 import { pagesApi } from "@/api/pages";
 import type { NotionTab, Page } from "@/types/tabs";
 
-// Re-export Page so callers can import from one place
-export type { Page };
-
 interface NotionPaneProps {
   tab: NotionTab;
   pages: Page[];

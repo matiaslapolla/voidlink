@@ -66,7 +66,11 @@ fn create_pty(
         let mut buf = [0u8; 4096];
         loop {
             match std::io::Read::read(&mut reader, &mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) | Err(_) => {
+                    let _ = reader_app_handle
+                        .emit(&format!("pty-exit:{}", reader_session_id), ());
+                    break;
+                }
                 Ok(n) => {
                     let chunk = buf[..n].to_vec();
                     let event_name = format!("pty-output:{}", reader_session_id);

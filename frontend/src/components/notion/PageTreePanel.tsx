@@ -10,12 +10,7 @@ import {
   DialogDescription,
   DialogClose,
 } from "@/components/ui/dialog";
-
-export interface Page {
-  id: string;
-  title: string;
-  parentId?: string | null;
-}
+import type { Page } from "@/types/tabs";
 
 interface PageTreeProps {
   pages: Page[];
