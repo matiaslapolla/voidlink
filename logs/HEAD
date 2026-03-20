@@ -1,3 +1,4 @@
 0000000000000000000000000000000000000000 36fb3050b81239a986ce0e0afc6d93448d6c6b3a Matias Lapolla <matias.lapolla.1@gmail.com> 1774026559 -0300
 36fb3050b81239a986ce0e0afc6d93448d6c6b3a 36fb3050b81239a986ce0e0afc6d93448d6c6b3a Matias Lapolla <matias.lapolla.1@gmail.com> 1774026559 -0300	reset: moving to HEAD
 36fb3050b81239a986ce0e0afc6d93448d6c6b3a 36fb3050b81239a986ce0e0afc6d93448d6c6b3a Matias Lapolla <matias.lapolla.1@gmail.com> 1774026581 -0300	checkout: moving from feature/langchain-agents to feature/langchain-agents
+36fb3050b81239a986ce0e0afc6d93448d6c6b3a 489824a8eb3e69b93ecde50b3ce895f3d0abfacb Matias Lapolla <matias.lapolla.1@gmail.com> 1774026767 -0300	commit: feat: Add LangChain agent infrastructure
