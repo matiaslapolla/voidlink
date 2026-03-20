@@ -1,5 +1,5 @@
 import { createSignal, For } from "solid-js";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, Effect, EffectState } from "@tauri-apps/api/window";
 import {
   Dialog,
   DialogPortal,
@@ -53,7 +53,7 @@ export function SettingsPanel({ open, onOpenChange }: SettingsPanelProps) {
     if (value === "off") {
       await win.clearEffects();
     } else {
-      await win.setEffects({ effects: [value], state: "active" });
+      await win.setEffects({ effects: [value as unknown as Effect], state: EffectState.Active });
     }
   };
 

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen } from "@solidjs/testing-library";
 import { describe, it, expect, vi } from "vitest";
 import App from "./App";
 
@@ -20,13 +20,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 describe("App", () => {
   it("renders empty workspace state when no tabs exist", () => {
     localStorage.clear();
-    render(<App />);
+    render(() => <App />);
     expect(screen.getByText("Empty workspace")).toBeInTheDocument();
   });
 
   it("renders new workspace buttons", () => {
     localStorage.clear();
-    render(<App />);
+    render(() => <App />);
     expect(
       screen.getAllByRole("button", { name: /new workspace/i }).length,
     ).toBeGreaterThan(0);

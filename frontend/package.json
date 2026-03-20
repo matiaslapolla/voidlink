@@ -39,6 +39,7 @@
     "clsx": "^2.1.1",
     "lucide-solid": "^0.576.0",
     "marked": "^17.0.4",
+    "shadcn": "^4.1.0",
     "solid-js": "^1.9.7",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",

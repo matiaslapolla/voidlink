@@ -157,7 +157,6 @@ export function NotionPane({
           }
         >
           <Editor
-            key={tab.pageId}
             content={loadedContent()!.html}
             onUpdate={handleUpdate}
             onCreateChildPage={handleCreateChildPage}
