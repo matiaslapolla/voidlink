@@ -5,6 +5,8 @@ use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 
+pub mod browser;
+
 // ─── PTY session store ────────────────────────────────────────────────────────
 
 struct PtySession {
@@ -182,6 +184,15 @@ pub fn run() {
             write_pty,
             resize_pty,
             close_pty,
+            browser_create_webview,
+            browser_navigate,
+            browser_execute_script,
+            browser_close,
+            agent_browser_open,
+            agent_browser_click,
+            agent_browser_fill,
+            agent_browser_snapshot,
+            agent_browser_screenshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
