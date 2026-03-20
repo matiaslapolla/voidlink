@@ -34,6 +34,9 @@ src-tauri/gen/
 # Docker
 docker-compose.override.yml
 
+# Worktrees
+.worktrees/
+
 # Test / Coverage
 coverage/
 htmlcov/
