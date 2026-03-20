@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { onMount, onCleanup } from "solid-js";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -14,18 +14,17 @@ interface TerminalPaneProps {
 }
 
 export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<XTerm | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const sessionIdRef = useRef<string | null>(tab.sessionId || null);
+  let containerRef: HTMLDivElement | undefined;
+  let term: XTerm | null = null;
+  let currentSessionId: string | null = tab.sessionId || null;
 
   const getCssVar = (name: string) =>
     getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-  const initTerminal = useCallback(async () => {
-    if (!containerRef.current) return;
+  async function initTerminal(): Promise<() => void> {
+    if (!containerRef) return () => {};
 
-    const term = new XTerm({
+    const t = new XTerm({
       fontFamily: '"GeistMono", "Cascadia Code", monospace',
       fontSize: 13,
       lineHeight: 1.4,
@@ -54,18 +53,17 @@ export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
       },
     });
 
-    const fitAddon = new FitAddon();
+    const fit = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
-    term.loadAddon(fitAddon);
-    term.loadAddon(webLinksAddon);
-    term.open(containerRef.current);
-    fitAddon.fit();
+    t.loadAddon(fit);
+    t.loadAddon(webLinksAddon);
+    t.open(containerRef);
+    fit.fit();
 
-    termRef.current = term;
-    fitRef.current = fitAddon;
+    term = t;
 
     // Update tab title from OSC escape sequences (sent by shells on command exec)
-    term.onTitleChange((title) => {
+    t.onTitleChange((title) => {
       if (title) onUpdateTab({ title });
     });
 
@@ -76,46 +74,46 @@ export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
         cwd: tab.cwd || (await invoke<string>("get_home_dir")),
       });
     } catch (err) {
-      term.writeln(`\x1b[31mFailed to start terminal: ${err}\x1b[0m`);
-      return;
+      t.writeln(`\x1b[31mFailed to start terminal: ${err}\x1b[0m`);
+      return () => {};
     }
 
-    sessionIdRef.current = sessionId;
+    currentSessionId = sessionId;
     onUpdateTab({ sessionId });
 
     // Listen for PTY output
     const unlisten = await listen<number[]>(`pty-output:${sessionId}`, (event) => {
       const bytes = new Uint8Array(event.payload);
-      term.write(bytes);
+      t.write(bytes);
     });
 
     // Listen for PTY exit — show message then close the tab
     let exitTimeout: ReturnType<typeof setTimeout> | null = null;
     const unlistenExit = await listen(`pty-exit:${sessionId}`, () => {
-      term.writeln("\r\n\x1b[2m[Process completed]\x1b[0m");
+      t.writeln("\r\n\x1b[2m[Process completed]\x1b[0m");
       exitTimeout = setTimeout(() => {
-        sessionIdRef.current = null; // prevent double close_pty on unmount
+        currentSessionId = null; // prevent double close_pty on unmount
         onClose();
       }, 1500);
     });
 
     // Send input to PTY
-    term.onData((data) => {
+    t.onData((data) => {
       invoke("write_pty", { sessionId, data }).catch(() => {});
     });
 
     // Resize handler
     const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit();
+      fit.fit();
       invoke("resize_pty", {
         sessionId,
-        cols: term.cols,
-        rows: term.rows,
+        cols: t.cols,
+        rows: t.rows,
       }).catch(() => {});
     });
 
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
+    if (containerRef) {
+      resizeObserver.observe(containerRef);
     }
 
     return () => {
@@ -124,46 +122,48 @@ export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
       if (exitTimeout !== null) clearTimeout(exitTimeout);
       resizeObserver.disconnect();
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
-  useEffect(() => {
+  onMount(async () => {
     let cleanup: (() => void) | undefined;
 
     initTerminal().then((fn) => {
       cleanup = fn;
     });
 
-    return () => {
-      cleanup?.();
-      termRef.current?.dispose();
-      termRef.current = null;
-      if (sessionIdRef.current) {
-        invoke("close_pty", { sessionId: sessionIdRef.current }).catch(() => {});
-      }
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // Forward horizontal wheel events to the parent <main> scroll container
+    // so trackpad swipes navigate between tabs instead of being captured by xterm.js
+    const el = containerRef;
+    if (el) {
+      const handler = (e: WheelEvent) => {
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+          e.stopPropagation();
+          e.preventDefault();
+          const scrollParent = el.closest("main");
+          if (scrollParent) scrollParent.scrollBy({ left: e.deltaX });
+        }
+      };
+      el.addEventListener("wheel", handler, { capture: true, passive: false });
 
-  // Forward horizontal wheel events to the parent <main> scroll container
-  // so trackpad swipes navigate between tabs instead of being captured by xterm.js
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const handler = (e: WheelEvent) => {
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-        e.stopPropagation();
-        e.preventDefault();
-        const scrollParent = el.closest("main");
-        if (scrollParent) scrollParent.scrollBy({ left: e.deltaX });
+      onCleanup(() => {
+        el.removeEventListener("wheel", handler, { capture: true });
+      });
+    }
+
+    onCleanup(() => {
+      cleanup?.();
+      term?.dispose();
+      term = null;
+      if (currentSessionId) {
+        invoke("close_pty", { sessionId: currentSessionId }).catch(() => {});
       }
-    };
-    el.addEventListener("wheel", handler, { capture: true, passive: false });
-    return () => el.removeEventListener("wheel", handler, { capture: true });
-  }, []);
+    });
+  });
 
   return (
     <div
-      ref={containerRef}
-      className="h-full overflow-hidden bg-background p-2"
+      ref={el => containerRef = el}
+      class="h-full overflow-hidden bg-background p-2"
     />
   );
 }
