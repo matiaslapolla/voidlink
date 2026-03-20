@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils"
 interface CommandItem {
   title: string
   description: string
+  aliases?: string[]
   command: (props: { editor: Editor; range: { from: number; to: number } }) => void
 }
 
@@ -18,6 +19,7 @@ const commands: CommandItem[] = [
   {
     title: "Heading 1",
     description: "Large section heading",
+    aliases: ["h1", "heading1"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).setHeading({ level: 1 }).run()
     },
@@ -25,6 +27,7 @@ const commands: CommandItem[] = [
   {
     title: "Heading 2",
     description: "Medium section heading",
+    aliases: ["h2", "heading2"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).setHeading({ level: 2 }).run()
     },
@@ -32,6 +35,7 @@ const commands: CommandItem[] = [
   {
     title: "Heading 3",
     description: "Small section heading",
+    aliases: ["h3", "heading3"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).setHeading({ level: 3 }).run()
     },
@@ -39,6 +43,7 @@ const commands: CommandItem[] = [
   {
     title: "Bullet List",
     description: "Unordered list",
+    aliases: ["bullet", "list", "-", "*"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleBulletList().run()
     },
@@ -46,6 +51,7 @@ const commands: CommandItem[] = [
   {
     title: "Numbered List",
     description: "Ordered list",
+    aliases: ["numbered", "1.", "num", "ordered"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleOrderedList().run()
     },
@@ -53,6 +59,7 @@ const commands: CommandItem[] = [
   {
     title: "Task List",
     description: "Checklist with checkboxes",
+    aliases: ["task", "todo", "check", "checkbox"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleTaskList().run()
     },
@@ -60,6 +67,7 @@ const commands: CommandItem[] = [
   {
     title: "Code Block",
     description: "Code snippet",
+    aliases: ["code", "```", "pre"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleCodeBlock().run()
     },
@@ -67,6 +75,7 @@ const commands: CommandItem[] = [
   {
     title: "Blockquote",
     description: "Quote block",
+    aliases: ["quote", ">", "blockquote"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleBlockquote().run()
     },
@@ -74,6 +83,7 @@ const commands: CommandItem[] = [
   {
     title: "Divider",
     description: "Horizontal rule",
+    aliases: ["divider", "hr", "---", "horizontal"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).setHorizontalRule().run()
     },
@@ -81,6 +91,7 @@ const commands: CommandItem[] = [
   {
     title: "Page",
     description: "Create a nested page",
+    aliases: ["page", "nested", "child"],
     command: ({ editor, range }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const storage = editor.storage as Record<string, any>
@@ -169,6 +180,7 @@ export const SlashCommand = Extension.create({
     return {
       suggestion: {
         char: "/",
+        allowSpaces: true,
         command: ({
           editor,
           range,
@@ -181,9 +193,14 @@ export const SlashCommand = Extension.create({
           props.command({ editor, range })
         },
         items: ({ query }: { query: string }) => {
-          return commands.filter(item =>
-            item.title.toLowerCase().includes(query.toLowerCase())
-          )
+          const normalizedQuery = query.toLowerCase().trim()
+          return commands.filter(item => {
+            const matchesTitle = item.title.toLowerCase().includes(normalizedQuery)
+            const matchesAlias = item.aliases?.some(alias =>
+              alias.toLowerCase().includes(normalizedQuery)
+            )
+            return matchesTitle || matchesAlias
+          })
         },
         render: () => {
           let component: SolidRenderer<Record<string, unknown>>
@@ -221,6 +238,19 @@ export const SlashCommand = Extension.create({
               if (props.event.key === "Escape") {
                 popup[0].hide()
                 return true
+              }
+              if (props.event.key === " ") {
+                const query = props.text?.toLowerCase().trim()
+                if (query) {
+                  const exactMatch = commands.find(item =>
+                    item.aliases?.some(alias => alias.toLowerCase() === query)
+                  )
+                  if (exactMatch) {
+                    exactMatch.command({ editor: props.editor as Editor, range: props.range })
+                    popup[0].hide()
+                    return true
+                  }
+                }
               }
               const ref = component.ref as CommandListRef | null
               return ref?.onKeyDown({ event: props.event }) ?? false
