@@ -1,8 +1,9 @@
 .PHONY: help \
-        docker-up docker-down docker-logs docker-rebuild \
-        backend frontend app \
-        dev check test-frontend test-backend test-tauri \
-        version
+         docker-up docker-down docker-logs docker-rebuild \
+         backend frontend app \
+         dev check test-frontend test-backend test-tauri \
+         setup install \
+         version
 
 # ── Default ──────────────────────────────────────────────────────────────────
 help:
@@ -60,8 +61,27 @@ test-tauri:
 
 check: test-frontend test-backend test-tauri
 	@echo ""
-	@echo "  All checks passed."
+	@echo " All checks passed."
 	@echo ""
+
+# ── Setup / Install ───────────────────────────────────────────────────────────
+setup:
+	@echo "📦 Installing frontend dependencies..."
+	cd frontend && npm install
+	@echo "🐍 Installing backend dependencies..."
+	cd backend && uv sync
+	@echo "🦀 Installing Tauri CLI (if not already installed)..."
+	cargo install tauri-cli --quiet
+	@echo ""
+	@echo "✅ Setup complete!"
+	@echo ""
+	@echo "To start development:"
+	@echo "  make dev                    (Start Postgres + Tauri desktop app)"
+	@echo "  make backend                (Run backend only)"
+	@echo "  make frontend               (Run frontend only)"
+	@echo ""
+
+install: setup
 
 # ── Versioning ───────────────────────────────────────────────────────────────
 # Usage: make version V=1.0.0
