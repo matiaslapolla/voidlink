@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import type { Editor } from "@tiptap/react";
+import { createSignal, onMount, onCleanup, For, Show } from "solid-js";
+import type { Editor } from "@tiptap/core";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Type, Heading, List, Plus, Quote } from "lucide-react";
+import { Type, Heading, List, Plus, Quote } from "lucide-solid";
 import { ExportMenu } from "./ExportMenu";
 
 interface EditorToolbarProps {
@@ -11,7 +11,7 @@ interface EditorToolbarProps {
 
 // Prevent the editor from losing selection when clicking toolbar buttons
 function cmd(fn: () => void) {
-  return (e: React.MouseEvent) => {
+  return (e: MouseEvent) => {
     e.preventDefault();
     fn();
   };
@@ -25,24 +25,23 @@ interface ToolbarItem {
 
 interface GroupDef {
   label: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: (props: { class?: string }) => any;
   items: ToolbarItem[];
 }
 
 function ToolbarGroupPopover({ group, editor }: { group: GroupDef; editor: Editor }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = createSignal(false);
+  let ref: HTMLDivElement | undefined;
 
-  useEffect(() => {
-    if (!open) return;
+  onMount(() => {
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref && !ref.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
+    onCleanup(() => document.removeEventListener("mousedown", handler));
+  });
 
-  const hasActive = group.items.some((item) => {
+  const hasActive = () => group.items.some((item) => {
     if (!item.active) return false;
     if (Array.isArray(item.active)) return editor.isActive(item.active[0], item.active[1]);
     return editor.isActive(item.active);
@@ -51,54 +50,55 @@ function ToolbarGroupPopover({ group, editor }: { group: GroupDef; editor: Edito
   const Icon = group.icon;
 
   return (
-    <div className="relative" ref={ref}>
+    <div class="relative" ref={ref}>
       <Button
-        variant={hasActive ? "default" : "ghost"}
+        variant={hasActive() ? "default" : "ghost"}
         size="sm"
-        onMouseDown={(e) => { e.preventDefault(); setOpen(!open); }}
+        onMouseDown={(e: MouseEvent) => { e.preventDefault(); setOpen(!open()); }}
         title={group.label}
       >
-        <Icon className="w-4 h-4" />
+        <Icon class="w-4 h-4" />
       </Button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 bg-popover border border-border rounded-lg shadow-md p-1 min-w-[120px] z-50 flex flex-col gap-0.5">
-          {group.items.map((item) => {
-            const isActive = item.active
-              ? Array.isArray(item.active)
-                ? editor.isActive(item.active[0], item.active[1])
-                : editor.isActive(item.active)
-              : false;
-            return (
-              <button
-                key={item.label}
-                className={`w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors ${
-                  isActive ? "bg-accent text-accent-foreground" : "hover:bg-accent"
-                }`}
-                onMouseDown={cmd(item.action)}
-              >
-                {item.label}
-              </button>
-            );
-          })}
+      <Show when={open()}>
+        <div class="absolute top-full left-0 mt-1 bg-popover border border-border rounded-lg shadow-md p-1 min-w-[120px] z-50 flex flex-col gap-0.5">
+          <For each={group.items}>
+            {(item) => {
+              const isActive = () => item.active
+                ? Array.isArray(item.active)
+                  ? editor.isActive(item.active[0], item.active[1])
+                  : editor.isActive(item.active)
+                : false;
+              return (
+                <button
+                  class={`w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors ${
+                    isActive() ? "bg-accent text-accent-foreground" : "hover:bg-accent"
+                  }`}
+                  onMouseDown={cmd(item.action)}
+                >
+                  {item.label}
+                </button>
+              );
+            }}
+          </For>
         </div>
-      )}
+      </Show>
     </div>
   );
 }
 
 export function EditorToolbar({ editor }: EditorToolbarProps) {
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const [compact, setCompact] = useState(false);
+  let toolbarRef: HTMLDivElement | undefined;
+  const [compact, setCompact] = createSignal(false);
 
-  useEffect(() => {
-    const el = toolbarRef.current;
+  onMount(() => {
+    const el = toolbarRef;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
       setCompact(entry.contentRect.width < 500);
     });
     ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+    onCleanup(() => ro.disconnect());
+  });
 
   const groups: GroupDef[] = [
     {
@@ -141,40 +141,41 @@ export function EditorToolbar({ editor }: EditorToolbarProps) {
   ];
 
   return (
-    <div ref={toolbarRef} className="flex items-center gap-1 border-b border-border px-4 py-2 flex-shrink-0">
-      {compact ? (
-        <>
-          {groups.map((g) => (
-            <ToolbarGroupPopover key={g.label} group={g} editor={editor} />
-          ))}
-        </>
-      ) : (
-        <>
-          <Button variant={editor.isActive("bold") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBold().run())}>B</Button>
-          <Button variant={editor.isActive("italic") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleItalic().run())}>I</Button>
-          <Button variant={editor.isActive("strike") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleStrike().run())}>S</Button>
-          <Button variant={editor.isActive("code") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleCode().run())}>{"<>"}</Button>
+    <div ref={toolbarRef} class="flex items-center gap-1 border-b border-border px-4 py-2 flex-shrink-0">
+      <Show
+        when={compact()}
+        fallback={
+          <>
+            <Button variant={editor.isActive("bold") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBold().run())}>B</Button>
+            <Button variant={editor.isActive("italic") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleItalic().run())}>I</Button>
+            <Button variant={editor.isActive("strike") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleStrike().run())}>S</Button>
+            <Button variant={editor.isActive("code") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleCode().run())}>{"<>"}</Button>
 
-          <Separator orientation="vertical" className="h-6 mx-1" />
+            <Separator orientation="vertical" class="h-6 mx-1" />
 
-          <Button variant={editor.isActive("heading", { level: 1 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 1 }).run())}>H1</Button>
-          <Button variant={editor.isActive("heading", { level: 2 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 2 }).run())}>H2</Button>
-          <Button variant={editor.isActive("heading", { level: 3 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 3 }).run())}>H3</Button>
+            <Button variant={editor.isActive("heading", { level: 1 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 1 }).run())}>H1</Button>
+            <Button variant={editor.isActive("heading", { level: 2 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 2 }).run())}>H2</Button>
+            <Button variant={editor.isActive("heading", { level: 3 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 3 }).run())}>H3</Button>
 
-          <Separator orientation="vertical" className="h-6 mx-1" />
+            <Separator orientation="vertical" class="h-6 mx-1" />
 
-          <Button variant={editor.isActive("bulletList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBulletList().run())}>List</Button>
-          <Button variant={editor.isActive("orderedList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleOrderedList().run())}>1.</Button>
-          <Button variant={editor.isActive("taskList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleTaskList().run())}>Tasks</Button>
-          <Button variant={editor.isActive("codeBlock") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleCodeBlock().run())}>Code</Button>
+            <Button variant={editor.isActive("bulletList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBulletList().run())}>List</Button>
+            <Button variant={editor.isActive("orderedList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleOrderedList().run())}>1.</Button>
+            <Button variant={editor.isActive("taskList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleTaskList().run())}>Tasks</Button>
+            <Button variant={editor.isActive("codeBlock") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleCodeBlock().run())}>Code</Button>
 
-          <Separator orientation="vertical" className="h-6 mx-1" />
+            <Separator orientation="vertical" class="h-6 mx-1" />
 
-          <Button variant="ghost" size="sm" onMouseDown={cmd(() => editor.chain().focus().setHorizontalRule().run())}>{"\u2014"}</Button>
-          <Button variant={editor.isActive("blockquote") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBlockquote().run())}><Quote className="w-4 h-4" /></Button>
-        </>
-      )}
-      <div className="ml-auto">
+            <Button variant="ghost" size="sm" onMouseDown={cmd(() => editor.chain().focus().setHorizontalRule().run())}>{"\u2014"}</Button>
+            <Button variant={editor.isActive("blockquote") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBlockquote().run())}><Quote class="w-4 h-4" /></Button>
+          </>
+        }
+      >
+        <For each={groups}>
+          {(g) => <ToolbarGroupPopover group={g} editor={editor} />}
+        </For>
+      </Show>
+      <div class="ml-auto">
         <ExportMenu editor={editor} />
       </div>
     </div>

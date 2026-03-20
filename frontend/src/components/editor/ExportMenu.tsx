@@ -1,7 +1,7 @@
-import type { Editor, JSONContent } from "@tiptap/react";
+import type { Editor, JSONContent } from "@tiptap/core";
 import { Button } from "@/components/ui/button";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
-import { useState } from "react";
+import { createSignal, Show } from "solid-js";
 
 interface ExportMenuProps {
   editor: Editor;
@@ -127,7 +127,7 @@ async function saveWithDialog(
 }
 
 export function ExportMenu({ editor }: ExportMenuProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = createSignal(false);
 
   const exportCsv = async () => {
     const data = extractStructuredData(editor);
@@ -154,15 +154,15 @@ export function ExportMenu({ editor }: ExportMenuProps) {
   };
 
   return (
-    <div className="relative">
-      <Button variant="ghost" size="sm" onClick={() => setOpen(!open)}>
+    <div class="relative">
+      <Button variant="ghost" size="sm" onClick={() => setOpen(!open())}>
         Export
       </Button>
-      {open && (
-        <div className="absolute top-full right-0 mt-1 bg-popover border border-border rounded-lg shadow-md p-1 min-w-[140px] z-50">
+      <Show when={open()}>
+        <div class="absolute top-full right-0 mt-1 bg-popover border border-border rounded-lg shadow-md p-1 min-w-[140px] z-50">
           <TooltipWrapper label="Export as CSV — structured rows and columns">
             <button
-              className="w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-accent"
+              class="w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-accent"
               onClick={exportCsv}
             >
               CSV
@@ -170,7 +170,7 @@ export function ExportMenu({ editor }: ExportMenuProps) {
           </TooltipWrapper>
           <TooltipWrapper label="Export as JSON — full document structure with metadata">
             <button
-              className="w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-accent"
+              class="w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-accent"
               onClick={exportJson}
             >
               JSON
@@ -178,14 +178,14 @@ export function ExportMenu({ editor }: ExportMenuProps) {
           </TooltipWrapper>
           <TooltipWrapper label="Export as Markdown text">
             <button
-              className="w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-accent"
+              class="w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-accent"
               onClick={exportMarkdown}
             >
               Plain Text
             </button>
           </TooltipWrapper>
         </div>
-      )}
+      </Show>
     </div>
   );
 }

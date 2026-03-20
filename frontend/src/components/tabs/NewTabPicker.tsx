@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { FileText, Terminal } from "lucide-react";
+import { onMount, onCleanup } from "solid-js";
+import { FileText, Terminal } from "lucide-solid";
 
 interface NewTabPickerProps {
   onSelect: (type: "notion" | "terminal") => void;
@@ -7,33 +7,33 @@ interface NewTabPickerProps {
 }
 
 export function NewTabPicker({ onSelect, onClose }: NewTabPickerProps) {
-  const ref = useRef<HTMLDivElement>(null);
+  let ref: HTMLDivElement | undefined;
 
-  useEffect(() => {
+  onMount(() => {
     const handleClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      if (ref && !ref.contains(e.target as Node)) onClose();
     };
     document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [onClose]);
+    onCleanup(() => document.removeEventListener("mousedown", handleClick));
+  });
 
   return (
     <div
       ref={ref}
-      className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg overflow-hidden min-w-40"
+      class="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg overflow-hidden min-w-40"
     >
       <button
         onClick={() => onSelect("notion")}
-        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
+        class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
       >
-        <FileText className="w-4 h-4 text-muted-foreground" />
+        <FileText class="w-4 h-4 text-muted-foreground" />
         New Document
       </button>
       <button
         onClick={() => onSelect("terminal")}
-        className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
+        class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
       >
-        <Terminal className="w-4 h-4 text-muted-foreground" />
+        <Terminal class="w-4 h-4 text-muted-foreground" />
         New Terminal
       </button>
     </div>
