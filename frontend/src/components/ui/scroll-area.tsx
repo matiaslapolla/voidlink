@@ -1,52 +1,51 @@
-import { ScrollArea as ScrollAreaPrimitive } from "@base-ui/react/scroll-area"
+import { splitProps } from "solid-js";
+import type { JSX } from "solid-js";
 
-import { cn } from "@/lib/utils"
+import { cn } from "@/lib/utils";
 
-function ScrollArea({
-  className,
-  children,
-  ...props
-}: ScrollAreaPrimitive.Root.Props) {
+interface ScrollAreaProps extends JSX.HTMLAttributes<HTMLDivElement> {
+  children?: JSX.Element;
+}
+
+function ScrollArea(props: ScrollAreaProps) {
+  const [local, rest] = splitProps(props, ["class", "children"]);
   return (
-    <ScrollAreaPrimitive.Root
+    <div
       data-slot="scroll-area"
-      className={cn("relative", className)}
-      {...props}
+      class={cn("overflow-y-auto relative", local.class)}
+      {...rest}
     >
-      <ScrollAreaPrimitive.Viewport
-        data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
-      >
-        {children}
-      </ScrollAreaPrimitive.Viewport>
-      <ScrollBar />
-      <ScrollAreaPrimitive.Corner />
-    </ScrollAreaPrimitive.Root>
-  )
+      {local.children}
+    </div>
+  );
 }
 
-function ScrollBar({
-  className,
-  orientation = "vertical",
-  ...props
-}: ScrollAreaPrimitive.Scrollbar.Props) {
+interface ScrollBarProps extends JSX.HTMLAttributes<HTMLDivElement> {
+  orientation?: "vertical" | "horizontal";
+}
+
+function ScrollBar(props: ScrollBarProps) {
+  const [local, rest] = splitProps(props, ["class", "orientation"]);
+  const orientation = () => local.orientation ?? "vertical";
   return (
-    <ScrollAreaPrimitive.Scrollbar
+    <div
       data-slot="scroll-area-scrollbar"
-      data-orientation={orientation}
-      orientation={orientation}
-      className={cn(
-        "flex touch-none p-px transition-colors select-none data-horizontal:h-2.5 data-horizontal:flex-col data-horizontal:border-t data-horizontal:border-t-transparent data-vertical:h-full data-vertical:w-2.5 data-vertical:border-l data-vertical:border-l-transparent",
-        className
+      data-orientation={orientation()}
+      class={cn(
+        "flex touch-none p-px transition-colors select-none",
+        orientation() === "horizontal"
+          ? "h-2.5 flex-col border-t border-t-transparent"
+          : "h-full w-2.5 border-l border-l-transparent",
+        local.class
       )}
-      {...props}
+      {...rest}
     >
-      <ScrollAreaPrimitive.Thumb
+      <div
         data-slot="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-border"
+        class="relative flex-1 rounded-full bg-border"
       />
-    </ScrollAreaPrimitive.Scrollbar>
-  )
+    </div>
+  );
 }
 
-export { ScrollArea, ScrollBar }
+export { ScrollArea, ScrollBar };

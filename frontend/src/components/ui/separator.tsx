@@ -1,25 +1,28 @@
-"use client"
+import { splitProps } from "solid-js";
+import type { JSX } from "solid-js";
 
-import { Separator as SeparatorPrimitive } from "@base-ui/react/separator"
+import { cn } from "@/lib/utils";
 
-import { cn } from "@/lib/utils"
-
-function Separator({
-  className,
-  orientation = "horizontal",
-  ...props
-}: SeparatorPrimitive.Props) {
-  return (
-    <SeparatorPrimitive
-      data-slot="separator"
-      orientation={orientation}
-      className={cn(
-        "shrink-0 bg-border data-horizontal:h-px data-horizontal:w-full data-vertical:w-px data-vertical:self-stretch",
-        className
-      )}
-      {...props}
-    />
-  )
+interface SeparatorProps extends JSX.HTMLAttributes<HTMLDivElement> {
+  orientation?: "horizontal" | "vertical";
 }
 
-export { Separator }
+function Separator(props: SeparatorProps) {
+  const [local, rest] = splitProps(props, ["class", "orientation"]);
+  const orientation = () => local.orientation ?? "horizontal";
+  return (
+    <div
+      role="separator"
+      data-slot="separator"
+      data-orientation={orientation()}
+      aria-orientation={orientation()}
+      class={cn(
+        "shrink-0 bg-border data-[orientation=horizontal]:h-px data-[orientation=horizontal]:w-full data-[orientation=vertical]:w-px data-[orientation=vertical]:self-stretch",
+        local.class
+      )}
+      {...rest}
+    />
+  );
+}
+
+export { Separator };

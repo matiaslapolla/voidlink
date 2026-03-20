@@ -1,17 +1,16 @@
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./tooltip";
+import type { JSX } from "solid-js";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
 
 interface TooltipWrapperProps {
   label: string;
-  children: React.ReactNode;
+  children: JSX.Element;
 }
 
-export function TooltipWrapper({ label, children }: TooltipWrapperProps) {
+export function TooltipWrapper(props: TooltipWrapperProps) {
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger render={<span className="contents" />}>{children}</TooltipTrigger>
-        <TooltipContent side="top">{label}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger>{props.children}</TooltipTrigger>
+      <TooltipContent side="top">{props.label}</TooltipContent>
+    </Tooltip>
   );
 }
