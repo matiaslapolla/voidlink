@@ -21,15 +21,8 @@ interface PageTreeProps {
   depth?: number;
 }
 
-function PageTree({
-  pages,
-  activePage,
-  onSelectPage,
-  onDeleteRequest,
-  parentId = null,
-  depth = 0,
-}: PageTreeProps) {
-  const children = () => pages.filter((p) => (p.parentId ?? null) === parentId);
+function PageTree(props: PageTreeProps) {
+  const children = () => props.pages.filter((p) => (p.parentId ?? null) === (props.parentId ?? null));
 
   return (
     <Show when={children().length > 0}>
@@ -38,17 +31,17 @@ function PageTree({
           <>
             <div
               class={`group relative flex items-center rounded-md ${
-                activePage === page.id
+                props.activePage === page.id
                   ? "bg-sidebar-accent text-sidebar-accent-foreground"
                   : "hover:bg-sidebar-accent/50"
               }`}
-              style={{ "padding-left": `${depth * 12 + 8}px` }}
+              style={{ "padding-left": `${(props.depth ?? 0) * 12 + 8}px` }}
             >
               <button
-                onClick={() => onSelectPage(page.id)}
+                onClick={() => props.onSelectPage(page.id)}
                 class="flex-1 text-left py-1.5 text-sm truncate pr-7"
               >
-                <Show when={depth > 0}>
+                <Show when={(props.depth ?? 0) > 0}>
                   <span class="text-muted-foreground mr-1">↳</span>
                 </Show>
                 {page.title || "Untitled"}
@@ -56,7 +49,7 @@ function PageTree({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onDeleteRequest(page.id);
+                  props.onDeleteRequest(page.id);
                 }}
                 class="absolute right-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/20 hover:text-destructive"
                 title="Delete page"
@@ -65,12 +58,12 @@ function PageTree({
               </button>
             </div>
             <PageTree
-              pages={pages}
-              activePage={activePage}
-              onSelectPage={onSelectPage}
-              onDeleteRequest={onDeleteRequest}
+              pages={props.pages}
+              activePage={props.activePage}
+              onSelectPage={props.onSelectPage}
+              onDeleteRequest={props.onDeleteRequest}
               parentId={page.id}
-              depth={depth + 1}
+              depth={(props.depth ?? 0) + 1}
             />
           </>
         )}
@@ -87,13 +80,7 @@ interface PageTreePanelProps {
   onDeletePage: (id: string) => void;
 }
 
-export function PageTreePanel({
-  pages,
-  activePage,
-  onSelectPage,
-  onNewPage,
-  onDeletePage,
-}: PageTreePanelProps) {
+export function PageTreePanel(props: PageTreePanelProps) {
   const [pendingDeleteId, setPendingDeleteId] = createSignal<string | null>(null);
   const [dialogOpen, setDialogOpen] = createSignal(false);
 
@@ -103,7 +90,7 @@ export function PageTreePanel({
   };
 
   const handleConfirmDelete = () => {
-    if (pendingDeleteId()) onDeletePage(pendingDeleteId()!);
+    if (pendingDeleteId()) props.onDeletePage(pendingDeleteId()!);
     setDialogOpen(false);
     setPendingDeleteId(null);
   };
@@ -117,16 +104,16 @@ export function PageTreePanel({
         <ScrollArea class="flex-1">
           <div class="p-2 flex flex-col gap-0.5">
             <PageTree
-              pages={pages}
-              activePage={activePage}
-              onSelectPage={onSelectPage}
+              pages={props.pages}
+              activePage={props.activePage}
+              onSelectPage={props.onSelectPage}
               onDeleteRequest={handleDeleteRequest}
             />
           </div>
         </ScrollArea>
         <div class="p-2 border-t border-border">
           <button
-            onClick={onNewPage}
+            onClick={props.onNewPage}
             class="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-sm hover:bg-sidebar-accent/50 transition-colors"
           >
             + New Page

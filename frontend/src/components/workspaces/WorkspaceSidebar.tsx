@@ -12,14 +12,7 @@ interface WorkspaceSidebarProps {
   onRenameWorkspace: (id: string, name: string) => void;
 }
 
-export function WorkspaceSidebar({
-  workspaces,
-  activeWorkspaceId,
-  onSelectWorkspace,
-  onAddWorkspace,
-  onOpenSettings,
-  onRenameWorkspace,
-}: WorkspaceSidebarProps) {
+export function WorkspaceSidebar(props: WorkspaceSidebarProps) {
   const [adding, setAdding] = createSignal(false);
   const [newName, setNewName] = createSignal("");
   const [editingId, setEditingId] = createSignal<string | null>(null);
@@ -40,7 +33,7 @@ export function WorkspaceSidebar({
 
   const confirmAdd = () => {
     const name = newName().trim() || "Workspace";
-    onAddWorkspace(name);
+    props.onAddWorkspace(name);
     setNewName("");
     setAdding(false);
   };
@@ -54,9 +47,9 @@ export function WorkspaceSidebar({
     if (!editingId()) return;
     const name =
       editValue().trim() ||
-      workspaces.find((w) => w.id === editingId())?.name ||
+      props.workspaces.find((w) => w.id === editingId())?.name ||
       "Workspace";
-    onRenameWorkspace(editingId()!, name);
+    props.onRenameWorkspace(editingId()!, name);
     setEditingId(null);
     setEditValue("");
   };
@@ -76,16 +69,16 @@ export function WorkspaceSidebar({
   return (
     <div class="w-60 border-r border-border flex flex-col h-full bg-sidebar text-sidebar-foreground">
       <div class="flex-1 overflow-y-auto p-2 pt-3 flex flex-col gap-0.5">
-        <For each={workspaces}>
+        <For each={props.workspaces}>
           {(ws) => (
             <button
-              onClick={() => onSelectWorkspace(ws.id)}
+              onClick={() => props.onSelectWorkspace(ws.id)}
               onDblClick={(e) => {
                 e.preventDefault();
                 startEdit(ws);
               }}
               class={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-sm text-left transition-colors ${
-                ws.id === activeWorkspaceId
+                ws.id === props.activeWorkspaceId
                   ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
                   : "hover:bg-sidebar-accent/50 text-sidebar-foreground"
               }`}
@@ -116,7 +109,7 @@ export function WorkspaceSidebar({
                   class="flex-1 px-1 py-0 text-sm bg-accent rounded outline-none min-w-0"
                 />
               </Show>
-              <Show when={ws.id === activeWorkspaceId && editingId() !== ws.id}>
+              <Show when={ws.id === props.activeWorkspaceId && editingId() !== ws.id}>
                 <span class="ml-auto w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
               </Show>
             </button>
@@ -154,7 +147,7 @@ export function WorkspaceSidebar({
           New Workspace
         </button>
         <button
-          onClick={onOpenSettings}
+          onClick={props.onOpenSettings}
           class="p-1.5 rounded-md hover:bg-sidebar-accent/50 transition-colors"
           title="Settings"
         >

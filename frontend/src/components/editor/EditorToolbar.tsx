@@ -29,7 +29,7 @@ interface GroupDef {
   items: ToolbarItem[];
 }
 
-function ToolbarGroupPopover({ group, editor }: { group: GroupDef; editor: Editor }) {
+function ToolbarGroupPopover(props: { group: GroupDef; editor: Editor }) {
   const [open, setOpen] = createSignal(false);
   let ref: HTMLDivElement | undefined;
 
@@ -41,13 +41,13 @@ function ToolbarGroupPopover({ group, editor }: { group: GroupDef; editor: Edito
     onCleanup(() => document.removeEventListener("mousedown", handler));
   });
 
-  const hasActive = () => group.items.some((item) => {
+  const hasActive = () => props.group.items.some((item) => {
     if (!item.active) return false;
-    if (Array.isArray(item.active)) return editor.isActive(item.active[0], item.active[1]);
-    return editor.isActive(item.active);
+    if (Array.isArray(item.active)) return props.editor.isActive(item.active[0], item.active[1]);
+    return props.editor.isActive(item.active);
   });
 
-  const Icon = group.icon;
+  const Icon = props.group.icon;
 
   return (
     <div class="relative" ref={ref}>
@@ -55,18 +55,18 @@ function ToolbarGroupPopover({ group, editor }: { group: GroupDef; editor: Edito
         variant={hasActive() ? "default" : "ghost"}
         size="sm"
         onMouseDown={(e: MouseEvent) => { e.preventDefault(); setOpen(!open()); }}
-        title={group.label}
+        title={props.group.label}
       >
         <Icon class="w-4 h-4" />
       </Button>
       <Show when={open()}>
         <div class="absolute top-full left-0 mt-1 bg-popover border border-border rounded-lg shadow-md p-1 min-w-[120px] z-50 flex flex-col gap-0.5">
-          <For each={group.items}>
+          <For each={props.group.items}>
             {(item) => {
               const isActive = () => item.active
                 ? Array.isArray(item.active)
-                  ? editor.isActive(item.active[0], item.active[1])
-                  : editor.isActive(item.active)
+                  ? props.editor.isActive(item.active[0], item.active[1])
+                  : props.editor.isActive(item.active)
                 : false;
               return (
                 <button
@@ -86,7 +86,7 @@ function ToolbarGroupPopover({ group, editor }: { group: GroupDef; editor: Edito
   );
 }
 
-export function EditorToolbar({ editor }: EditorToolbarProps) {
+export function EditorToolbar(props: EditorToolbarProps) {
   let toolbarRef: HTMLDivElement | undefined;
   const [compact, setCompact] = createSignal(false);
 
@@ -105,37 +105,37 @@ export function EditorToolbar({ editor }: EditorToolbarProps) {
       label: "Text",
       icon: Type,
       items: [
-        { label: "B", active: "bold", action: () => editor.chain().focus().toggleBold().run() },
-        { label: "I", active: "italic", action: () => editor.chain().focus().toggleItalic().run() },
-        { label: "S", active: "strike", action: () => editor.chain().focus().toggleStrike().run() },
-        { label: "<>", active: "code", action: () => editor.chain().focus().toggleCode().run() },
+        { label: "B", active: "bold", action: () => props.editor.chain().focus().toggleBold().run() },
+        { label: "I", active: "italic", action: () => props.editor.chain().focus().toggleItalic().run() },
+        { label: "S", active: "strike", action: () => props.editor.chain().focus().toggleStrike().run() },
+        { label: "<>", active: "code", action: () => props.editor.chain().focus().toggleCode().run() },
       ],
     },
     {
       label: "Heading",
       icon: Heading,
       items: [
-        { label: "H1", active: ["heading", { level: 1 }], action: () => editor.chain().focus().toggleHeading({ level: 1 }).run() },
-        { label: "H2", active: ["heading", { level: 2 }], action: () => editor.chain().focus().toggleHeading({ level: 2 }).run() },
-        { label: "H3", active: ["heading", { level: 3 }], action: () => editor.chain().focus().toggleHeading({ level: 3 }).run() },
+        { label: "H1", active: ["heading", { level: 1 }], action: () => props.editor.chain().focus().toggleHeading({ level: 1 }).run() },
+        { label: "H2", active: ["heading", { level: 2 }], action: () => props.editor.chain().focus().toggleHeading({ level: 2 }).run() },
+        { label: "H3", active: ["heading", { level: 3 }], action: () => props.editor.chain().focus().toggleHeading({ level: 3 }).run() },
       ],
     },
     {
       label: "Lists",
       icon: List,
       items: [
-        { label: "List", active: "bulletList", action: () => editor.chain().focus().toggleBulletList().run() },
-        { label: "1.", active: "orderedList", action: () => editor.chain().focus().toggleOrderedList().run() },
-        { label: "Tasks", active: "taskList", action: () => editor.chain().focus().toggleTaskList().run() },
-        { label: "Code", active: "codeBlock", action: () => editor.chain().focus().toggleCodeBlock().run() },
+        { label: "List", active: "bulletList", action: () => props.editor.chain().focus().toggleBulletList().run() },
+        { label: "1.", active: "orderedList", action: () => props.editor.chain().focus().toggleOrderedList().run() },
+        { label: "Tasks", active: "taskList", action: () => props.editor.chain().focus().toggleTaskList().run() },
+        { label: "Code", active: "codeBlock", action: () => props.editor.chain().focus().toggleCodeBlock().run() },
       ],
     },
     {
       label: "Insert",
       icon: Plus,
       items: [
-        { label: "\u2014", active: null, action: () => editor.chain().focus().setHorizontalRule().run() },
-        { label: "Quote", active: "blockquote", action: () => editor.chain().focus().toggleBlockquote().run() },
+        { label: "\u2014", active: null, action: () => props.editor.chain().focus().setHorizontalRule().run() },
+        { label: "Quote", active: "blockquote", action: () => props.editor.chain().focus().toggleBlockquote().run() },
       ],
     },
   ];
@@ -146,37 +146,37 @@ export function EditorToolbar({ editor }: EditorToolbarProps) {
         when={compact()}
         fallback={
           <>
-            <Button variant={editor.isActive("bold") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBold().run())}>B</Button>
-            <Button variant={editor.isActive("italic") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleItalic().run())}>I</Button>
-            <Button variant={editor.isActive("strike") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleStrike().run())}>S</Button>
-            <Button variant={editor.isActive("code") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleCode().run())}>{"<>"}</Button>
+            <Button variant={props.editor.isActive("bold") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleBold().run())}>B</Button>
+            <Button variant={props.editor.isActive("italic") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleItalic().run())}>I</Button>
+            <Button variant={props.editor.isActive("strike") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleStrike().run())}>S</Button>
+            <Button variant={props.editor.isActive("code") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleCode().run())}>{"<>"}</Button>
 
             <Separator orientation="vertical" class="h-6 mx-1" />
 
-            <Button variant={editor.isActive("heading", { level: 1 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 1 }).run())}>H1</Button>
-            <Button variant={editor.isActive("heading", { level: 2 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 2 }).run())}>H2</Button>
-            <Button variant={editor.isActive("heading", { level: 3 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleHeading({ level: 3 }).run())}>H3</Button>
+            <Button variant={props.editor.isActive("heading", { level: 1 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleHeading({ level: 1 }).run())}>H1</Button>
+            <Button variant={props.editor.isActive("heading", { level: 2 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleHeading({ level: 2 }).run())}>H2</Button>
+            <Button variant={props.editor.isActive("heading", { level: 3 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleHeading({ level: 3 }).run())}>H3</Button>
 
             <Separator orientation="vertical" class="h-6 mx-1" />
 
-            <Button variant={editor.isActive("bulletList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBulletList().run())}>List</Button>
-            <Button variant={editor.isActive("orderedList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleOrderedList().run())}>1.</Button>
-            <Button variant={editor.isActive("taskList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleTaskList().run())}>Tasks</Button>
-            <Button variant={editor.isActive("codeBlock") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleCodeBlock().run())}>Code</Button>
+            <Button variant={props.editor.isActive("bulletList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleBulletList().run())}>List</Button>
+            <Button variant={props.editor.isActive("orderedList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleOrderedList().run())}>1.</Button>
+            <Button variant={props.editor.isActive("taskList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleTaskList().run())}>Tasks</Button>
+            <Button variant={props.editor.isActive("codeBlock") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleCodeBlock().run())}>Code</Button>
 
             <Separator orientation="vertical" class="h-6 mx-1" />
 
-            <Button variant="ghost" size="sm" onMouseDown={cmd(() => editor.chain().focus().setHorizontalRule().run())}>{"\u2014"}</Button>
-            <Button variant={editor.isActive("blockquote") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => editor.chain().focus().toggleBlockquote().run())}><Quote class="w-4 h-4" /></Button>
+            <Button variant="ghost" size="sm" onMouseDown={cmd(() => props.editor.chain().focus().setHorizontalRule().run())}>{"\u2014"}</Button>
+            <Button variant={props.editor.isActive("blockquote") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleBlockquote().run())}><Quote class="w-4 h-4" /></Button>
           </>
         }
       >
         <For each={groups}>
-          {(g) => <ToolbarGroupPopover group={g} editor={editor} />}
+          {(g) => <ToolbarGroupPopover group={g} editor={props.editor} />}
         </For>
       </Show>
       <div class="ml-auto">
-        <ExportMenu editor={editor} />
+        <ExportMenu editor={props.editor} />
       </div>
     </div>
   );

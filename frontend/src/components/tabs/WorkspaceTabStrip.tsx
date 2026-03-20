@@ -16,18 +16,7 @@ interface WorkspaceTabStripProps {
   onCloseSplit: () => void;
 }
 
-export function WorkspaceTabStrip({
-  tabs,
-  activeTabId,
-  splitTabId,
-  focusedPane,
-  onSelectTab,
-  onCloseTab,
-  onAddTab,
-  onRenameTab,
-  onSplitTab,
-  onCloseSplit,
-}: WorkspaceTabStripProps) {
+export function WorkspaceTabStrip(props: WorkspaceTabStripProps) {
   const [pickerOpen, setPickerOpen] = createSignal(false);
   const [editingId, setEditingId] = createSignal<string | null>(null);
   const [editValue, setEditValue] = createSignal("");
@@ -69,9 +58,9 @@ export function WorkspaceTabStrip({
     if (!editingId()) return;
     const title =
       editValue().trim() ||
-      tabs.find((t) => t.id === editingId())?.title ||
+      props.tabs.find((t) => t.id === editingId())?.title ||
       "Tab";
-    onRenameTab(editingId()!, title);
+    props.onRenameTab(editingId()!, title);
     setEditingId(null);
     setEditValue("");
   };
@@ -82,9 +71,9 @@ export function WorkspaceTabStrip({
   };
 
   const getTabStyle = (tabId: string) => {
-    const isActive = tabId === activeTabId;
-    const isSplit = tabId === splitTabId;
-    const inSplitMode = splitTabId !== null;
+    const isActive = tabId === props.activeTabId;
+    const isSplit = tabId === props.splitTabId;
+    const inSplitMode = props.splitTabId !== null;
 
     if (isActive) {
       return inSplitMode
@@ -97,7 +86,7 @@ export function WorkspaceTabStrip({
     return "text-muted-foreground hover:text-foreground hover:bg-accent/40 opacity-60 hover:opacity-80";
   };
 
-  const canSplit = () => tabs.length > 1;
+  const canSplit = () => props.tabs.length > 1;
 
   return (
     <div class="flex items-stretch border-b border-border bg-background/40 shrink-0">
@@ -106,15 +95,15 @@ export function WorkspaceTabStrip({
         onWheel={handleWheel}
         class="flex items-center gap-1 px-2 py-1 overflow-x-auto overflow-y-hidden scrollbar-tab-strip"
       >
-        <For each={tabs}>
+        <For each={props.tabs}>
           {(tab) => {
-            const isActive = () => tab.id === activeTabId;
-            const isSplit = () => tab.id === splitTabId;
-            const isFocused = () => (isActive() && focusedPane === "left") || (isSplit() && focusedPane === "right");
+            const isActive = () => tab.id === props.activeTabId;
+            const isSplit = () => tab.id === props.splitTabId;
+            const isFocused = () => (isActive() && props.focusedPane === "left") || (isSplit() && props.focusedPane === "right");
 
             return (
               <div
-                onClick={() => onSelectTab(tab.id)}
+                onClick={() => props.onSelectTab(tab.id)}
                 onDblClick={(e) => {
                   e.preventDefault();
                   startEdit(tab);
@@ -126,7 +115,7 @@ export function WorkspaceTabStrip({
                 class={`group flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium cursor-pointer transition-all whitespace-nowrap flex-shrink-0 ${getTabStyle(tab.id)}`}
               >
                 {/* Focus indicator dot */}
-                <Show when={isFocused() && splitTabId}>
+                <Show when={isFocused() && props.splitTabId}>
                   <span class="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" />
                 </Show>
                 <Show
@@ -162,7 +151,7 @@ export function WorkspaceTabStrip({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onCloseTab(tab.id);
+                      props.onCloseTab(tab.id);
                     }}
                     class="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-destructive/20 hover:text-destructive"
                     title="Close tab"
@@ -180,19 +169,19 @@ export function WorkspaceTabStrip({
         {/* Split toggle button */}
         <button
           onClick={() => {
-            if (splitTabId) {
-              onCloseSplit();
-            } else if (canSplit() && activeTabId) {
-              onSplitTab(activeTabId);
+            if (props.splitTabId) {
+              props.onCloseSplit();
+            } else if (canSplit() && props.activeTabId) {
+              props.onSplitTab(props.activeTabId);
             }
           }}
-          disabled={!splitTabId && !canSplit()}
+          disabled={!props.splitTabId && !canSplit()}
           class={`p-1 rounded transition-colors ${
-            splitTabId
+            props.splitTabId
               ? "text-primary hover:bg-accent/40"
               : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
           } disabled:opacity-30 disabled:cursor-not-allowed`}
-          title={splitTabId ? "Close split view (⌘\\)" : "Split view (⌘\\)"}
+          title={props.splitTabId ? "Close split view (⌘\\)" : "Split view (⌘\\)"}
         >
           <Columns2 class="w-4 h-4" />
         </button>
@@ -207,7 +196,7 @@ export function WorkspaceTabStrip({
         <Show when={pickerOpen()}>
           <NewTabPicker
             onSelect={(type) => {
-              onAddTab(type);
+              props.onAddTab(type);
               setPickerOpen(false);
             }}
             onClose={() => setPickerOpen(false)}
@@ -223,33 +212,33 @@ export function WorkspaceTabStrip({
             class="fixed z-50 bg-popover border border-border rounded-md shadow-md py-1 min-w-[180px]"
             style={{ left: `${menu().x}px`, top: `${menu().y}px` }}
           >
-            <Show when={!splitTabId && canSplit()}>
+            <Show when={!props.splitTabId && canSplit()}>
               <button
                 class="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground transition-colors"
                 onClick={() => {
-                  onSplitTab(menu().tabId);
+                  props.onSplitTab(menu().tabId);
                   setContextMenu(null);
                 }}
               >
                 Open in Split View
               </button>
             </Show>
-            <Show when={splitTabId && menu().tabId !== activeTabId && menu().tabId !== splitTabId}>
+            <Show when={props.splitTabId && menu().tabId !== props.activeTabId && menu().tabId !== props.splitTabId}>
               <button
                 class="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground transition-colors"
                 onClick={() => {
-                  onSplitTab(menu().tabId);
+                  props.onSplitTab(menu().tabId);
                   setContextMenu(null);
                 }}
               >
                 Open in Split View
               </button>
             </Show>
-            <Show when={splitTabId}>
+            <Show when={props.splitTabId}>
               <button
                 class="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground transition-colors"
                 onClick={() => {
-                  onCloseSplit();
+                  props.onCloseSplit();
                   setContextMenu(null);
                 }}
               >
@@ -259,7 +248,7 @@ export function WorkspaceTabStrip({
             <button
               class="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground transition-colors"
               onClick={() => {
-                onCloseTab(menu().tabId);
+                props.onCloseTab(menu().tabId);
                 setContextMenu(null);
               }}
             >

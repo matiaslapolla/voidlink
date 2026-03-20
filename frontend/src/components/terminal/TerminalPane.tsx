@@ -13,10 +13,10 @@ interface TerminalPaneProps {
   onClose: () => void;
 }
 
-export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
+export function TerminalPane(props: TerminalPaneProps) {
   let containerRef: HTMLDivElement | undefined;
   let term: XTerm | null = null;
-  let currentSessionId: string | null = tab.sessionId || null;
+  let currentSessionId: string | null = props.tab.sessionId || null;
 
   const getCssVar = (name: string) =>
     getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -64,14 +64,14 @@ export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
 
     // Update tab title from OSC escape sequences (sent by shells on command exec)
     t.onTitleChange((title) => {
-      if (title) onUpdateTab({ title });
+      if (title) props.onUpdateTab({ title });
     });
 
     // Spawn PTY
     let sessionId: string;
     try {
       sessionId = await invoke<string>("create_pty", {
-        cwd: tab.cwd || (await invoke<string>("get_home_dir")),
+        cwd: props.tab.cwd || (await invoke<string>("get_home_dir")),
       });
     } catch (err) {
       t.writeln(`\x1b[31mFailed to start terminal: ${err}\x1b[0m`);
@@ -79,7 +79,7 @@ export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
     }
 
     currentSessionId = sessionId;
-    onUpdateTab({ sessionId });
+    props.onUpdateTab({ sessionId });
 
     // Listen for PTY output
     const unlisten = await listen<number[]>(`pty-output:${sessionId}`, (event) => {
@@ -93,7 +93,7 @@ export function TerminalPane({ tab, onUpdateTab, onClose }: TerminalPaneProps) {
       t.writeln("\r\n\x1b[2m[Process completed]\x1b[0m");
       exitTimeout = setTimeout(() => {
         currentSessionId = null; // prevent double close_pty on unmount
-        onClose();
+        props.onClose();
       }, 1500);
     });
 

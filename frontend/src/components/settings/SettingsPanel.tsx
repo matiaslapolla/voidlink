@@ -35,7 +35,7 @@ function readSavedVibrancy(): VibrancyValue {
   return (localStorage.getItem("voidlink-vibrancy") as VibrancyValue) ?? "hudWindow";
 }
 
-export function SettingsPanel({ open, onOpenChange }: SettingsPanelProps) {
+export function SettingsPanel(props: SettingsPanelProps) {
   const [opacity, setOpacity] = createSignal<number>(readSavedOpacity());
   const [vibrancy, setVibrancy] = createSignal<VibrancyValue>(readSavedVibrancy());
 
@@ -58,7 +58,7 @@ export function SettingsPanel({ open, onOpenChange }: SettingsPanelProps) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogPortal>
         <DialogBackdrop />
         <DialogPopup>
@@ -118,7 +118,7 @@ export function SettingsPanel({ open, onOpenChange }: SettingsPanelProps) {
           </div>
 
           <div class="mt-6 flex justify-end">
-            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            <Button variant="ghost" size="sm" onClick={() => props.onOpenChange(false)}>
               Close
             </Button>
           </div>

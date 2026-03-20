@@ -11,14 +11,7 @@ interface WorkspaceTopBarProps {
   onRenameWorkspace: (id: string, name: string) => void;
 }
 
-export function WorkspaceTopBar({
-  workspaces,
-  activeWorkspaceId,
-  onSelectWorkspace,
-  onAddWorkspace,
-  onRemoveWorkspace,
-  onRenameWorkspace,
-}: WorkspaceTopBarProps) {
+export function WorkspaceTopBar(props: WorkspaceTopBarProps) {
   const [adding, setAdding] = createSignal(false);
   const [newName, setNewName] = createSignal("");
   const [editingId, setEditingId] = createSignal<string | null>(null);
@@ -39,7 +32,7 @@ export function WorkspaceTopBar({
 
   const confirmAdd = () => {
     const name = newName().trim() || "Workspace";
-    onAddWorkspace(name);
+    props.onAddWorkspace(name);
     setNewName("");
     setAdding(false);
   };
@@ -53,9 +46,9 @@ export function WorkspaceTopBar({
     if (!editingId()) return;
     const name =
       editValue().trim() ||
-      workspaces.find((w) => w.id === editingId())?.name ||
+      props.workspaces.find((w) => w.id === editingId())?.name ||
       "Workspace";
-    onRenameWorkspace(editingId()!, name);
+    props.onRenameWorkspace(editingId()!, name);
     setEditingId(null);
     setEditValue("");
   };
@@ -67,21 +60,21 @@ export function WorkspaceTopBar({
 
   return (
     <div class="flex items-center gap-1 px-2 h-9 border-b border-border bg-background/60 overflow-x-auto scrollbar-none flex-shrink-0">
-      <For each={workspaces}>
+      <For each={props.workspaces}>
         {(ws) => (
           <div
             class={`group flex items-center gap-1 px-2 py-1 rounded text-xs font-medium cursor-pointer transition-colors whitespace-nowrap ${
-              ws.id === activeWorkspaceId
+              ws.id === props.activeWorkspaceId
                 ? "bg-accent text-accent-foreground"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
             }`}
-            onClick={() => onSelectWorkspace(ws.id)}
+            onClick={() => props.onSelectWorkspace(ws.id)}
             onDblClick={(e) => {
               e.preventDefault();
               startEdit(ws);
             }}
           >
-            <Show when={ws.id === activeWorkspaceId && editingId() !== ws.id}>
+            <Show when={ws.id === props.activeWorkspaceId && editingId() !== ws.id}>
               <span class="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
             </Show>
             <Show
@@ -107,11 +100,11 @@ export function WorkspaceTopBar({
                 class="px-1 py-0 text-xs bg-background rounded outline-none w-24"
               />
             </Show>
-            <Show when={workspaces.length > 1 && editingId() !== ws.id}>
+            <Show when={props.workspaces.length > 1 && editingId() !== ws.id}>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onRemoveWorkspace(ws.id);
+                  props.onRemoveWorkspace(ws.id);
                 }}
                 class="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-destructive/20 hover:text-destructive"
                 title="Close workspace"

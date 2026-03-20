@@ -16,16 +16,7 @@ interface NotionPaneProps {
   onCreateChildPage: (parentId: string | null) => string;
 }
 
-export function NotionPane({
-  tab,
-  pages,
-  useApi,
-  onUpdateTab,
-  onNewPage,
-  onDeletePage,
-  onPageTitleChange,
-  onCreateChildPage,
-}: NotionPaneProps) {
+export function NotionPane(props: NotionPaneProps) {
   const [loadedContent, setLoadedContent] = createSignal<{
     id: string;
     html: string;
@@ -34,13 +25,13 @@ export function NotionPane({
 
   // Load content when pageId changes
   createEffect(() => {
-    const pageId = tab.pageId;
+    const pageId = props.tab.pageId;
     if (!pageId) {
       setLoadedContent(null);
       return;
     }
     setLoadedContent(null);
-    if (useApi) {
+    if (props.useApi) {
       pagesApi
         .get(pageId)
         .then((p) => setLoadedContent({ id: pageId, html: p.content }))
@@ -68,52 +59,52 @@ export function NotionPane({
   };
 
   const handleUpdate = (html: string) => {
-    if (!tab.pageId) return;
+    if (!props.tab.pageId) return;
     const title = extractTitle(html);
-    localStorage.setItem(`voidlink-content-${tab.pageId}`, html);
-    onPageTitleChange(tab.pageId, title);
-    onUpdateTab({ title });
+    localStorage.setItem(`voidlink-content-${props.tab.pageId}`, html);
+    props.onPageTitleChange(props.tab.pageId, title);
+    props.onUpdateTab({ title });
 
-    if (useApi) {
+    if (props.useApi) {
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
-        pagesApi.update(tab.pageId!, { title, content: html }).catch(() => {});
+        pagesApi.update(props.tab.pageId!, { title, content: html }).catch(() => {});
       }, 500);
     }
   };
 
   const handleSelectPage = (pageId: string) => {
-    const page = pages.find((p) => p.id === pageId);
-    onUpdateTab({
+    const page = props.pages.find((p) => p.id === pageId);
+    props.onUpdateTab({
       pageId,
       title: page?.title ?? "Untitled",
     });
   };
 
   const handleNewPage = async () => {
-    const id = await onNewPage();
+    const id = await props.onNewPage();
     if (id) {
-      onUpdateTab({ pageId: id, title: "Untitled" });
+      props.onUpdateTab({ pageId: id, title: "Untitled" });
     }
   };
 
   const handleCreateChildPage = (): string => {
-    return onCreateChildPage(tab.pageId);
+    return props.onCreateChildPage(props.tab.pageId);
   };
 
   const togglePagesPanel = () => {
-    onUpdateTab({ pagesPanelVisible: !tab.pagesPanelVisible });
+    props.onUpdateTab({ pagesPanelVisible: !props.tab.pagesPanelVisible });
   };
 
   return (
     <div class="flex h-full overflow-hidden">
-      <Show when={tab.pagesPanelVisible}>
+      <Show when={props.tab.pagesPanelVisible}>
         <PageTreePanel
-          pages={pages}
-          activePage={tab.pageId}
+          pages={props.pages}
+          activePage={props.tab.pageId}
           onSelectPage={handleSelectPage}
           onNewPage={handleNewPage}
-          onDeletePage={onDeletePage}
+          onDeletePage={props.onDeletePage}
         />
       </Show>
 
@@ -123,10 +114,10 @@ export function NotionPane({
           <button
             onClick={togglePagesPanel}
             class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
-            title={tab.pagesPanelVisible ? "Hide pages panel" : "Show pages panel"}
+            title={props.tab.pagesPanelVisible ? "Hide pages panel" : "Show pages panel"}
           >
             <Show
-              when={tab.pagesPanelVisible}
+              when={props.tab.pagesPanelVisible}
               fallback={<PanelLeftOpen class="w-4 h-4" />}
             >
               <PanelLeftClose class="w-4 h-4" />
@@ -135,10 +126,10 @@ export function NotionPane({
         </div>
 
         <Show
-          when={tab.pageId && loadedContent()?.id === tab.pageId}
+          when={props.tab.pageId && loadedContent()?.id === props.tab.pageId}
           fallback={
             <Show
-              when={tab.pageId}
+              when={props.tab.pageId}
               fallback={
                 <div class="flex-1 flex items-center justify-center text-muted-foreground">
                   <div class="text-center">
@@ -161,7 +152,7 @@ export function NotionPane({
             onUpdate={handleUpdate}
             onCreateChildPage={handleCreateChildPage}
             onSelectPage={handleSelectPage}
-            pages={pages}
+            pages={props.pages}
           />
         </Show>
       </div>

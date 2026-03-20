@@ -126,17 +126,17 @@ async function saveWithDialog(
   download(content, defaultPath, "text/plain");
 }
 
-export function ExportMenu({ editor }: ExportMenuProps) {
+export function ExportMenu(props: ExportMenuProps) {
   const [open, setOpen] = createSignal(false);
 
   const exportCsv = async () => {
-    const data = extractStructuredData(editor);
+    const data = extractStructuredData(props.editor);
     await saveWithDialog(toCsv(data), "export.csv", "CSV", "csv");
     setOpen(false);
   };
 
   const exportJson = async () => {
-    const data = extractStructuredData(editor);
+    const data = extractStructuredData(props.editor);
     await saveWithDialog(
       JSON.stringify(data, null, 2),
       "export.json",
@@ -147,7 +147,7 @@ export function ExportMenu({ editor }: ExportMenuProps) {
   };
 
   const exportMarkdown = async () => {
-    const html = editor.getHTML();
+    const html = props.editor.getHTML();
     const text = htmlToPlainText(html);
     await saveWithDialog(text, "export.md", "Markdown", "md");
     setOpen(false);
