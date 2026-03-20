@@ -1,4 +1,4 @@
-import { onMount, onCleanup } from "solid-js";
+import { onMount, onCleanup, createEffect } from "solid-js";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -9,6 +9,8 @@ import type { TerminalTab } from "@/types/tabs";
 
 interface TerminalPaneProps {
   tab: TerminalTab;
+  isActive: boolean;
+  visible?: boolean;
   onUpdateTab: (updates: Partial<TerminalTab>) => void;
   onClose: () => void;
 }
@@ -16,6 +18,7 @@ interface TerminalPaneProps {
 export function TerminalPane(props: TerminalPaneProps) {
   let containerRef: HTMLDivElement | undefined;
   let term: XTerm | null = null;
+  let fit: FitAddon | null = null;
   let currentSessionId: string | null = props.tab.sessionId || null;
 
   const getCssVar = (name: string) =>
@@ -53,7 +56,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       },
     });
 
-    const fit = new FitAddon();
+    fit = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
     t.loadAddon(fit);
     t.loadAddon(webLinksAddon);
@@ -104,7 +107,7 @@ export function TerminalPane(props: TerminalPaneProps) {
 
     // Resize handler
     const resizeObserver = new ResizeObserver(() => {
-      fit.fit();
+      fit?.fit();
       invoke("resize_pty", {
         sessionId,
         cols: t.cols,
@@ -131,33 +134,27 @@ export function TerminalPane(props: TerminalPaneProps) {
       cleanup = fn;
     });
 
-    // Forward horizontal wheel events to the parent <main> scroll container
-    // so trackpad swipes navigate between tabs instead of being captured by xterm.js
-    const el = containerRef;
-    if (el) {
-      const handler = (e: WheelEvent) => {
-        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-          e.stopPropagation();
-          e.preventDefault();
-          const scrollParent = el.closest("main");
-          if (scrollParent) scrollParent.scrollBy({ left: e.deltaX });
-        }
-      };
-      el.addEventListener("wheel", handler, { capture: true, passive: false });
-
-      onCleanup(() => {
-        el.removeEventListener("wheel", handler, { capture: true });
-      });
-    }
-
     onCleanup(() => {
       cleanup?.();
       term?.dispose();
       term = null;
+      fit = null;
       if (currentSessionId) {
         invoke("close_pty", { sessionId: currentSessionId }).catch(() => {});
       }
     });
+  });
+
+  createEffect(() => {
+    if (props.isActive && fit) {
+      requestAnimationFrame(() => fit!.fit());
+    }
+  });
+
+  createEffect(() => {
+    if (props.visible && fit) {
+      requestAnimationFrame(() => fit!.fit());
+    }
   });
 
   return (

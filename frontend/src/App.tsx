@@ -1,4 +1,5 @@
 import { createSignal, createMemo, createEffect, onMount, onCleanup, For, Show } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { pagesApi } from "@/api/pages";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
@@ -54,16 +55,15 @@ function App() {
   const [pagesMap, setPagesMap] = createSignal<Record<string, Page[]>>({});
   const [useApi, setUseApi] = createSignal(true);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
-  const [wsState, setWsState] = createSignal<WsState>(initWsState());
-
-  let contentScrollRef: HTMLElement | undefined;
+  const [wsState, setWsState] = createStore<WsState>(initWsState());
+  const scrollRefs: Record<string, HTMLElement | undefined> = {};
 
   // ─── Derived values ────────────────────────────────────────────────────
 
-  const workspaces = createMemo(() => wsState().workspaces);
-  const activeWorkspaceId = createMemo(() => wsState().activeWorkspaceId);
+  const workspaces = createMemo(() => wsState.workspaces);
+  const activeWorkspaceId = createMemo(() => wsState.activeWorkspaceId);
   const activeWorkspace = createMemo(() =>
-    wsState().workspaces.find((w) => w.id === wsState().activeWorkspaceId) ?? null
+    wsState.workspaces.find((w) => w.id === wsState.activeWorkspaceId) ?? null
   );
   const activeTab = createMemo(() => {
     const ws = activeWorkspace();
@@ -77,8 +77,8 @@ function App() {
   // ─── Persist workspaces ─────────────────────────────────────────────────
 
   function updateWsState(updater: (prev: WsState) => WsState) {
-    const next = updater(wsState());
-    setWsState(next);
+    const next = updater(wsState as unknown as WsState);
+    setWsState(reconcile(next, { key: "id" }));
     localStorage.setItem("voidlink-workspaces", JSON.stringify(next.workspaces));
     if (next.activeWorkspaceId) {
       localStorage.setItem("voidlink-active-workspace", next.activeWorkspaceId);
@@ -140,6 +140,7 @@ function App() {
           : prev.activeWorkspaceId;
       return { workspaces: wss, activeWorkspaceId: activeId };
     });
+    delete scrollRefs[id];
   }
 
   function selectWorkspace(id: string) {
@@ -388,18 +389,22 @@ function App() {
     onCleanup(() => document.removeEventListener("keydown", handler));
   });
 
-  // ─── Scroll-to-tab when active tab changes ─────────────────────────────
-
+  // ─── Scroll to active tab (niri-style) ──────────────────────────────────
   createEffect(() => {
-    const ws = activeWorkspace(); // track this signal
-    const container = contentScrollRef;
-    if (!container || !ws?.activeTabId) return;
-    const idx = ws.tabs.findIndex((t) => t.id === ws.activeTabId);
+    const ws = activeWorkspace();
+    if (!ws || ws.splitTabId) return;
+    const _activeTabId = ws.activeTabId;
+    const _tabs = ws.tabs;
+    if (!_activeTabId || _tabs.length === 0) return;
+
+    const container = scrollRefs[ws.id];
+    if (!container) return;
+
+    const idx = _tabs.findIndex((t) => t.id === _activeTabId);
     if (idx < 0) return;
-    const targetLeft = idx * (container as HTMLElement).clientWidth;
-    if (Math.abs((container as HTMLElement).scrollLeft - targetLeft) > 2) {
-      (container as HTMLElement).scrollTo({ left: targetLeft, behavior: "smooth" });
-    }
+
+    const targetLeft = idx * container.clientWidth;
+    container.scrollTo({ left: targetLeft, behavior: "smooth" });
   });
 
   // ─── Vibrancy / opacity on mount ─────────────────────────────────────────
@@ -442,7 +447,7 @@ function App() {
 
   // Load pages for each workspace — re-runs when workspace IDs change
   createEffect(() => {
-    const wsIds = wsState().workspaces.map((w) => w.id).join(","); // track workspace IDs
+    const wsIds = wsState.workspaces.map((w) => w.id).join(","); // track workspace IDs
     const ids = wsIds.split(",").filter(Boolean);
 
     const loadPages = async () => {
@@ -534,30 +539,33 @@ function App() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
-  const renderTabContent = (tab: Tab) => {
+  // isActive is a function so SolidJS JSX compiles it into a reactive getter
+  const renderTabContent = (tab: Tab, wsId: string, isActive: () => boolean) => {
     if (tab.type === "notion") {
       return (
         <NotionPane
           tab={tab as NotionTab}
-          pages={getWorkspacePages(activeWorkspaceId()!)}
+          pages={getWorkspacePages(wsId)}
           useApi={useApi()}
           onUpdateTab={(updates) =>
-            updateTab(activeWorkspaceId()!, tab.id, updates as Partial<Tab>)
+            updateTab(wsId, tab.id, updates as Partial<Tab>)
           }
-          onNewPage={() => handleNewPage(activeWorkspaceId()!)}
-          onDeletePage={(id) => handleDeletePage(activeWorkspaceId()!, id)}
-          onPageTitleChange={(pid, t) => handlePageTitleChange(activeWorkspaceId()!, pid, t)}
-          onCreateChildPage={(pid) => handleCreateChildPage(activeWorkspaceId()!, pid)}
+          onNewPage={() => handleNewPage(wsId)}
+          onDeletePage={(id) => handleDeletePage(wsId, id)}
+          onPageTitleChange={(pid, t) => handlePageTitleChange(wsId, pid, t)}
+          onCreateChildPage={(pid) => handleCreateChildPage(wsId, pid)}
         />
       );
     }
     return (
       <TerminalPane
         tab={tab as TerminalTab}
+        isActive={isActive()}
+        visible={wsId === activeWorkspaceId()}
         onUpdateTab={(updates) =>
-          updateTab(activeWorkspaceId()!, tab.id, updates as Partial<Tab>)
+          updateTab(wsId, tab.id, updates as Partial<Tab>)
         }
-        onClose={() => removeTab(activeWorkspaceId()!, tab.id)}
+        onClose={() => removeTab(wsId, tab.id)}
       />
     );
   };
@@ -577,6 +585,7 @@ function App() {
         onAddWorkspace={addWorkspace}
         onOpenSettings={() => setSettingsOpen(true)}
         onRenameWorkspace={renameWorkspace}
+        onRemoveWorkspace={removeWorkspace}
       />
 
       {/* Main content column */}
@@ -611,38 +620,41 @@ function App() {
           )}
         </Show>
 
-        {/* Content area */}
-        <Show
-          when={activeWorkspace()?.tabs.length !== 0}
-          fallback={
-            <main class="flex flex-1 overflow-hidden">
-              <EmptyWorkspaceState
-                onAddNotion={() => addTab(activeWorkspaceId()!, "notion")}
-                onAddTerminal={() => addTab(activeWorkspaceId()!, "terminal")}
-              />
-            </main>
-          }
-        >
-          <Show
-            when={activeWorkspace()?.splitTabId}
-            fallback={
-              /* Single-pane mode — horizontal scroll container */
-              <main
-                ref={(el) => { contentScrollRef = el; }}
-                class="flex flex-1 overflow-x-auto overflow-y-hidden scrollbar-thin"
-              >
-                <For each={activeWorkspace()?.tabs}>
-                  {(tab) => (
-                    <div class="w-full h-full flex-shrink-0">
-                      {renderTabContent(tab)}
-                    </div>
-                  )}
-                </For>
-              </main>
-            }
-          >
-            {/* Split mode — two equal-width columns */}
-            <div class="flex flex-1 overflow-hidden">
+        {/* Content area — per-workspace horizontal scroll containers */}
+        <div class="relative flex-1 overflow-hidden">
+
+          {/* Per-workspace scroll containers — ALL always mounted */}
+          <For each={wsState.workspaces}>
+            {(ws) => {
+              const isActiveWs = () => ws.id === activeWorkspaceId();
+              const shouldHide = () => !isActiveWs() || !!activeWorkspace()?.splitTabId;
+              return (
+                <div
+                  ref={(el) => { scrollRefs[ws.id] = el; }}
+                  class="absolute inset-0 flex overflow-x-auto overflow-y-hidden scrollbar-thin"
+                  classList={{ "invisible pointer-events-none": shouldHide() }}
+                >
+                  <For each={ws.tabs}>
+                    {(tab) => {
+                      const isActive = () =>
+                        !activeWorkspace()?.splitTabId &&
+                        isActiveWs() &&
+                        tab.id === ws.activeTabId;
+                      return (
+                        <div class="w-full h-full flex-shrink-0">
+                          {renderTabContent(tab, ws.id, isActive)}
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
+              );
+            }}
+          </For>
+
+          {/* Split mode — rendered on top of the scroll containers */}
+          <Show when={activeWorkspace()?.splitTabId}>
+            <div class="absolute inset-0 flex">
               <div
                 class={`flex-1 overflow-hidden ${
                   activeWorkspace()?.focusedPane === "left" ? "border-t-2 border-primary" : ""
@@ -650,7 +662,7 @@ function App() {
                 onMouseDown={() => setFocusedPane(activeWorkspaceId()!, "left")}
               >
                 <Show when={activeTab()}>
-                  {(tab) => renderTabContent(tab())}
+                  {(tab) => renderTabContent(tab(), activeWorkspaceId()!, () => true)}
                 </Show>
               </div>
               <div class="w-px bg-border flex-shrink-0" />
@@ -661,12 +673,23 @@ function App() {
                 onMouseDown={() => setFocusedPane(activeWorkspaceId()!, "right")}
               >
                 <Show when={splitTab()}>
-                  {(tab) => renderTabContent(tab())}
+                  {(tab) => renderTabContent(tab(), activeWorkspaceId()!, () => true)}
                 </Show>
               </div>
             </div>
           </Show>
-        </Show>
+
+          {/* Empty workspace state — rendered on top when active workspace has no tabs */}
+          <Show when={!activeWorkspace()?.tabs.length}>
+            <main class="absolute inset-0 flex">
+              <EmptyWorkspaceState
+                onAddNotion={() => addTab(activeWorkspaceId()!, "notion")}
+                onAddTerminal={() => addTab(activeWorkspaceId()!, "terminal")}
+              />
+            </main>
+          </Show>
+
+        </div>
       </div>
       </div>
 
