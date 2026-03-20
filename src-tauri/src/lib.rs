@@ -5,7 +5,16 @@ use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 
-// ─── PTY session store ────────────────────────────────────────────────────────
+pub mod agents;
+pub mod llm;
+pub mod tools;
+
+use agents::{Agent, AgentConfig, ChatAgent, ToolAgent};
+use std::sync::Mutex;
+
+// ─── Agent session store ────────────────────────────────────────────────────────
+
+type AgentStore = Arc<Mutex<HashMap<String, Box<dyn Agent + Send>>>>;
 
 struct PtySession {
     master: Box<dyn portable_pty::MasterPty + Send>,
@@ -147,11 +156,13 @@ fn close_pty(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let pty_store: PtyStore = Arc::new(Mutex::new(HashMap::new()));
+    let agent_store: AgentStore = Arc::new(Mutex::new(HashMap::new()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(pty_store)
+        .manage(agent_store)
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -182,6 +193,9 @@ pub fn run() {
             write_pty,
             resize_pty,
             close_pty,
+            agent_create,
+            agent_execute,
+            agent_stream,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
