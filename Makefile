@@ -2,6 +2,7 @@
         docker-up docker-down docker-logs docker-rebuild \
         backend frontend app \
         dev check test-frontend test-backend test-tauri \
+        setup install \
         version
 
 # ── Default ──────────────────────────────────────────────────────────────────
@@ -9,6 +10,7 @@ help:
 	@echo ""
 	@echo "  VoidLink dev commands"
 	@echo ""
+	@echo "  make setup           Install all dependencies and start Postgres"
 	@echo "  make docker-up       Start Postgres + backend (detached)"
 	@echo "  make docker-down     Stop all containers"
 	@echo "  make docker-logs     Tail container logs"
@@ -48,7 +50,24 @@ app:
 dev: docker-up
 	cargo tauri dev
 
-# ── Testing ──────────────────────────────────────────────────────────────────
+# ── Setup / Install ───────────────────────────────────────────────────────────
+setup: docker-up
+	@echo "📦 Installing frontend dependencies..."
+	cd frontend && npm install
+	@echo "🐍 Installing backend dependencies..."
+	cd backend && uv sync
+	@echo "🦀 Installing Tauri CLI (if not already installed)..."
+	cargo install tauri-cli --quiet
+	@echo ""
+	@echo "✅ Setup complete!"
+	@echo ""
+	@echo "To start development:"
+	@echo "  make dev                    (Start Postgres + Tauri desktop app)"
+	@echo "  make backend                (Run backend only)"
+	@echo "  make frontend               (Run frontend only)"
+	@echo ""
+
+install: setup
 test-frontend:
 	cd frontend && npm run lint && npm run build && npm test
 
