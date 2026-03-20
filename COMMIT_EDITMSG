@@ -1,8 +1,0 @@
-feat: Add LangChain agent infrastructure
-
-- Add langchain-rust dependency to Cargo.toml
-- Create agent module structure (base, chat_agent, tool_agent)
-- Create LLM provider abstraction
-- Create tool system (search, filesystem)
-- Add Tauri commands for agent lifecycle (create, execute, stream)
-- Add AgentStore for managing agent instances
