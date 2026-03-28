@@ -1,413 +1,477 @@
-import { createSignal, createMemo, createEffect, onMount, onCleanup, For, Show } from "solid-js";
-import { createStore, reconcile } from "solid-js/store";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { pagesApi } from "@/api/pages";
+import { open } from "@tauri-apps/plugin-dialog";
+import {
+  DatabaseZap,
+  FilePlus2,
+  FolderOpen,
+  Play,
+  RefreshCcw,
+  Search,
+  Settings,
+  Trash2,
+  Workflow,
+} from "lucide-solid";
+import { migrationApi } from "@/api/migration";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
 import { TitleBar } from "@/components/TitleBar";
-import { WorkspaceSidebar } from "@/components/workspaces/WorkspaceSidebar";
-import { WorkspaceTopBar } from "@/components/workspaces/WorkspaceTopBar";
-import { WorkspaceTabStrip } from "@/components/tabs/WorkspaceTabStrip";
-import { NotionPane } from "@/components/notion/NotionPane";
-import { TerminalPane } from "@/components/terminal/TerminalPane";
-import type { Page, Workspace, Tab, NotionTab, TerminalTab } from "@/types/tabs";
+import type {
+  RunState,
+  ScanProgress,
+  SearchResult,
+  WorkflowDsl,
+} from "@/types/migration";
 
-// ─── Workspace state initializer ─────────────────────────────────────────────
+type WorkArea = "repository" | "contextBuilder" | "workflow";
 
-interface WsState {
-  workspaces: Workspace[];
-  activeWorkspaceId: string | null;
+interface WorkspaceState {
+  id: string;
+  name: string;
+  repoRoot: string | null;
+  activeArea: WorkArea;
+  lastScanJobId: string | null;
+  scanStatus: ScanProgress | null;
+  searchQuery: string;
+  searchResults: SearchResult[];
+  selectedContext: SearchResult[];
+  objective: string;
+  constraintsText: string;
+  workflow: WorkflowDsl | null;
+  activeRunId: string | null;
+  runState: RunState | null;
+  searching: boolean;
+  generatingWorkflow: boolean;
+  runningWorkflow: boolean;
+  lastError: string | null;
 }
 
-function initWsState(): WsState {
+interface PersistedWorkspace {
+  id: string;
+  name: string;
+  repoRoot: string | null;
+  activeArea: WorkArea;
+  objective: string;
+  constraintsText: string;
+}
+
+interface AppState {
+  workspaces: WorkspaceState[];
+  activeWorkspaceId: string;
+}
+
+const STORAGE_KEY = "voidlink-repo-workspaces";
+const ACTIVE_STORAGE_KEY = "voidlink-active-repo-workspace";
+const MIGRATION_MARKER_KEY = "voidlink-migration-v1-done";
+
+function createWorkspace(name: string): WorkspaceState {
+  return {
+    id: crypto.randomUUID(),
+    name,
+    repoRoot: null,
+    activeArea: "repository",
+    lastScanJobId: null,
+    scanStatus: null,
+    searchQuery: "",
+    searchResults: [],
+    selectedContext: [],
+    objective: "",
+    constraintsText: "",
+    workflow: null,
+    activeRunId: null,
+    runState: null,
+    searching: false,
+    generatingWorkflow: false,
+    runningWorkflow: false,
+    lastError: null,
+  };
+}
+
+function clearLegacyStorage(): void {
+  localStorage.removeItem("voidlink-workspaces");
+  localStorage.removeItem("voidlink-active-workspace");
+  localStorage.removeItem("voidlink-pages");
+
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    if (key.startsWith("voidlink-pages-") || key.startsWith("voidlink-content-")) {
+      keysToRemove.push(key);
+    }
+  }
+  for (const key of keysToRemove) {
+    localStorage.removeItem(key);
+  }
+}
+
+function ensureMigrationCleanup(): void {
+  if (localStorage.getItem(MIGRATION_MARKER_KEY)) return;
+  clearLegacyStorage();
+  localStorage.setItem(MIGRATION_MARKER_KEY, "true");
+}
+
+function loadInitialState(): AppState {
+  ensureMigrationCleanup();
+
   try {
-    const saved = localStorage.getItem("voidlink-workspaces");
-    if (saved) {
-      const raw = JSON.parse(saved) as Workspace[];
-      if (raw.length > 0) {
-        const workspaces = raw.map((w) => ({
-          ...w,
-          splitTabId: w.splitTabId ?? null,
-          focusedPane: w.focusedPane ?? "left" as const,
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as PersistedWorkspace[];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const workspaces = parsed.map((item) => ({
+          ...createWorkspace(item.name),
+          id: item.id,
+          repoRoot: item.repoRoot,
+          activeArea: item.activeArea,
+          objective: item.objective,
+          constraintsText: item.constraintsText,
         }));
-        const savedActiveId = localStorage.getItem("voidlink-active-workspace");
+        const activeId = localStorage.getItem(ACTIVE_STORAGE_KEY);
         const activeWorkspaceId =
-          savedActiveId && workspaces.find((w) => w.id === savedActiveId)
-            ? savedActiveId
+          activeId && workspaces.some((ws) => ws.id === activeId)
+            ? activeId
             : workspaces[0].id;
         return { workspaces, activeWorkspaceId };
       }
     }
-  } catch {}
-  const ws: Workspace = {
-    id: crypto.randomUUID(),
-    name: "Main",
-    tabs: [],
-    activeTabId: null,
-    splitTabId: null,
-    focusedPane: "left",
-  };
-  return { workspaces: [ws], activeWorkspaceId: ws.id };
-}
-
-// ─── App ──────────────────────────────────────────────────────────────────────
-
-function App() {
-  const [pagesMap, setPagesMap] = createSignal<Record<string, Page[]>>({});
-  const [useApi, setUseApi] = createSignal(true);
-  const [settingsOpen, setSettingsOpen] = createSignal(false);
-  const [wsState, setWsState] = createStore<WsState>(initWsState());
-  const scrollRefs: Record<string, HTMLElement | undefined> = {};
-
-  // ─── Derived values ────────────────────────────────────────────────────
-
-  const workspaces = createMemo(() => wsState.workspaces);
-  const activeWorkspaceId = createMemo(() => wsState.activeWorkspaceId);
-  const activeWorkspace = createMemo(() =>
-    wsState.workspaces.find((w) => w.id === wsState.activeWorkspaceId) ?? null
-  );
-  const activeTab = createMemo(() => {
-    const ws = activeWorkspace();
-    return ws?.tabs.find((t) => t.id === ws.activeTabId) ?? null;
-  });
-  const splitTab = createMemo(() => {
-    const ws = activeWorkspace();
-    return ws?.tabs.find((t) => t.id === ws.splitTabId) ?? null;
-  });
-
-  // ─── Persist workspaces ─────────────────────────────────────────────────
-
-  function updateWsState(updater: (prev: WsState) => WsState) {
-    const next = updater(wsState as unknown as WsState);
-    setWsState(reconcile(next, { key: "id" }));
-    localStorage.setItem("voidlink-workspaces", JSON.stringify(next.workspaces));
-    if (next.activeWorkspaceId) {
-      localStorage.setItem("voidlink-active-workspace", next.activeWorkspaceId);
-    }
+  } catch {
+    // ignore corrupted local storage payloads
   }
 
-  // ─── Workspace helpers ──────────────────────────────────────────────────
+  const initial = createWorkspace("Main");
+  return {
+    workspaces: [initial],
+    activeWorkspaceId: initial.id,
+  };
+}
 
-  function addWorkspace(name: string) {
-    const wsId = crypto.randomUUID();
-    const pageId = crypto.randomUUID();
-    const defaultTab: NotionTab = {
-      id: crypto.randomUUID(),
-      type: "notion",
-      title: "Untitled",
-      pageId,
-      pagesPanelVisible: true,
-    };
-    const ws: Workspace = {
-      id: wsId,
-      name,
-      tabs: [defaultTab],
-      activeTabId: defaultTab.id,
-      splitTabId: null,
-      focusedPane: "left",
-    };
-    updateWsState((prev) => ({
-      workspaces: [...prev.workspaces, ws],
-      activeWorkspaceId: wsId,
-    }));
-    const defaultPage: Page = { id: pageId, title: "Untitled", workspaceId: wsId };
-    setPagesMap((prev) => {
-      const updated = [defaultPage];
-      localStorage.setItem(`voidlink-pages-${wsId}`, JSON.stringify(updated));
-      return { ...prev, [wsId]: updated };
-    });
-    if (useApi()) {
-      pagesApi.create({ id: pageId, workspace_id: wsId }).catch(() => {});
-    }
+function parseConstraintLines(input: string): string[] {
+  return input
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function formatTimestamp(ms: number | null): string {
+  if (!ms) return "-";
+  return new Date(ms).toLocaleTimeString();
+}
+
+function isRunTerminal(status: string): boolean {
+  return status === "success" || status === "failed";
+}
+
+function isScanTerminal(status: string): boolean {
+  return status === "success" || status === "failed";
+}
+
+function App() {
+  const initial = loadInitialState();
+  const [workspaces, setWorkspaces] = createSignal<WorkspaceState[]>(initial.workspaces);
+  const [activeWorkspaceId, setActiveWorkspaceId] = createSignal<string>(initial.activeWorkspaceId);
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
+
+  const scanTimers = new Map<string, number>();
+  const runTimers = new Map<string, number>();
+
+  const activeWorkspace = createMemo(
+    () => workspaces().find((ws) => ws.id === activeWorkspaceId()) ?? null,
+  );
+
+  const selectedContextTokenEstimate = createMemo(() => {
+    const ws = activeWorkspace();
+    if (!ws) return 0;
+    return ws.selectedContext.reduce(
+      (sum, item) => sum + item.snippet.split(/\s+/).filter(Boolean).length,
+      0,
+    );
+  });
+
+  function updateWorkspace(id: string, updater: (workspace: WorkspaceState) => WorkspaceState) {
+    setWorkspaces((prev) => prev.map((ws) => (ws.id === id ? updater(ws) : ws)));
+  }
+
+  function addWorkspace() {
+    const count = workspaces().length + 1;
+    const ws = createWorkspace(`Workspace ${count}`);
+    setWorkspaces((prev) => [...prev, ws]);
+    setActiveWorkspaceId(ws.id);
   }
 
   function removeWorkspace(id: string) {
-    updateWsState((prev) => {
-      const wss = prev.workspaces.filter((w) => w.id !== id);
-      if (wss.length === 0) {
-        const newWs: Workspace = {
-          id: crypto.randomUUID(),
-          name: "Main",
-          tabs: [],
-          activeTabId: null,
-          splitTabId: null,
-          focusedPane: "left",
-        };
-        return { workspaces: [newWs], activeWorkspaceId: newWs.id };
+    const next = workspaces().filter((ws) => ws.id !== id);
+    if (next.length === 0) {
+      const fallback = createWorkspace("Main");
+      setWorkspaces([fallback]);
+      setActiveWorkspaceId(fallback.id);
+      return;
+    }
+    setWorkspaces(next);
+    if (activeWorkspaceId() === id) {
+      setActiveWorkspaceId(next[next.length - 1].id);
+    }
+  }
+
+  function addContextResult(workspaceId: string, result: SearchResult) {
+    updateWorkspace(workspaceId, (ws) => {
+      if (ws.selectedContext.some((item) => item.id === result.id)) {
+        return ws;
       }
-      const activeId =
-        prev.activeWorkspaceId === id
-          ? (wss[wss.length - 1]?.id ?? null)
-          : prev.activeWorkspaceId;
-      return { workspaces: wss, activeWorkspaceId: activeId };
+      return {
+        ...ws,
+        selectedContext: [...ws.selectedContext, result],
+      };
     });
-    delete scrollRefs[id];
   }
 
-  function selectWorkspace(id: string) {
-    updateWsState((prev) => ({ ...prev, activeWorkspaceId: id }));
-  }
-
-  function renameWorkspace(id: string, name: string) {
-    updateWsState((prev) => ({
-      ...prev,
-      workspaces: prev.workspaces.map((w) =>
-        w.id === id ? { ...w, name } : w,
-      ),
+  function removeContextResult(workspaceId: string, resultId: string) {
+    updateWorkspace(workspaceId, (ws) => ({
+      ...ws,
+      selectedContext: ws.selectedContext.filter((item) => item.id !== resultId),
     }));
   }
 
-  // ─── Tab helpers ─────────────────────────────────────────────────────────
-
-  function addTab(wsId: string, type: "notion" | "terminal") {
-    const tab: Tab =
-      type === "notion"
-        ? {
-            id: crypto.randomUUID(),
-            type: "notion",
-            title: "New Document",
-            pageId: null,
-            pagesPanelVisible: true,
-          }
-        : {
-            id: crypto.randomUUID(),
-            type: "terminal",
-            title: "Terminal",
-            sessionId: "",
-            cwd: "",
-          };
-    updateWsState((prev) => ({
-      ...prev,
-      workspaces: prev.workspaces.map((w) => {
-        if (w.id !== wsId) return w;
-        if (w.splitTabId && w.focusedPane === "right") {
-          return { ...w, tabs: [...w.tabs, tab], splitTabId: tab.id };
-        }
-        return { ...w, tabs: [...w.tabs, tab], activeTabId: tab.id };
-      }),
-    }));
+  async function chooseRepository(workspaceId: string): Promise<void> {
+    try {
+      const selected = await open({ directory: true, multiple: false, title: "Select repository root" });
+      if (!selected || Array.isArray(selected)) return;
+      updateWorkspace(workspaceId, (ws) => ({
+        ...ws,
+        repoRoot: selected,
+        lastError: null,
+        searchResults: [],
+        selectedContext: [],
+        workflow: null,
+        runState: null,
+        activeRunId: null,
+        scanStatus: null,
+        lastScanJobId: null,
+      }));
+    } catch (error) {
+      updateWorkspace(workspaceId, (ws) => ({
+        ...ws,
+        lastError: error instanceof Error ? error.message : "Failed to open directory picker",
+      }));
+    }
   }
 
-  function removeTab(wsId: string, tabId: string) {
-    updateWsState((prev) => ({
-      ...prev,
-      workspaces: prev.workspaces.map((w) => {
-        if (w.id !== wsId) return w;
-        const tabs = w.tabs.filter((t) => t.id !== tabId);
-        // Removing the split tab → close split
-        if (w.splitTabId === tabId) {
-          return { ...w, tabs, splitTabId: null, focusedPane: "left" as const };
-        }
-        // Removing the active tab while split is active → promote split tab
-        if (w.activeTabId === tabId && w.splitTabId) {
-          return { ...w, tabs, activeTabId: w.splitTabId, splitTabId: null, focusedPane: "left" as const };
-        }
-        // Normal case
-        const activeTabId =
-          w.activeTabId === tabId
-            ? (tabs[tabs.length - 1]?.id ?? null)
-            : w.activeTabId;
-        return { ...w, tabs, activeTabId };
-      }),
-    }));
+  function clearScanTimer(workspaceId: string): void {
+    const timer = scanTimers.get(workspaceId);
+    if (timer) {
+      window.clearTimeout(timer);
+      scanTimers.delete(workspaceId);
+    }
   }
 
-  function selectTab(wsId: string, tabId: string) {
-    updateWsState((prev) => ({
-      ...prev,
-      workspaces: prev.workspaces.map((w) => {
-        if (w.id !== wsId) return w;
-        if (!w.splitTabId) return { ...w, activeTabId: tabId };
-        // In split mode: if clicking tab already in other pane, swap
-        if (w.focusedPane === "left" && tabId === w.splitTabId) {
-          return { ...w, activeTabId: w.splitTabId, splitTabId: w.activeTabId };
-        }
-        if (w.focusedPane === "right" && tabId === w.activeTabId) {
-          return { ...w, activeTabId: w.splitTabId, splitTabId: w.activeTabId };
-        }
-        // Assign to focused pane
-        if (w.focusedPane === "right") {
-          return { ...w, splitTabId: tabId };
-        }
-        return { ...w, activeTabId: tabId };
-      }),
-    }));
+  function clearRunTimer(workspaceId: string): void {
+    const timer = runTimers.get(workspaceId);
+    if (timer) {
+      window.clearTimeout(timer);
+      runTimers.delete(workspaceId);
+    }
   }
 
-  function updateTab(wsId: string, tabId: string, updates: Partial<Tab>) {
-    updateWsState((prev) => ({
-      ...prev,
-      workspaces: prev.workspaces.map((w) =>
-        w.id !== wsId
-          ? w
-          : {
-              ...w,
-              tabs: w.tabs.map((t) =>
-                t.id !== tabId ? t : ({ ...t, ...updates } as Tab),
-              ),
-            },
-      ),
-    }));
+  async function pollScanStatus(workspaceId: string, scanJobId: string): Promise<void> {
+    clearScanTimer(workspaceId);
+    try {
+      const status = await migrationApi.getScanStatus(scanJobId);
+      updateWorkspace(workspaceId, (ws) => ({
+        ...ws,
+        scanStatus: status,
+      }));
+      if (!isScanTerminal(status.status)) {
+        const timer = window.setTimeout(() => {
+          void pollScanStatus(workspaceId, scanJobId);
+        }, 800);
+        scanTimers.set(workspaceId, timer);
+      }
+    } catch (error) {
+      updateWorkspace(workspaceId, (ws) => ({
+        ...ws,
+        lastError: error instanceof Error ? error.message : "Failed to poll scan status",
+      }));
+    }
   }
 
-  // ─── Split helpers ─────────────────────────────────────────────────────
+  async function startScan(workspaceId: string, forceFullRescan = false): Promise<void> {
+    const ws = workspaces().find((item) => item.id === workspaceId);
+    if (!ws?.repoRoot) return;
 
-  function splitTabAction(wsId: string, tabId: string) {
-    updateWsState((prev) => ({
-      ...prev,
-      workspaces: prev.workspaces.map((w) => {
-        if (w.id !== wsId) return w;
-        let activeTabId = w.activeTabId;
-        if (tabId === activeTabId) {
-          // Pick a different tab for left pane
-          const idx = w.tabs.findIndex((t) => t.id === tabId);
-          const next = w.tabs[idx + 1] ?? w.tabs[idx - 1];
-          if (!next) return w; // Only 1 tab, can't split
-          activeTabId = next.id;
-        }
-        return { ...w, splitTabId: tabId, activeTabId, focusedPane: "right" as const };
-      }),
-    }));
+    try {
+      const scanJobId = await migrationApi.scanRepository(ws.repoRoot, { forceFullRescan });
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        lastScanJobId: scanJobId,
+        scanStatus: {
+          scanJobId,
+          repoPath: current.repoRoot ?? "",
+          status: "pending",
+          scannedFiles: 0,
+          indexedFiles: 0,
+          indexedChunks: 0,
+          startedAt: Date.now(),
+          finishedAt: null,
+          error: null,
+        },
+        lastError: null,
+      }));
+      await pollScanStatus(workspaceId, scanJobId);
+    } catch (error) {
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        lastError: error instanceof Error ? error.message : "Scan failed",
+      }));
+    }
   }
 
-  function closeSplit(wsId: string) {
-    updateWsState((prev) => ({
-      ...prev,
-      workspaces: prev.workspaces.map((w) => {
-        if (w.id !== wsId) return w;
-        const activeTabId = w.focusedPane === "right" ? w.splitTabId ?? w.activeTabId : w.activeTabId;
-        return { ...w, activeTabId, splitTabId: null, focusedPane: "left" as const };
-      }),
-    }));
+  async function performSearch(workspaceId: string): Promise<void> {
+    const ws = workspaces().find((item) => item.id === workspaceId);
+    if (!ws?.repoRoot || ws.searchQuery.trim().length === 0) return;
+
+    updateWorkspace(workspaceId, (current) => ({ ...current, searching: true, lastError: null }));
+    try {
+      const results = await migrationApi.searchRepository(
+        {
+          repoPath: ws.repoRoot,
+          text: ws.searchQuery.trim(),
+          maxTokens: 120,
+          type: "hybrid",
+        },
+        { limit: 20 },
+      );
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        searchResults: results,
+        searching: false,
+      }));
+    } catch (error) {
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        searching: false,
+        lastError: error instanceof Error ? error.message : "Search failed",
+      }));
+    }
   }
 
-  function setFocusedPane(wsId: string, pane: "left" | "right") {
-    updateWsState((prev) => ({
-      ...prev,
-      workspaces: prev.workspaces.map((w) =>
-        w.id === wsId ? { ...w, focusedPane: pane } : w,
-      ),
+  async function generateWorkflowForWorkspace(workspaceId: string): Promise<void> {
+    const ws = workspaces().find((item) => item.id === workspaceId);
+    if (!ws) return;
+
+    const objective = ws.objective.trim() || ws.searchQuery.trim();
+    if (!objective) {
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        lastError: "Objective is required before generating a workflow.",
+      }));
+      return;
+    }
+
+    updateWorkspace(workspaceId, (current) => ({
+      ...current,
+      generatingWorkflow: true,
+      lastError: null,
     }));
+
+    try {
+      const dsl = await migrationApi.generateWorkflow({
+        repoPath: ws.repoRoot ?? undefined,
+        objective,
+        constraints: parseConstraintLines(ws.constraintsText),
+        contextBundle: {
+          freeText: ws.objective,
+          selectedResults: ws.selectedContext,
+          maxTokens: 1200,
+        },
+      });
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        workflow: dsl,
+        generatingWorkflow: false,
+      }));
+    } catch (error) {
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        generatingWorkflow: false,
+        lastError: error instanceof Error ? error.message : "Workflow generation failed",
+      }));
+    }
   }
 
-  // ─── Keyboard shortcuts ──────────────────────────────────────────────────
-
-  onMount(() => {
-    const handler = (e: KeyboardEvent) => {
-      const meta = e.metaKey || e.ctrlKey;
-      const ws = activeWorkspace();
-      const wsId = activeWorkspaceId();
-
-      // Cmd+T → new notion tab in active workspace
-      if (meta && e.key === "t" && !e.shiftKey) {
-        e.preventDefault();
-        if (wsId) addTab(wsId, "notion");
-        return;
+  async function pollRunStatus(workspaceId: string, runId: string): Promise<void> {
+    clearRunTimer(workspaceId);
+    try {
+      const runState = await migrationApi.getRunStatus(runId);
+      updateWorkspace(workspaceId, (ws) => ({
+        ...ws,
+        runState,
+        runningWorkflow: !isRunTerminal(runState.status),
+      }));
+      if (!isRunTerminal(runState.status)) {
+        const timer = window.setTimeout(() => {
+          void pollRunStatus(workspaceId, runId);
+        }, 900);
+        runTimers.set(workspaceId, timer);
       }
+    } catch (error) {
+      updateWorkspace(workspaceId, (ws) => ({
+        ...ws,
+        runningWorkflow: false,
+        lastError: error instanceof Error ? error.message : "Failed to poll run status",
+      }));
+    }
+  }
 
-      // Cmd+W → close focused pane's tab
-      if (meta && e.key === "w" && !e.shiftKey) {
-        e.preventDefault();
-        if (wsId && ws) {
-          const tabToClose = ws.splitTabId && ws.focusedPane === "right"
-            ? ws.splitTabId
-            : ws.activeTabId;
-          if (tabToClose) removeTab(wsId, tabToClose);
-        }
-        return;
-      }
+  async function runWorkflowForWorkspace(workspaceId: string): Promise<void> {
+    const ws = workspaces().find((item) => item.id === workspaceId);
+    if (!ws?.workflow) return;
 
-      // Cmd+\ → toggle split
-      if (meta && e.key === "\\") {
-        e.preventDefault();
-        if (wsId && ws) {
-          if (ws.splitTabId) {
-            closeSplit(wsId);
-          } else if (ws.activeTabId && ws.tabs.length > 1) {
-            splitTabAction(wsId, ws.activeTabId);
-          }
-        }
-        return;
-      }
+    updateWorkspace(workspaceId, (current) => ({
+      ...current,
+      runningWorkflow: true,
+      runState: null,
+      activeRunId: null,
+      lastError: null,
+    }));
 
-      // Ctrl+Cmd+Left/Right → move focus between panes
-      if (e.ctrlKey && e.metaKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-        e.preventDefault();
-        if (wsId && ws?.splitTabId) {
-          setFocusedPane(wsId, e.key === "ArrowLeft" ? "left" : "right");
-        }
-        return;
-      }
+    try {
+      const runId = await migrationApi.runWorkflow({
+        dsl: ws.workflow,
+        repoPath: ws.repoRoot ?? undefined,
+      });
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        activeRunId: runId,
+      }));
+      await pollRunStatus(workspaceId, runId);
+    } catch (error) {
+      updateWorkspace(workspaceId, (current) => ({
+        ...current,
+        runningWorkflow: false,
+        lastError: error instanceof Error ? error.message : "Workflow execution failed",
+      }));
+    }
+  }
 
-      // Cmd+[ → prev tab in focused pane
-      if (meta && e.key === "[" && !e.shiftKey) {
-        e.preventDefault();
-        if (ws && wsId) {
-          const tabs = ws.tabs;
-          const currentTabId = ws.splitTabId && ws.focusedPane === "right"
-            ? ws.splitTabId
-            : ws.activeTabId;
-          const idx = tabs.findIndex((t) => t.id === currentTabId);
-          if (idx > 0) selectTab(wsId, tabs[idx - 1].id);
-        }
-        return;
-      }
-
-      // Cmd+] → next tab in focused pane
-      if (meta && e.key === "]" && !e.shiftKey) {
-        e.preventDefault();
-        if (ws && wsId) {
-          const tabs = ws.tabs;
-          const currentTabId = ws.splitTabId && ws.focusedPane === "right"
-            ? ws.splitTabId
-            : ws.activeTabId;
-          const idx = tabs.findIndex((t) => t.id === currentTabId);
-          if (idx < tabs.length - 1) selectTab(wsId, tabs[idx + 1].id);
-        }
-        return;
-      }
-
-      // Cmd+Shift+[ → prev workspace
-      if (meta && e.shiftKey && e.key === "[") {
-        e.preventDefault();
-        const wss = workspaces();
-        const idx = wss.findIndex((w) => w.id === wsId);
-        if (idx > 0) selectWorkspace(wss[idx - 1].id);
-        return;
-      }
-
-      // Cmd+Shift+] → next workspace
-      if (meta && e.shiftKey && e.key === "]") {
-        e.preventDefault();
-        const wss = workspaces();
-        const idx = wss.findIndex((w) => w.id === wsId);
-        if (idx < wss.length - 1) selectWorkspace(wss[idx + 1].id);
-        return;
-      }
-    };
-
-    document.addEventListener("keydown", handler);
-    onCleanup(() => document.removeEventListener("keydown", handler));
-  });
-
-  // ─── Scroll to active tab (niri-style) ──────────────────────────────────
   createEffect(() => {
-    const ws = activeWorkspace();
-    if (!ws || ws.splitTabId) return;
-    const _activeTabId = ws.activeTabId;
-    const _tabs = ws.tabs;
-    if (!_activeTabId || _tabs.length === 0) return;
-
-    const container = scrollRefs[ws.id];
-    if (!container) return;
-
-    const idx = _tabs.findIndex((t) => t.id === _activeTabId);
-    if (idx < 0) return;
-
-    const targetLeft = idx * container.clientWidth;
-    container.scrollTo({ left: targetLeft, behavior: "smooth" });
+    const serialized: PersistedWorkspace[] = workspaces().map((ws) => ({
+      id: ws.id,
+      name: ws.name,
+      repoRoot: ws.repoRoot,
+      activeArea: ws.activeArea,
+      objective: ws.objective,
+      constraintsText: ws.constraintsText,
+    }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serialized));
+    localStorage.setItem(ACTIVE_STORAGE_KEY, activeWorkspaceId());
   });
-
-  // ─── Vibrancy / opacity on mount ─────────────────────────────────────────
 
   onMount(() => {
     const opacity = localStorage.getItem("voidlink-opacity") ?? "0.85";
@@ -420,314 +484,407 @@ function App() {
     } else {
       win.setEffects({ effects: [vibrancy as never], state: "active" as never }).catch(() => {});
     }
+
+    migrationApi
+      .getStartupRepoPath()
+      .then((repoPath) => {
+        if (!repoPath) return;
+        const wsId = activeWorkspaceId();
+        updateWorkspace(wsId, (ws) => ({
+          ...ws,
+          repoRoot: ws.repoRoot ?? repoPath,
+        }));
+      })
+      .catch(() => {});
   });
 
-  // ─── Pages (per-workspace) ──────────────────────────────────────────────
-
-  function getWorkspacePages(wsId: string): Page[] {
-    return pagesMap()[wsId] ?? [];
-  }
-
-  function persistWorkspacePages(wsId: string, pages: Page[]) {
-    localStorage.setItem(`voidlink-pages-${wsId}`, JSON.stringify(pages));
-  }
-
-  // Migrate legacy global pages to first workspace on mount
-  onMount(() => {
-    const globalPages = localStorage.getItem("voidlink-pages");
-    const wss = workspaces();
-    if (globalPages && wss.length > 0) {
-      const firstWsId = wss[0].id;
-      if (!localStorage.getItem(`voidlink-pages-${firstWsId}`)) {
-        localStorage.setItem(`voidlink-pages-${firstWsId}`, globalPages);
-        localStorage.removeItem("voidlink-pages");
-      }
+  onCleanup(() => {
+    for (const timer of scanTimers.values()) {
+      window.clearTimeout(timer);
+    }
+    for (const timer of runTimers.values()) {
+      window.clearTimeout(timer);
     }
   });
-
-  // Load pages for each workspace — re-runs when workspace IDs change
-  createEffect(() => {
-    const wsIds = wsState.workspaces.map((w) => w.id).join(","); // track workspace IDs
-    const ids = wsIds.split(",").filter(Boolean);
-
-    const loadPages = async () => {
-      const newMap: Record<string, Page[]> = {};
-      for (const wsId of ids) {
-        try {
-          const list = await pagesApi.list(wsId);
-          newMap[wsId] = list.map((p) => ({
-            id: p.id,
-            title: p.title,
-            parentId: p.parent_id ?? null,
-            workspaceId: wsId,
-          }));
-          localStorage.setItem(`voidlink-pages-${wsId}`, JSON.stringify(newMap[wsId]));
-        } catch {
-          setUseApi(false);
-          const raw = localStorage.getItem(`voidlink-pages-${wsId}`);
-          if (raw) {
-            try {
-              newMap[wsId] = JSON.parse(raw) as Page[];
-            } catch {}
-          }
-          if (!newMap[wsId]) newMap[wsId] = [];
-        }
-      }
-      setPagesMap(newMap);
-    };
-    loadPages();
-  });
-
-  async function handleNewPage(workspaceId: string): Promise<string | null> {
-    if (useApi()) {
-      try {
-        const page = await pagesApi.create({ workspace_id: workspaceId });
-        const newPage: Page = { id: page.id, title: page.title, workspaceId };
-        setPagesMap((prev) => {
-          const updated = [...(prev[workspaceId] ?? []), newPage];
-          persistWorkspacePages(workspaceId, updated);
-          return { ...prev, [workspaceId]: updated };
-        });
-        return page.id;
-      } catch {}
-    }
-    const id = crypto.randomUUID();
-    const newPage: Page = { id, title: "Untitled", workspaceId };
-    setPagesMap((prev) => {
-      const updated = [...(prev[workspaceId] ?? []), newPage];
-      persistWorkspacePages(workspaceId, updated);
-      return { ...prev, [workspaceId]: updated };
-    });
-    return id;
-  }
-
-  function handleDeletePage(workspaceId: string, id: string) {
-    setPagesMap((prev) => {
-      const updated = (prev[workspaceId] ?? []).filter((p) => p.id !== id);
-      persistWorkspacePages(workspaceId, updated);
-      return { ...prev, [workspaceId]: updated };
-    });
-    localStorage.removeItem(`voidlink-content-${id}`);
-    if (useApi()) pagesApi.delete(id).catch(() => {});
-  }
-
-  function handleCreateChildPage(workspaceId: string, parentId: string | null): string {
-    const id = crypto.randomUUID();
-    const newPage: Page = { id, title: "Untitled", parentId, workspaceId };
-    setPagesMap((prev) => {
-      const updated = [...(prev[workspaceId] ?? []), newPage];
-      persistWorkspacePages(workspaceId, updated);
-      return { ...prev, [workspaceId]: updated };
-    });
-    if (useApi()) {
-      pagesApi
-        .create({ id, title: "Untitled", parent_id: parentId ?? undefined, workspace_id: workspaceId })
-        .catch(() => {});
-    }
-    return id;
-  }
-
-  function handlePageTitleChange(workspaceId: string, pageId: string, title: string) {
-    setPagesMap((prev) => {
-      const updated = (prev[workspaceId] ?? []).map((p) =>
-        p.id === pageId ? { ...p, title } : p,
-      );
-      persistWorkspacePages(workspaceId, updated);
-      return { ...prev, [workspaceId]: updated };
-    });
-  }
-
-  // ─── Render ───────────────────────────────────────────────────────────────
-
-  // isActive is a function so SolidJS JSX compiles it into a reactive getter
-  const renderTabContent = (tab: Tab, wsId: string, isActive: () => boolean) => {
-    if (tab.type === "notion") {
-      return (
-        <NotionPane
-          tab={tab as NotionTab}
-          pages={getWorkspacePages(wsId)}
-          useApi={useApi()}
-          onUpdateTab={(updates) =>
-            updateTab(wsId, tab.id, updates as Partial<Tab>)
-          }
-          onNewPage={() => handleNewPage(wsId)}
-          onDeletePage={(id) => handleDeletePage(wsId, id)}
-          onPageTitleChange={(pid, t) => handlePageTitleChange(wsId, pid, t)}
-          onCreateChildPage={(pid) => handleCreateChildPage(wsId, pid)}
-        />
-      );
-    }
-    return (
-      <TerminalPane
-        tab={tab as TerminalTab}
-        isActive={isActive()}
-        visible={wsId === activeWorkspaceId()}
-        onUpdateTab={(updates) =>
-          updateTab(wsId, tab.id, updates as Partial<Tab>)
-        }
-        onClose={() => removeTab(wsId, tab.id)}
-      />
-    );
-  };
 
   return (
     <div class="flex flex-col h-screen bg-background text-foreground overflow-hidden">
-      {/* Draggable macOS title bar — full width, hosts traffic lights */}
       <TitleBar />
 
-      {/* Sidebar + content row */}
       <div class="flex flex-1 overflow-hidden">
-      {/* Global workspace sidebar */}
-      <WorkspaceSidebar
-        workspaces={workspaces()}
-        activeWorkspaceId={activeWorkspaceId()}
-        onSelectWorkspace={selectWorkspace}
-        onAddWorkspace={addWorkspace}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onRenameWorkspace={renameWorkspace}
-        onRemoveWorkspace={removeWorkspace}
-      />
+        <aside class="w-64 border-r border-border bg-sidebar flex flex-col">
+          <div class="px-3 py-3 border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+            Workspaces
+          </div>
 
-      {/* Main content column */}
-      <div class="flex flex-col flex-1 overflow-hidden">
-        {/* Workspace top bar */}
-        <WorkspaceTopBar
-          workspaces={workspaces()}
-          activeWorkspaceId={activeWorkspaceId()}
-          onSelectWorkspace={selectWorkspace}
-          onAddWorkspace={addWorkspace}
-          onRemoveWorkspace={removeWorkspace}
-          onRenameWorkspace={renameWorkspace}
-        />
-
-        {/* Tab strip for active workspace */}
-        <Show when={activeWorkspace()}>
-          {(ws) => (
-            <WorkspaceTabStrip
-              tabs={ws().tabs}
-              activeTabId={ws().activeTabId}
-              splitTabId={ws().splitTabId}
-              focusedPane={ws().focusedPane}
-              onSelectTab={(tabId) => selectTab(activeWorkspaceId()!, tabId)}
-              onCloseTab={(tabId) => removeTab(activeWorkspaceId()!, tabId)}
-              onAddTab={(type) => addTab(activeWorkspaceId()!, type)}
-              onRenameTab={(tabId, title) =>
-                updateTab(activeWorkspaceId()!, tabId, { title } as Partial<Tab>)
-              }
-              onSplitTab={(tabId) => splitTabAction(activeWorkspaceId()!, tabId)}
-              onCloseSplit={() => closeSplit(activeWorkspaceId()!)}
-            />
-          )}
-        </Show>
-
-        {/* Content area — per-workspace horizontal scroll containers */}
-        <div class="relative flex-1 overflow-hidden">
-
-          {/* Per-workspace scroll containers — ALL always mounted */}
-          <For each={wsState.workspaces}>
-            {(ws) => {
-              const isActiveWs = () => ws.id === activeWorkspaceId();
-              const shouldHide = () => !isActiveWs() || !!activeWorkspace()?.splitTabId;
-              return (
+          <div class="flex-1 overflow-y-auto p-2 space-y-1">
+            <For each={workspaces()}>
+              {(ws) => (
                 <div
-                  ref={(el) => { scrollRefs[ws.id] = el; }}
-                  class="absolute inset-0 flex overflow-x-auto overflow-y-hidden scrollbar-thin"
-                  classList={{ "invisible pointer-events-none": shouldHide() }}
+                  class={`group rounded-md border px-2 py-2 text-sm transition-colors ${
+                    ws.id === activeWorkspaceId()
+                      ? "border-primary/50 bg-sidebar-accent"
+                      : "border-transparent hover:bg-sidebar-accent/50"
+                  }`}
                 >
-                  <For each={ws.tabs}>
-                    {(tab) => {
-                      const isActive = () =>
-                        !activeWorkspace()?.splitTabId &&
-                        isActiveWs() &&
-                        tab.id === ws.activeTabId;
-                      return (
-                        <div class="w-full h-full flex-shrink-0">
-                          {renderTabContent(tab, ws.id, isActive)}
-                        </div>
-                      );
-                    }}
-                  </For>
+                  <button
+                    class="w-full text-left"
+                    onClick={() => setActiveWorkspaceId(ws.id)}
+                    title={ws.name}
+                  >
+                    <div class="truncate font-medium">{ws.name}</div>
+                    <div class="truncate text-xs text-muted-foreground">
+                      {ws.repoRoot ?? "No repository selected"}
+                    </div>
+                  </button>
+
+                  <div class="mt-2 flex items-center justify-between gap-1">
+                    <input
+                      value={ws.name}
+                      onInput={(event) => {
+                        const value = event.currentTarget.value;
+                        updateWorkspace(ws.id, (current) => ({ ...current, name: value || "Workspace" }));
+                      }}
+                      class="w-full rounded bg-accent/60 px-1.5 py-1 text-xs outline-none"
+                      aria-label={`Rename ${ws.name}`}
+                    />
+                    <button
+                      onClick={() => removeWorkspace(ws.id)}
+                      class="rounded p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                      title="Delete workspace"
+                    >
+                      <Trash2 class="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
+              )}
+            </For>
+          </div>
+
+          <div class="border-t border-border p-2 space-y-2">
+            <button
+              onClick={addWorkspace}
+              class="w-full flex items-center justify-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-accent/60"
+            >
+              <FilePlus2 class="w-4 h-4" />
+              New Workspace
+            </button>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              class="w-full flex items-center justify-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-accent/60"
+            >
+              <Settings class="w-4 h-4" />
+              Settings
+            </button>
+          </div>
+        </aside>
+
+        <main class="flex-1 flex flex-col overflow-hidden">
+          <Show when={activeWorkspace()}>
+            {(wsAccessor) => {
+              const ws = () => wsAccessor();
+
+              return (
+                <>
+                  <header class="border-b border-border p-3 space-y-3 bg-background/80">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => void chooseRepository(ws().id)}
+                        class="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent/60"
+                      >
+                        <FolderOpen class="w-4 h-4" />
+                        Choose Repository
+                      </button>
+
+                      <button
+                        onClick={() => void startScan(ws().id, false)}
+                        disabled={!ws().repoRoot}
+                        class="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-accent/60"
+                      >
+                        <RefreshCcw class="w-4 h-4" />
+                        Scan
+                      </button>
+
+                      <button
+                        onClick={() => void startScan(ws().id, true)}
+                        disabled={!ws().repoRoot}
+                        class="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-accent/60"
+                      >
+                        Full Rescan
+                      </button>
+
+                      <div class="text-xs text-muted-foreground">
+                        {ws().repoRoot ?? "Select a repository to begin"}
+                      </div>
+                    </div>
+
+                    <Show when={ws().scanStatus}>
+                      {(status) => (
+                        <div class="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+                          <span>scan: {status().status}</span>
+                          <span>scanned: {status().scannedFiles}</span>
+                          <span>indexed files: {status().indexedFiles}</span>
+                          <span>indexed chunks: {status().indexedChunks}</span>
+                          <span>finished: {formatTimestamp(status().finishedAt)}</span>
+                        </div>
+                      )}
+                    </Show>
+
+                    <Show when={ws().lastError}>
+                      {(error) => (
+                        <div class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                          {error()}
+                        </div>
+                      )}
+                    </Show>
+                  </header>
+
+                  <div class="border-b border-border px-3 py-2 flex flex-wrap gap-2 bg-background/60">
+                    <button
+                      onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "repository" }))}
+                      class={`rounded-md px-3 py-1.5 text-sm ${
+                        ws().activeArea === "repository"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-accent/60 hover:bg-accent"
+                      }`}
+                    >
+                      <DatabaseZap class="inline w-4 h-4 mr-1" />
+                      Repository
+                    </button>
+                    <button
+                      onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "contextBuilder" }))}
+                      class={`rounded-md px-3 py-1.5 text-sm ${
+                        ws().activeArea === "contextBuilder"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-accent/60 hover:bg-accent"
+                      }`}
+                    >
+                      Context Builder
+                    </button>
+                    <button
+                      onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "workflow" }))}
+                      class={`rounded-md px-3 py-1.5 text-sm ${
+                        ws().activeArea === "workflow"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-accent/60 hover:bg-accent"
+                      }`}
+                    >
+                      <Workflow class="inline w-4 h-4 mr-1" />
+                      Workflow
+                    </button>
+                  </div>
+
+                  <section class="flex-1 overflow-auto p-4">
+                    <Show when={ws().activeArea === "repository"}>
+                      <div class="space-y-4">
+                        <div class="flex gap-2">
+                          <input
+                            value={ws().searchQuery}
+                            onInput={(event) =>
+                              updateWorkspace(ws().id, (current) => ({
+                                ...current,
+                                searchQuery: event.currentTarget.value,
+                              }))
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                void performSearch(ws().id);
+                              }
+                            }}
+                            placeholder="Search files and snippets..."
+                            class="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
+                          />
+                          <button
+                            onClick={() => void performSearch(ws().id)}
+                            disabled={!ws().repoRoot || ws().searching || ws().searchQuery.trim().length === 0}
+                            class="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50 hover:bg-accent/60"
+                          >
+                            <Search class="inline w-4 h-4 mr-1" />
+                            {ws().searching ? "Searching..." : "Search"}
+                          </button>
+                        </div>
+
+                        <Show when={ws().searchResults.length > 0} fallback={<p class="text-sm text-muted-foreground">No results yet.</p>}>
+                          <div class="space-y-2">
+                            <For each={ws().searchResults}>
+                              {(result) => (
+                                <article class="rounded-md border border-border bg-card/60 p-3 space-y-2">
+                                  <div class="flex items-start justify-between gap-3">
+                                    <div>
+                                      <div class="font-medium text-sm">{result.filePath}</div>
+                                      <div class="text-xs text-muted-foreground">{result.anchor}</div>
+                                    </div>
+                                    <button
+                                      onClick={() => addContextResult(ws().id, result)}
+                                      class="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/60"
+                                    >
+                                      Add to Context
+                                    </button>
+                                  </div>
+                                  <pre class="text-xs whitespace-pre-wrap text-muted-foreground bg-background/40 rounded p-2 overflow-auto">
+                                    {result.snippet}
+                                  </pre>
+                                  <div class="text-xs text-muted-foreground">
+                                    lexical {result.lexicalScore.toFixed(2)} | semantic {result.semanticScore.toFixed(2)} | graph {(result.why.graphProximity ?? 0).toFixed(2)}
+                                  </div>
+                                </article>
+                              )}
+                            </For>
+                          </div>
+                        </Show>
+                      </div>
+                    </Show>
+
+                    <Show when={ws().activeArea === "contextBuilder"}>
+                      <div class="space-y-4">
+                        <div>
+                          <label class="block text-sm font-medium mb-1">Objective</label>
+                          <textarea
+                            value={ws().objective}
+                            onInput={(event) =>
+                              updateWorkspace(ws().id, (current) => ({
+                                ...current,
+                                objective: event.currentTarget.value,
+                              }))
+                            }
+                            rows={4}
+                            placeholder="Describe the migration objective..."
+                            class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label class="block text-sm font-medium mb-1">Constraints (one per line)</label>
+                          <textarea
+                            value={ws().constraintsText}
+                            onInput={(event) =>
+                              updateWorkspace(ws().id, (current) => ({
+                                ...current,
+                                constraintsText: event.currentTarget.value,
+                              }))
+                            }
+                            rows={4}
+                            placeholder="No destructive edits in v1\nPreserve existing behavior"
+                            class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
+                          />
+                        </div>
+
+                        <div class="text-xs text-muted-foreground">
+                          Selected context items: {ws().selectedContext.length} | Estimated tokens: {selectedContextTokenEstimate()}
+                        </div>
+
+                        <Show when={ws().selectedContext.length > 0} fallback={<p class="text-sm text-muted-foreground">Add repository results to build context.</p>}>
+                          <div class="space-y-2">
+                            <For each={ws().selectedContext}>
+                              {(item) => (
+                                <div class="rounded-md border border-border p-2">
+                                  <div class="flex items-center justify-between gap-2">
+                                    <div class="text-sm font-medium truncate">{item.anchor}</div>
+                                    <button
+                                      onClick={() => removeContextResult(ws().id, item.id)}
+                                      class="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/60"
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                  <p class="text-xs text-muted-foreground mt-1 line-clamp-3">{item.snippet}</p>
+                                </div>
+                              )}
+                            </For>
+                          </div>
+                        </Show>
+                      </div>
+                    </Show>
+
+                    <Show when={ws().activeArea === "workflow"}>
+                      <div class="space-y-4">
+                        <div class="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => void generateWorkflowForWorkspace(ws().id)}
+                            disabled={ws().generatingWorkflow}
+                            class="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50 hover:bg-accent/60"
+                          >
+                            {ws().generatingWorkflow ? "Generating..." : "Generate Workflow"}
+                          </button>
+                          <button
+                            onClick={() => void runWorkflowForWorkspace(ws().id)}
+                            disabled={!ws().workflow || ws().runningWorkflow}
+                            class="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50 hover:bg-accent/60"
+                          >
+                            <Play class="inline w-4 h-4 mr-1" />
+                            {ws().runningWorkflow ? "Running..." : "Run Workflow"}
+                          </button>
+                        </div>
+
+                        <Show when={ws().workflow} fallback={<p class="text-sm text-muted-foreground">Generate a workflow to preview steps.</p>}>
+                          {(dsl) => (
+                            <div class="rounded-md border border-border p-3 space-y-3">
+                              <div>
+                                <h3 class="text-sm font-semibold">{dsl().workflow.objective}</h3>
+                                <p class="text-xs text-muted-foreground">Workflow ID: {dsl().workflow.id}</p>
+                              </div>
+
+                              <div class="space-y-2">
+                                <For each={dsl().steps}>
+                                  {(step) => (
+                                    <div class="rounded border border-border/70 p-2">
+                                      <div class="text-sm font-medium">{step.id}</div>
+                                      <div class="text-xs text-muted-foreground">{step.intent}</div>
+                                      <div class="text-xs text-muted-foreground mt-1">
+                                        tools: {step.tools.join(", ")}
+                                      </div>
+                                    </div>
+                                  )}
+                                </For>
+                              </div>
+                            </div>
+                          )}
+                        </Show>
+
+                        <Show when={ws().runState}>
+                          {(runState) => (
+                            <div class="rounded-md border border-border p-3 space-y-3">
+                              <div class="text-sm font-medium">
+                                Run {runState().runId} - {runState().status}
+                              </div>
+
+                              <div class="space-y-1">
+                                <For each={runState().steps}>
+                                  {(step) => (
+                                    <div class="text-xs text-muted-foreground">
+                                      {step.stepId}: {step.status} (attempts: {step.attempts})
+                                    </div>
+                                  )}
+                                </For>
+                              </div>
+
+                              <div class="max-h-44 overflow-auto rounded border border-border/60 p-2 space-y-1 bg-background/40">
+                                <For each={runState().events}>
+                                  {(event) => (
+                                    <div class="text-xs">
+                                      <span class="text-muted-foreground">[{formatTimestamp(event.createdAt)}]</span>{" "}
+                                      <span class={event.level === "error" ? "text-destructive" : "text-foreground"}>
+                                        {event.message}
+                                      </span>
+                                    </div>
+                                  )}
+                                </For>
+                              </div>
+                            </div>
+                          )}
+                        </Show>
+                      </div>
+                    </Show>
+                  </section>
+                </>
               );
             }}
-          </For>
-
-          {/* Split mode — rendered on top of the scroll containers */}
-          <Show when={activeWorkspace()?.splitTabId}>
-            <div class="absolute inset-0 flex">
-              <div
-                class={`flex-1 overflow-hidden ${
-                  activeWorkspace()?.focusedPane === "left" ? "border-t-2 border-primary" : ""
-                }`}
-                onMouseDown={() => setFocusedPane(activeWorkspaceId()!, "left")}
-              >
-                <Show when={activeTab()}>
-                  {(tab) => renderTabContent(tab(), activeWorkspaceId()!, () => true)}
-                </Show>
-              </div>
-              <div class="w-px bg-border flex-shrink-0" />
-              <div
-                class={`flex-1 overflow-hidden ${
-                  activeWorkspace()?.focusedPane === "right" ? "border-t-2 border-primary" : ""
-                }`}
-                onMouseDown={() => setFocusedPane(activeWorkspaceId()!, "right")}
-              >
-                <Show when={splitTab()}>
-                  {(tab) => renderTabContent(tab(), activeWorkspaceId()!, () => true)}
-                </Show>
-              </div>
-            </div>
           </Show>
-
-          {/* Empty workspace state — rendered on top when active workspace has no tabs */}
-          <Show when={!activeWorkspace()?.tabs.length}>
-            <main class="absolute inset-0 flex">
-              <EmptyWorkspaceState
-                onAddNotion={() => addTab(activeWorkspaceId()!, "notion")}
-                onAddTerminal={() => addTab(activeWorkspaceId()!, "terminal")}
-              />
-            </main>
-          </Show>
-
-        </div>
-      </div>
+        </main>
       </div>
 
-      <SettingsPanel
-        open={settingsOpen()}
-        onOpenChange={setSettingsOpen}
-      />
-    </div>
-  );
-}
-
-function EmptyWorkspaceState({
-  onAddNotion,
-  onAddTerminal,
-}: {
-  onAddNotion: () => void;
-  onAddTerminal: () => void;
-}) {
-  return (
-    <div class="flex-1 flex items-center justify-center text-muted-foreground">
-      <div class="text-center">
-        <h2 class="text-xl font-medium mb-3">Empty workspace</h2>
-        <p class="text-sm mb-4">Open a new tab to get started.</p>
-        <div class="flex gap-2 justify-center">
-          <button
-            onClick={onAddNotion}
-            class="px-4 py-2 rounded-md bg-accent text-accent-foreground text-sm hover:bg-accent/80 transition-colors"
-          >
-            New Document
-          </button>
-          <button
-            onClick={onAddTerminal}
-            class="px-4 py-2 rounded-md border border-border text-sm hover:bg-accent/40 transition-colors"
-          >
-            New Terminal
-          </button>
-        </div>
-      </div>
+      <SettingsPanel open={settingsOpen()} onOpenChange={setSettingsOpen} />
     </div>
   );
 }

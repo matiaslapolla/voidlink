@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import App from "./App";
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+  invoke: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -13,22 +13,24 @@ vi.mock("@tauri-apps/api/window", () => ({
   })),
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn().mockResolvedValue(() => {}),
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn().mockResolvedValue(null),
 }));
 
 describe("App", () => {
-  it("renders empty workspace state when no tabs exist", () => {
+  it("renders migration workspace shell", () => {
     localStorage.clear();
     render(() => <App />);
-    expect(screen.getByText("Empty workspace")).toBeInTheDocument();
+    expect(screen.getByText("Workspaces")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /choose repository/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^scan$/i })).toBeInTheDocument();
   });
 
-  it("renders new workspace buttons", () => {
+  it("renders the three migration areas", () => {
     localStorage.clear();
     render(() => <App />);
-    expect(
-      screen.getAllByRole("button", { name: /new workspace/i }).length,
-    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /^repository$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^context builder$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^workflow$/i })).toBeInTheDocument();
   });
 });

@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
+
+#[cfg(target_os = "macos")]
+use tauri::Manager;
+
+mod migration;
 
 #[cfg(target_os = "macos")]
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
@@ -142,16 +147,77 @@ fn close_pty(
     Ok(())
 }
 
+#[tauri::command]
+fn scan_repository(
+    repo_path: String,
+    options: Option<migration::ScanOptions>,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<String, String> {
+    migration::scan_repository(state, repo_path, options)
+}
+
+#[tauri::command]
+fn get_scan_status(
+    scan_job_id: String,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<migration::ScanProgress, String> {
+    migration::get_scan_status(state, scan_job_id)
+}
+
+#[tauri::command]
+fn search_repository(
+    query: migration::SearchQuery,
+    options: Option<migration::SearchOptions>,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<Vec<migration::SearchResult>, String> {
+    migration::search_repository(state, query, options)
+}
+
+#[tauri::command]
+fn generate_workflow(
+    input: migration::GenerateWorkflowInput,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<migration::WorkflowDsl, String> {
+    migration::generate_workflow(state, input)
+}
+
+#[tauri::command]
+fn run_workflow(
+    input: migration::RunWorkflowInput,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<String, String> {
+    migration::run_workflow(state, input)
+}
+
+#[tauri::command]
+fn get_run_status(
+    run_id: String,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<migration::RunState, String> {
+    migration::get_run_status(state, run_id)
+}
+
+#[tauri::command]
+fn get_startup_repo_path(
+    state: tauri::State<migration::MigrationState>,
+) -> Option<String> {
+    migration::get_startup_repo_path(state)
+}
+
 // ─── App entry point ──────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let pty_store: PtyStore = Arc::new(Mutex::new(HashMap::new()));
+    let startup_repo = std::env::args().nth(1);
+    let migration_state =
+        migration::MigrationState::new(startup_repo).expect("failed to initialize migration state");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(pty_store)
+        .manage(migration_state)
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -182,6 +248,13 @@ pub fn run() {
             write_pty,
             resize_pty,
             close_pty,
+            scan_repository,
+            get_scan_status,
+            search_repository,
+            generate_workflow,
+            run_workflow,
+            get_run_status,
+            get_startup_repo_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
