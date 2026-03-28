@@ -1019,7 +1019,7 @@ pub fn scan_repository(
 
     let shared = state.inner().clone();
     let spawned_job = job_id.clone();
-    tauri::async_runtime::spawn(async move {
+    std::thread::spawn(move || {
         if let Err(err) = execute_scan_job(&shared, &spawned_job, &canonical, &options) {
             let _ = update_scan(
                 &shared,
@@ -1188,7 +1188,7 @@ pub fn run_workflow(
     }
 
     let run_id_for_task = run_id.clone();
-    tauri::async_runtime::spawn(async move {
+    std::thread::spawn(move || {
         let _ = execute_run(&shared, &run_id_for_task, &workflow, repo_path_hint.as_deref());
         if let Ok(run_state) = shared.db.load_run_state(&run_id_for_task) {
             if let Ok(mut cache) = shared.run_cache.lock() {
