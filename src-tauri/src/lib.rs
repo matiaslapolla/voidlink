@@ -6,6 +6,9 @@ use tauri::Emitter;
 use tauri::Manager;
 
 mod migration;
+mod git;
+mod git_agent;
+mod git_review;
 
 #[cfg(target_os = "macos")]
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
@@ -212,12 +215,16 @@ pub fn run() {
     let startup_repo = std::env::args().nth(1);
     let migration_state =
         migration::MigrationState::new(startup_repo).expect("failed to initialize migration state");
+    let git_state = git::GitState::new();
+    let git_agent_state = git_agent::GitAgentState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(pty_store)
         .manage(migration_state)
+        .manage(git_state)
+        .manage(git_agent_state)
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -255,6 +262,39 @@ pub fn run() {
             run_workflow,
             get_run_status,
             get_startup_repo_path,
+            // Phase 1: Git foundation
+            git::git_repo_info,
+            git::git_list_branches,
+            git::git_file_status,
+            git::git_log,
+            git::git_checkout_branch,
+            git::git_stage_files,
+            git::git_stage_all,
+            git::git_commit,
+            git::git_push,
+            // Phase 2: Worktrees
+            git::git_create_worktree,
+            git::git_list_worktrees,
+            git::git_remove_worktree,
+            git::git_worktree_status,
+            // Phase 3: Diffs
+            git::git_diff_working,
+            git::git_diff_branches,
+            git::git_diff_commit,
+            git::git_explain_diff,
+            // Phase 4: AI agent
+            git_agent::git_agent_start,
+            git_agent::git_agent_status,
+            git_agent::git_agent_cancel,
+            git_agent::git_generate_pr_description,
+            git_agent::git_create_pr,
+            // Phase 5: PR review
+            git_review::git_list_prs,
+            git_review::git_get_pr,
+            git_review::git_generate_review_checklist,
+            git_review::git_update_checklist_item,
+            git_review::git_merge_pr,
+            git_review::git_get_audit_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

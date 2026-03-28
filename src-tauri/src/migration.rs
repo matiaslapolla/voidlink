@@ -209,6 +209,14 @@ impl MigrationState {
             startup_repo_path,
         })
     }
+
+    pub fn llm_chat(&self, prompt: &str, json_mode: bool) -> Result<String, String> {
+        self.provider.chat_completion(prompt, json_mode)
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.db.path.clone()
+    }
 }
 
 #[derive(Clone)]

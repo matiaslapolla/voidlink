@@ -13,6 +13,7 @@ import {
   DatabaseZap,
   FilePlus2,
   FolderOpen,
+  GitBranch,
   Play,
   RefreshCcw,
   Search,
@@ -21,6 +22,8 @@ import {
   Workflow,
 } from "lucide-solid";
 import { migrationApi } from "@/api/migration";
+import { GitStatusBar } from "@/components/git/GitStatusBar";
+import { GitTabContent } from "@/components/git/GitTabContent";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
 import { TitleBar } from "@/components/TitleBar";
 import type {
@@ -30,7 +33,7 @@ import type {
   WorkflowDsl,
 } from "@/types/migration";
 
-type WorkArea = "repository" | "contextBuilder" | "workflow";
+type WorkArea = "repository" | "contextBuilder" | "workflow" | "git";
 
 interface WorkspaceState {
   id: string;
@@ -672,6 +675,19 @@ function App() {
                       <Workflow class="inline w-4 h-4 mr-1" />
                       Workflow
                     </button>
+                    <Show when={ws().repoRoot}>
+                      <button
+                        onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "git" }))}
+                        class={`rounded-md px-3 py-1.5 text-sm ${
+                          ws().activeArea === "git"
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-accent/60 hover:bg-accent"
+                        }`}
+                      >
+                        <GitBranch class="inline w-4 h-4 mr-1" />
+                        Git
+                      </button>
+                    </Show>
                   </div>
 
                   <section class="flex-1 overflow-auto p-4">
@@ -797,6 +813,18 @@ function App() {
                       </div>
                     </Show>
 
+                    <Show when={ws().activeArea === "git"}>
+                      <Show when={ws().repoRoot} fallback={<p class="text-sm text-muted-foreground">Select a repository to use Git features.</p>}>
+                        {(repoRoot) => (
+                          <div class="h-full -m-4">
+                            <GitTabContent
+                              repoPath={repoRoot()}
+                            />
+                          </div>
+                        )}
+                      </Show>
+                    </Show>
+
                     <Show when={ws().activeArea === "workflow"}>
                       <div class="space-y-4">
                         <div class="flex flex-wrap gap-2">
@@ -880,6 +908,18 @@ function App() {
                 </>
               );
             }}
+          </Show>
+          {/* Git status bar — shown at the bottom when a repo is open */}
+          <Show when={activeWorkspace()?.repoRoot}>
+            {(repoRoot) => (
+              <GitStatusBar
+                repoPath={repoRoot()}
+                onOpenGit={() => {
+                  const wsId = activeWorkspaceId();
+                  updateWorkspace(wsId, (ws) => ({ ...ws, activeArea: "git" }));
+                }}
+              />
+            )}
           </Show>
         </main>
       </div>

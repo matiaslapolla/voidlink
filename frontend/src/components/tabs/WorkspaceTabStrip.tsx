@@ -1,5 +1,5 @@
 import { createSignal, createEffect, onMount, onCleanup, For, Show } from "solid-js";
-import { X, Plus, FileText, Terminal, Columns2 } from "lucide-solid";
+import { X, Plus, FileText, Terminal, Columns2, GitBranch } from "lucide-solid";
 import type { Tab } from "@/types/tabs";
 import { NewTabPicker } from "./NewTabPicker";
 
@@ -10,7 +10,7 @@ interface WorkspaceTabStripProps {
   focusedPane: "left" | "right";
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
-  onAddTab: (type: "notion" | "terminal") => void;
+  onAddTab: (type: "notion" | "terminal" | "git") => void;
   onRenameTab: (id: string, title: string) => void;
   onSplitTab: (tabId: string) => void;
   onCloseSplit: () => void;
@@ -118,11 +118,14 @@ export function WorkspaceTabStrip(props: WorkspaceTabStripProps) {
                 <Show when={isFocused() && props.splitTabId}>
                   <span class="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" />
                 </Show>
-                <Show
-                  when={tab.type === "notion"}
-                  fallback={<Terminal class="w-3.5 h-3.5 flex-shrink-0" />}
-                >
+                <Show when={tab.type === "notion"}>
                   <FileText class="w-3.5 h-3.5 flex-shrink-0" />
+                </Show>
+                <Show when={tab.type === "terminal"}>
+                  <Terminal class="w-3.5 h-3.5 flex-shrink-0" />
+                </Show>
+                <Show when={tab.type === "git"}>
+                  <GitBranch class="w-3.5 h-3.5 flex-shrink-0" />
                 </Show>
                 <Show
                   when={editingId() === tab.id}
