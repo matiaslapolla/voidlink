@@ -42,11 +42,11 @@ frontend:
 	cd frontend && npm run dev
 
 app:
-	cargo tauri dev
+	WEBKIT_DISABLE_DMABUF_RENDERER=1 cargo tauri dev
 
 # ── Full-stack shortcut ───────────────────────────────────────────────────────
 dev: docker-up
-	cargo tauri dev
+	WEBKIT_DISABLE_DMABUF_RENDERER=1 cargo tauri dev
 
 # ── Testing ──────────────────────────────────────────────────────────────────
 test-frontend:

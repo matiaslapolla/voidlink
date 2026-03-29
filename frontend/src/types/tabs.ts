@@ -21,7 +21,18 @@ export interface TerminalTab {
   cwd: string;
 }
 
-export type Tab = NotionTab | TerminalTab;
+export interface GitTab {
+  id: string;
+  type: "git";
+  title: string;
+  repoPath: string;
+  view: "status" | "diff" | "log" | "branches" | "worktrees" | "prs" | "review" | "agent";
+  diffBase?: string;
+  diffHead?: string;
+  prNumber?: number;
+}
+
+export type Tab = NotionTab | TerminalTab | GitTab;
 
 export interface Workspace {
   id: string;

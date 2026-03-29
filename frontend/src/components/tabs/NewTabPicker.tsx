@@ -1,8 +1,8 @@
 import { onMount, onCleanup } from "solid-js";
-import { FileText, Terminal } from "lucide-solid";
+import { FileText, Terminal, GitBranch } from "lucide-solid";
 
 interface NewTabPickerProps {
-  onSelect: (type: "notion" | "terminal") => void;
+  onSelect: (type: "notion" | "terminal" | "git") => void;
   onClose: () => void;
 }
 
@@ -35,6 +35,13 @@ export function NewTabPicker(props: NewTabPickerProps) {
       >
         <Terminal class="w-4 h-4 text-muted-foreground" />
         New Terminal
+      </button>
+      <button
+        onClick={() => props.onSelect("git")}
+        class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
+      >
+        <GitBranch class="w-4 h-4 text-muted-foreground" />
+        Git Panel
       </button>
     </div>
   );
