@@ -37,6 +37,9 @@ docker-compose.override.yml
 # Worktrees
 .worktrees/
 
+# Claude Code
+.claude/settings.local.json
+
 # Test / Coverage
 coverage/
 htmlcov/

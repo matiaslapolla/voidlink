@@ -25,7 +25,6 @@ import { migrationApi } from "@/api/migration";
 import { GitStatusBar } from "@/components/git/GitStatusBar";
 import { GitTabContent } from "@/components/git/GitTabContent";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
-import { TitleBar } from "@/components/TitleBar";
 import type {
   RunState,
   ScanProgress,
@@ -511,9 +510,8 @@ function App() {
   });
 
   return (
-    <div class="flex flex-col h-screen bg-background text-foreground overflow-hidden">
-      <TitleBar />
-
+    <div class="relative flex flex-col h-screen bg-background text-foreground overflow-hidden">
+      <div data-tauri-drag-region class="absolute top-0 left-0 right-0 h-3 z-50" />
       <div class="flex flex-1 overflow-hidden">
         <aside class="w-64 border-r border-border bg-sidebar flex flex-col">
           <div class="px-3 py-3 border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
