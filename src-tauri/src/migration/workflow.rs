@@ -153,7 +153,7 @@ fn execute_step(
             ))
         }
         "open_file_snippet" => {
-            let summary = state.provider.structured_generate(&format!(
+            let summary = state.get_provider().structured_generate(&format!(
                 "Objective: {}. Step intent: {}",
                 workflow.workflow.objective, step.intent
             ));
@@ -182,7 +182,7 @@ fn execute_step(
                         .collect::<Vec<_>>()
                         .join("\n")
                 },
-                state.provider.generate(&format!(
+                state.get_provider().generate(&format!(
                     "Create concise execution notes for step {}",
                     step.id
                 ))

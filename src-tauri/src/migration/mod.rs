@@ -187,7 +187,7 @@ pub struct MigrationState {
     pub(crate) db: SqliteStore,
     pub(crate) scan_jobs: Arc<Mutex<HashMap<String, ScanProgress>>>,
     pub(crate) run_cache: Arc<Mutex<HashMap<String, RunState>>>,
-    pub(crate) provider: Arc<ProviderAdapter>,
+    pub(crate) provider: Arc<Mutex<Arc<ProviderAdapter>>>,
     pub startup_repo_path: Option<String>,
 }
 
@@ -199,18 +199,32 @@ impl MigrationState {
             db,
             scan_jobs: Arc::new(Mutex::new(HashMap::new())),
             run_cache: Arc::new(Mutex::new(HashMap::new())),
-            provider: Arc::new(ProviderAdapter::new()),
+            provider: Arc::new(Mutex::new(Arc::new(ProviderAdapter::new()))),
             startup_repo_path,
         })
     }
 
+    /// Returns a snapshot of the current provider adapter.
+    pub(crate) fn get_provider(&self) -> Arc<ProviderAdapter> {
+        self.provider
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| Arc::new(ProviderAdapter::new()))
+    }
+
     pub fn llm_chat(&self, prompt: &str, json_mode: bool) -> Result<String, String> {
-        self.provider.chat_completion(prompt, json_mode)
+        self.get_provider().chat_completion(prompt, json_mode)
     }
 
     pub fn db_path(&self) -> std::path::PathBuf {
         self.db.path.clone()
     }
+}
+
+pub fn reload_provider(state: tauri::State<'_, MigrationState>) -> Result<(), String> {
+    let new_provider = Arc::new(ProviderAdapter::new());
+    *state.provider.lock().map_err(|e| e.to_string())? = new_provider;
+    Ok(())
 }
 
 pub(crate) fn update_scan<F>(state: &MigrationState, job_id: &str, updater: F) -> Result<(), String>

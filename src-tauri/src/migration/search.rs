@@ -35,7 +35,7 @@ pub(crate) fn perform_search(
     let mut rows = stmt.query(params![repo_id]).map_err(|e| e.to_string())?;
 
     let query_tokens = tokenize(&query.text);
-    let (embedding_model_id, query_embedding) = state.provider.embed(&query.text);
+    let (embedding_model_id, query_embedding) = state.get_provider().embed(&query.text);
     let max_tokens = query.max_tokens.unwrap_or(140);
     let limit = options.and_then(|opts| opts.limit).unwrap_or(25);
     let path_filter = query.path.as_ref().map(|value| value.to_lowercase());
