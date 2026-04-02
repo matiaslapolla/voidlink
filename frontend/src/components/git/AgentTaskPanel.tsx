@@ -1,14 +1,15 @@
 import {
   createSignal,
   createEffect,
-  For,
   Show,
   onCleanup,
 } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
-import { Play, X, ExternalLink, GitBranch, CheckCircle, AlertCircle, Loader } from "lucide-solid";
+import { X, ExternalLink, GitBranch, CheckCircle, AlertCircle, Loader } from "lucide-solid";
 import { gitAgentApi } from "@/api/git-agent";
 import type { AgentEvent, AgentTaskInput, AgentTaskState } from "@/types/git";
+import { AgentConfigForm } from "./AgentConfigForm";
+import { AgentEventLog } from "./AgentEventLog";
 
 interface AgentTaskPanelProps {
   repoPath: string;
@@ -127,66 +128,19 @@ export function AgentTaskPanel(props: AgentTaskPanelProps) {
   return (
     <div class="space-y-4">
       <Show when={!taskId()}>
-        {/* Config form */}
-        <div class="space-y-3">
-          <div>
-            <label class="block text-sm font-medium mb-1">Objective</label>
-            <textarea
-              value={objective()}
-              onInput={(e) => setObjective(e.currentTarget.value)}
-              rows={3}
-              placeholder="Describe what the agent should implement..."
-              class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none resize-none"
-            />
-          </div>
-          <div>
-            <label class="block text-sm font-medium mb-1">
-              Constraints <span class="font-normal text-muted-foreground">(one per line)</span>
-            </label>
-            <textarea
-              value={constraints()}
-              onInput={(e) => setConstraints(e.currentTarget.value)}
-              rows={2}
-              placeholder="Preserve existing API\nNo external dependencies"
-              class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none resize-none"
-            />
-          </div>
-          <div class="flex flex-wrap gap-4">
-            <div class="flex-1 min-w-32">
-              <label class="block text-sm font-medium mb-1">Base branch</label>
-              <input
-                value={baseBranch()}
-                onInput={(e) => setBaseBranch(e.currentTarget.value)}
-                placeholder="main"
-                class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
-              />
-            </div>
-            <div class="flex items-end pb-2">
-              <label class="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoPr()}
-                  onChange={(e) => setAutoPr(e.currentTarget.checked)}
-                  class="rounded"
-                />
-                Auto-open PR
-              </label>
-            </div>
-          </div>
-
-          <Show when={error()}>
-            <p class="text-xs text-destructive">{error()}</p>
-          </Show>
-
-          <button
-            onClick={() => void handleStart()}
-            disabled={starting() || !objective().trim()}
-            class="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm disabled:opacity-50"
-          >
-            <Play class="w-4 h-4" />
-            {starting() ? "Starting…" : "Run Agent"}
-          </button>
-        </div>
+        <AgentConfigForm
+          objective={objective()}
+          onObjective={setObjective}
+          constraints={constraints()}
+          onConstraints={setConstraints}
+          baseBranch={baseBranch()}
+          onBaseBranch={setBaseBranch}
+          autoPr={autoPr()}
+          onAutoPr={setAutoPr}
+          starting={starting()}
+          error={error()}
+          onStart={() => void handleStart()}
+        />
       </Show>
 
       <Show when={taskState()}>
@@ -261,28 +215,7 @@ export function AgentTaskPanel(props: AgentTaskPanelProps) {
             </Show>
 
             {/* Event log */}
-            <div class="rounded-md border border-border bg-background/40 max-h-64 overflow-y-auto p-2 space-y-0.5 font-mono">
-              <For each={state().events}>
-                {(ev) => (
-                  <div class="flex gap-2 text-xs">
-                    <span class="text-muted-foreground/60 flex-shrink-0 tabular-nums">
-                      {new Date(ev.createdAt).toLocaleTimeString()}
-                    </span>
-                    <span
-                      class={
-                        ev.level === "error"
-                          ? "text-destructive"
-                          : ev.level === "warn"
-                            ? "text-amber-400"
-                            : "text-foreground"
-                      }
-                    >
-                      {ev.message}
-                    </span>
-                  </div>
-                )}
-              </For>
-            </div>
+            <AgentEventLog events={state().events} />
           </div>
         )}
       </Show>

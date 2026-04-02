@@ -26,11 +26,6 @@ type PtyStore = Arc<Mutex<HashMap<String, PtySession>>>;
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! Welcome to VoidLink.", name)
-}
-
-#[tauri::command]
 fn get_home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
 }
@@ -249,7 +244,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             get_home_dir,
             create_pty,
             write_pty,
@@ -303,16 +297,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn greet_returns_message() {
-        assert_eq!(greet("World"), "Hello, World! Welcome to VoidLink.");
-    }
-
-    #[test]
-    fn greet_empty_name() {
-        assert_eq!(greet(""), "Hello, ! Welcome to VoidLink.");
-    }
 
     #[test]
     fn get_home_dir_returns_string() {
