@@ -211,7 +211,8 @@ pub(crate) fn execute_scan_job(
     rebuild_repo_edges(&tx, &repo_id, Path::new(repo_path))?;
 
     tx.commit().map_err(|e| e.to_string())?;
-    persist_chunk_embeddings(&state.db, &state.provider, &pending_chunk_embeddings)?;
+    let provider = state.get_provider();
+    persist_chunk_embeddings(&state.db, &provider, &pending_chunk_embeddings)?;
     cleanup_orphan_chunk_embeddings(&state.db)?;
 
     super::update_scan(state, job_id, |job| {

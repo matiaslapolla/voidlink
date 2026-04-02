@@ -2,16 +2,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
-#[cfg(target_os = "macos")]
-use tauri::Manager;
-
 mod migration;
 mod git;
 mod git_agent;
 mod git_review;
-
-#[cfg(target_os = "macos")]
-use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+mod settings;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
@@ -202,6 +197,11 @@ fn get_startup_repo_path(
     migration::get_startup_repo_path(state)
 }
 
+#[tauri::command]
+fn reload_provider(state: tauri::State<migration::MigrationState>) -> Result<(), String> {
+    migration::reload_provider(state)
+}
+
 // ─── App entry point ──────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -229,22 +229,16 @@ pub fn run() {
                 )?;
             }
 
-            #[cfg(target_os = "macos")]
-            {
-                let window = app.get_webview_window("main").unwrap();
-                apply_vibrancy(
-                    &window,
-                    NSVisualEffectMaterial::HudWindow,
-                    Some(NSVisualEffectState::Active),
-                    None,
-                )
-                .expect("apply_vibrancy failed");
-            }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_home_dir,
+            // BYOK settings
+            settings::save_api_key,
+            settings::load_api_key,
+            settings::save_provider_settings,
+            settings::load_provider_settings,
+            reload_provider,
             create_pty,
             write_pty,
             resize_pty,

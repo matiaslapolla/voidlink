@@ -211,17 +211,6 @@ function App() {
   });
 
   onMount(() => {
-    const opacity = localStorage.getItem("voidlink-opacity") ?? "0.85";
-    document.documentElement.style.setProperty("--bg-opacity", opacity);
-
-    const vibrancy = localStorage.getItem("voidlink-vibrancy") ?? "hudWindow";
-    const win = getCurrentWindow();
-    if (vibrancy === "off") {
-      win.clearEffects().catch(() => {});
-    } else {
-      win.setEffects({ effects: [vibrancy as never], state: "active" as never }).catch(() => {});
-    }
-
     migrationApi
       .getStartupRepoPath()
       .then((repoPath) => {

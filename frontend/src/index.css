@@ -9,7 +9,6 @@
   line-height: 1.5;
   color-scheme: dark;
   --window-radius: 16px;
-  --bg-opacity: 0.85;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -121,22 +120,12 @@ body,
   overflow: hidden;
 }
 
-/* These override Tailwind's generated .bg-background / .bg-sidebar utilities.
-   !important is intentional here — transparency must always apply. */
 .bg-background {
-  background-color: color-mix(
-    in oklch,
-    var(--background) calc(var(--bg-opacity, 1) * 100%),
-    transparent
-  ) !important;
+  background-color: var(--background) !important;
 }
 
 .bg-sidebar {
-  background-color: color-mix(
-    in oklch,
-    var(--sidebar) calc(var(--bg-opacity, 1) * 100%),
-    transparent
-  ) !important;
+  background-color: var(--sidebar) !important;
 }
 
 /* Thin modern scrollbar — hidden until hover */
