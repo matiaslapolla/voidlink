@@ -63,25 +63,55 @@ voidlink/
 │   ├── src/
 │   │   ├── main.rs         # Punto de entrada Tauri
 │   │   ├── lib.rs          # Registro de comandos, estado global
-│   │   ├── migration.rs    # Escaneo de repos, búsqueda, workflows
-│   │   ├── git.rs          # Operaciones git (fases 1-3)
-│   │   ├── git_agent.rs    # Agente autónomo (fase 4)
-│   │   └── git_review.rs   # Review y merge de PRs (fase 5)
+│   │   ├── settings.rs     # BYOK: guardar/cargar API keys y provider settings
+│   │   ├── migration/      # Escaneo de repos, búsqueda, workflows
+│   │   │   ├── mod.rs
+│   │   │   ├── chunks.rs   # Chunking de código y embeddings
+│   │   │   ├── db.rs       # Capa SQLite local
+│   │   │   ├── graph.rs    # Análisis de grafo de dependencias
+│   │   │   ├── path_utils.rs
+│   │   │   ├── provider.rs # Adaptador multi-proveedor LLM
+│   │   │   ├── scan.rs     # Escaneo del árbol de archivos
+│   │   │   ├── search.rs   # Búsqueda híbrida (lexical + semántica)
+│   │   │   └── workflow.rs # DSL y ejecución de workflows
+│   │   ├── git/            # Operaciones git (fases 1-3)
+│   │   │   ├── mod.rs
+│   │   │   ├── branch.rs
+│   │   │   ├── diff.rs
+│   │   │   ├── push.rs
+│   │   │   ├── repo.rs
+│   │   │   ├── staging.rs
+│   │   │   ├── status.rs
+│   │   │   └── worktree.rs
+│   │   ├── git_agent/      # Agente autónomo (fase 4)
+│   │   │   ├── mod.rs
+│   │   │   ├── github.rs
+│   │   │   └── pipeline.rs
+│   │   └── git_review/     # Review y merge de PRs (fase 5)
+│   │       ├── mod.rs
+│   │       ├── audit.rs
+│   │       ├── checklist.rs
+│   │       ├── db.rs
+│   │       ├── github.rs
+│   │       └── merge.rs
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 │
-├── frontend/               # SolidJS app
-│   └── src/
-│       ├── App.tsx         # Componente raíz, orquestación principal
-│       ├── types/          # Interfaces TypeScript (espejan structs Rust)
-│       ├── api/            # Wrappers de IPC (invoke → comando Rust)
-│       └── components/
-│           ├── git/        # Suite Git (13 componentes)
-│           ├── editor/     # Editor Tiptap
-│           ├── terminal/   # TerminalPane + xterm
-│           └── tabs/       # Sistema de pestañas
-│
-└── backend/                # FastAPI opcional (páginas Notion + Postgres)
+└── frontend/               # SolidJS app
+    └── src/
+        ├── App.tsx         # Componente raíz, orquestación principal
+        ├── types/          # Interfaces TypeScript (espejan structs Rust)
+        ├── api/            # Wrappers de IPC (invoke → comando Rust)
+        └── components/
+            ├── git/        # Suite Git (fase 1-5)
+            ├── context/    # Context Builder
+            ├── workflow/   # Workflow Tab
+            ├── repository/ # Repository Scanner
+            ├── settings/   # Settings Panel (BYOK)
+            ├── editor/     # Editor Tiptap (no expuesto en UI principal)
+            ├── sidebar/    # Sidebar de navegación
+            ├── workspace/  # Workspaces
+            └── TitleBar.tsx
 ```
 
 ---
@@ -186,9 +216,9 @@ struct PtySession {
 
 ---
 
-### `migration.rs` — Motor de análisis e IA
+### `migration/` — Motor de análisis e IA
 
-El módulo más complejo. Gestiona:
+El módulo más complejo, dividido en submódulos por responsabilidad. Gestiona:
 
 - **Escaneo de repos**: caminar el árbol de directorios con `ignore` (respeta `.gitignore`), chunking de código, cómputo de embeddings.
 - **Búsqueda híbrida**: lexical (TF-IDF manual) + semántico (similitud de embeddings).
@@ -222,7 +252,7 @@ Este patrón — exponer solo lo necesario con métodos específicos — es pref
 
 ---
 
-### `git.rs` — Operaciones Git (Fases 1–3)
+### `git/` — Operaciones Git (Fases 1–3)
 
 Usa la crate `git2`, que es un binding de `libgit2` (la librería C de Git). Se compila con `vendored-libgit2` para no depender de la instalación del sistema.
 
@@ -253,7 +283,7 @@ Solo cachea paths resueltos, nunca un `Repository`. Esto es importante porque `g
 
 ---
 
-### `git_agent.rs` — Agente autónomo (Fase 4)
+### `git_agent/` — Agente autónomo (Fase 4)
 
 Implementa un pipeline de múltiples pasos que corre en un thread separado:
 
@@ -278,7 +308,7 @@ app_handle.emit(&format!("git-agent-event:{}", task_id), event).ok();
 
 ---
 
-### `git_review.rs` — PR Review y Merge (Fase 5)
+### `git_review/` — PR Review y Merge (Fase 5)
 
 Gestiona la integración con la GitHub REST API y el log de auditoría en SQLite.
 
@@ -364,10 +394,11 @@ Cuando `props.repoPath` cambia, el resource automáticamente vuelve a llamar a `
 Cada módulo Rust tiene un archivo de API correspondiente en TypeScript:
 
 ```
-migration.rs  →  frontend/src/api/migration.ts
-git.rs        →  frontend/src/api/git.ts
-git_agent.rs  →  frontend/src/api/git-agent.ts
-git_review.rs →  frontend/src/api/git-review.ts
+migration/  →  frontend/src/api/migration.ts
+git/        →  frontend/src/api/git.ts
+git_agent/  →  frontend/src/api/git-agent.ts
+git_review/ →  frontend/src/api/git-review.ts
+settings.rs →  frontend/src/api/settings.ts
 ```
 
 Cada archivo exporta un objeto con métodos que llaman a `invoke`:
@@ -651,30 +682,41 @@ El `RefCell` permite que las tres closures compartan el mismo `Vec<FileDiff>` mu
 
 ### Proveedores LLM
 
-El `ProviderAdapter` en `migration.rs` soporta múltiples backends de LLM configurables via variables de entorno:
+El `ProviderAdapter` en `migration/provider.rs` soporta 9 backends. La selección sigue este orden de prioridad:
 
-| Variable | Proveedor | Modelo por defecto |
-|----------|-----------|-------------------|
-| `VOIDLINK_LLM_PROVIDER=openai` | OpenAI | `gpt-4o-mini` |
-| `VOIDLINK_LLM_PROVIDER=groq` | Groq | `llama-3.3-70b-versatile` |
-| `VOIDLINK_LLM_PROVIDER=openrouter` | OpenRouter | `openai/gpt-4.1-mini` |
-| `VOIDLINK_LLM_PROVIDER=ollama` | Ollama (local) | `llama3.2` |
+1. **Settings guardados** — `~/.voidlink/provider_settings.json` + API key del OS keychain
+2. **Variable de entorno** — `VOIDLINK_LLM_PROVIDER=<nombre>`
+3. **Auto-detección** — busca API keys de cada proveedor en el entorno
 
-Todos usan la misma interfaz:
+| Proveedor | Modelo por defecto |
+|-----------|-------------------|
+| `openai` | `gpt-4.1-mini` |
+| `anthropic` | `claude-sonnet-4-6` |
+| `gemini` | `gemini-2.5-flash` |
+| `groq` | `llama-3.3-70b-versatile` |
+| `fireworks` | `llama-v3p3-70b-instruct` |
+| `openrouter` | `openai/gpt-4.1-mini` |
+| `ollama` | `llama3.2` |
+| `kimi` / `moonshot` | `kimi-k2.5` |
+| `minimax` | `MiniMax-M2` |
+
+Las API keys se almacenan en el keychain del sistema operativo (crate `keyring`), bajo el servicio `"voidlink"`. El módulo `settings.rs` expone los comandos Tauri `save_api_key`, `load_api_key`, `save_provider_settings`, y `load_provider_settings` para que el panel de configuración del frontend pueda leer y escribir estas credenciales sin exponerlas como variables de entorno.
+
+Todos los proveedores usan la misma interfaz:
 
 ```rust
 impl ProviderAdapter {
     pub fn chat_completion(&self, prompt: &str, json_mode: bool) -> Result<String, String> {
-        match &self.provider {
-            Provider::OpenAi => self.call_openai(prompt, json_mode),
-            Provider::Groq => self.call_groq(prompt, json_mode),
-            // ...
+        // Anthropic usa su propio formato de request; el resto usa OpenAI-compatible
+        if self.uses_anthropic_format {
+            return self.anthropic_chat_completion(prompt, json_mode);
         }
+        self.openai_chat_completion(prompt, json_mode)
     }
 }
 ```
 
-`json_mode: true` activa el modo de respuesta JSON estructurado (soportado por OpenAI y Groq), que garantiza que la respuesta sea JSON válido sin texto adicional.
+`json_mode: true` activa el modo de respuesta JSON estructurado, que garantiza que la respuesta sea JSON válido sin texto adicional.
 
 ### WorkflowDsl — Pipeline de tareas
 
@@ -917,17 +959,23 @@ Si un tipo no es `Send` (como `Rc<T>` o `RefCell<T>`), no puede usarse en estado
 
 ## Apéndice: Variables de entorno
 
+Las API keys se configuran preferentemente desde el panel de Settings (se guardan en el OS keychain). Las variables de entorno funcionan como fallback.
+
 ```bash
-# LLM
-VOIDLINK_LLM_PROVIDER=openai          # openai | groq | openrouter | ollama
+# LLM — selección de proveedor (fallback si no hay settings guardados)
+VOIDLINK_LLM_PROVIDER=openai   # openai|anthropic|gemini|groq|fireworks|openrouter|ollama|kimi|minimax
 VOIDLINK_LLM_TIMEOUT_SECS=30
+
+# API keys de cada proveedor (fallback si no hay key en keychain)
 OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
 GROQ_API_KEY=gsk_...
+FIREWORKS_API_KEY=...
 OPENROUTER_API_KEY=sk-or-...
+KIMI_API_KEY=...
+MINIMAX_API_KEY=...
 
 # GitHub (para PRs y agente)
 GITHUB_TOKEN=ghp_...
-
-# Backend opcional
-DATABASE_URL=postgresql://user:pass@localhost:5432/voidlink
 ```

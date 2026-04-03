@@ -1,6 +1,6 @@
 # Guía de Testing — VoidLink
 
-Documento de pruebas manual para validar el estado actual de la aplicación. Cubre todas las funcionalidades implementadas hasta la fecha, incluyendo la integración Git completa (Fases 1–5).
+Documento de pruebas manual para validar el estado actual de la aplicación. Cubre todas las funcionalidades activamente expuestas en la UI, incluyendo la integración Git completa (Fases 1–5) y el sistema BYOK de configuración de proveedores.
 
 ---
 
@@ -11,8 +11,8 @@ Documento de pruebas manual para validar el estado actual de la aplicación. Cub
 | Rust / Cargo | `cargo --version` ≥ 1.78 |
 | Node.js | `node --version` ≥ 20 |
 | `git2` / libgit2 | incluido como vendored en Cargo.toml |
-| Variable de entorno `GITHUB_TOKEN` | necesaria para Fases 4 y 5 |
-| Variable de entorno `OPENAI_API_KEY` (u otro proveedor LLM) | necesaria para funciones de IA |
+| `GITHUB_TOKEN` | necesario para Fases 4 y 5 (PRs y agente) |
+| Proveedor LLM | configurar desde Settings o via env var (ver sección 10) |
 | Repo git local de prueba | cualquier repo con al menos 2 ramas y commits |
 
 ### Iniciar la aplicación
@@ -36,9 +36,8 @@ cargo tauri dev
 2. Esperar a que la ventana se muestre.
 
 **Resultado esperado:**
-- La ventana aparece con el título "Voidlink".
-- Fondo transparente/vibrancy (solo macOS).
-- Sidebar izquierdo con al menos un workspace por defecto.
+- La ventana aparece con la barra de título personalizada de VoidLink.
+- Sidebar izquierdo visible con al menos un workspace por defecto.
 - Sin errores en la consola del navegador (F12).
 
 ---
@@ -57,95 +56,7 @@ cargo tauri dev
 
 ---
 
-## 2. Editor de documentos (Notion-style)
-
-### TC-010 — Crear y editar documento
-
-**Pasos:**
-1. Abrir o crear una pestaña de tipo "Document".
-2. Escribir texto.
-3. Aplicar formato: **negrita** (Ctrl+B), _itálica_ (Ctrl+I), `código inline`.
-4. Crear una lista con viñetas (usar `/` → "Bullet List").
-
-**Resultado esperado:**
-- El texto se muestra con el formato correcto.
-- El menú `/` aparece al escribir la barra.
-
----
-
-### TC-011 — Menú de comandos `/`
-
-**Pasos:**
-1. En el editor, escribir `/`.
-
-**Resultado esperado:**
-- Aparece el menú contextual con opciones: Heading 1/2/3, Bullet List, Numbered List, Code Block, Blockquote.
-- Al seleccionar una opción, se inserta el bloque correspondiente.
-
----
-
-### TC-012 — Renombrar pestaña de documento
-
-**Pasos:**
-1. Hacer doble clic en el título de una pestaña de documento.
-2. Escribir un nuevo nombre y presionar Enter.
-
-**Resultado esperado:**
-- La pestaña muestra el nuevo nombre.
-
----
-
-## 3. Terminal
-
-### TC-020 — Abrir terminal
-
-**Pasos:**
-1. Hacer clic en el botón `+` de la barra de pestañas.
-2. Seleccionar "New Terminal".
-
-**Resultado esperado:**
-- Se abre una pestaña con un terminal funcional.
-- El prompt del shell del usuario es visible.
-
----
-
-### TC-021 — Ejecutar comandos en terminal
-
-**Pasos:**
-1. En el terminal, escribir `echo "hola voidlink"` y presionar Enter.
-
-**Resultado esperado:**
-- Se muestra `hola voidlink` en la salida.
-
----
-
-### TC-022 — Múltiples terminales
-
-**Pasos:**
-1. Abrir dos terminales en pestañas distintas.
-2. Ejecutar `pwd` en cada una.
-
-**Resultado esperado:**
-- Cada terminal mantiene su propia sesión PTY independiente.
-- Las sesiones no se mezclan al cambiar de pestaña.
-
----
-
-### TC-023 — Vista dividida (Split View)
-
-**Pasos:**
-1. Tener al menos 2 pestañas abiertas.
-2. Hacer clic en el ícono de columnas (`⊞`) en la barra de pestañas, o usar el atajo `Ctrl+\`.
-3. Observar las dos vistas lado a lado.
-
-**Resultado esperado:**
-- La pestaña activa aparece a la izquierda, la segunda a la derecha.
-- El indicador de punto (•) muestra qué panel está enfocado.
-- Hacer clic en cada panel cambia el foco.
-
----
-
-## 4. Repository Scanner
+## 2. Repository Scanner
 
 ### TC-030 — Abrir repositorio
 
@@ -185,11 +96,11 @@ cargo tauri dev
 
 ---
 
-### TC-033 — Agregar contexto y generar workflow
+### TC-033 — Context Builder: agregar contexto y generar workflow
 
 **Pasos:**
 1. Desde los resultados de búsqueda, hacer clic en "Add to context" en 2–3 resultados.
-2. Ir a la pestaña "Context Builder".
+2. Ir a la pestaña/área "Context Builder".
 3. Escribir un objetivo (p.ej. "Refactorizar el módulo de autenticación para usar JWT").
 4. Hacer clic en "Generate Workflow".
 
@@ -199,7 +110,20 @@ cargo tauri dev
 
 ---
 
-## 5. Git — Fase 1: Operaciones base
+### TC-034 — Workflow Tab: ejecutar un workflow
+
+**Pasos:**
+1. Con un workflow generado (TC-033), ir a la pestaña "Workflow".
+2. Iniciar la ejecución.
+
+**Resultado esperado:**
+- Los pasos se ejecutan en orden respetando `depends_on`.
+- El progreso de cada paso es visible en tiempo real.
+- Al completar, el estado final es visible.
+
+---
+
+## 3. Git — Fase 1: Operaciones base
 
 Para estas pruebas, configurar el workspace apuntando a un repositorio git con al menos 2 ramas.
 
@@ -277,7 +201,7 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 
 ---
 
-## 6. Git — Fase 2: Worktrees
+## 4. Git — Fase 2: Worktrees
 
 ### TC-050 — Crear worktree
 
@@ -292,18 +216,7 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 
 ---
 
-### TC-051 — Abrir terminal en worktree
-
-**Pasos:**
-1. En la lista de worktrees, hacer clic en el ícono de terminal junto al worktree creado en TC-050.
-
-**Resultado esperado:**
-- Se abre una nueva pestaña de terminal.
-- El directorio de trabajo (`pwd`) apunta al path del worktree.
-
----
-
-### TC-052 — Eliminar worktree
+### TC-051 — Eliminar worktree
 
 **Pasos:**
 1. Con el worktree creado en TC-050, hacer clic en el ícono de eliminar.
@@ -315,7 +228,7 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 
 ---
 
-## 7. Git — Fase 3: Diff & Review
+## 5. Git — Fase 3: Diff & Review
 
 ### TC-060 — Ver diff del árbol de trabajo
 
@@ -344,7 +257,7 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 
 ### TC-062 — Explicación de diff con IA
 
-> Requiere `OPENAI_API_KEY` (u otro proveedor LLM configurado).
+> Requiere un proveedor LLM configurado (ver sección 10).
 
 **Pasos:**
 1. Con un diff visible (TC-060 o TC-061), hacer clic en "Explain" sobre un archivo.
@@ -355,7 +268,7 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 
 ---
 
-## 8. Git — Fase 4: AI Agent
+## 6. Git — Fase 4: AI Agent
 
 > Requiere `GITHUB_TOKEN` y un proveedor LLM configurado.
 
@@ -400,7 +313,7 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 
 ---
 
-## 9. Git — Fase 5: PR Dashboard & Merge
+## 7. Git — Fase 5: PR Dashboard & Merge
 
 > Requiere `GITHUB_TOKEN` y un repo conectado a GitHub con PRs abiertos.
 
@@ -466,7 +379,23 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 
 ---
 
-## 10. Configuración / Settings
+## 8. Barra de título personalizada
+
+### TC-100 — Controles de ventana
+
+**Pasos:**
+1. Abrir la app.
+2. Usar los botones de minimizar, maximizar y cerrar en la barra de título.
+
+**Resultado esperado:**
+- Cada botón realiza la acción correspondiente.
+- La barra arrastra la ventana al hacer clic y arrastrar.
+
+---
+
+## 9. Configuración / Settings (BYOK)
+
+El panel de Settings gestiona la selección de proveedor LLM y las API keys, almacenadas en el keychain del sistema operativo.
 
 ### TC-090 — Abrir panel de configuración
 
@@ -474,28 +403,43 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 1. Hacer clic en el ícono de ajustes (⚙️) en la interfaz.
 
 **Resultado esperado:**
-- Se abre el panel de configuración.
+- Se abre el panel de configuración con la lista de proveedores disponibles.
 
 ---
 
-### TC-091 — Cambiar opacidad del fondo (macOS)
+### TC-091 — Guardar API key de un proveedor
 
 **Pasos:**
-1. En Settings, mover el slider de "Background opacity".
+1. En Settings, seleccionar un proveedor (p.ej. OpenAI).
+2. Ingresar la API key.
+3. Hacer clic en "Save".
 
 **Resultado esperado:**
-- La transparencia del fondo de la ventana cambia en tiempo real (solo macOS con soporte vibrancy).
+- La key se guarda en el OS keychain (sin aparecer en texto plano tras guardar).
+- Al reabrir Settings, el campo muestra que hay una key guardada.
 
 ---
 
-### TC-092 — Cambiar efecto vibrancy (macOS)
+### TC-092 — Cambiar proveedor activo
 
 **Pasos:**
-1. En Settings, seleccionar un efecto diferente (HUD, Sidebar, Window, Off).
+1. Con al menos una key guardada, seleccionar un proveedor diferente como activo.
+2. Guardar.
 
 **Resultado esperado:**
-- El efecto de fondo cambia al seleccionar la opción.
-- Al reiniciar la app, el efecto persiste.
+- Al usar cualquier función de IA, se usa el proveedor seleccionado.
+- Al reiniciar la app, el proveedor activo persiste.
+
+---
+
+### TC-093 — Reload provider en caliente
+
+**Pasos:**
+1. Cambiar el proveedor en Settings.
+2. Sin reiniciar la app, usar una función de IA (p.ej. TC-062).
+
+**Resultado esperado:**
+- La función de IA usa el nuevo proveedor sin necesidad de reiniciar.
 
 ---
 
@@ -514,14 +458,15 @@ Para estas pruebas, configurar el workspace apuntando a un repositorio git con a
 ## Checklist rápido de smoke test
 
 ```
-[ ] La app abre sin errores
+[ ] La app abre sin errores y la barra de título es visible
 [ ] Se puede crear un workspace y persiste al reiniciar
-[ ] Terminal abre y ejecuta comandos
-[ ] Split view funciona con 2 pestañas
-[ ] Editor de documentos formatea texto correctamente
+[ ] Repository Scanner escanea un repo sin errores
+[ ] Búsqueda devuelve resultados relevantes
+[ ] Context Builder genera un workflow
 [ ] GitStatusBar muestra la rama correcta
 [ ] Se puede listar y cambiar ramas
 [ ] Se puede ver el diff del árbol de trabajo
 [ ] Se puede crear y eliminar un worktree
 [ ] PRs se listan si GITHUB_TOKEN está configurado
+[ ] Settings guarda una API key y el proveedor persiste al reiniciar
 ```
