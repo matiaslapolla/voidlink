@@ -1,22 +1,33 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use dashmap::DashMap;
 use tauri::Emitter;
+use tauri::ipc::{Channel, InvokeResponseBody};
 
 mod migration;
 mod git;
 mod git_agent;
 mod git_review;
 mod settings;
+mod agent_runner;
+mod shell_integration;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
-struct PtySession {
-    master: Box<dyn portable_pty::MasterPty + Send>,
-    writer: Box<dyn std::io::Write + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+pub(crate) struct PtySession {
+    pub master: Box<dyn portable_pty::MasterPty + Send>,
+    pub writer: Box<dyn std::io::Write + Send>,
+    pub child: Box<dyn portable_pty::Child + Send + Sync>,
+    pub shutdown: Arc<AtomicBool>,
 }
 
-type PtyStore = Arc<Mutex<HashMap<String, PtySession>>>;
+pub(crate) type PtyStore = Arc<Mutex<HashMap<String, PtySession>>>;
+
+/// Per-PTY output channels. When a frontend terminal subscribes via `pty_subscribe`,
+/// the reader thread sends raw bytes through the channel (bypassing JSON serialisation)
+/// instead of emitting events.
+pub(crate) type PtyChannels = Arc<DashMap<String, Channel>>;
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -26,118 +37,190 @@ fn get_home_dir() -> String {
 }
 
 #[tauri::command]
-fn create_pty(
+async fn create_pty(
     cwd: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
     app_handle: tauri::AppHandle,
-    state: tauri::State<PtyStore>,
+    state: tauri::State<'_, PtyStore>,
+    channels: tauri::State<'_, PtyChannels>,
 ) -> Result<String, String> {
-    use portable_pty::{native_pty_system, PtySize};
+    let store = state.inner().clone();
+    let chans = channels.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use portable_pty::{native_pty_system, PtySize};
 
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())?;
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: rows.unwrap_or(24),
+                cols: cols.unwrap_or(80),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
-    let mut cmd = portable_pty::CommandBuilder::new(&shell);
-    cmd.cwd(&cwd);
+        let mut cmd = portable_pty::CommandBuilder::new(&shell);
+        cmd.cwd(&cwd);
 
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| e.to_string())?;
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| e.to_string())?;
 
-    let session_id = uuid::Uuid::new_v4().to_string();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let shutdown = Arc::new(AtomicBool::new(false));
 
-    // Reader thread: emit output events
-    let reader_session_id = session_id.clone();
-    let reader_app_handle = app_handle.clone();
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+        // Reader thread: send output via channel (raw binary) or fall back to events
+        let reader_session_id = session_id.clone();
+        let reader_app_handle = app_handle.clone();
+        let reader_channels = chans.clone();
+        let reader_shutdown = shutdown.clone();
+        let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            match std::io::Read::read(&mut reader, &mut buf) {
-                Ok(0) | Err(_) => {
-                    let _ = reader_app_handle
-                        .emit(&format!("pty-exit:{}", reader_session_id), ());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                if reader_shutdown.load(Ordering::Relaxed) {
                     break;
                 }
-                Ok(n) => {
-                    let chunk = buf[..n].to_vec();
-                    let event_name = format!("pty-output:{}", reader_session_id);
-                    let _ = reader_app_handle.emit(&event_name, chunk);
+                match std::io::Read::read(&mut reader, &mut buf) {
+                    Ok(0) | Err(_) => {
+                        let _ = reader_app_handle
+                            .emit(&format!("pty-exit:{}", reader_session_id), ());
+                        break;
+                    }
+                    Ok(n) => {
+                        let chunk = buf[..n].to_vec();
+                        if let Some(ch) = reader_channels.get(&reader_session_id) {
+                            if let Err(e) = ch.send(InvokeResponseBody::Raw(chunk)) {
+                                log::warn!("PTY {}: channel send failed: {}", reader_session_id, e);
+                            }
+                        } else {
+                            let event_name = format!("pty-output:{}", reader_session_id);
+                            if let Err(e) = reader_app_handle.emit(&event_name, chunk) {
+                                log::warn!("PTY {}: event emit failed: {}", reader_session_id, e);
+                            }
+                        }
+                    }
                 }
             }
+            // Clean up channel subscription when reader exits
+            reader_channels.remove(&reader_session_id);
+        });
+
+        let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+
+        // Inject shell integration (OSC 133 prompt marking + OSC 7 CWD tracking)
+        if let Some(script) = shell_integration::integration_for_shell(&shell) {
+            let basename = shell.rsplit('/').next().unwrap_or(&shell);
+            let inject = if basename == "fish" {
+                format!("builtin source (printf '%s' '{}' | psub)\n", script.replace('\'', "\\'"))
+            } else {
+                format!("eval '{}'\n", script.replace('\'', "'\\''"))
+            };
+            let _ = std::io::Write::write_all(&mut writer, inject.as_bytes());
+            let _ = std::io::Write::write_all(&mut writer, b"clear\n");
         }
-    });
 
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let session = PtySession {
+            master: pair.master,
+            writer,
+            child,
+            shutdown,
+        };
 
-    let session = PtySession {
-        master: pair.master,
-        writer,
-        child,
-    };
+        store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(session_id.clone(), session);
 
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(session_id.clone(), session);
-
-    Ok(session_id)
+        Ok(session_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn write_pty(
+async fn write_pty(
     session_id: String,
     data: String,
-    state: tauri::State<PtyStore>,
+    state: tauri::State<'_, PtyStore>,
 ) -> Result<(), String> {
-    let mut store = state.lock().map_err(|e| e.to_string())?;
-    let session = store
-        .get_mut(&session_id)
-        .ok_or("PTY session not found")?;
-    std::io::Write::write_all(&mut *session.writer, data.as_bytes()).map_err(|e| e.to_string())
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut s = store.lock().map_err(|e| e.to_string())?;
+        let session = s
+            .get_mut(&session_id)
+            .ok_or("PTY session not found")?;
+        std::io::Write::write_all(&mut *session.writer, data.as_bytes())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn resize_pty(
+async fn resize_pty(
     session_id: String,
     cols: u16,
     rows: u16,
-    state: tauri::State<PtyStore>,
+    state: tauri::State<'_, PtyStore>,
 ) -> Result<(), String> {
-    use portable_pty::PtySize;
-    let store = state.lock().map_err(|e| e.to_string())?;
-    let session = store.get(&session_id).ok_or("PTY session not found")?;
-    session
-        .master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use portable_pty::PtySize;
+        let s = store.lock().map_err(|e| e.to_string())?;
+        let session = s.get(&session_id).ok_or("PTY session not found")?;
+        session
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn close_pty(
+async fn pty_subscribe(
     session_id: String,
-    state: tauri::State<PtyStore>,
+    on_output: Channel,
+    state: tauri::State<'_, PtyChannels>,
 ) -> Result<(), String> {
-    let mut store = state.lock().map_err(|e| e.to_string())?;
-    if let Some(mut session) = store.remove(&session_id) {
-        let _ = session.child.kill();
-    }
+    state.insert(session_id, on_output);
     Ok(())
+}
+
+#[tauri::command]
+async fn close_pty(
+    session_id: String,
+    state: tauri::State<'_, PtyStore>,
+    channels: tauri::State<'_, PtyChannels>,
+) -> Result<(), String> {
+    let store = state.inner().clone();
+    let chans = channels.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let mut s = store.lock().map_err(|e| e.to_string())?;
+            if let Some(mut session) = s.remove(&session_id) {
+                session.shutdown.store(true, Ordering::Relaxed);
+                let _ = session.child.kill();
+                drop(session.writer);
+                drop(session.master);
+            }
+        }
+        chans.remove(&session_id);
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -207,19 +290,23 @@ fn reload_provider(state: tauri::State<migration::MigrationState>) -> Result<(),
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let pty_store: PtyStore = Arc::new(Mutex::new(HashMap::new()));
+    let pty_channels: PtyChannels = Arc::new(DashMap::new());
     let startup_repo = std::env::args().nth(1);
     let migration_state =
         migration::MigrationState::new(startup_repo).expect("failed to initialize migration state");
     let git_state = git::GitState::new();
     let git_agent_state = git_agent::GitAgentState::new();
+    let agent_runner_state = agent_runner::AgentRunnerState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(pty_store)
+        .manage(pty_channels)
         .manage(migration_state)
         .manage(git_state)
         .manage(git_agent_state)
+        .manage(agent_runner_state)
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -242,6 +329,7 @@ pub fn run() {
             create_pty,
             write_pty,
             resize_pty,
+            pty_subscribe,
             close_pty,
             scan_repository,
             get_scan_status,
@@ -283,6 +371,13 @@ pub fn run() {
             git_review::git_update_checklist_item,
             git_review::git_merge_pr,
             git_review::git_get_audit_log,
+            // CLI agent runner
+            agent_runner::agent_detect_tools,
+            agent_runner::agent_list_sessions,
+            agent_runner::agent_start_session,
+            agent_runner::agent_kill_session,
+            agent_runner::agent_get_scrollback,
+            agent_runner::agent_cleanup_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -11,6 +11,40 @@ import { Button } from "@/components/ui/button";
 import { X, Check, ChevronDown, Lock } from "lucide-solid";
 import { settingsApi } from "@/api/settings";
 
+// ─── Terminal settings (persisted in localStorage) ─────────────────────────
+
+const TERMINAL_SETTINGS_KEY = "voidlink-terminal-settings";
+
+export interface TerminalSettings {
+  fontFamily: string;
+  fontSize: number;
+  scrollback: number;
+  cursorStyle: "block" | "underline" | "bar";
+  cursorBlink: boolean;
+  lineHeight: number;
+}
+
+const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+  fontFamily: '"GeistMono Nerd Font", "Geist Mono", "Cascadia Code", "JetBrains Mono", monospace',
+  fontSize: 13,
+  scrollback: 5000,
+  cursorStyle: "block",
+  cursorBlink: true,
+  lineHeight: 1.4,
+};
+
+export function loadTerminalSettings(): TerminalSettings {
+  try {
+    const raw = localStorage.getItem(TERMINAL_SETTINGS_KEY);
+    if (raw) return { ...DEFAULT_TERMINAL_SETTINGS, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return { ...DEFAULT_TERMINAL_SETTINGS };
+}
+
+function saveTerminalSettings(settings: TerminalSettings) {
+  localStorage.setItem(TERMINAL_SETTINGS_KEY, JSON.stringify(settings));
+}
+
 interface SettingsPanelProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -172,6 +206,22 @@ function modelDisplayName(model: string): string {
 }
 
 export function SettingsPanel(props: SettingsPanelProps) {
+  const [settingsTab, setSettingsTab] = createSignal<"ai" | "terminal">("ai");
+
+  // ─── Terminal settings state ─────────────────────────────────────────────
+  const [termSettings, setTermSettings] = createSignal<TerminalSettings>(loadTerminalSettings());
+  const [termSaved, setTermSaved] = createSignal(false);
+
+  function handleTermSave() {
+    saveTerminalSettings(termSettings());
+    setTermSaved(true);
+    setTimeout(() => setTermSaved(false), 2000);
+  }
+
+  function updateTermSetting<K extends keyof TerminalSettings>(key: K, value: TerminalSettings[K]) {
+    setTermSettings((prev) => ({ ...prev, [key]: value }));
+  }
+
   // Which provider the user is currently editing
   const [selectedProvider, setSelectedProvider] = createSignal<string>(PROVIDERS[0].id);
   // Selected model per provider (editing state, not yet saved)
@@ -291,15 +341,149 @@ export function SettingsPanel(props: SettingsPanelProps) {
         <DialogBackdrop />
         <DialogPopup class="max-w-md w-full">
           {/* Header */}
-          <div class="flex items-center justify-between mb-6">
+          <div class="flex items-center justify-between mb-4">
             <DialogTitle class="text-sm font-semibold tracking-wide uppercase text-muted-foreground">
-              AI Provider
+              Settings
             </DialogTitle>
             <DialogClose class="p-1 rounded hover:bg-accent transition-colors">
               <X class="w-4 h-4" />
             </DialogClose>
           </div>
 
+          {/* Tab switcher */}
+          <div class="flex gap-1 mb-5 border-b border-border pb-2">
+            <button
+              onClick={() => setSettingsTab("ai")}
+              class={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                settingsTab() === "ai"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+              }`}
+            >
+              AI Provider
+            </button>
+            <button
+              onClick={() => setSettingsTab("terminal")}
+              class={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                settingsTab() === "terminal"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+              }`}
+            >
+              Terminal
+            </button>
+          </div>
+
+          {/* ── Terminal settings tab ─────────────────────────────────── */}
+          <Show when={settingsTab() === "terminal"}>
+            <div class="space-y-4">
+              <div>
+                <label class="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1 block">
+                  Font Family
+                </label>
+                <input
+                  type="text"
+                  value={termSettings().fontFamily}
+                  onInput={(e) => updateTermSetting("fontFamily", e.currentTarget.value)}
+                  class="w-full rounded-md bg-background border border-input px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1 block">
+                    Font Size
+                  </label>
+                  <input
+                    type="number"
+                    min="8"
+                    max="32"
+                    value={termSettings().fontSize}
+                    onInput={(e) => updateTermSetting("fontSize", parseInt(e.currentTarget.value) || 13)}
+                    class="w-full rounded-md bg-background border border-input px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+                <div>
+                  <label class="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1 block">
+                    Line Height
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="2.5"
+                    step="0.1"
+                    value={termSettings().lineHeight}
+                    onInput={(e) => updateTermSetting("lineHeight", parseFloat(e.currentTarget.value) || 1.4)}
+                    class="w-full rounded-md bg-background border border-input px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label class="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1 block">
+                  Scrollback Lines
+                </label>
+                <input
+                  type="number"
+                  min="500"
+                  max="100000"
+                  step="500"
+                  value={termSettings().scrollback}
+                  onInput={(e) => updateTermSetting("scrollback", parseInt(e.currentTarget.value) || 5000)}
+                  class="w-full rounded-md bg-background border border-input px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1 block">
+                    Cursor Style
+                  </label>
+                  <div class="relative">
+                    <select
+                      value={termSettings().cursorStyle}
+                      onChange={(e) => updateTermSetting("cursorStyle", e.currentTarget.value as "block" | "underline" | "bar")}
+                      class="w-full appearance-none rounded-md bg-background border border-input px-3 py-2 text-sm pr-8 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+                    >
+                      <option value="block">Block</option>
+                      <option value="underline">Underline</option>
+                      <option value="bar">Bar</option>
+                    </select>
+                    <ChevronDown class="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                  </div>
+                </div>
+                <div>
+                  <label class="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1 block">
+                    Cursor Blink
+                  </label>
+                  <button
+                    onClick={() => updateTermSetting("cursorBlink", !termSettings().cursorBlink)}
+                    class={`w-full rounded-md border px-3 py-2 text-sm transition-colors ${
+                      termSettings().cursorBlink
+                        ? "bg-primary/10 border-primary text-primary"
+                        : "bg-background border-input text-muted-foreground"
+                    }`}
+                  >
+                    {termSettings().cursorBlink ? "On" : "Off"}
+                  </button>
+                </div>
+              </div>
+
+              <div class="mt-4 flex items-center justify-end gap-2">
+                <Show when={termSaved()}>
+                  <span class="text-xs text-green-500 flex items-center gap-1">
+                    <Check class="w-3.5 h-3.5" /> Saved
+                  </span>
+                </Show>
+                <Button size="sm" onClick={handleTermSave} class="h-8 text-sm">
+                  Save
+                </Button>
+              </div>
+            </div>
+          </Show>
+
+          {/* ── AI Provider settings tab ──────────────────────────────── */}
+          <Show when={settingsTab() === "ai"}>
           <div class="space-y-5">
             {/* Step 1 — Provider */}
             <div>
@@ -427,6 +611,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               </Button>
             </div>
           </div>
+          </Show>
         </DialogPopup>
       </DialogPortal>
     </Dialog>

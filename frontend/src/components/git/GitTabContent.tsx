@@ -4,7 +4,6 @@ import {
   GitCommit,
   FolderGit2,
   GitPullRequest,
-  Bot,
   History,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
@@ -12,7 +11,6 @@ import { DiffViewer } from "./DiffViewer";
 import { DiffFileList } from "./DiffFileList";
 import { DiffExplanationPanel } from "./DiffExplanation";
 import { WorktreePanel } from "./WorktreePanel";
-import { AgentTaskPanel } from "./AgentTaskPanel";
 import { PrDashboard } from "./PrDashboard";
 import { PrReviewView } from "./PrReviewView";
 import { AuditLog } from "./AuditLog";
@@ -25,7 +23,6 @@ type GitView =
   | "worktrees"
   | "prs"
   | "review"
-  | "agent"
   | "audit";
 
 interface GitTabContentProps {
@@ -40,7 +37,6 @@ const NAV_ITEMS: { view: GitView; label: string; Icon: any }[] = [
   { view: "branches", label: "Branches", Icon: GitBranch },
   { view: "worktrees", label: "Worktrees", Icon: FolderGit2 },
   { view: "prs", label: "Pull Requests", Icon: GitPullRequest },
-  { view: "agent", label: "AI Agent", Icon: Bot },
   { view: "audit", label: "Audit", Icon: History },
 ];
 
@@ -159,12 +155,6 @@ export function GitTabContent(props: GitTabContentProps) {
               onBack={() => setView("prs")}
               onMerged={() => setView("prs")}
             />
-          </div>
-        </Show>
-
-        <Show when={view() === "agent"}>
-          <div class="flex-1 overflow-y-auto p-4">
-            <AgentTaskPanel repoPath={props.repoPath} />
           </div>
         </Show>
 
