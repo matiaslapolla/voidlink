@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, AtomicI64, Ordering},
     Arc, Mutex,
@@ -31,8 +31,8 @@ fn now_secs() -> i64 {
 pub(super) fn start_session(
     input: StartSessionInput,
     app_handle: tauri::AppHandle,
-    sessions: Arc<Mutex<HashMap<String, AgentSessionInfo>>>,
-    pty_store: Arc<Mutex<HashMap<String, crate::PtySession>>>,
+    sessions: Arc<Mutex<std::collections::HashMap<String, AgentSessionInfo>>>,
+    pty_store: crate::PtyStore,
     scrollback: ScrollbackStore,
     channels: crate::PtyChannels,
 ) -> Result<AgentSessionInfo, String> {
@@ -63,6 +63,7 @@ pub(super) fn start_session(
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
     let mut cmd = portable_pty::CommandBuilder::new(&shell);
     cmd.cwd(&worktree.path);
+    cmd.env("TERM", "xterm-256color");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
 
@@ -85,7 +86,7 @@ pub(super) fn start_session(
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
     std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 65536];
         loop {
             match std::io::Read::read(&mut reader, &mut buf) {
                 Ok(0) | Err(_) => {
@@ -159,18 +160,15 @@ pub(super) fn start_session(
     std::io::Write::write_all(&mut writer, prefix.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    pty_store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(
-            pty_id.clone(),
-            crate::PtySession {
-                master: pair.master,
-                writer,
-                child,
-                shutdown: session_done.clone(),
-            },
-        );
+    pty_store.insert(
+        pty_id.clone(),
+        crate::PtySession {
+            master: Mutex::new(pair.master),
+            writer: Mutex::new(writer),
+            child: Mutex::new(child),
+            shutdown: session_done.clone(),
+        },
+    );
 
     let info = AgentSessionInfo {
         session_id: session_id.clone(),
@@ -193,8 +191,8 @@ pub(super) fn start_session(
 
 pub(super) fn kill_session(
     session_id: String,
-    sessions: Arc<Mutex<HashMap<String, AgentSessionInfo>>>,
-    pty_store: Arc<Mutex<HashMap<String, crate::PtySession>>>,
+    sessions: Arc<Mutex<std::collections::HashMap<String, AgentSessionInfo>>>,
+    pty_store: crate::PtyStore,
 ) -> Result<(), String> {
     let pty_id = {
         let mut s = sessions.lock().map_err(|e| e.to_string())?;
@@ -208,9 +206,10 @@ pub(super) fn kill_session(
     };
 
     if let Some(id) = pty_id {
-        let mut store = pty_store.lock().map_err(|e| e.to_string())?;
-        if let Some(mut sess) = store.remove(&id) {
-            let _ = sess.child.kill();
+        if let Some((_, sess)) = pty_store.remove(&id) {
+            if let Ok(mut child) = sess.child.lock() {
+                let _ = child.kill();
+            }
         }
     }
 
@@ -221,8 +220,8 @@ pub(super) fn kill_session(
 /// from memory. Intended as the explicit "clean up" action after a session ends.
 pub(super) fn cleanup_session(
     session_id: String,
-    sessions: Arc<Mutex<HashMap<String, AgentSessionInfo>>>,
-    pty_store: Arc<Mutex<HashMap<String, crate::PtySession>>>,
+    sessions: Arc<Mutex<std::collections::HashMap<String, AgentSessionInfo>>>,
+    pty_store: crate::PtyStore,
     scrollback: ScrollbackStore,
 ) -> Result<(), String> {
     // Pull session info and remove it from the map atomically
@@ -236,10 +235,9 @@ pub(super) fn cleanup_session(
     };
 
     // Kill PTY if still alive
-    {
-        let mut store = pty_store.lock().map_err(|e| e.to_string())?;
-        if let Some(mut sess) = store.remove(&pty_id) {
-            let _ = sess.child.kill();
+    if let Some((_, sess)) = pty_store.remove(&pty_id) {
+        if let Ok(mut child) = sess.child.lock() {
+            let _ = child.kill();
         }
     }
 

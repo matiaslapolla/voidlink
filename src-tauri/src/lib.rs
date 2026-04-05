@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
@@ -16,17 +15,18 @@ mod shell_integration;
 // ─── PTY session store ────────────────────────────────────────────────────────
 
 pub(crate) struct PtySession {
-    pub master: Box<dyn portable_pty::MasterPty + Send>,
-    pub writer: Box<dyn std::io::Write + Send>,
-    pub child: Box<dyn portable_pty::Child + Send + Sync>,
+    pub master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
+    pub writer: Mutex<Box<dyn std::io::Write + Send>>,
+    pub child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     pub shutdown: Arc<AtomicBool>,
 }
 
-pub(crate) type PtyStore = Arc<Mutex<HashMap<String, PtySession>>>;
+/// Lock-free concurrent map keyed by session ID. Each session's fields have
+/// independent Mutex locks so write/resize/close never contend with each other.
+pub(crate) type PtyStore = Arc<DashMap<String, PtySession>>;
 
-/// Per-PTY output channels. When a frontend terminal subscribes via `pty_subscribe`,
-/// the reader thread sends raw bytes through the channel (bypassing JSON serialisation)
-/// instead of emitting events.
+/// Per-PTY output channels. The reader thread sends raw bytes through the
+/// channel (bypassing JSON serialisation) for minimal-latency push to the frontend.
 pub(crate) type PtyChannels = Arc<DashMap<String, Channel>>;
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -64,6 +64,7 @@ async fn create_pty(
 
         let mut cmd = portable_pty::CommandBuilder::new(&shell);
         cmd.cwd(&cwd);
+        cmd.env("TERM", "xterm-256color");
 
         let child = pair
             .slave
@@ -73,7 +74,7 @@ async fn create_pty(
         let session_id = uuid::Uuid::new_v4().to_string();
         let shutdown = Arc::new(AtomicBool::new(false));
 
-        // Reader thread: send output via channel (raw binary) or fall back to events
+        // Reader thread: pushes output via Channel (raw binary, no JSON)
         let reader_session_id = session_id.clone();
         let reader_app_handle = app_handle.clone();
         let reader_channels = chans.clone();
@@ -81,7 +82,7 @@ async fn create_pty(
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
         std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; 65536];
             loop {
                 if reader_shutdown.load(Ordering::Relaxed) {
                     break;
@@ -107,35 +108,19 @@ async fn create_pty(
                     }
                 }
             }
-            // Clean up channel subscription when reader exits
             reader_channels.remove(&reader_session_id);
         });
 
-        let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-
-        // Inject shell integration (OSC 133 prompt marking + OSC 7 CWD tracking)
-        if let Some(script) = shell_integration::integration_for_shell(&shell) {
-            let basename = shell.rsplit('/').next().unwrap_or(&shell);
-            let inject = if basename == "fish" {
-                format!("builtin source (printf '%s' '{}' | psub)\n", script.replace('\'', "\\'"))
-            } else {
-                format!("eval '{}'\n", script.replace('\'', "'\\''"))
-            };
-            let _ = std::io::Write::write_all(&mut writer, inject.as_bytes());
-            let _ = std::io::Write::write_all(&mut writer, b"clear\n");
-        }
+        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
         let session = PtySession {
-            master: pair.master,
-            writer,
-            child,
+            master: Mutex::new(pair.master),
+            writer: Mutex::new(writer),
+            child: Mutex::new(child),
             shutdown,
         };
 
-        store
-            .lock()
-            .map_err(|e| e.to_string())?
-            .insert(session_id.clone(), session);
+        store.insert(session_id.clone(), session);
 
         Ok(session_id)
     })
@@ -149,17 +134,10 @@ async fn write_pty(
     data: String,
     state: tauri::State<'_, PtyStore>,
 ) -> Result<(), String> {
-    let store = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut s = store.lock().map_err(|e| e.to_string())?;
-        let session = s
-            .get_mut(&session_id)
-            .ok_or("PTY session not found")?;
-        std::io::Write::write_all(&mut *session.writer, data.as_bytes())
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let session = state.get(&session_id).ok_or("PTY session not found")?;
+    let mut writer = session.writer.lock().map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut *writer, data.as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -169,23 +147,20 @@ async fn resize_pty(
     rows: u16,
     state: tauri::State<'_, PtyStore>,
 ) -> Result<(), String> {
-    let store = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        use portable_pty::PtySize;
-        let s = store.lock().map_err(|e| e.to_string())?;
-        let session = s.get(&session_id).ok_or("PTY session not found")?;
-        session
-            .master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    use portable_pty::PtySize;
+    let session = state.get(&session_id).ok_or("PTY session not found")?;
+    let master = session.master.lock().map_err(|e| e.to_string())?;
+    let result = master
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| e.to_string());
+    drop(master);
+    drop(session);
+    result
 }
 
 #[tauri::command]
@@ -204,23 +179,14 @@ async fn close_pty(
     state: tauri::State<'_, PtyStore>,
     channels: tauri::State<'_, PtyChannels>,
 ) -> Result<(), String> {
-    let store = state.inner().clone();
-    let chans = channels.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        {
-            let mut s = store.lock().map_err(|e| e.to_string())?;
-            if let Some(mut session) = s.remove(&session_id) {
-                session.shutdown.store(true, Ordering::Relaxed);
-                let _ = session.child.kill();
-                drop(session.writer);
-                drop(session.master);
-            }
+    if let Some((_, session)) = state.remove(&session_id) {
+        session.shutdown.store(true, Ordering::Relaxed);
+        if let Ok(mut child) = session.child.lock() {
+            let _ = child.kill();
         }
-        chans.remove(&session_id);
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }
+    channels.remove(&session_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -289,7 +255,7 @@ fn reload_provider(state: tauri::State<migration::MigrationState>) -> Result<(),
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let pty_store: PtyStore = Arc::new(Mutex::new(HashMap::new()));
+    let pty_store: PtyStore = Arc::new(DashMap::new());
     let pty_channels: PtyChannels = Arc::new(DashMap::new());
     let startup_repo = std::env::args().nth(1);
     let migration_state =
