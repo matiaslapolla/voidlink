@@ -54,11 +54,6 @@ export function TerminalView(props: TerminalViewProps) {
     }
   };
 
-  const handleCwdChange = (id: string, cwd: string) => {
-    const dirname = cwd.split("/").pop() || cwd;
-    setTabTitles((prev) => ({ ...prev, [id]: dirname }));
-  };
-
   return (
     <div class="flex flex-col h-full overflow-hidden">
       {/* Tab bar */}
@@ -123,7 +118,6 @@ export function TerminalView(props: TerminalViewProps) {
                 <TerminalPane
                   ptyId={tab.ptyId}
                   class="w-full h-full"
-                  onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
                 />
               </div>
             )}
