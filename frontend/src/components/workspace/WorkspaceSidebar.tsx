@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { For, createSignal } from "solid-js";
 import { FilePlus2, Settings, Trash2 } from "lucide-solid";
 import type { WorkspaceState } from "@/types/workspace";
 
@@ -10,6 +10,31 @@ interface WorkspaceSidebarProps {
   onRemove: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onSettingsOpen: () => void;
+}
+
+/** Inline rename input that only commits on blur/Enter to avoid re-render loops. */
+function RenameInput(props: { name: string; onCommit: (name: string) => void }) {
+  const [draft, setDraft] = createSignal(props.name);
+
+  function commit() {
+    const value = draft().trim() || "Workspace";
+    props.onCommit(value);
+  }
+
+  return (
+    <input
+      value={draft()}
+      onInput={(e) => setDraft(e.currentTarget.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.currentTarget.blur();
+        }
+      }}
+      class="w-full rounded bg-accent/60 px-1.5 py-1 text-xs outline-none"
+      aria-label={`Rename ${props.name}`}
+    />
+  );
 }
 
 export function WorkspaceSidebar(props: WorkspaceSidebarProps) {
@@ -41,13 +66,9 @@ export function WorkspaceSidebar(props: WorkspaceSidebarProps) {
               </button>
 
               <div class="mt-2 flex items-center justify-between gap-1">
-                <input
-                  value={ws.name}
-                  onInput={(event) => {
-                    props.onRename(ws.id, event.currentTarget.value || "Workspace");
-                  }}
-                  class="w-full rounded bg-accent/60 px-1.5 py-1 text-xs outline-none"
-                  aria-label={`Rename ${ws.name}`}
+                <RenameInput
+                  name={ws.name}
+                  onCommit={(name) => props.onRename(ws.id, name)}
                 />
                 <button
                   onClick={() => props.onRemove(ws.id)}

@@ -9,13 +9,18 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  Bot,
   DatabaseZap,
   GitBranch,
+  TerminalSquare,
   Workflow,
 } from "lucide-solid";
 import { migrationApi } from "@/api/migration";
 import { GitStatusBar } from "@/components/git/GitStatusBar";
 import { GitTabContent } from "@/components/git/GitTabContent";
+import { AgentTaskPanel } from "@/components/git/AgentTaskPanel";
+import { AgentOrchestratorView } from "@/components/agent/AgentOrchestratorView";
+import { TerminalView } from "@/components/terminal/TerminalView";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
 import { WorkspaceSidebar } from "@/components/workspace/WorkspaceSidebar";
 import { RepositoryHeader } from "@/components/repository/RepositoryHeader";
@@ -336,6 +341,28 @@ function App() {
                         <GitBranch class="inline w-4 h-4 mr-1" />
                         Git
                       </button>
+                      <button
+                        onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "aiAgent" }))}
+                        class={`rounded-md px-3 py-1.5 text-sm ${
+                          ws().activeArea === "aiAgent"
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-accent/60 hover:bg-accent"
+                        }`}
+                      >
+                        <Bot class="inline w-4 h-4 mr-1" />
+                        AI Agent
+                      </button>
+                      <button
+                        onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "terminal" }))}
+                        class={`rounded-md px-3 py-1.5 text-sm ${
+                          ws().activeArea === "terminal"
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-accent/60 hover:bg-accent"
+                        }`}
+                      >
+                        <TerminalSquare class="inline w-4 h-4 mr-1" />
+                        Terminal
+                      </button>
                     </Show>
                   </div>
 
@@ -374,6 +401,26 @@ function App() {
                       </Show>
                     </Show>
 
+                    <Show when={ws().activeArea === "aiAgent"}>
+                      <Show when={ws().repoRoot}>
+                        {(repoRoot) => (
+                          <div class="h-full overflow-y-auto p-4">
+                            <AgentTaskPanel repoPath={repoRoot()} />
+                          </div>
+                        )}
+                      </Show>
+                    </Show>
+
+                    <Show when={ws().activeArea === "terminal"}>
+                      <Show when={ws().repoRoot}>
+                        {(repoRoot) => (
+                          <div class="h-full overflow-hidden">
+                            <TerminalView cwd={repoRoot()} />
+                          </div>
+                        )}
+                      </Show>
+                    </Show>
+
                     <Show when={ws().activeArea === "workflow"}>
                       <WorkflowTab
                         workflow={ws().workflow}
@@ -393,6 +440,7 @@ function App() {
             {(repoRoot) => (
               <GitStatusBar
                 repoPath={repoRoot()}
+                activeArea={activeWorkspace()?.activeArea}
                 onOpenGit={() => {
                   const wsId = activeWorkspaceId();
                   updateWorkspace(wsId, (ws) => ({ ...ws, activeArea: "git" }));

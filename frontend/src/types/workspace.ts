@@ -5,7 +5,7 @@ import type {
   WorkflowDsl,
 } from "@/types/migration";
 
-export type WorkArea = "repository" | "contextBuilder" | "workflow" | "git";
+export type WorkArea = "repository" | "contextBuilder" | "workflow" | "git" | "aiAgent" | "cliAgents" | "terminal";
 
 export interface WorkspaceState {
   id: string;

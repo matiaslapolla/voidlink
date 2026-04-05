@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, Show } from "solid-js";
 import { GitBranch, GitCommit, Circle } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import type { GitRepoInfo } from "@/types/git";
@@ -6,6 +6,7 @@ import { BranchPicker } from "./BranchPicker";
 
 interface GitStatusBarProps {
   repoPath: string;
+  activeArea?: string;
   onOpenGit?: () => void;
 }
 
@@ -20,11 +21,12 @@ export function GitStatusBar(props: GitStatusBarProps) {
       .catch(() => setInfo(null));
   };
 
+  // Refresh on mount and whenever the active area changes (e.g. switching to/from git tab)
   createEffect(() => {
     if (!props.repoPath) return;
+    // Track activeArea so we re-run when the user switches tabs
+    void props.activeArea;
     refresh();
-    const id = window.setInterval(refresh, 3000);
-    onCleanup(() => window.clearInterval(id));
   });
 
   return (

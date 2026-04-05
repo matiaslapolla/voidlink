@@ -158,11 +158,13 @@ pub struct DiffExplanation {
 // ─── Tauri command wrappers ───────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn git_repo_info(
+pub async fn git_repo_info(
     repo_path: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<GitRepoInfo, String> {
-    git_repo_info_impl(repo_path)
+    tauri::async_runtime::spawn_blocking(move || git_repo_info_impl(repo_path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
