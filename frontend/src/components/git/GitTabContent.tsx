@@ -7,6 +7,7 @@ import {
   History,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
+import { ResizeHandle } from "@/components/layout/ResizeHandle";
 import { DiffViewer } from "./DiffViewer";
 import { DiffFileList } from "./DiffFileList";
 import { DiffExplanationPanel } from "./DiffExplanation";
@@ -28,6 +29,7 @@ type GitView =
 interface GitTabContentProps {
   repoPath: string;
   onOpenTerminal?: (worktreePath: string) => void;
+  onAddToContext?: (filePath: string, content: string) => void;
   initialView?: GitView;
 }
 
@@ -40,10 +42,30 @@ const NAV_ITEMS: { view: GitView; label: string; Icon: any }[] = [
   { view: "audit", label: "Audit", Icon: History },
 ];
 
+const GIT_SIDEBAR_KEY = "voidlink-git-sidebar-width";
+const MIN_WIDTH = 40;
+const COLLAPSE_THRESHOLD = 56;
+const DEFAULT_WIDTH = 160;
+
 export function GitTabContent(props: GitTabContentProps) {
   const [view, setView] = createSignal<GitView>(props.initialView ?? "status");
   const [reviewPr, setReviewPr] = createSignal<number | null>(null);
   const [selectedFile, setSelectedFile] = createSignal<string | null>(null);
+
+  const stored = localStorage.getItem(GIT_SIDEBAR_KEY);
+  const [sidebarWidth, setSidebarWidth] = createSignal(
+    stored ? Math.max(Number(stored), MIN_WIDTH) : DEFAULT_WIDTH,
+  );
+
+  const isCollapsed = () => sidebarWidth() < COLLAPSE_THRESHOLD;
+
+  const handleResize = (delta: number) => {
+    setSidebarWidth((w) => {
+      const next = Math.max(MIN_WIDTH, w + delta);
+      localStorage.setItem(GIT_SIDEBAR_KEY, String(next));
+      return next;
+    });
+  };
 
   // Status / diff data
   const [workingDiff] = createResource(
@@ -63,24 +85,35 @@ export function GitTabContent(props: GitTabContentProps) {
   return (
     <div class="flex h-full overflow-hidden">
       {/* Sidebar nav */}
-      <div class="w-40 flex-shrink-0 border-r border-border flex flex-col py-2 gap-0.5 bg-sidebar">
+      <div
+        class="flex-shrink-0 border-r border-border flex flex-col py-2 gap-0.5 bg-sidebar overflow-hidden"
+        style={{ width: `${sidebarWidth()}px` }}
+      >
         {NAV_ITEMS.map(({ view: v, label, Icon }) => (
           <button
             onClick={() => {
               setView(v);
               if (v !== "review") setReviewPr(null);
             }}
-            class={`flex items-center gap-2 px-3 py-2 text-xs transition-colors text-left ${
+            class={`flex items-center gap-2 py-2 text-xs transition-colors text-left ${
+              isCollapsed() ? "justify-center px-0" : "px-3"
+            } ${
               view() === v
                 ? "bg-accent text-accent-foreground font-medium"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
             }`}
+            title={label}
           >
             <Icon class="w-3.5 h-3.5 flex-shrink-0" />
-            {label}
+            <Show when={!isCollapsed()}>
+              <span class="truncate">{label}</span>
+            </Show>
           </button>
         ))}
       </div>
+
+      {/* Resize handle */}
+      <ResizeHandle direction="vertical" onResize={handleResize} />
 
       {/* Main content */}
       <div class="flex-1 overflow-hidden flex flex-col">
@@ -97,7 +130,7 @@ export function GitTabContent(props: GitTabContentProps) {
                     />
                   </div>
                   <div class="flex-1 overflow-y-auto p-3">
-                    <DiffViewer diff={diff()} onFileClick={setSelectedFile} />
+                    <DiffViewer diff={diff()} onFileClick={setSelectedFile} onAddToContext={props.onAddToContext} />
                   </div>
                 </>
               )}
@@ -118,7 +151,7 @@ export function GitTabContent(props: GitTabContentProps) {
               head="HEAD"
             />
             <Show when={workingDiff()}>
-              {(diff) => <DiffViewer diff={diff()} />}
+              {(diff) => <DiffViewer diff={diff()} onAddToContext={props.onAddToContext} />}
             </Show>
           </div>
         </Show>

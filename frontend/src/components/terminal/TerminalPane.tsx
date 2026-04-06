@@ -46,6 +46,8 @@ export function TerminalPane(props: TerminalPaneProps) {
       cursorBlink: settings.cursorBlink,
       cursorStyle: settings.cursorStyle,
       scrollback: settings.scrollback,
+      customGlyphs: true,
+      letterSpacing: -0.5,
     });
 
     const fitAddon = new FitAddon();
@@ -81,8 +83,6 @@ export function TerminalPane(props: TerminalPaneProps) {
     ro.observe(container);
 
     // ── PTY output ───────────────────────────────────────────────────────
-    // Channel pushes raw binary from Rust reader thread → direct to xterm.
-    // Event listener as fallback until Channel is subscribed.
     let unlisten: (() => void) | null = null;
 
     listen<number[]>(`pty-output:${props.ptyId}`, (event) => {

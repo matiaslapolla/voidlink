@@ -4,8 +4,9 @@ import type {
   SearchResult,
   WorkflowDsl,
 } from "@/types/migration";
+import type { ContextItem } from "@/types/context";
 
-export type WorkArea = "repository" | "contextBuilder" | "workflow" | "git" | "aiAgent" | "cliAgents" | "terminal";
+export type WorkArea = "repository" | "contextBuilder" | "workflow" | "aiAgent" | "cliAgents" | "terminal";
 
 export interface WorkspaceState {
   id: string;
@@ -16,8 +17,11 @@ export interface WorkspaceState {
   scanStatus: ScanProgress | null;
   searchQuery: string;
   searchResults: SearchResult[];
-  selectedContext: SearchResult[];
+  /** Context items assembled from any source (search, diffs, freetext) */
+  contextItems: ContextItem[];
+  /** Workflow-specific: objective text */
   objective: string;
+  /** Workflow-specific: constraints (one per line) */
   constraintsText: string;
   workflow: WorkflowDsl | null;
   activeRunId: string | null;
@@ -25,6 +29,7 @@ export interface WorkspaceState {
   searching: boolean;
   generatingWorkflow: boolean;
   runningWorkflow: boolean;
+  gitPanelOpen: boolean;
   lastError: string | null;
 }
 
@@ -35,6 +40,7 @@ export interface PersistedWorkspace {
   activeArea: WorkArea;
   objective: string;
   constraintsText: string;
+  gitPanelOpen?: boolean;
 }
 
 export function createWorkspace(name: string): WorkspaceState {
@@ -47,7 +53,7 @@ export function createWorkspace(name: string): WorkspaceState {
     scanStatus: null,
     searchQuery: "",
     searchResults: [],
-    selectedContext: [],
+    contextItems: [],
     objective: "",
     constraintsText: "",
     workflow: null,
@@ -56,6 +62,7 @@ export function createWorkspace(name: string): WorkspaceState {
     searching: false,
     generatingWorkflow: false,
     runningWorkflow: false,
+    gitPanelOpen: false,
     lastError: null,
   };
 }

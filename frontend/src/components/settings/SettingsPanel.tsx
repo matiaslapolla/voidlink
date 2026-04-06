@@ -25,12 +25,12 @@ export interface TerminalSettings {
 }
 
 const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
-  fontFamily: '"GeistMono Nerd Font", "Geist Mono", "Cascadia Code", "JetBrains Mono", monospace',
-  fontSize: 13,
+  fontFamily: '"JetBrainsMono Nerd Font Mono", "JetBrains Mono", monospace',
+  fontSize: 16,
   scrollback: 5000,
   cursorStyle: "block",
   cursorBlink: true,
-  lineHeight: 1.4,
+  lineHeight: 1.0,
 };
 
 export function loadTerminalSettings(): TerminalSettings {

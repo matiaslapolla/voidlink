@@ -1,5 +1,5 @@
 import { createSignal, createEffect, Show } from "solid-js";
-import { GitBranch, GitCommit, Circle } from "lucide-solid";
+import { GitBranch, Circle, ChevronUp, ChevronDown } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import type { GitRepoInfo } from "@/types/git";
 import { BranchPicker } from "./BranchPicker";
@@ -7,7 +7,8 @@ import { BranchPicker } from "./BranchPicker";
 interface GitStatusBarProps {
   repoPath: string;
   activeArea?: string;
-  onOpenGit?: () => void;
+  gitPanelOpen?: boolean;
+  onToggleGit?: () => void;
 }
 
 export function GitStatusBar(props: GitStatusBarProps) {
@@ -21,11 +22,10 @@ export function GitStatusBar(props: GitStatusBarProps) {
       .catch(() => setInfo(null));
   };
 
-  // Refresh on mount and whenever the active area changes (e.g. switching to/from git tab)
   createEffect(() => {
     if (!props.repoPath) return;
-    // Track activeArea so we re-run when the user switches tabs
     void props.activeArea;
+    void props.gitPanelOpen;
     refresh();
   });
 
@@ -56,15 +56,19 @@ export function GitStatusBar(props: GitStatusBarProps) {
             </span>
           </Show>
 
-          {/* Open git panel */}
-          <Show when={props.onOpenGit}>
+          {/* Toggle git panel */}
+          <Show when={props.onToggleGit}>
             <button
-              onClick={props.onOpenGit}
-              class="ml-auto flex items-center gap-1 hover:text-foreground transition-colors rounded px-1 py-0.5 hover:bg-accent/60"
-              title="Open Git panel"
+              onClick={props.onToggleGit}
+              class="ml-auto flex items-center gap-1.5 hover:text-foreground transition-colors rounded px-1.5 py-0.5 hover:bg-accent/60"
+              title={`${props.gitPanelOpen ? "Close" : "Open"} Git panel (Ctrl+G)`}
             >
-              <GitCommit class="w-3.5 h-3.5" />
-              Git
+              {props.gitPanelOpen ? (
+                <ChevronDown class="w-3.5 h-3.5" />
+              ) : (
+                <ChevronUp class="w-3.5 h-3.5" />
+              )}
+              <span>Git</span>
             </button>
           </Show>
 
