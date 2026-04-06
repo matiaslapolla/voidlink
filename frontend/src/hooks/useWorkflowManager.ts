@@ -78,7 +78,17 @@ export function createWorkflowManager(deps: WorkflowManagerDeps) {
         constraints: parseConstraintLines(ws.constraintsText),
         contextBundle: {
           freeText: ws.objective,
-          selectedResults: ws.selectedContext,
+          selectedResults: ws.contextItems.map((item) => ({
+            id: item.id,
+            filePath: item.filePath ?? "",
+            anchor: item.label,
+            snippet: item.content,
+            language: "",
+            score: 0,
+            lexicalScore: 0,
+            semanticScore: 0,
+            why: { matchedTerms: [], semanticScore: 0, graphProximity: null },
+          })),
           maxTokens: 1200,
         },
       });

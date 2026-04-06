@@ -59,11 +59,13 @@ pub(super) fn start_session(
         })
         .map_err(|e| e.to_string())?;
 
-    // Spawn the user's interactive shell so that .bashrc/.zshrc is sourced.
+    // Spawn the user's interactive login shell so that .bashrc/.zshrc, starship, etc. are sourced.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
     let mut cmd = portable_pty::CommandBuilder::new(&shell);
+    cmd.args(["-l", "-i"]);
     cmd.cwd(&worktree.path);
     cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
 

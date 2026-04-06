@@ -63,8 +63,12 @@ async fn create_pty(
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
         let mut cmd = portable_pty::CommandBuilder::new(&shell);
+        // Start as interactive login shell so .bashrc/.zshrc, starship, etc. are sourced.
+        // Both bash and zsh accept -l (login) and -i (interactive).
+        cmd.args(["-l", "-i"]);
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
 
         let child = pair
             .slave

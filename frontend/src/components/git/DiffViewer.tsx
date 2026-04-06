@@ -1,10 +1,11 @@
 import { createSignal, For, Show } from "solid-js";
-import { ChevronDown, ChevronRight, FileText, FilePlus, FileMinus } from "lucide-solid";
+import { ChevronDown, ChevronRight, FileText, FilePlus, FileMinus, Plus } from "lucide-solid";
 import type { DiffResult, FileDiff, DiffHunk } from "@/types/git";
 
 interface DiffViewerProps {
   diff: DiffResult;
   onFileClick?: (path: string) => void;
+  onAddToContext?: (filePath: string, content: string) => void;
 }
 
 export function DiffViewer(props: DiffViewerProps) {
@@ -15,7 +16,7 @@ export function DiffViewer(props: DiffViewerProps) {
       </Show>
 
       <For each={props.diff.files}>
-        {(file) => <FileDiffBlock file={file} onFileClick={props.onFileClick} />}
+        {(file) => <FileDiffBlock file={file} onFileClick={props.onFileClick} onAddToContext={props.onAddToContext} />}
       </For>
     </div>
   );
@@ -24,6 +25,7 @@ export function DiffViewer(props: DiffViewerProps) {
 function FileDiffBlock(props: {
   file: FileDiff;
   onFileClick?: (path: string) => void;
+  onAddToContext?: (filePath: string, content: string) => void;
 }) {
   const [collapsed, setCollapsed] = createSignal(false);
 
@@ -68,6 +70,21 @@ function FileDiffBlock(props: {
         </button>
         <span class="flex-shrink-0 text-green-500">+{props.file.additions}</span>
         <span class="flex-shrink-0 text-red-400">-{props.file.deletions}</span>
+        <Show when={props.onAddToContext}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const content = props.file.hunks
+                .map((h) => h.header + "\n" + h.lines.map((l) => l.origin + l.content).join("\n"))
+                .join("\n\n");
+              props.onAddToContext!(filePath(), content);
+            }}
+            class="flex-shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
+            title="Add diff to context"
+          >
+            <Plus class="w-3.5 h-3.5" />
+          </button>
+        </Show>
       </div>
 
       <Show when={!collapsed()}>

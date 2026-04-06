@@ -11,27 +11,30 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   Bot,
   DatabaseZap,
-  GitBranch,
   TerminalSquare,
   Workflow,
 } from "lucide-solid";
 import { migrationApi } from "@/api/migration";
 import { GitStatusBar } from "@/components/git/GitStatusBar";
 import { GitTabContent } from "@/components/git/GitTabContent";
-import { AgentTaskPanel } from "@/components/git/AgentTaskPanel";
-import { AgentOrchestratorView } from "@/components/agent/AgentOrchestratorView";
+import { AgentChatView } from "@/components/agent/AgentChatView";
+import { BottomPanel } from "@/components/layout/BottomPanel";
+import { MountOnce } from "@/components/layout/MountOnce";
 import { TerminalView } from "@/components/terminal/TerminalView";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
 import { WorkspaceSidebar } from "@/components/workspace/WorkspaceSidebar";
 import { RepositoryHeader } from "@/components/repository/RepositoryHeader";
 import { SearchTab } from "@/components/repository/SearchTab";
 import { ContextBuilderTab } from "@/components/context/ContextBuilderTab";
+import { ContextIndicator } from "@/components/context/ContextIndicator";
 import { WorkflowTab } from "@/components/workflow/WorkflowTab";
 import { createScanPolling } from "@/hooks/useScanPolling";
 import { createWorkflowManager } from "@/hooks/useWorkflowManager";
 import type { SearchResult } from "@/types/migration";
 import type { WorkspaceState, PersistedWorkspace } from "@/types/workspace";
 import { createWorkspace } from "@/types/workspace";
+import type { ContextItem } from "@/types/context";
+import { contextItemFromSearch, contextItemFromText, contextItemFromDiff } from "@/types/context";
 
 const STORAGE_KEY = "voidlink-repo-workspaces";
 const ACTIVE_STORAGE_KEY = "voidlink-active-repo-workspace";
@@ -51,9 +54,10 @@ function loadInitialState(): AppState {
           ...createWorkspace(item.name),
           id: item.id,
           repoRoot: item.repoRoot,
-          activeArea: item.activeArea,
+          activeArea: item.activeArea === ("git" as string) ? "repository" : item.activeArea,
           objective: item.objective,
           constraintsText: item.constraintsText,
+          gitPanelOpen: item.gitPanelOpen ?? false,
         }));
         const activeId = localStorage.getItem(ACTIVE_STORAGE_KEY);
         const activeWorkspaceId =
@@ -84,13 +88,10 @@ function App() {
     () => workspaces().find((ws) => ws.id === activeWorkspaceId()) ?? null,
   );
 
-  const selectedContextTokenEstimate = createMemo(() => {
+  const contextTokenEstimate = createMemo(() => {
     const ws = activeWorkspace();
     if (!ws) return 0;
-    return ws.selectedContext.reduce(
-      (sum, item) => sum + item.snippet.split(/\s+/).filter(Boolean).length,
-      0,
-    );
+    return ws.contextItems.reduce((sum, item) => sum + item.tokenEstimate, 0);
   });
 
   function updateWorkspace(id: string, updater: (workspace: WorkspaceState) => WorkspaceState) {
@@ -134,17 +135,21 @@ function App() {
 
   // ─── Context helpers ────────────────────────────────────────────────────────
 
-  function addContextResult(workspaceId: string, result: SearchResult) {
+  function addContextItem(workspaceId: string, item: ContextItem) {
     updateWorkspace(workspaceId, (ws) => {
-      if (ws.selectedContext.some((item) => item.id === result.id)) return ws;
-      return { ...ws, selectedContext: [...ws.selectedContext, result] };
+      if (ws.contextItems.some((existing) => existing.id === item.id)) return ws;
+      return { ...ws, contextItems: [...ws.contextItems, item] };
     });
   }
 
-  function removeContextResult(workspaceId: string, resultId: string) {
+  function addContextFromSearch(workspaceId: string, result: SearchResult) {
+    addContextItem(workspaceId, contextItemFromSearch(result));
+  }
+
+  function removeContextItem(workspaceId: string, itemId: string) {
     updateWorkspace(workspaceId, (ws) => ({
       ...ws,
-      selectedContext: ws.selectedContext.filter((item) => item.id !== resultId),
+      contextItems: ws.contextItems.filter((item) => item.id !== itemId),
     }));
   }
 
@@ -159,7 +164,7 @@ function App() {
         repoRoot: selected,
         lastError: null,
         searchResults: [],
-        selectedContext: [],
+        contextItems: [],
         workflow: null,
         runState: null,
         activeRunId: null,
@@ -210,6 +215,7 @@ function App() {
       activeArea: ws.activeArea,
       objective: ws.objective,
       constraintsText: ws.constraintsText,
+      gitPanelOpen: ws.gitPanelOpen,
     }));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(serialized));
     localStorage.setItem(ACTIVE_STORAGE_KEY, activeWorkspaceId());
@@ -331,17 +337,6 @@ function App() {
                     </button>
                     <Show when={ws().repoRoot}>
                       <button
-                        onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "git" }))}
-                        class={`rounded-md px-3 py-1.5 text-sm ${
-                          ws().activeArea === "git"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-accent/60 hover:bg-accent"
-                        }`}
-                      >
-                        <GitBranch class="inline w-4 h-4 mr-1" />
-                        Git
-                      </button>
-                      <button
                         onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "aiAgent" }))}
                         class={`rounded-md px-3 py-1.5 text-sm ${
                           ws().activeArea === "aiAgent"
@@ -366,8 +361,12 @@ function App() {
                     </Show>
                   </div>
 
-                  <section class="flex-1 overflow-hidden">
-                    <Show when={ws().activeArea === "repository"}>
+                  <section class="flex-1 overflow-hidden relative">
+                    {/* Props-driven tabs: Show is OK — state lives in workspace signals */}
+                    <div
+                      class="absolute inset-0"
+                      style={{ display: ws().activeArea === "repository" ? "block" : "none" }}
+                    >
                       <SearchTab
                         searchQuery={ws().searchQuery}
                         searchResults={ws().searchResults}
@@ -375,79 +374,111 @@ function App() {
                         repoRoot={ws().repoRoot}
                         onQueryChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, searchQuery: v }))}
                         onSearch={() => void performSearch(ws().id)}
-                        onAddContext={(r) => addContextResult(ws().id, r)}
+                        onAddContext={(r) => addContextFromSearch(ws().id, r)}
                       />
-                    </Show>
+                    </div>
 
-                    <Show when={ws().activeArea === "contextBuilder"}>
+                    <div
+                      class="absolute inset-0"
+                      style={{ display: ws().activeArea === "contextBuilder" ? "block" : "none" }}
+                    >
                       <ContextBuilderTab
+                        contextItems={ws().contextItems}
+                        tokenEstimate={contextTokenEstimate()}
+                        onRemoveItem={(id) => removeContextItem(ws().id, id)}
+                        onAddFreetext={(label, content) => {
+                          addContextItem(ws().id, contextItemFromText(label, content));
+                        }}
+                      />
+                    </div>
+
+                    <div
+                      class="absolute inset-0"
+                      style={{ display: ws().activeArea === "workflow" ? "block" : "none" }}
+                    >
+                      <WorkflowTab
                         objective={ws().objective}
                         constraintsText={ws().constraintsText}
-                        selectedContext={ws().selectedContext}
-                        tokenEstimate={selectedContextTokenEstimate()}
-                        onObjectiveChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, objective: v }))}
-                        onConstraintsChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, constraintsText: v }))}
-                        onRemoveContext={(id) => removeContextResult(ws().id, id)}
-                      />
-                    </Show>
-
-                    <Show when={ws().activeArea === "git"}>
-                      <Show when={ws().repoRoot} fallback={<div class="h-full flex items-center justify-center"><p class="text-sm text-muted-foreground">Select a repository to use Git features.</p></div>}>
-                        {(repoRoot) => (
-                          <div class="h-full">
-                            <GitTabContent repoPath={repoRoot()} />
-                          </div>
-                        )}
-                      </Show>
-                    </Show>
-
-                    <Show when={ws().activeArea === "aiAgent"}>
-                      <Show when={ws().repoRoot}>
-                        {(repoRoot) => (
-                          <div class="h-full overflow-y-auto p-4">
-                            <AgentTaskPanel repoPath={repoRoot()} />
-                          </div>
-                        )}
-                      </Show>
-                    </Show>
-
-                    <Show when={ws().activeArea === "terminal"}>
-                      <Show when={ws().repoRoot}>
-                        {(repoRoot) => (
-                          <div class="h-full overflow-hidden">
-                            <TerminalView cwd={repoRoot()} />
-                          </div>
-                        )}
-                      </Show>
-                    </Show>
-
-                    <Show when={ws().activeArea === "workflow"}>
-                      <WorkflowTab
+                        contextItems={ws().contextItems}
+                        contextTokenEstimate={contextTokenEstimate()}
                         workflow={ws().workflow}
                         runState={ws().runState}
                         generatingWorkflow={ws().generatingWorkflow}
                         runningWorkflow={ws().runningWorkflow}
+                        onObjectiveChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, objective: v }))}
+                        onConstraintsChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, constraintsText: v }))}
                         onGenerate={() => void workflowManager.generateWorkflow(ws().id)}
                         onRun={() => void workflowManager.runWorkflow(ws().id)}
                       />
-                    </Show>
+                    </div>
+
+                    {/* Stateful tabs: MountOnce keeps them alive after first render */}
+                    <MountOnce when={ws().repoRoot}>
+                      {(repoRoot) => (
+                        <div
+                          class="absolute inset-0 overflow-hidden"
+                          style={{ display: ws().activeArea === "aiAgent" ? "block" : "none" }}
+                        >
+                          <AgentChatView repoPath={repoRoot()} />
+                        </div>
+                      )}
+                    </MountOnce>
+
+                    <MountOnce when={ws().repoRoot}>
+                      {(repoRoot) => (
+                        <div
+                          class="absolute inset-0 overflow-hidden"
+                          style={{ display: ws().activeArea === "terminal" ? "block" : "none" }}
+                        >
+                          <TerminalView cwd={repoRoot()} />
+                        </div>
+                      )}
+                    </MountOnce>
                   </section>
                 </>
               );
             }}
           </Show>
           <Show when={activeWorkspace()?.repoRoot}>
-            {(repoRoot) => (
-              <GitStatusBar
-                repoPath={repoRoot()}
-                activeArea={activeWorkspace()?.activeArea}
-                onOpenGit={() => {
-                  const wsId = activeWorkspaceId();
-                  updateWorkspace(wsId, (ws) => ({ ...ws, activeArea: "git" }));
-                }}
-              />
-            )}
+            {(repoRoot) => {
+              const gitOpen = () => activeWorkspace()?.gitPanelOpen ?? false;
+              const toggleGit = () => {
+                const wsId = activeWorkspaceId();
+                updateWorkspace(wsId, (ws) => ({ ...ws, gitPanelOpen: !ws.gitPanelOpen }));
+              };
+              return (
+                <>
+                  <BottomPanel
+                    open={gitOpen()}
+                    onToggle={toggleGit}
+                    shortcutKey="g"
+                  >
+                    <GitTabContent
+                      repoPath={repoRoot()}
+                      onAddToContext={(filePath, content) => {
+                        const item = contextItemFromDiff(filePath, content);
+                        addContextItem(activeWorkspaceId(), item);
+                      }}
+                    />
+                  </BottomPanel>
+                  <GitStatusBar
+                    repoPath={repoRoot()}
+                    activeArea={activeWorkspace()?.activeArea}
+                    gitPanelOpen={gitOpen()}
+                    onToggleGit={toggleGit}
+                  />
+                </>
+              );
+            }}
           </Show>
+          <ContextIndicator
+            items={activeWorkspace()?.contextItems ?? []}
+            tokenEstimate={contextTokenEstimate()}
+            onRemoveItem={(id) => removeContextItem(activeWorkspaceId(), id)}
+            onOpenContextTab={() => {
+              updateWorkspace(activeWorkspaceId(), (ws) => ({ ...ws, activeArea: "contextBuilder" }));
+            }}
+          />
         </main>
       </div>
 

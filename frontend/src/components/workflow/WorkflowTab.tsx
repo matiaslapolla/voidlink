@@ -1,6 +1,7 @@
 import { Show, For } from "solid-js";
-import { Play } from "lucide-solid";
+import { Play, FileText } from "lucide-solid";
 import type { WorkflowDsl, RunState } from "@/types/migration";
+import type { ContextItem } from "@/types/context";
 
 function formatTimestamp(ms: number | null): string {
   if (!ms) return "-";
@@ -8,10 +9,16 @@ function formatTimestamp(ms: number | null): string {
 }
 
 interface WorkflowTabProps {
+  objective: string;
+  constraintsText: string;
+  contextItems: ContextItem[];
+  contextTokenEstimate: number;
   workflow: WorkflowDsl | null;
   runState: RunState | null;
   generatingWorkflow: boolean;
   runningWorkflow: boolean;
+  onObjectiveChange: (v: string) => void;
+  onConstraintsChange: (v: string) => void;
   onGenerate: () => void;
   onRun: () => void;
 }
@@ -19,6 +26,66 @@ interface WorkflowTabProps {
 export function WorkflowTab(props: WorkflowTabProps) {
   return (
     <div class="h-full overflow-auto p-4 space-y-4">
+      {/* Objective + Constraints */}
+      <div class="space-y-3">
+        <div>
+          <label class="block text-sm font-medium mb-1">Objective</label>
+          <textarea
+            value={props.objective}
+            onInput={(e) => props.onObjectiveChange(e.currentTarget.value)}
+            rows={3}
+            placeholder="Describe what this workflow should accomplish..."
+            class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none resize-y"
+          />
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium mb-1">Constraints (one per line)</label>
+          <textarea
+            value={props.constraintsText}
+            onInput={(e) => props.onConstraintsChange(e.currentTarget.value)}
+            rows={3}
+            placeholder="No destructive edits in v1&#10;Preserve existing behavior"
+            class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none resize-y"
+          />
+        </div>
+      </div>
+
+      {/* Context summary */}
+      <div class="rounded-md border border-border p-3 bg-card/40">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2 text-sm">
+            <FileText class="w-4 h-4 text-muted-foreground" />
+            <span class="font-medium">Context</span>
+          </div>
+          <span class="text-xs text-muted-foreground">
+            {props.contextItems.length} items | ~{props.contextTokenEstimate} tokens
+          </span>
+        </div>
+        <Show when={props.contextItems.length > 0}>
+          <div class="mt-2 flex flex-wrap gap-1.5">
+            <For each={props.contextItems.slice(0, 8)}>
+              {(item) => (
+                <span class="rounded bg-accent/60 px-1.5 py-0.5 text-xs text-muted-foreground truncate max-w-32">
+                  {item.label}
+                </span>
+              )}
+            </For>
+            <Show when={props.contextItems.length > 8}>
+              <span class="text-xs text-muted-foreground">
+                +{props.contextItems.length - 8} more
+              </span>
+            </Show>
+          </div>
+        </Show>
+        <Show when={props.contextItems.length === 0}>
+          <p class="mt-1 text-xs text-muted-foreground">
+            No context items. Add items from the Context tab first.
+          </p>
+        </Show>
+      </div>
+
+      {/* Actions */}
       <div class="flex flex-wrap gap-2">
         <button
           onClick={props.onGenerate}
@@ -37,6 +104,7 @@ export function WorkflowTab(props: WorkflowTabProps) {
         </button>
       </div>
 
+      {/* Workflow preview */}
       <Show when={props.workflow} fallback={<p class="text-sm text-muted-foreground">Generate a workflow to preview steps.</p>}>
         {(dsl) => (
           <div class="rounded-md border border-border p-3 space-y-3">
@@ -62,6 +130,7 @@ export function WorkflowTab(props: WorkflowTabProps) {
         )}
       </Show>
 
+      {/* Run state */}
       <Show when={props.runState}>
         {(runState) => (
           <div class="rounded-md border border-border p-3 space-y-3">
