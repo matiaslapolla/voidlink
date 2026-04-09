@@ -1,9 +1,6 @@
 import { migrationApi } from "@/api/migration";
 import type { WorkspaceState } from "@/types/workspace";
-
-function isScanTerminal(status: string): boolean {
-  return status === "success" || status === "failed";
-}
+import { isTerminalStatus } from "@/lib/statusUtils";
 
 interface ScanPollingDeps {
   getWorkspaces: () => WorkspaceState[];
@@ -29,7 +26,7 @@ export function createScanPolling(deps: ScanPollingDeps) {
         ...ws,
         scanStatus: status,
       }));
-      if (!isScanTerminal(status.status)) {
+      if (!isTerminalStatus(status.status)) {
         const timer = window.setTimeout(() => {
           void pollScanStatus(workspaceId, scanJobId);
         }, 800);

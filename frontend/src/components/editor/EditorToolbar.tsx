@@ -2,7 +2,7 @@ import { createSignal, onMount, onCleanup, For, Show } from "solid-js";
 import type { Editor } from "@tiptap/core";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Type, Heading, List, Plus, Quote } from "lucide-solid";
+import { Type, Heading, List, Plus } from "lucide-solid";
 import { ExportMenu } from "./ExportMenu";
 
 interface EditorToolbarProps {
@@ -146,28 +146,33 @@ export function EditorToolbar(props: EditorToolbarProps) {
         when={compact()}
         fallback={
           <>
-            <Button variant={props.editor.isActive("bold") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleBold().run())}>B</Button>
-            <Button variant={props.editor.isActive("italic") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleItalic().run())}>I</Button>
-            <Button variant={props.editor.isActive("strike") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleStrike().run())}>S</Button>
-            <Button variant={props.editor.isActive("code") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleCode().run())}>{"<>"}</Button>
-
-            <Separator orientation="vertical" class="h-6 mx-1" />
-
-            <Button variant={props.editor.isActive("heading", { level: 1 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleHeading({ level: 1 }).run())}>H1</Button>
-            <Button variant={props.editor.isActive("heading", { level: 2 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleHeading({ level: 2 }).run())}>H2</Button>
-            <Button variant={props.editor.isActive("heading", { level: 3 }) ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleHeading({ level: 3 }).run())}>H3</Button>
-
-            <Separator orientation="vertical" class="h-6 mx-1" />
-
-            <Button variant={props.editor.isActive("bulletList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleBulletList().run())}>List</Button>
-            <Button variant={props.editor.isActive("orderedList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleOrderedList().run())}>1.</Button>
-            <Button variant={props.editor.isActive("taskList") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleTaskList().run())}>Tasks</Button>
-            <Button variant={props.editor.isActive("codeBlock") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleCodeBlock().run())}>Code</Button>
-
-            <Separator orientation="vertical" class="h-6 mx-1" />
-
-            <Button variant="ghost" size="sm" onMouseDown={cmd(() => props.editor.chain().focus().setHorizontalRule().run())}>{"\u2014"}</Button>
-            <Button variant={props.editor.isActive("blockquote") ? "default" : "ghost"} size="sm" onMouseDown={cmd(() => props.editor.chain().focus().toggleBlockquote().run())}><Quote class="w-4 h-4" /></Button>
+            <For each={groups}>
+              {(group, groupIdx) => (
+                <>
+                  <Show when={groupIdx() > 0}>
+                    <Separator orientation="vertical" class="h-6 mx-1" />
+                  </Show>
+                  <For each={group.items}>
+                    {(item) => {
+                      const isActive = () => item.active
+                        ? Array.isArray(item.active)
+                          ? props.editor.isActive(item.active[0], item.active[1])
+                          : props.editor.isActive(item.active)
+                        : false;
+                      return (
+                        <Button
+                          variant={isActive() ? "default" : "ghost"}
+                          size="sm"
+                          onMouseDown={cmd(item.action)}
+                        >
+                          {item.label}
+                        </Button>
+                      );
+                    }}
+                  </For>
+                </>
+              )}
+            </For>
           </>
         }
       >
