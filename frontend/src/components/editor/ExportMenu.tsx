@@ -13,6 +13,95 @@ function htmlToPlainText(html: string): string {
   return div.textContent ?? "";
 }
 
+function htmlToMarkdown(html: string): string {
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  return convertNodeToMarkdown(div).trim() + "\n";
+}
+
+function convertNodeToMarkdown(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? "";
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+  const el = node as HTMLElement;
+  const tag = el.tagName.toLowerCase();
+  const childrenMd = () => Array.from(el.childNodes).map(convertNodeToMarkdown).join("");
+
+  switch (tag) {
+    case "h1": return `# ${childrenMd().trim()}\n\n`;
+    case "h2": return `## ${childrenMd().trim()}\n\n`;
+    case "h3": return `### ${childrenMd().trim()}\n\n`;
+    case "h4": return `#### ${childrenMd().trim()}\n\n`;
+    case "h5": return `##### ${childrenMd().trim()}\n\n`;
+    case "h6": return `###### ${childrenMd().trim()}\n\n`;
+    case "p": return `${childrenMd().trim()}\n\n`;
+    case "br": return "\n";
+    case "strong":
+    case "b": return `**${childrenMd()}**`;
+    case "em":
+    case "i": return `*${childrenMd()}*`;
+    case "s":
+    case "del": return `~~${childrenMd()}~~`;
+    case "code": {
+      // Inline code (not inside a <pre>)
+      const parent = el.parentElement;
+      if (parent && parent.tagName.toLowerCase() === "pre") {
+        return childrenMd();
+      }
+      return `\`${childrenMd()}\``;
+    }
+    case "pre": {
+      const codeEl = el.querySelector("code");
+      const content = codeEl ? (codeEl.textContent ?? "") : (el.textContent ?? "");
+      const lang = codeEl?.className?.match(/language-(\S+)/)?.[1] ?? "";
+      return `\`\`\`${lang}\n${content}\n\`\`\`\n\n`;
+    }
+    case "blockquote": {
+      const inner = childrenMd().trim();
+      const quoted = inner.split("\n").map((line) => `> ${line}`).join("\n");
+      return `${quoted}\n\n`;
+    }
+    case "ul": {
+      let result = "";
+      for (const child of Array.from(el.children)) {
+        if (child.tagName.toLowerCase() === "li") {
+          const text = convertNodeToMarkdown(child).trim();
+          result += `- ${text}\n`;
+        }
+      }
+      return `${result}\n`;
+    }
+    case "ol": {
+      let result = "";
+      let idx = 1;
+      for (const child of Array.from(el.children)) {
+        if (child.tagName.toLowerCase() === "li") {
+          const text = convertNodeToMarkdown(child).trim();
+          result += `${idx}. ${text}\n`;
+          idx++;
+        }
+      }
+      return `${result}\n`;
+    }
+    case "li": return childrenMd();
+    case "a": {
+      const href = el.getAttribute("href") ?? "";
+      const text = childrenMd();
+      return href ? `[${text}](${href})` : text;
+    }
+    case "hr": return `---\n\n`;
+    case "img": {
+      const alt = el.getAttribute("alt") ?? "";
+      const src = el.getAttribute("src") ?? "";
+      return `![${alt}](${src})`;
+    }
+    default: return childrenMd();
+  }
+}
+
 interface TableRow {
   type: string;
   content: string;
@@ -148,8 +237,8 @@ export function ExportMenu(props: ExportMenuProps) {
 
   const exportMarkdown = async () => {
     const html = props.editor.getHTML();
-    const text = htmlToPlainText(html);
-    await saveWithDialog(text, "export.md", "Markdown", "md");
+    const md = htmlToMarkdown(html);
+    await saveWithDialog(md, "export.md", "Markdown", "md");
     setOpen(false);
   };
 
@@ -176,12 +265,12 @@ export function ExportMenu(props: ExportMenuProps) {
               JSON
             </button>
           </TooltipWrapper>
-          <TooltipWrapper label="Export as Markdown text">
+          <TooltipWrapper label="Export as Markdown with formatting preserved">
             <button
               class="w-full text-left px-3 py-1.5 text-sm rounded-md hover:bg-accent"
               onClick={exportMarkdown}
             >
-              Plain Text
+              Markdown
             </button>
           </TooltipWrapper>
         </div>

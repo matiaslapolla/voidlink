@@ -1,7 +1,7 @@
 import { onMount, onCleanup } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { loadTerminalSettings } from "@/components/settings/SettingsPanel";
+import { loadTerminalSettings } from "@/lib/terminalSettings";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";

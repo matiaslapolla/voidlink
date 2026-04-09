@@ -1,6 +1,7 @@
 import { createSignal, Show, For } from "solid-js";
-import { X, Plus, FileText, GitCommit, Search, MessageSquare } from "lucide-solid";
-import type { ContextItem, ContextItemKind } from "@/types/context";
+import { X, Plus } from "lucide-solid";
+import type { ContextItem } from "@/types/context";
+import { KIND_ICON, KIND_LABEL } from "@/lib/contextUtils";
 
 interface ContextBuilderTabProps {
   contextItems: ContextItem[];
@@ -8,20 +9,6 @@ interface ContextBuilderTabProps {
   onRemoveItem: (itemId: string) => void;
   onAddFreetext: (label: string, content: string) => void;
 }
-
-const KIND_ICON: Record<ContextItemKind, any> = {
-  "search-result": Search,
-  file: FileText,
-  "diff-hunk": GitCommit,
-  freetext: MessageSquare,
-};
-
-const KIND_LABEL: Record<ContextItemKind, string> = {
-  "search-result": "Search",
-  file: "File",
-  "diff-hunk": "Diff",
-  freetext: "Note",
-};
 
 export function ContextBuilderTab(props: ContextBuilderTabProps) {
   const [showAddNote, setShowAddNote] = createSignal(false);

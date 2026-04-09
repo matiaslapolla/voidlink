@@ -1,6 +1,7 @@
 import { createSignal, Show, For } from "solid-js";
-import { Layers, X, FileText, GitCommit, Search, MessageSquare } from "lucide-solid";
-import type { ContextItem, ContextItemKind } from "@/types/context";
+import { Layers, X } from "lucide-solid";
+import type { ContextItem } from "@/types/context";
+import { KIND_ICON } from "@/lib/contextUtils";
 
 interface ContextIndicatorProps {
   items: ContextItem[];
@@ -8,13 +9,6 @@ interface ContextIndicatorProps {
   onRemoveItem: (id: string) => void;
   onOpenContextTab: () => void;
 }
-
-const KIND_ICON: Record<ContextItemKind, any> = {
-  "search-result": Search,
-  file: FileText,
-  "diff-hunk": GitCommit,
-  freetext: MessageSquare,
-};
 
 export function ContextIndicator(props: ContextIndicatorProps) {
   const [open, setOpen] = createSignal(false);

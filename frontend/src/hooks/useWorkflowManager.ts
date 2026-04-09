@@ -1,9 +1,6 @@
 import { migrationApi } from "@/api/migration";
 import type { WorkspaceState } from "@/types/workspace";
-
-function isRunTerminal(status: string): boolean {
-  return status === "success" || status === "failed";
-}
+import { isTerminalStatus } from "@/lib/statusUtils";
 
 function parseConstraintLines(input: string): string[] {
   return input
@@ -35,9 +32,9 @@ export function createWorkflowManager(deps: WorkflowManagerDeps) {
       deps.updateWorkspace(workspaceId, (ws) => ({
         ...ws,
         runState,
-        runningWorkflow: !isRunTerminal(runState.status),
+        runningWorkflow: !isTerminalStatus(runState.status),
       }));
-      if (!isRunTerminal(runState.status)) {
+      if (!isTerminalStatus(runState.status)) {
         const timer = window.setTimeout(() => {
           void pollRunStatus(workspaceId, runId);
         }, 900);
