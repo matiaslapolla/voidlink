@@ -14,7 +14,8 @@ export type CenterTabType =
   | "terminal"
   | "file"
   | "image"
-  | "svg";
+  | "svg"
+  | "diff";
 
 /** Kept for backward compat in NavTree tabTarget */
 export type CenterTabId = CenterTabType;
@@ -25,6 +26,7 @@ export interface TabMeta {
   filePath?: string;
   cwd?: string;
   ptyId?: string;
+  scrollToLine?: number;
 }
 
 export interface TabInstance {
@@ -79,6 +81,9 @@ export interface LayoutStoreActions {
   /** Open a file as a pinned tab (double-click). Promotes preview if it matches. */
   openFilePinned: (wsId: string, filePath: string) => void;
 
+  /** Open a file and scroll to a specific line. */
+  openFileAtLine: (wsId: string, filePath: string, line: number) => void;
+
   /** Pin a tab (convert from preview to permanent). */
   pinTab: (wsId: string, tabId: string) => void;
 
@@ -115,6 +120,7 @@ function labelForType(type: CenterTabType): string {
     file: "File",
     image: "Image",
     svg: "SVG",
+    diff: "Diff",
   };
   return map[type] || type;
 }
@@ -349,6 +355,48 @@ export function createLayoutStore() {
             preview: true,
           };
           // Replace existing preview tab if any
+          const previewIdx = entry.tabs.findIndex((t) => t.preview);
+          if (previewIdx !== -1) {
+            entry.tabs.splice(previewIdx, 1, tab);
+          } else {
+            entry.tabs.push(tab);
+          }
+          entry.activeTabId = tab.id;
+        }),
+      );
+    },
+
+    openFileAtLine: (wsId, filePath, line) => {
+      setStore(
+        produce((s) => {
+          if (!s.centerTabsByWorkspace[wsId]) {
+            s.centerTabsByWorkspace[wsId] = { tabs: [], activeTabId: "" };
+          }
+          const entry = s.centerTabsByWorkspace[wsId];
+          // If there's already a tab for this file, activate it and set scrollToLine
+          const existing = entry.tabs.find(
+            (t) => (t.type === "file" || t.type === "image" || t.type === "svg") &&
+              t.meta.filePath === filePath,
+          );
+          if (existing) {
+            existing.meta.scrollToLine = line;
+            entry.activeTabId = existing.id;
+            return;
+          }
+          const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+          const type: CenterTabType = IMAGE_EXTS.has(ext)
+            ? "image"
+            : ext === "svg"
+              ? "svg"
+              : "file";
+          const label = filePath.split("/").pop() ?? filePath;
+          const tab: TabInstance = {
+            id: crypto.randomUUID(),
+            type,
+            label,
+            meta: { filePath, scrollToLine: line },
+            preview: true,
+          };
           const previewIdx = entry.tabs.findIndex((t) => t.preview);
           if (previewIdx !== -1) {
             entry.tabs.splice(previewIdx, 1, tab);

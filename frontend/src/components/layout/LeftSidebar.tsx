@@ -11,16 +11,13 @@ import {
   ChevronDown,
   FilePlus2,
   Trash2,
-  FolderOpen,
-  RefreshCcw,
-  RotateCw,
 } from "lucide-solid";
 import { FileExplorer } from "@/components/layout/FileExplorer";
 import { NavTree } from "@/components/layout/NavTree";
 import { useLayout } from "@/store/LayoutContext";
 import { sendToTerminal } from "@/store/terminal-bridge";
 import { terminalApi } from "@/api/terminal";
-import type { NavNode, NavNodeAction } from "@/components/layout/NavTree";
+import type { NavNode } from "@/components/layout/NavTree";
 import type { WorkspaceState } from "@/types/workspace";
 
 interface LeftSidebarProps {
@@ -31,8 +28,6 @@ interface LeftSidebarProps {
   onRemoveWorkspace: (id: string) => void;
   onRenameWorkspace: (id: string, name: string) => void;
   onSettingsOpen: () => void;
-  onChooseRepo: () => void;
-  onScan: (full: boolean) => void;
   repoRoot: string | null;
 }
 
@@ -179,32 +174,6 @@ export function LeftSidebar(props: LeftSidebarProps) {
     return tab?.type ?? null;
   });
 
-  const scanActions = createMemo((): NavNodeAction[] => {
-    const hasRepo = !!props.repoRoot;
-    return [
-      {
-        id: "chooseRepo",
-        label: "Choose Repository",
-        icon: FolderOpen,
-        onClick: props.onChooseRepo,
-      },
-      {
-        id: "scan",
-        label: "Scan",
-        icon: RefreshCcw,
-        onClick: () => props.onScan(false),
-        disabled: !hasRepo,
-      },
-      {
-        id: "fullRescan",
-        label: "Full Rescan",
-        icon: RotateCw,
-        onClick: () => props.onScan(true),
-        disabled: !hasRepo,
-      },
-    ];
-  });
-
   const navNodes = createMemo((): NavNode[] => {
     const ws = activeWs();
     const hasRepo = !!ws?.repoRoot;
@@ -216,7 +185,6 @@ export function LeftSidebar(props: LeftSidebarProps) {
         icon: DatabaseZap,
         iconColor: "text-icon-repository",
         tabTarget: "repository",
-        actions: scanActions(),
       },
       {
         id: "contextBuilder",

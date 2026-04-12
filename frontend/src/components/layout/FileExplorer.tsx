@@ -15,6 +15,7 @@ import {
   Bot,
   TerminalSquare,
   Pencil,
+  Columns,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import type { GitFileStatus } from "@/types/git";
@@ -63,6 +64,7 @@ function FileNode(props: {
   depth: number;
   onOpenFile: (path: string) => void;
   onOpenFilePinned: (path: string) => void;
+  onOpenDiff: (path: string) => void;
   onRefresh: () => void;
   explorerProps: FileExplorerProps;
   gitStatusMap: GitStatusMap;
@@ -335,6 +337,12 @@ function FileNode(props: {
             <FolderInput class="w-3.5 h-3.5" />
             Open
           </ContextMenuItem>
+          <Show when={!props.entry.is_dir}>
+            <ContextMenuItem onSelect={() => props.onOpenDiff(props.entry.path)}>
+              <Columns class="w-3.5 h-3.5" />
+              Split Diff View
+            </ContextMenuItem>
+          </Show>
           <ContextMenuItem onSelect={handleRename}>
             <Pencil class="w-3.5 h-3.5" />
             Rename
@@ -414,6 +422,7 @@ function FileNode(props: {
               depth={props.depth + 1}
               onOpenFile={props.onOpenFile}
               onOpenFilePinned={props.onOpenFilePinned}
+              onOpenDiff={props.onOpenDiff}
               onRefresh={props.onRefresh}
               explorerProps={props.explorerProps}
               gitStatusMap={props.gitStatusMap}
@@ -498,6 +507,18 @@ export function FileExplorer(props: FileExplorerProps) {
     }
   };
 
+  const handleOpenDiff = (filePath: string) => {
+    if (props.activeWorkspaceId) {
+      const label = `Diff: ${filePath.split("/").pop() ?? filePath}`;
+      actions.openTab(props.activeWorkspaceId, {
+        id: `diff:${filePath}`,
+        type: "diff",
+        label,
+        meta: { filePath },
+      });
+    }
+  };
+
   // Handle paste from clipboard
   const handlePaste = async (targetDir: string) => {
     const src = clipboardPath();
@@ -554,6 +575,7 @@ export function FileExplorer(props: FileExplorerProps) {
                 depth={0}
                 onOpenFile={handleOpenFile}
                 onOpenFilePinned={handleOpenFilePinned}
+                onOpenDiff={handleOpenDiff}
                 onRefresh={handleRefresh}
                 explorerProps={props}
                 gitStatusMap={gitStatusMap()}

@@ -1,12 +1,12 @@
 import { Show, For, createMemo } from "solid-js";
 import { MountOnce } from "@/components/layout/MountOnce";
-import { RepositoryHeader } from "@/components/repository/RepositoryHeader";
-import { SearchTab } from "@/components/repository/SearchTab";
+import { RepositoryView } from "@/components/repository/RepositoryView";
 import { ContextBuilderTab } from "@/components/context/ContextBuilderTab";
 import { WorkflowTab } from "@/components/workflow/WorkflowTab";
 import { AgentChatView } from "@/components/agent/AgentChatView";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { FileEditor } from "@/components/editor/FileEditor";
+import { SplitDiffView } from "@/components/editor/SplitDiffView";
 import { BreadcrumbBar } from "@/components/layout/BreadcrumbBar";
 import { CenterTabBar } from "@/components/layout/CenterTabBar";
 import { useLayout } from "@/store/LayoutContext";
@@ -26,6 +26,8 @@ interface CenterColumnProps {
   onConstraintsChange: (v: string) => void;
   onGenerate: () => void;
   onRun: () => void;
+  onChooseRepo: () => void;
+  onScan: (full: boolean) => void;
 }
 
 const SINGLETON_TYPES = new Set(["repository", "contextBuilder", "workflow", "aiAgent"]);
@@ -58,31 +60,22 @@ export function CenterColumn(props: CenterColumnProps) {
       <section class="flex-1 overflow-hidden relative">
         {/* Singleton: Repository */}
         <div
-          class="absolute inset-0"
+          class="absolute inset-0 h-full"
           style={{ display: activeType() === "repository" ? "block" : "none" }}
         >
-          <div class="flex flex-col h-full overflow-hidden">
-            <RepositoryHeader
-              scanStatus={ws().scanStatus}
-              lastError={ws().lastError}
-            />
-            <div class="flex-1 overflow-auto">
-              <SearchTab
-                searchQuery={ws().searchQuery}
-                searchResults={ws().searchResults}
-                searching={ws().searching}
-                repoRoot={ws().repoRoot}
-                onQueryChange={props.onQueryChange}
-                onSearch={props.onSearch}
-                onAddContext={props.onAddContext}
-              />
-            </div>
-          </div>
+          <RepositoryView
+            workspace={ws()}
+            onSearch={props.onSearch}
+            onQueryChange={props.onQueryChange}
+            onAddContext={props.onAddContext}
+            onChooseRepo={props.onChooseRepo}
+            onScan={props.onScan}
+          />
         </div>
 
         {/* Singleton: Context Builder */}
         <div
-          class="absolute inset-0"
+          class="absolute inset-0 h-full"
           style={{ display: activeType() === "contextBuilder" ? "block" : "none" }}
         >
           <ContextBuilderTab
@@ -95,7 +88,7 @@ export function CenterColumn(props: CenterColumnProps) {
 
         {/* Singleton: Workflow */}
         <div
-          class="absolute inset-0"
+          class="absolute inset-0 h-full"
           style={{ display: activeType() === "workflow" ? "block" : "none" }}
         >
           <WorkflowTab
@@ -118,7 +111,7 @@ export function CenterColumn(props: CenterColumnProps) {
         <MountOnce when={ws().repoRoot}>
           {(repoRoot) => (
             <div
-              class="absolute inset-0 overflow-hidden"
+              class="absolute inset-0 h-full overflow-hidden"
               style={{ display: activeType() === "aiAgent" ? "block" : "none" }}
             >
               <AgentChatView repoPath={repoRoot()} />
@@ -130,7 +123,7 @@ export function CenterColumn(props: CenterColumnProps) {
         <For each={dynamicTabs()}>
           {(tab) => (
             <div
-              class="absolute inset-0 overflow-hidden"
+              class="absolute inset-0 h-full overflow-hidden"
               style={{ display: activeTab()?.id === tab.id ? "block" : "none" }}
             >
               <Show when={tab.type === "file" || tab.type === "image" || tab.type === "svg"}>
@@ -139,6 +132,12 @@ export function CenterColumn(props: CenterColumnProps) {
                   tabId={tab.id}
                   workspaceId={props.workspace.id}
                   repoPath={ws().repoRoot}
+                />
+              </Show>
+              <Show when={tab.type === "diff" && tab.meta.filePath}>
+                <SplitDiffView
+                  filePath={tab.meta.filePath!}
+                  repoPath={ws().repoRoot ?? ""}
                 />
               </Show>
               <Show when={tab.type === "terminal" && tab.meta.ptyId}>
