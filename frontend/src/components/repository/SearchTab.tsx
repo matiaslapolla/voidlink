@@ -10,6 +10,7 @@ interface SearchTabProps {
   onQueryChange: (query: string) => void;
   onSearch: () => void;
   onAddContext: (result: SearchResult) => void;
+  onOpenFile?: (filePath: string, line?: number) => void;
 }
 
 export function SearchTab(props: SearchTabProps) {
@@ -45,7 +46,17 @@ export function SearchTab(props: SearchTabProps) {
               <article class="rounded-md border border-border bg-card/60 p-3 space-y-2">
                 <div class="flex items-start justify-between gap-3">
                   <div>
-                    <div class="font-medium text-sm">{result.filePath}</div>
+                    <button
+                      class="font-medium text-sm text-primary hover:underline cursor-pointer text-left"
+                      onClick={() => {
+                        if (!props.onOpenFile) return;
+                        const lineMatch = result.anchor.match(/:(\d+)/);
+                        const line = lineMatch ? parseInt(lineMatch[1], 10) : undefined;
+                        props.onOpenFile(result.filePath, line);
+                      }}
+                    >
+                      {result.filePath}
+                    </button>
                     <div class="text-xs text-muted-foreground">{result.anchor}</div>
                   </div>
                   <button

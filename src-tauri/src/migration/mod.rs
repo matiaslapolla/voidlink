@@ -1,4 +1,5 @@
 pub(crate) mod chunks;
+pub(crate) mod dataflow;
 pub(crate) mod db;
 pub(crate) mod graph;
 pub(crate) mod path_utils;
@@ -9,6 +10,7 @@ pub(crate) mod workflow;
 
 use db::SqliteStore;
 use path_utils::{canonicalize_repo_path, default_db_path, now_ms};
+use rusqlite::params;
 use provider::ProviderAdapter;
 use scan::execute_scan_job;
 use search::perform_search;
@@ -469,6 +471,141 @@ pub fn get_run_status(
 
 pub fn get_startup_repo_path(state: tauri::State<'_, MigrationState>) -> Option<String> {
     state.startup_repo_path.clone()
+}
+
+pub fn get_repo_graph(
+    state: tauri::State<'_, MigrationState>,
+    repo_path: String,
+) -> Result<graph::RepoGraph, String> {
+    graph::fetch_repo_graph(&state.db, &repo_path)
+}
+
+// ─── Entity identification ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityCategory {
+    pub category: String,
+    pub file_paths: Vec<String>,
+    pub confidence: f32,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityAnalysisResult {
+    pub categories: Vec<EntityCategory>,
+    pub uncategorized: Vec<String>,
+}
+
+pub fn identify_entities(
+    state: tauri::State<'_, MigrationState>,
+    repo_path: String,
+) -> Result<EntityAnalysisResult, String> {
+    let canonical = canonicalize_repo_path(&repo_path)?;
+    let conn = state.db.open()?;
+
+    let repo_id: String = conn
+        .query_row(
+            "SELECT id FROM repos WHERE root_path = ?1",
+            params![canonical],
+            |row| row.get(0),
+        )
+        .map_err(|_| format!("Repository not found: {canonical}"))?;
+
+    let mut paths = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT path FROM files WHERE repo_id = ?1 ORDER BY path")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query(params![repo_id]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let path = row.get::<_, String>(0).map_err(|e| e.to_string())?;
+            paths.push(path);
+        }
+    }
+
+    if paths.is_empty() {
+        return Ok(EntityAnalysisResult {
+            categories: vec![],
+            uncategorized: vec![],
+        });
+    }
+
+    // Batch file paths (max ~100 per batch) to stay within LLM context
+    let mut all_categories: Vec<EntityCategory> = Vec::new();
+    let mut all_uncategorized: Vec<String> = Vec::new();
+
+    for batch in paths.chunks(100) {
+        let file_list = batch.join("\n");
+        let prompt = format!(
+            r#"Analyze the following file paths from a software repository and categorize each file into entity types based on its name and path.
+
+Common categories include: model, service, controller, route, middleware, util, config, test, component, hook, store, type, migration, script, asset, style, documentation.
+
+Return ONLY valid JSON with this structure:
+{{
+  "categories": [
+    {{
+      "category": "model",
+      "filePaths": ["src/models/user.ts", "src/models/post.ts"],
+      "confidence": 0.9,
+      "description": "Data models and entity definitions"
+    }}
+  ],
+  "uncategorized": ["some/ambiguous/file.ts"]
+}}
+
+File paths:
+{file_list}"#
+        );
+
+        match state.llm_chat(&prompt, true) {
+            Ok(response) => {
+                if let Ok(result) = serde_json::from_str::<EntityAnalysisResult>(&response) {
+                    all_categories.extend(result.categories);
+                    all_uncategorized.extend(result.uncategorized);
+                }
+            }
+            Err(e) => {
+                log::warn!("LLM entity identification batch failed: {e}");
+                all_uncategorized.extend(batch.iter().cloned());
+            }
+        }
+    }
+
+    // Merge duplicate categories
+    let mut merged: HashMap<String, EntityCategory> = HashMap::new();
+    for cat in all_categories {
+        let entry = merged.entry(cat.category.clone()).or_insert(EntityCategory {
+            category: cat.category,
+            file_paths: vec![],
+            confidence: cat.confidence,
+            description: cat.description,
+        });
+        entry.file_paths.extend(cat.file_paths);
+        entry.confidence = (entry.confidence + cat.confidence) / 2.0;
+    }
+
+    let mut categories: Vec<EntityCategory> = merged.into_values().collect();
+    categories.sort_by(|a, b| b.file_paths.len().cmp(&a.file_paths.len()));
+
+    Ok(EntityAnalysisResult {
+        categories,
+        uncategorized: all_uncategorized,
+    })
+}
+
+// ─── Data-flow analysis ─────────────────────────────────────────────────────
+
+pub fn analyze_data_flows(
+    state: tauri::State<'_, MigrationState>,
+    repo_path: String,
+) -> Result<dataflow::DataFlowAnalysisResult, String> {
+    let shared = state.inner().clone();
+    dataflow::analyze_data_flows(&shared.db, &repo_path, &|prompt, json_mode| {
+        shared.llm_chat(prompt, json_mode)
+    })
 }
 
 #[cfg(test)]

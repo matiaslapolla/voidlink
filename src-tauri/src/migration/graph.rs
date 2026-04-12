@@ -1,11 +1,144 @@
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use uuid::Uuid;
 
-use super::path_utils::{join_relative, normalize_relative_path, parent_rel_path, split_relative_path};
+use super::db::SqliteStore;
+use super::path_utils::{canonicalize_repo_path, join_relative, normalize_relative_path, parent_rel_path, split_relative_path};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNode {
+    pub id: String,
+    pub label: String,
+    pub node_type: String,
+    pub language: Option<String>,
+    pub file_path: Option<String>,
+    pub size_bytes: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    pub edge_type: String,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoGraph {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+pub fn fetch_repo_graph(db: &SqliteStore, repo_path: &str) -> Result<RepoGraph, String> {
+    let canonical = canonicalize_repo_path(repo_path)?;
+    let conn = db.open()?;
+
+    // Get repo_id
+    let repo_id: String = conn
+        .query_row(
+            "SELECT id FROM repos WHERE root_path = ?1",
+            params![canonical],
+            |row| row.get(0),
+        )
+        .map_err(|_| format!("Repository not found: {canonical}"))?;
+
+    // Load file nodes
+    let mut nodes = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, path, language, size_bytes FROM files WHERE repo_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query(params![repo_id]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let id = row.get::<_, String>(0).map_err(|e| e.to_string())?;
+            let path = row.get::<_, String>(1).map_err(|e| e.to_string())?;
+            let language = row.get::<_, String>(2).map_err(|e| e.to_string())?;
+            let size_bytes: Option<i64> = row.get::<_, Option<i64>>(3).map_err(|e| e.to_string())?;
+            let label = path.rsplit('/').next().unwrap_or(&path).to_string();
+            nodes.push(GraphNode {
+                id,
+                label,
+                node_type: "file".to_string(),
+                language: Some(language),
+                file_path: Some(path),
+                size_bytes,
+            });
+        }
+    }
+
+    // Load edges (exclude "contains" edges for visualization performance)
+    let mut edges = Vec::new();
+    let mut extra_node_ids = HashSet::<String>::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT source_id, target_id, edge_type, metadata_json FROM edges WHERE repo_id = ?1 AND edge_type != 'contains'",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query(params![repo_id]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let source = row.get::<_, String>(0).map_err(|e| e.to_string())?;
+            let target = row.get::<_, String>(1).map_err(|e| e.to_string())?;
+            let edge_type = row.get::<_, String>(2).map_err(|e| e.to_string())?;
+            let meta_raw = row.get::<_, String>(3).map_err(|e| e.to_string())?;
+            let metadata: Value = serde_json::from_str(&meta_raw).unwrap_or(Value::Null);
+
+            // Collect dir:* and external:* nodes
+            for node_id in &[&source, &target] {
+                if node_id.starts_with("dir:") || node_id.starts_with("external:") {
+                    extra_node_ids.insert((*node_id).clone());
+                }
+            }
+
+            edges.push(GraphEdge {
+                source,
+                target,
+                edge_type,
+                metadata,
+            });
+        }
+    }
+
+    // Build synthetic nodes for directories and externals
+    let file_ids: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    for node_id in extra_node_ids {
+        if file_ids.contains(&node_id) {
+            continue;
+        }
+        if node_id.starts_with("dir:") {
+            let dir_path = &node_id["dir:".len()..];
+            let label = dir_path.rsplit('/').next().unwrap_or(dir_path).to_string();
+            let file_path = dir_path.to_string();
+            nodes.push(GraphNode {
+                id: node_id,
+                label,
+                node_type: "directory".to_string(),
+                language: None,
+                file_path: Some(file_path),
+                size_bytes: None,
+            });
+        } else if node_id.starts_with("external:") {
+            let ext_name = node_id["external:".len()..].to_string();
+            nodes.push(GraphNode {
+                id: node_id,
+                label: ext_name,
+                node_type: "external".to_string(),
+                language: None,
+                file_path: None,
+                size_bytes: None,
+            });
+        }
+    }
+
+    Ok(RepoGraph { nodes, edges })
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct FileRecord {

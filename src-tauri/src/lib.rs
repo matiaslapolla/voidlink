@@ -383,6 +383,30 @@ fn get_startup_repo_path(
 }
 
 #[tauri::command]
+fn get_repo_graph(
+    repo_path: String,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<migration::graph::RepoGraph, String> {
+    migration::get_repo_graph(state, repo_path)
+}
+
+#[tauri::command]
+fn identify_entities(
+    repo_path: String,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<migration::EntityAnalysisResult, String> {
+    migration::identify_entities(state, repo_path)
+}
+
+#[tauri::command]
+fn analyze_data_flows(
+    repo_path: String,
+    state: tauri::State<migration::MigrationState>,
+) -> Result<migration::dataflow::DataFlowAnalysisResult, String> {
+    migration::analyze_data_flows(state, repo_path)
+}
+
+#[tauri::command]
 fn reload_provider(state: tauri::State<migration::MigrationState>) -> Result<(), String> {
     migration::reload_provider(state)
 }
@@ -451,6 +475,9 @@ pub fn run() {
             run_workflow,
             get_run_status,
             get_startup_repo_path,
+            get_repo_graph,
+            identify_entities,
+            analyze_data_flows,
             // Phase 1: Git foundation
             git::git_repo_info,
             git::git_list_branches,

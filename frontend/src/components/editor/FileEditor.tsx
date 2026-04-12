@@ -213,6 +213,7 @@ function CodeView(props: {
   workspaceId?: string;
   editBuffer: string;
   onEdit: (text: string) => void;
+  scrollToLine?: number;
 }) {
   const [lines, setLines] = createSignal<string[]>([]);
   const [lineChanges, setLineChanges] = createSignal<Map<number, string>>(new Map());
@@ -384,6 +385,22 @@ function CodeView(props: {
             ));
           }
         }, 100);
+      },
+    ),
+  );
+
+  // Scroll to target line after content renders
+  createEffect(
+    on(
+      () => [lines().length, props.scrollToLine] as const,
+      ([count, target]) => {
+        if (!target || count === 0 || !scrollContainerRef) return;
+        requestAnimationFrame(() => {
+          const lineHeight = 12 * 1.6; // font-size * line-height
+          const top = Math.max(0, (target - 1)) * lineHeight;
+          scrollContainerRef!.scrollTop = top;
+          if (gutterRef) gutterRef.scrollTop = top;
+        });
       },
     ),
   );
@@ -620,8 +637,15 @@ export function FileEditor(props: FileEditorProps) {
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
-  const [, layoutActions] = useLayout();
+  const [layout, layoutActions] = useLayout();
   const dirty = () => content() != null && editBuffer() !== content();
+
+  const scrollToLine = createMemo(() => {
+    const ws = layout.centerTabsByWorkspace[props.workspaceId];
+    if (!ws) return undefined;
+    const tab = ws.tabs.find((t) => t.id === props.tabId);
+    return tab?.meta.scrollToLine;
+  });
 
   // Auto-pin the tab when file is modified
   createEffect(() => {
@@ -727,6 +751,7 @@ export function FileEditor(props: FileEditorProps) {
             onEdit={setEditBuffer}
             repoPath={props.repoPath}
             workspaceId={props.workspaceId}
+            scrollToLine={scrollToLine()}
           />
         </Show>
       </div>

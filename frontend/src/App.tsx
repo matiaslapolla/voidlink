@@ -338,8 +338,6 @@ function App() {
             onRemoveWorkspace={removeWorkspace}
             onRenameWorkspace={(id, name) => updateWorkspace(id, (ws) => ({ ...ws, name }))}
             onSettingsOpen={() => setSettingsOpen(true)}
-            onChooseRepo={() => void chooseRepository(activeWorkspaceId())}
-            onScan={(full) => void scanPolling.startScan(activeWorkspaceId(), full)}
             repoRoot={activeWorkspace()?.repoRoot ?? null}
           />
         }
@@ -364,6 +362,8 @@ function App() {
                     onConstraintsChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, constraintsText: v }))}
                     onGenerate={() => void workflowManager.generateWorkflow(ws().id)}
                     onRun={() => void workflowManager.runWorkflow(ws().id)}
+                    onChooseRepo={() => void chooseRepository(ws().id)}
+                    onScan={(full) => void scanPolling.startScan(ws().id, full)}
                   />
                 );
               }}

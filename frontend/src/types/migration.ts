@@ -124,3 +124,61 @@ export interface RunState {
   steps: RunStepState[];
   events: RunEvent[];
 }
+
+// ─── Graph types ────────────────────────────────────────────────────────────
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  nodeType: "file" | "directory" | "external";
+  language: string | null;
+  filePath: string | null;
+  sizeBytes: number | null;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  edgeType: "import" | "path_parent";
+  metadata: Record<string, unknown>;
+}
+
+export interface RepoGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+// ─── Entity identification types ────────────────────────────────────────────
+
+export interface EntityCategory {
+  category: string;
+  filePaths: string[];
+  confidence: number;
+  description: string;
+}
+
+export interface EntityAnalysisResult {
+  categories: EntityCategory[];
+  uncategorized: string[];
+}
+
+// ─── Data-flow analysis types ───────────────────────────────────────────────
+
+export interface DataFlowStep {
+  filePath: string;
+  description: string;
+  role: "source" | "transform" | "sink" | "middleware";
+}
+
+export interface DataPipeline {
+  id: string;
+  name: string;
+  description: string;
+  steps: DataFlowStep[];
+  confidence: number;
+}
+
+export interface DataFlowAnalysisResult {
+  pipelines: DataPipeline[];
+  summary: string;
+}
