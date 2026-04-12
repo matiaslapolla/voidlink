@@ -485,6 +485,7 @@ pub fn run() {
             git::git_log,
             git::git_checkout_branch,
             git::git_stage_files,
+            git::git_unstage_files,
             git::git_stage_all,
             git::git_commit,
             git::git_push,

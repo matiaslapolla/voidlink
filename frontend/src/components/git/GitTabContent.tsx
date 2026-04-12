@@ -1,4 +1,4 @@
-import { createSignal, createResource, Show } from "solid-js";
+import { createSignal, createResource, Show, For } from "solid-js";
 import {
   GitBranch,
   GitCommit,
@@ -7,6 +7,13 @@ import {
   History,
   Columns2,
   Rows3,
+  Plus,
+  Minus,
+  Check,
+  FilePlus,
+  FileMinus,
+  FileText,
+  FileQuestion,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { ResizeHandle } from "@/components/layout/ResizeHandle";
@@ -74,10 +81,62 @@ export function GitTabContent(props: GitTabContentProps) {
   };
 
   // Status / diff data
-  const [workingDiff] = createResource(
+  const [workingDiff, { refetch: refetchDiff }] = createResource(
     () => props.repoPath,
     (path) => gitApi.diffWorking(path),
   );
+
+  const [fileStatus, { refetch: refetchStatus }] = createResource(
+    () => props.repoPath,
+    (path) => gitApi.fileStatus(path),
+  );
+
+  // Commit form state
+  const [commitMsg, setCommitMsg] = createSignal("");
+  const [committing, setCommitting] = createSignal(false);
+  const [commitError, setCommitError] = createSignal("");
+  const [commitSuccess, setCommitSuccess] = createSignal(false);
+
+  const stagedFiles = () => (fileStatus() ?? []).filter((f) => f.staged);
+  const unstagedFiles = () => (fileStatus() ?? []).filter((f) => !f.staged);
+
+  async function handleStageFile(path: string) {
+    await gitApi.stageFiles(props.repoPath, [path]);
+    refetchStatus();
+    refetchDiff();
+  }
+
+  async function handleUnstageFile(path: string) {
+    await gitApi.unstageFiles(props.repoPath, [path]);
+    refetchStatus();
+    refetchDiff();
+  }
+
+  async function handleStageAll() {
+    await gitApi.stageAll(props.repoPath);
+    refetchStatus();
+    refetchDiff();
+  }
+
+  async function handleCommit() {
+    const msg = commitMsg().trim();
+    if (!msg || stagedFiles().length === 0) return;
+    setCommitting(true);
+    setCommitError("");
+    setCommitSuccess(false);
+    try {
+      await gitApi.commit(props.repoPath, msg);
+      setCommitMsg("");
+      setCommitSuccess(true);
+      setTimeout(() => setCommitSuccess(false), 2500);
+      refetchStatus();
+      refetchDiff();
+    } catch (e) {
+      setCommitError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCommitting(false);
+    }
+  }
 
   const openReview = (prNumber: number) => {
     setReviewPr(prNumber);
@@ -156,34 +215,130 @@ export function GitTabContent(props: GitTabContentProps) {
               </button>
             </div>
             <div class="flex-1 flex overflow-hidden">
-              <Show when={workingDiff()}>
-                {(diff) => (
-                  <>
-                    <div class="w-48 flex-shrink-0">
-                      <DiffFileList
-                        files={diff().files}
-                        selectedFile={selectedFile() ?? undefined}
-                        onSelectFile={setSelectedFile}
-                      />
-                    </div>
-                    <div class="flex-1 overflow-y-auto p-3">
-                      <Show
-                        when={diffMode() === "split"}
-                        fallback={
-                          <DiffViewer diff={diff()} onFileClick={setSelectedFile} onAddToContext={props.onAddToContext} />
-                        }
-                      >
-                        <SplitDiffViewer diff={diff()} onFileClick={setSelectedFile} onAddToContext={props.onAddToContext} />
+              {/* Left panel: commit form + staging file list */}
+              <div class="w-56 flex-shrink-0 border-r border-border bg-sidebar flex flex-col overflow-hidden">
+                {/* Commit message */}
+                <div class="p-2 border-b border-border/50">
+                  <textarea
+                    placeholder="Commit message"
+                    value={commitMsg()}
+                    onInput={(e) => setCommitMsg(e.currentTarget.value)}
+                    class="w-full rounded-md bg-muted/50 border border-border/60 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-ring focus:border-ring"
+                    rows={3}
+                    onKeyDown={(e) => {
+                      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                        e.preventDefault();
+                        handleCommit();
+                      }
+                    }}
+                  />
+                  <div class="flex items-center gap-1.5 mt-1.5">
+                    <button
+                      disabled={committing() || stagedFiles().length === 0 || !commitMsg().trim()}
+                      onClick={() => void handleCommit()}
+                      class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Show when={commitSuccess()} fallback={
+                        committing() ? "Committing..." : <>Commit ({stagedFiles().length})</>
+                      }>
+                        <Check class="w-3 h-3" /> Done
                       </Show>
-                    </div>
-                  </>
-                )}
-              </Show>
-              <Show when={!workingDiff() && !workingDiff.loading}>
-                <div class="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-                  Working tree is clean
+                    </button>
+                    <button
+                      onClick={() => void handleStageAll()}
+                      class="px-2 py-1 rounded-md text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+                      title="Stage all changes"
+                    >
+                      <Plus class="w-3 h-3" />
+                    </button>
+                  </div>
+                  <Show when={commitError()}>
+                    <p class="text-[10px] text-destructive mt-1 truncate" title={commitError()}>{commitError()}</p>
+                  </Show>
                 </div>
-              </Show>
+
+                {/* Staged files */}
+                <Show when={stagedFiles().length > 0}>
+                  <div class="border-b border-border/50">
+                    <div class="px-2.5 py-1.5 text-[10px] uppercase tracking-wider font-semibold text-success/80">
+                      Staged ({stagedFiles().length})
+                    </div>
+                    <div class="max-h-32 overflow-y-auto scrollbar-thin">
+                      <For each={stagedFiles()}>
+                        {(f) => (
+                          <div class="flex items-center gap-1.5 px-2.5 py-1 text-xs hover:bg-accent/40 group">
+                            <StatusIcon status={f.status} />
+                            <span
+                              class="flex-1 truncate cursor-pointer hover:underline"
+                              onClick={() => setSelectedFile(f.path)}
+                            >
+                              {f.path}
+                            </span>
+                            <button
+                              onClick={() => void handleUnstageFile(f.path)}
+                              class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-opacity"
+                              title="Unstage"
+                            >
+                              <Minus class="w-3 h-3 text-muted-foreground" />
+                            </button>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+
+                {/* Unstaged files */}
+                <div class="flex-1 overflow-y-auto scrollbar-thin">
+                  <div class="px-2.5 py-1.5 text-[10px] uppercase tracking-wider font-semibold text-muted-foreground/70">
+                    Changes ({unstagedFiles().length})
+                  </div>
+                  <Show when={unstagedFiles().length === 0 && stagedFiles().length === 0 && !fileStatus.loading}>
+                    <p class="px-2.5 py-2 text-[11px] text-muted-foreground">Working tree clean</p>
+                  </Show>
+                  <For each={unstagedFiles()}>
+                    {(f) => (
+                      <div class="flex items-center gap-1.5 px-2.5 py-1 text-xs hover:bg-accent/40 group">
+                        <StatusIcon status={f.status} />
+                        <span
+                          class="flex-1 truncate cursor-pointer hover:underline"
+                          onClick={() => setSelectedFile(f.path)}
+                        >
+                          {f.path}
+                        </span>
+                        <button
+                          onClick={() => void handleStageFile(f.path)}
+                          class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-opacity"
+                          title="Stage"
+                        >
+                          <Plus class="w-3 h-3 text-muted-foreground" />
+                        </button>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </div>
+
+              {/* Right panel: diff viewer */}
+              <div class="flex-1 overflow-y-auto p-3">
+                <Show when={workingDiff()}>
+                  {(diff) => (
+                    <Show
+                      when={diffMode() === "split"}
+                      fallback={
+                        <DiffViewer diff={diff()} onFileClick={setSelectedFile} onAddToContext={props.onAddToContext} />
+                      }
+                    >
+                      <SplitDiffViewer diff={diff()} onFileClick={setSelectedFile} onAddToContext={props.onAddToContext} />
+                    </Show>
+                  )}
+                </Show>
+                <Show when={!workingDiff() && !workingDiff.loading}>
+                  <div class="flex-1 flex items-center justify-center text-sm text-muted-foreground h-full">
+                    Working tree is clean
+                  </div>
+                </Show>
+              </div>
             </div>
           </div>
         </Show>
@@ -244,6 +399,24 @@ export function GitTabContent(props: GitTabContentProps) {
       </div>
     </div>
   );
+}
+
+// ─── Status icon helper ──────────────────────────────────────────────────────
+
+function StatusIcon(props: { status: string }) {
+  switch (props.status) {
+    case "added":
+    case "untracked":
+      return <FilePlus class="w-3 h-3 text-success flex-shrink-0" />;
+    case "deleted":
+      return <FileMinus class="w-3 h-3 text-destructive flex-shrink-0" />;
+    case "modified":
+      return <FileText class="w-3 h-3 text-info flex-shrink-0" />;
+    case "renamed":
+      return <FileText class="w-3 h-3 text-warning flex-shrink-0" />;
+    default:
+      return <FileQuestion class="w-3 h-3 text-muted-foreground flex-shrink-0" />;
+  }
 }
 
 // ─── Inline branches view ─────────────────────────────────────────────────────
