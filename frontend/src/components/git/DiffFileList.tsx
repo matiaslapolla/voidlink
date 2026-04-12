@@ -13,7 +13,7 @@ export function DiffFileList(props: DiffFileListProps) {
 
   return (
     <div class="h-full overflow-y-auto border-r border-border bg-sidebar py-1">
-      <div class="px-3 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+      <div class="px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
         Changed Files ({props.files.length})
       </div>
       <Show when={props.files.length === 0}>
@@ -28,23 +28,23 @@ export function DiffFileList(props: DiffFileListProps) {
             <button
               onClick={() => props.onSelectFile(path)}
               class={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors text-left hover:bg-accent/60 ${
-                isSelected() ? "bg-accent text-accent-foreground" : "text-foreground"
+                isSelected() ? "bg-primary/15 text-foreground font-medium" : "text-foreground"
               }`}
             >
               <Show when={file.status === "added"}>
-                <FilePlus class="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                <FilePlus class="w-3.5 h-3.5 text-success flex-shrink-0" />
               </Show>
               <Show when={file.status === "deleted"}>
-                <FileMinus class="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
+                <FileMinus class="w-3.5 h-3.5 text-destructive flex-shrink-0" />
               </Show>
               <Show when={file.status !== "added" && file.status !== "deleted"}>
-                <FileText class="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                <FileText class="w-3.5 h-3.5 text-info flex-shrink-0" />
               </Show>
               <span class="flex-1 truncate">{path}</span>
-              <span class="flex-shrink-0 text-green-500 text-xs">
+              <span class="flex-shrink-0 text-success text-xs">
                 +{file.additions}
               </span>
-              <span class="flex-shrink-0 text-red-400 text-xs">
+              <span class="flex-shrink-0 text-destructive text-xs">
                 -{file.deletions}
               </span>
             </button>

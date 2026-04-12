@@ -19,7 +19,7 @@ export function AgentEventLog(props: AgentEventLogProps) {
                 ev.level === "error"
                   ? "text-destructive"
                   : ev.level === "warn"
-                    ? "text-amber-400"
+                    ? "text-warning"
                     : "text-foreground"
               }
             >

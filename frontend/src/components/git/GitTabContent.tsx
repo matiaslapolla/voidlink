@@ -99,7 +99,7 @@ export function GitTabContent(props: GitTabContentProps) {
               isCollapsed() ? "justify-center px-0" : "px-3"
             } ${
               view() === v
-                ? "bg-accent text-accent-foreground font-medium"
+                ? "bg-primary/15 text-primary font-medium"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
             }`}
             title={label}
@@ -232,10 +232,10 @@ function BranchesView(props: { repoPath: string }) {
                 <span class="max-w-40 truncate">{b.lastCommitSummary}</span>
               </Show>
               <Show when={b.ahead > 0}>
-                <span class="text-green-500">↑{b.ahead}</span>
+                <span class="text-success">↑{b.ahead}</span>
               </Show>
               <Show when={b.behind > 0}>
-                <span class="text-red-400">↓{b.behind}</span>
+                <span class="text-destructive">↓{b.behind}</span>
               </Show>
             </div>
           </div>

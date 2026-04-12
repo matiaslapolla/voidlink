@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { X, Check, ChevronDown, Lock } from "lucide-solid";
 import { settingsApi } from "@/api/settings";
+import { useTheme, THEMES } from "@/store/theme";
 
 // ─── Terminal settings (persisted in localStorage) ─────────────────────────
 
@@ -206,7 +207,8 @@ function modelDisplayName(model: string): string {
 }
 
 export function SettingsPanel(props: SettingsPanelProps) {
-  const [settingsTab, setSettingsTab] = createSignal<"ai" | "terminal">("ai");
+  const [settingsTab, setSettingsTab] = createSignal<"ai" | "terminal" | "theme">("ai");
+  const { theme: currentTheme, setTheme: applyTheme } = useTheme();
 
   // ─── Terminal settings state ─────────────────────────────────────────────
   const [termSettings, setTermSettings] = createSignal<TerminalSettings>(loadTerminalSettings());
@@ -372,6 +374,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
             >
               Terminal
             </button>
+            <button
+              onClick={() => setSettingsTab("theme")}
+              class={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                settingsTab() === "theme"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+              }`}
+            >
+              Theme
+            </button>
           </div>
 
           {/* ── Terminal settings tab ─────────────────────────────────── */}
@@ -471,13 +483,70 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
               <div class="mt-4 flex items-center justify-end gap-2">
                 <Show when={termSaved()}>
-                  <span class="text-xs text-green-500 flex items-center gap-1">
+                  <span class="text-xs text-success flex items-center gap-1">
                     <Check class="w-3.5 h-3.5" /> Saved
                   </span>
                 </Show>
                 <Button size="sm" onClick={handleTermSave} class="h-8 text-sm">
                   Save
                 </Button>
+              </div>
+            </div>
+          </Show>
+
+          {/* ── Theme settings tab ─────────────────────────────────────── */}
+          <Show when={settingsTab() === "theme"}>
+            <div class="space-y-4">
+              <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Choose a theme
+              </p>
+              <div class="grid grid-cols-2 gap-2">
+                <For each={THEMES}>
+                  {(t) => {
+                    const isActive = () => currentTheme() === t.id;
+                    return (
+                      <button
+                        onClick={() => applyTheme(t.id)}
+                        class={`relative flex flex-col gap-2 p-3 rounded-lg border text-left transition-colors ${
+                          isActive()
+                            ? "border-primary bg-primary/8 ring-1 ring-primary/40"
+                            : "border-border hover:border-muted-foreground/30 hover:bg-accent/40"
+                        }`}
+                      >
+                        {/* Color preview dots */}
+                        <div class="flex gap-1.5">
+                          <span
+                            class="w-4 h-4 rounded-full border border-white/10"
+                            style={{ background: t.preview[0] }}
+                          />
+                          <span
+                            class="w-4 h-4 rounded-full border border-white/10"
+                            style={{ background: t.preview[2] }}
+                          />
+                          <span
+                            class="w-4 h-4 rounded-full border border-white/10"
+                            style={{ background: t.preview[1] }}
+                          />
+                          <span
+                            class="w-4 h-4 rounded-full border border-white/10"
+                            style={{ background: t.preview[3] }}
+                          />
+                        </div>
+                        <div class="flex items-center justify-between">
+                          <span class="text-sm font-medium">{t.label}</span>
+                          <span class="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {t.mode}
+                          </span>
+                        </div>
+                        <Show when={isActive()}>
+                          <div class="absolute top-2 right-2">
+                            <Check class="w-3.5 h-3.5 text-primary" />
+                          </div>
+                        </Show>
+                      </button>
+                    );
+                  }}
+                </For>
               </div>
             </div>
           </Show>

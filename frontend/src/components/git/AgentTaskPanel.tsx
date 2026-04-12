@@ -150,7 +150,7 @@ export function AgentTaskPanel(props: AgentTaskPanelProps) {
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
                 <Show when={state().status === "success"}>
-                  <CheckCircle class="w-5 h-5 text-green-500" />
+                  <CheckCircle class="w-5 h-5 text-success" />
                 </Show>
                 <Show when={state().status === "failed"}>
                   <AlertCircle class="w-5 h-5 text-destructive" />

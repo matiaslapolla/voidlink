@@ -78,10 +78,13 @@ export function BottomPanel(props: BottomPanelProps) {
   // so child components (GitTabContent, xterm, etc.) survive toggle.
   return (
     <div
-      class={`flex flex-col flex-shrink-0 overflow-hidden transition-[height] duration-150 ${
+      class={`flex flex-col flex-shrink-0 overflow-hidden will-change-[height] ${
         props.open ? "border-t border-border" : ""
       }`}
-      style={{ height: props.open ? `${height()}px` : "0px" }}
+      style={{
+        height: props.open ? `${height()}px` : "0px",
+        transition: dragging() ? "none" : "height 100ms var(--ease-snap)",
+      }}
     >
       {/* Drag handle — only interactive when open */}
       <div

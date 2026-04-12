@@ -48,7 +48,7 @@ export function GitStatusBar(props: GitStatusBarProps) {
           {/* Dirty indicator */}
           <Show when={!repoInfo().isClean}>
             <span
-              class="flex items-center gap-1 text-amber-500"
+              class="flex items-center gap-1 text-warning"
               title="Uncommitted changes"
             >
               <Circle class="w-2 h-2 fill-current" />

@@ -1,3 +1,4 @@
+pub(crate) mod blame;
 pub(crate) mod branch;
 pub(crate) mod diff;
 pub(crate) mod push;
@@ -11,6 +12,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use blame::{git_blame_file_impl, git_diff_file_lines_impl};
 use branch::{git_checkout_branch_impl, git_list_branches_impl};
 use diff::{git_diff_commit_impl, git_diff_working_impl, git_explain_diff_impl};
 use repo::git_repo_info_impl;
@@ -312,4 +314,22 @@ pub fn git_explain_diff(
     migration_state: tauri::State<crate::migration::MigrationState>,
 ) -> Result<Vec<DiffExplanation>, String> {
     git_explain_diff_impl(repo_path, base, head, &migration_state)
+}
+
+#[tauri::command]
+pub fn git_blame_file(
+    repo_path: String,
+    file_path: String,
+    _state: tauri::State<GitState>,
+) -> Result<Vec<blame::BlameLineInfo>, String> {
+    git_blame_file_impl(&repo_path, &file_path)
+}
+
+#[tauri::command]
+pub fn git_diff_file_lines(
+    repo_path: String,
+    file_path: String,
+    _state: tauri::State<GitState>,
+) -> Result<Vec<blame::LineChange>, String> {
+    git_diff_file_lines_impl(&repo_path, &file_path)
 }

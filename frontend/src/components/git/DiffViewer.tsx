@@ -35,11 +35,11 @@ function FileDiffBlock(props: {
   const StatusIcon = () => {
     switch (props.file.status) {
       case "added":
-        return <FilePlus class="w-3.5 h-3.5 text-green-500" />;
+        return <FilePlus class="w-3.5 h-3.5 text-success" />;
       case "deleted":
-        return <FileMinus class="w-3.5 h-3.5 text-red-500" />;
+        return <FileMinus class="w-3.5 h-3.5 text-destructive" />;
       default:
-        return <FileText class="w-3.5 h-3.5 text-blue-400" />;
+        return <FileText class="w-3.5 h-3.5 text-info" />;
     }
   };
 
@@ -68,8 +68,8 @@ function FileDiffBlock(props: {
         >
           {filePath()}
         </button>
-        <span class="flex-shrink-0 text-green-500">+{props.file.additions}</span>
-        <span class="flex-shrink-0 text-red-400">-{props.file.deletions}</span>
+        <span class="flex-shrink-0 text-success">+{props.file.additions}</span>
+        <span class="flex-shrink-0 text-destructive">-{props.file.deletions}</span>
         <Show when={props.onAddToContext}>
           <button
             onClick={(e) => {
@@ -114,7 +114,7 @@ function HunkBlock(props: { hunk: DiffHunk }) {
   return (
     <div>
       {/* Hunk header */}
-      <div class="px-3 py-1 bg-blue-500/10 text-blue-400 border-y border-border/50 text-xs">
+      <div class="px-3 py-1 bg-info/10 text-info border-y border-border/50 text-xs">
         {props.hunk.header}
       </div>
 
@@ -126,21 +126,21 @@ function HunkBlock(props: { hunk: DiffHunk }) {
               <tr
                 class={
                   line.origin === "+"
-                    ? "bg-green-500/10"
+                    ? "bg-success/8"
                     : line.origin === "-"
-                      ? "bg-red-500/10"
+                      ? "bg-destructive/8"
                       : ""
                 }
               >
-                <td class="w-10 px-2 text-right text-muted-foreground/50 select-none border-r border-border/30 tabular-nums">
+                <td class="w-10 px-2 text-right text-muted-foreground/40 select-none border-r border-border/30 tabular-nums">
                   {line.origin === "-" ? (line.oldLineno ?? "") : ""}
                 </td>
-                <td class="w-10 px-2 text-right text-muted-foreground/50 select-none border-r border-border/30 tabular-nums">
+                <td class="w-10 px-2 text-right text-muted-foreground/40 select-none border-r border-border/30 tabular-nums">
                   {line.origin === "+" ? (line.newLineno ?? "") : ""}
                 </td>
                 <td
                   class={`px-3 py-0.5 whitespace-pre-wrap break-all ${
-                    line.origin === "+" ? "text-green-400" : line.origin === "-" ? "text-red-400" : "text-foreground"
+                    line.origin === "+" ? "text-success/90" : line.origin === "-" ? "text-destructive/90" : "text-foreground"
                   }`}
                 >
                   <span class="select-none text-muted-foreground/40 mr-1">

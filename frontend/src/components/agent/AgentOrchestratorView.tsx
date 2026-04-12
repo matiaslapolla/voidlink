@@ -38,11 +38,11 @@ function toolLabel(tool: AgentTool): string {
 function StatusDot(props: { status: string }) {
   const cls = () => {
     switch (props.status) {
-      case "running":  return "bg-green-500";
-      case "starting": return "bg-yellow-400 animate-pulse";
-      case "done":     return "bg-zinc-500";
-      case "failed":   return "bg-red-500";
-      default:         return "bg-zinc-500";
+      case "running":  return "bg-success";
+      case "starting": return "bg-warning animate-pulse";
+      case "done":     return "bg-muted-foreground";
+      case "failed":   return "bg-destructive";
+      default:         return "bg-muted-foreground";
     }
   };
   return <span class={`inline-block w-2 h-2 rounded-full flex-shrink-0 mt-0.5 ${cls()}`} />;
@@ -191,7 +191,7 @@ export function AgentOrchestratorView(props: AgentOrchestratorViewProps) {
                   <StatusDot status={session.status} />
                   <Show when={attentionIds().has(session.sessionId)}>
                     <span
-                      class="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse"
+                      class="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-warning animate-pulse"
                       title="Waiting for input"
                     />
                   </Show>
@@ -230,7 +230,7 @@ export function AgentOrchestratorView(props: AgentOrchestratorViewProps) {
             <Show
               when={availableTools().length > 0}
               fallback={
-                <p class="text-xs text-yellow-500">
+                <p class="text-xs text-warning">
                   No CLI agents found in PATH. Install{" "}
                   <code class="font-mono">claude</code>,{" "}
                   <code class="font-mono">codex</code>, or{" "}
@@ -300,12 +300,12 @@ export function AgentOrchestratorView(props: AgentOrchestratorViewProps) {
                 <span
                   class={`ml-auto text-xs px-1.5 py-0.5 rounded-full shrink-0 ${
                     session().status === "running"
-                      ? "bg-green-500/10 text-green-400"
+                      ? "bg-success/10 text-success"
                       : session().status === "done"
-                        ? "bg-zinc-500/10 text-zinc-400"
+                        ? "bg-muted text-muted-foreground"
                         : session().status === "failed"
-                          ? "bg-red-500/10 text-red-400"
-                          : "bg-yellow-500/10 text-yellow-400"
+                          ? "bg-destructive/10 text-destructive"
+                          : "bg-warning/10 text-warning"
                   }`}
                 >
                   {session().status}
@@ -323,8 +323,8 @@ export function AgentOrchestratorView(props: AgentOrchestratorViewProps) {
 
               {/* Attention banner */}
               <Show when={attentionIds().has(session().sessionId)}>
-                <div class="flex items-center gap-2 px-3 py-1.5 bg-yellow-500/10 border-b border-yellow-500/20 text-yellow-400 text-xs shrink-0">
-                  <span class="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0" />
+                <div class="flex items-center gap-2 px-3 py-1.5 bg-warning/10 border-b border-warning/20 text-warning text-xs shrink-0">
+                  <span class="w-1.5 h-1.5 rounded-full bg-warning animate-pulse shrink-0" />
                   Agent is waiting — switch to the terminal and respond.
                 </div>
               </Show>

@@ -8,33 +8,29 @@ import {
 } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  Bot,
-  DatabaseZap,
-  TerminalSquare,
-  Workflow,
-} from "lucide-solid";
+
+import { Sun, Moon } from "lucide-solid";
 import { migrationApi } from "@/api/migration";
-import { GitStatusBar } from "@/components/git/GitStatusBar";
 import { GitTabContent } from "@/components/git/GitTabContent";
-import { AgentChatView } from "@/components/agent/AgentChatView";
-import { BottomPanel } from "@/components/layout/BottomPanel";
-import { MountOnce } from "@/components/layout/MountOnce";
-import { TerminalView } from "@/components/terminal/TerminalView";
+import { AppShell } from "@/components/layout/AppShell";
+import { BottomBar } from "@/components/layout/BottomBar";
+import { BottomPane } from "@/components/layout/BottomPane";
+import { CenterColumn } from "@/components/layout/CenterColumn";
+import { LeftSidebar } from "@/components/layout/LeftSidebar";
+import { RightSidebar } from "@/components/layout/RightSidebar";
 import { SettingsPanel } from "@/components/settings/SettingsPanel";
-import { WorkspaceSidebar } from "@/components/workspace/WorkspaceSidebar";
-import { RepositoryHeader } from "@/components/repository/RepositoryHeader";
-import { SearchTab } from "@/components/repository/SearchTab";
-import { ContextBuilderTab } from "@/components/context/ContextBuilderTab";
-import { ContextIndicator } from "@/components/context/ContextIndicator";
-import { WorkflowTab } from "@/components/workflow/WorkflowTab";
+import { TerminalView } from "@/components/terminal/TerminalView";
 import { createScanPolling } from "@/hooks/useScanPolling";
 import { createWorkflowManager } from "@/hooks/useWorkflowManager";
+import { createLayoutStore } from "@/store/layout";
+import { LayoutContext } from "@/store/LayoutContext";
 import type { SearchResult } from "@/types/migration";
 import type { WorkspaceState, PersistedWorkspace } from "@/types/workspace";
 import { createWorkspace } from "@/types/workspace";
 import type { ContextItem } from "@/types/context";
 import { contextItemFromSearch, contextItemFromText, contextItemFromDiff } from "@/types/context";
+import type { CenterTabType } from "@/store/layout";
+import { useTheme } from "@/store/theme";
 
 const STORAGE_KEY = "voidlink-repo-workspaces";
 const ACTIVE_STORAGE_KEY = "voidlink-active-repo-workspace";
@@ -83,6 +79,13 @@ function App() {
   const [workspaces, setWorkspaces] = createSignal<WorkspaceState[]>(initial.workspaces);
   const [activeWorkspaceId, setActiveWorkspaceId] = createSignal<string>(initial.activeWorkspaceId);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+
+  const [layoutStore, layoutActions] = createLayoutStore();
+
+  // Seed layout store with existing workspace tabs
+  for (const ws of initial.workspaces) {
+    layoutActions.initWorkspaceTabs(ws.id, ws.activeArea as any);
+  }
 
   const activeWorkspace = createMemo(
     () => workspaces().find((ws) => ws.id === activeWorkspaceId()) ?? null,
@@ -242,217 +245,165 @@ function App() {
 
   const win = getCurrentWindow();
 
+  // ─── Render helpers ──────────────────────────────────────────────────────────
+
+  const cycleLayout = () => {
+    const orders: [string, string, string][] = [
+      ["left", "center", "right"],
+      ["right", "center", "left"],
+    ];
+    const current = layoutStore.columnOrder.join(",");
+    const idx = orders.findIndex((o) => o.join(",") === current);
+    const next = orders[(idx + 1) % orders.length] as ["left" | "center" | "right", "left" | "center" | "right", "left" | "center" | "right"];
+    layoutActions.setColumnOrder(next);
+  };
+
+  const { mode, toggleTheme } = useTheme();
+
+  const statusText = createMemo(() => {
+    const ws = activeWorkspace();
+    if (!ws) return "No workspace";
+    const parts: string[] = [];
+    if (ws.repoRoot) {
+      const name = ws.repoRoot.split("/").pop() ?? ws.repoRoot;
+      parts.push(name);
+    }
+    if (ws.scanStatus?.status === "scanning") parts.push("Scanning...");
+    if (ws.runningWorkflow) parts.push("Workflow running");
+    return parts.join(" \u00b7 ") || "No repository selected";
+  });
+
   // ─── Render ─────────────────────────────────────────────────────────────────
+  //
+  // All layout components that call useLayout() MUST be created inside the
+  // LayoutContext.Provider tree.  In SolidJS, component functions execute
+  // immediately when their JSX is evaluated, so pre-creating them as variables
+  // above the Provider would call useLayout() before the context exists.
 
   return (
-    <div class="flex flex-col h-screen bg-background text-foreground overflow-hidden">
-      {/* Titlebar */}
-      <div class="flex items-center h-8 shrink-0 border-b border-border bg-background/70 select-none">
-        <div data-tauri-drag-region class="flex-1 flex items-center px-3 h-full">
-          <span class="text-xs font-semibold tracking-wide text-muted-foreground">Voidlink</span>
-        </div>
-        <div class="flex items-center h-full text-muted-foreground">
-          <button
-            onClick={() => void win.minimize()}
-            class="w-10 h-full flex items-center justify-center hover:bg-accent/60 transition-colors text-sm"
-            title="Minimize"
-          >
-            &#x2212;
-          </button>
-          <button
-            onClick={() => void win.toggleMaximize()}
-            class="w-10 h-full flex items-center justify-center hover:bg-accent/60 transition-colors text-xs"
-            title="Maximize"
-          >
-            &#x25A1;
-          </button>
-          <button
-            onClick={() => void win.close()}
-            class="w-10 h-full flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground transition-colors text-sm"
-            title="Close"
-          >
-            &#x2715;
-          </button>
-        </div>
-      </div>
+    <LayoutContext.Provider value={[layoutStore, layoutActions]}>
+      <AppShell
+        titleBar={
+          <div class="flex items-center h-8 shrink-0 border-b border-border bg-background/70 select-none">
+            <div data-tauri-drag-region class="flex-1 flex items-center px-3 h-full">
+              <span class="text-xs font-bold tracking-wider text-primary/80">Voidlink</span>
+            </div>
+            <div class="flex items-center h-full text-muted-foreground">
+              <button
+                onClick={toggleTheme}
+                class="w-10 h-full flex items-center justify-center hover:bg-accent/60 transition-colors"
+                title={mode() === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              >
+                <Show when={mode() === "dark"} fallback={<Moon class="w-3.5 h-3.5" />}>
+                  <Sun class="w-3.5 h-3.5" />
+                </Show>
+              </button>
+              <button
+                onClick={cycleLayout}
+                class="w-10 h-full flex items-center justify-center hover:bg-accent/60 transition-colors text-xs"
+                title="Swap layout"
+              >
+                &#x21C4;
+              </button>
+              <button
+                onClick={() => void win.minimize()}
+                class="w-10 h-full flex items-center justify-center hover:bg-accent/60 transition-colors text-sm"
+                title="Minimize"
+              >
+                &#x2212;
+              </button>
+              <button
+                onClick={() => void win.toggleMaximize()}
+                class="w-10 h-full flex items-center justify-center hover:bg-accent/60 transition-colors text-xs"
+                title="Maximize"
+              >
+                &#x25A1;
+              </button>
+              <button
+                onClick={() => void win.close()}
+                class="w-10 h-full flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground transition-colors text-sm"
+                title="Close"
+              >
+                &#x2715;
+              </button>
+            </div>
+          </div>
+        }
+        leftSidebar={
+          <LeftSidebar
+            workspaces={workspaces()}
+            activeWorkspaceId={activeWorkspaceId()}
+            onSelectWorkspace={setActiveWorkspaceId}
+            onAddWorkspace={addWorkspace}
+            onRemoveWorkspace={removeWorkspace}
+            onRenameWorkspace={(id, name) => updateWorkspace(id, (ws) => ({ ...ws, name }))}
+            onSettingsOpen={() => setSettingsOpen(true)}
+            onChooseRepo={() => void chooseRepository(activeWorkspaceId())}
+            onScan={(full) => void scanPolling.startScan(activeWorkspaceId(), full)}
+            repoRoot={activeWorkspace()?.repoRoot ?? null}
+          />
+        }
+        centerColumn={
+          <main class="flex-1 flex flex-col overflow-hidden">
+            <Show when={activeWorkspace()}>
+              {(wsAccessor) => {
+                const ws = () => wsAccessor();
 
-      <div class="flex flex-1 overflow-hidden">
-        <WorkspaceSidebar
-          workspaces={workspaces()}
-          activeId={activeWorkspaceId()}
-          onSelect={setActiveWorkspaceId}
-          onAdd={addWorkspace}
-          onRemove={removeWorkspace}
-          onRename={(id, name) => updateWorkspace(id, (ws) => ({ ...ws, name }))}
-          onSettingsOpen={() => setSettingsOpen(true)}
-        />
-
-        <main class="flex-1 flex flex-col overflow-hidden">
-          <Show when={activeWorkspace()}>
-            {(wsAccessor) => {
-              const ws = () => wsAccessor();
-
-              return (
-                <>
-                  <RepositoryHeader
-                    repoRoot={ws().repoRoot}
-                    scanStatus={ws().scanStatus}
-                    lastError={ws().lastError}
-                    onChooseRepo={() => void chooseRepository(ws().id)}
-                    onScan={(full) => void scanPolling.startScan(ws().id, full)}
+                return (
+                  <CenterColumn
+                    workspace={ws()}
+                    contextTokenEstimate={contextTokenEstimate()}
+                    onSearch={() => void performSearch(ws().id)}
+                    onQueryChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, searchQuery: v }))}
+                    onAddContext={(r) => addContextFromSearch(ws().id, r)}
+                    onRemoveContext={(id) => removeContextItem(ws().id, id)}
+                    onAddFreetext={(label, content) => {
+                      addContextItem(ws().id, contextItemFromText(label, content));
+                    }}
+                    onObjectiveChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, objective: v }))}
+                    onConstraintsChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, constraintsText: v }))}
+                    onGenerate={() => void workflowManager.generateWorkflow(ws().id)}
+                    onRun={() => void workflowManager.runWorkflow(ws().id)}
                   />
-
-                  <div class="border-b border-border px-3 py-2 flex flex-wrap gap-2 bg-background/60">
-                    <button
-                      onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "repository" }))}
-                      class={`rounded-md px-3 py-1.5 text-sm ${
-                        ws().activeArea === "repository"
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-accent/60 hover:bg-accent"
-                      }`}
-                    >
-                      <DatabaseZap class="inline w-4 h-4 mr-1" />
-                      Repository
-                    </button>
-                    <button
-                      onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "contextBuilder" }))}
-                      class={`rounded-md px-3 py-1.5 text-sm ${
-                        ws().activeArea === "contextBuilder"
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-accent/60 hover:bg-accent"
-                      }`}
-                    >
-                      Context Builder
-                    </button>
-                    <button
-                      onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "workflow" }))}
-                      class={`rounded-md px-3 py-1.5 text-sm ${
-                        ws().activeArea === "workflow"
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-accent/60 hover:bg-accent"
-                      }`}
-                    >
-                      <Workflow class="inline w-4 h-4 mr-1" />
-                      Workflow
-                    </button>
-                    <Show when={ws().repoRoot}>
-                      <button
-                        onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "aiAgent" }))}
-                        class={`rounded-md px-3 py-1.5 text-sm ${
-                          ws().activeArea === "aiAgent"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-accent/60 hover:bg-accent"
-                        }`}
-                      >
-                        <Bot class="inline w-4 h-4 mr-1" />
-                        AI Agent
-                      </button>
-                      <button
-                        onClick={() => updateWorkspace(ws().id, (current) => ({ ...current, activeArea: "terminal" }))}
-                        class={`rounded-md px-3 py-1.5 text-sm ${
-                          ws().activeArea === "terminal"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-accent/60 hover:bg-accent"
-                        }`}
-                      >
-                        <TerminalSquare class="inline w-4 h-4 mr-1" />
-                        Terminal
-                      </button>
-                    </Show>
-                  </div>
-
-                  <section class="flex-1 overflow-hidden relative">
-                    {/* Props-driven tabs: Show is OK — state lives in workspace signals */}
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: ws().activeArea === "repository" ? "block" : "none" }}
-                    >
-                      <SearchTab
-                        searchQuery={ws().searchQuery}
-                        searchResults={ws().searchResults}
-                        searching={ws().searching}
-                        repoRoot={ws().repoRoot}
-                        onQueryChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, searchQuery: v }))}
-                        onSearch={() => void performSearch(ws().id)}
-                        onAddContext={(r) => addContextFromSearch(ws().id, r)}
-                      />
+                );
+              }}
+            </Show>
+          </main>
+        }
+        rightSidebar={
+          <RightSidebar
+            workspace={activeWorkspace()}
+            contextTokenEstimate={contextTokenEstimate()}
+            onRemoveContextItem={(id) => removeContextItem(activeWorkspaceId(), id)}
+            onOpenContextTab={() => layoutActions.openSingleton(activeWorkspaceId(), "contextBuilder")}
+            repoPath={activeWorkspace()?.repoRoot ?? null}
+          />
+        }
+        bottomPane={
+          <BottomPane>
+            {{
+              terminal: (
+                <Show
+                  when={activeWorkspace()?.repoRoot}
+                  fallback={
+                    <div class="h-full flex items-center justify-center text-xs text-muted-foreground">
+                      Select a repository to open terminal
                     </div>
-
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: ws().activeArea === "contextBuilder" ? "block" : "none" }}
-                    >
-                      <ContextBuilderTab
-                        contextItems={ws().contextItems}
-                        tokenEstimate={contextTokenEstimate()}
-                        onRemoveItem={(id) => removeContextItem(ws().id, id)}
-                        onAddFreetext={(label, content) => {
-                          addContextItem(ws().id, contextItemFromText(label, content));
-                        }}
-                      />
+                  }
+                >
+                  {(repoRoot) => <TerminalView cwd={repoRoot()} />}
+                </Show>
+              ),
+              git: (
+                <Show
+                  when={activeWorkspace()?.repoRoot}
+                  fallback={
+                    <div class="h-full flex items-center justify-center text-xs text-muted-foreground">
+                      Select a repository to view git info
                     </div>
-
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: ws().activeArea === "workflow" ? "block" : "none" }}
-                    >
-                      <WorkflowTab
-                        objective={ws().objective}
-                        constraintsText={ws().constraintsText}
-                        contextItems={ws().contextItems}
-                        contextTokenEstimate={contextTokenEstimate()}
-                        workflow={ws().workflow}
-                        runState={ws().runState}
-                        generatingWorkflow={ws().generatingWorkflow}
-                        runningWorkflow={ws().runningWorkflow}
-                        onObjectiveChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, objective: v }))}
-                        onConstraintsChange={(v) => updateWorkspace(ws().id, (c) => ({ ...c, constraintsText: v }))}
-                        onGenerate={() => void workflowManager.generateWorkflow(ws().id)}
-                        onRun={() => void workflowManager.runWorkflow(ws().id)}
-                      />
-                    </div>
-
-                    {/* Stateful tabs: MountOnce keeps them alive after first render */}
-                    <MountOnce when={ws().repoRoot}>
-                      {(repoRoot) => (
-                        <div
-                          class="absolute inset-0 overflow-hidden"
-                          style={{ display: ws().activeArea === "aiAgent" ? "block" : "none" }}
-                        >
-                          <AgentChatView repoPath={repoRoot()} />
-                        </div>
-                      )}
-                    </MountOnce>
-
-                    <MountOnce when={ws().repoRoot}>
-                      {(repoRoot) => (
-                        <div
-                          class="absolute inset-0 overflow-hidden"
-                          style={{ display: ws().activeArea === "terminal" ? "block" : "none" }}
-                        >
-                          <TerminalView cwd={repoRoot()} />
-                        </div>
-                      )}
-                    </MountOnce>
-                  </section>
-                </>
-              );
-            }}
-          </Show>
-          <Show when={activeWorkspace()?.repoRoot}>
-            {(repoRoot) => {
-              const gitOpen = () => activeWorkspace()?.gitPanelOpen ?? false;
-              const toggleGit = () => {
-                const wsId = activeWorkspaceId();
-                updateWorkspace(wsId, (ws) => ({ ...ws, gitPanelOpen: !ws.gitPanelOpen }));
-              };
-              return (
-                <>
-                  <BottomPanel
-                    open={gitOpen()}
-                    onToggle={toggleGit}
-                    shortcutKey="g"
-                  >
+                  }
+                >
+                  {(repoRoot) => (
                     <GitTabContent
                       repoPath={repoRoot()}
                       onAddToContext={(filePath, content) => {
@@ -460,30 +411,31 @@ function App() {
                         addContextItem(activeWorkspaceId(), item);
                       }}
                     />
-                  </BottomPanel>
-                  <GitStatusBar
-                    repoPath={repoRoot()}
-                    activeArea={activeWorkspace()?.activeArea}
-                    gitPanelOpen={gitOpen()}
-                    onToggleGit={toggleGit}
-                  />
-                </>
-              );
+                  )}
+                </Show>
+              ),
+              logs: (
+                <div class="h-full flex items-center justify-center text-xs text-muted-foreground">
+                  Logs — coming soon
+                </div>
+              ),
+              agentOutput: (
+                <div class="h-full flex items-center justify-center text-xs text-muted-foreground">
+                  Agent output — coming soon
+                </div>
+              ),
             }}
-          </Show>
-          <ContextIndicator
-            items={activeWorkspace()?.contextItems ?? []}
-            tokenEstimate={contextTokenEstimate()}
-            onRemoveItem={(id) => removeContextItem(activeWorkspaceId(), id)}
-            onOpenContextTab={() => {
-              updateWorkspace(activeWorkspaceId(), (ws) => ({ ...ws, activeArea: "contextBuilder" }));
-            }}
+          </BottomPane>
+        }
+        bottomBar={
+          <BottomBar
+            repoPath={activeWorkspace()?.repoRoot ?? null}
+            statusText={statusText()}
           />
-        </main>
-      </div>
-
+        }
+      />
       <SettingsPanel open={settingsOpen()} onOpenChange={setSettingsOpen} />
-    </div>
+    </LayoutContext.Provider>
   );
 }
 

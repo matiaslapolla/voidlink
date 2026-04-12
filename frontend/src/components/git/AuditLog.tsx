@@ -7,11 +7,11 @@ interface AuditLogProps {
 }
 
 const actionColors: Record<string, string> = {
-  merged: "text-purple-400",
-  pr_created: "text-green-400",
-  checklist_generated: "text-blue-400",
-  checklist_item_passed: "text-green-500",
-  checklist_item_flagged: "text-red-500",
+  merged: "text-primary",
+  pr_created: "text-success",
+  checklist_generated: "text-info",
+  checklist_item_passed: "text-success",
+  checklist_item_flagged: "text-destructive",
 };
 
 export function AuditLog(props: AuditLogProps) {

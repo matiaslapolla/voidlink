@@ -59,11 +59,11 @@ export function MergeButton(props: MergeButtonProps) {
     <div class="space-y-2">
       {/* Blockers */}
       <Show when={blockers().length > 0}>
-        <div class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 space-y-1">
-          <p class="text-xs font-medium text-amber-500">Cannot merge:</p>
+        <div class="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 space-y-1">
+          <p class="text-xs font-medium text-warning">Cannot merge:</p>
           <ul class="list-disc list-inside space-y-0.5">
             {blockers().map((b) => (
-              <li class="text-xs text-amber-400">{b}</li>
+              <li class="text-xs text-warning/80">{b}</li>
             ))}
           </ul>
         </div>
