@@ -1,9 +1,6 @@
 import { onMount, onCleanup } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { ShellIntegrationAddon } from "./ShellIntegrationAddon";
 import { loadTerminalSettings } from "@/components/settings/SettingsPanel";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -55,32 +52,16 @@ export function TerminalPane(props: TerminalPaneProps) {
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-
-    // Lightweight addons — load before open (no perf cost)
-    term.loadAddon(new WebLinksAddon());
-    term.loadAddon(new Unicode11Addon());
-    term.unicode.activeVersion = "11";
-
-    // Shell integration — OSC 133 prompt tracking + OSC 7 CWD
-    const shellAddon = new ShellIntegrationAddon();
-    term.loadAddon(shellAddon);
-
     term.open(container);
 
-    requestAnimationFrame(() => {
-      fitAddon.fit();
+    requestAnimationFrame(() => fitAddon.fit());
 
-      // WebGL renderer — lazy load after first frame, silent fallback to canvas
-      import("@xterm/addon-webgl").then(({ WebglAddon }) => {
-        try {
-          const webgl = new WebglAddon();
-          webgl.onContextLoss(() => webgl.dispose());
-          term.loadAddon(webgl);
-        } catch {
-          // GPU unavailable — default canvas renderer is fine
-        }
-      }).catch(() => {});
-    });
+    // WebLinksAddon — clickable URLs, lazy-loaded to keep term.open() fast.
+    // No WebGL: Tauri's Wry webview has known WebGL context loss and input
+    // lag issues (tauri-apps/tauri#8020, #6559). Canvas renderer is fine.
+    import("@xterm/addon-web-links").then(({ WebLinksAddon }) => {
+      try { term.loadAddon(new WebLinksAddon()); } catch { /* ignore */ }
+    }).catch(() => {});
 
     // Keyboard input → PTY
     term.onData((data) => {
