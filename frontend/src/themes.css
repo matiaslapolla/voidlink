@@ -12,7 +12,7 @@
 /* ── GitHub Dark ────────────────────────────────────────────────────────────
  * bg #0d1117  fg #e6edf3  primary #58a6ff  border #30363d  sidebar #010409
  */
-[data-theme="github-dark"] {
+:root[data-theme="github-dark"] {
   color-scheme: dark;
 
   --background: oklch(0.140 0.010 250);
@@ -69,7 +69,7 @@
 /* ── GitHub Light ───────────────────────────────────────────────────────────
  * bg #ffffff  fg #1f2328  primary #0969da  border #d1d9e0  sidebar #f6f8fa
  */
-[data-theme="github-light"] {
+:root.light[data-theme="github-light"] {
   color-scheme: light;
 
   --background: oklch(1.000 0.000 0);
@@ -126,7 +126,7 @@
 /* ── Monokai ────────────────────────────────────────────────────────────────
  * bg #272822  fg #f8f8f2  primary #a6e22e  accent-yellow #e6db74  border #3e3d32
  */
-[data-theme="monokai"] {
+:root[data-theme="monokai"] {
   color-scheme: dark;
 
   --background: oklch(0.220 0.015 100);
@@ -183,7 +183,7 @@
 /* ── Solarized Dark ─────────────────────────────────────────────────────────
  * bg #002b36  fg #839496  primary #268bd2  border #073642
  */
-[data-theme="solarized-dark"] {
+:root[data-theme="solarized-dark"] {
   color-scheme: dark;
 
   --background: oklch(0.240 0.040 220);
@@ -240,7 +240,7 @@
 /* ── Solarized Light ────────────────────────────────────────────────────────
  * bg #fdf6e3  fg #657b83  primary #268bd2  border #eee8d5
  */
-[data-theme="solarized-light"] {
+:root.light[data-theme="solarized-light"] {
   color-scheme: light;
 
   --background: oklch(0.970 0.018 90);
@@ -297,7 +297,7 @@
 /* ── Nord ───────────────────────────────────────────────────────────────────
  * bg #2e3440  fg #eceff4  primary #88c0d0  border #3b4252
  */
-[data-theme="nord"] {
+:root[data-theme="nord"] {
   color-scheme: dark;
 
   --background: oklch(0.265 0.015 250);
@@ -354,7 +354,7 @@
 /* ── Dracula ────────────────────────────────────────────────────────────────
  * bg #282a36  fg #f8f8f2  primary #bd93f9  border #44475a
  */
-[data-theme="dracula"] {
+:root[data-theme="dracula"] {
   color-scheme: dark;
 
   --background: oklch(0.235 0.020 285);
@@ -411,7 +411,7 @@
 /* ── One Dark ───────────────────────────────────────────────────────────────
  * bg #282c34  fg #abb2bf  primary #61afef  border #3e4452
  */
-[data-theme="one-dark"] {
+:root[data-theme="one-dark"] {
   color-scheme: dark;
 
   --background: oklch(0.240 0.012 260);
