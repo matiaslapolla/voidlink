@@ -39,6 +39,10 @@ export const gitApi = {
     return invoke<void>("git_stage_files", { repoPath, paths });
   },
 
+  unstageFiles(repoPath: string, paths: string[]): Promise<void> {
+    return invoke<void>("git_unstage_files", { repoPath, paths });
+  },
+
   stageAll(repoPath: string): Promise<void> {
     return invoke<void>("git_stage_all", { repoPath });
   },

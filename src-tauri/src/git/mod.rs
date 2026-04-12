@@ -16,7 +16,7 @@ use blame::{git_blame_file_impl, git_diff_file_lines_impl};
 use branch::{git_checkout_branch_impl, git_list_branches_impl};
 use diff::{git_diff_commit_impl, git_diff_working_impl, git_explain_diff_impl};
 use repo::git_repo_info_impl;
-use staging::git_stage_files_impl;
+use staging::{git_stage_files_impl, git_unstage_files_impl};
 use status::{git_file_status_impl, git_log_impl};
 use worktree::{git_list_worktrees_impl, git_worktree_status_impl};
 
@@ -213,6 +213,15 @@ pub fn git_stage_files(
     _state: tauri::State<GitState>,
 ) -> Result<(), String> {
     git_stage_files_impl(repo_path, paths)
+}
+
+#[tauri::command]
+pub fn git_unstage_files(
+    repo_path: String,
+    paths: Vec<String>,
+    _state: tauri::State<GitState>,
+) -> Result<(), String> {
+    git_unstage_files_impl(repo_path, paths)
 }
 
 #[tauri::command]
