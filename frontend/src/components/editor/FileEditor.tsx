@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { createHighlighter, type Highlighter } from "shiki";
 import { Image, Code } from "lucide-solid";
 import { useTheme } from "@/store/theme";
+import { useEditorSettings } from "@/store/editor-settings";
 import { gitApi, type BlameLineInfo } from "@/api/git";
 import { useLayout } from "@/store/LayoutContext";
 import {
@@ -222,6 +223,7 @@ function CodeView(props: {
   const [hoverInfo, setHoverInfo] = createSignal<string | null>(null);
   const [hoverPos, setHoverPos] = createSignal<{ x: number; y: number } | null>(null);
   const { mode, theme: themeId } = useTheme();
+  const editorSettings = useEditorSettings();
   const [, actions] = useLayout();
 
   let textareaRef: HTMLTextAreaElement | undefined;
@@ -250,10 +252,11 @@ function CodeView(props: {
     clearTimeout(hoverTimeout);
     const target = e.currentTarget as HTMLElement;
     const rect = target.getBoundingClientRect();
+    const es = editorSettings();
     const relY = e.clientY - rect.top - 12;
     const relX = e.clientX - rect.left - 16;
-    const line = Math.floor(relY / (12 * 1.6));
-    const char = Math.floor(relX / (12 * 0.6));
+    const line = Math.floor(relY / (es.fontSize * es.lineHeight));
+    const char = Math.floor(relX / (es.fontSize * 0.6));
 
     if (line < 0 || char < 0) {
       setHoverInfo(null);
@@ -277,10 +280,11 @@ function CodeView(props: {
   const handleGotoDefinition = async (e: MouseEvent) => {
     const target = e.currentTarget as HTMLElement;
     const rect = target.getBoundingClientRect();
+    const es = editorSettings();
     const relY = e.clientY - rect.top - 12;
     const relX = e.clientX - rect.left - 16;
-    const line = Math.floor(relY / (12 * 1.6));
-    const char = Math.floor(relX / (12 * 0.6));
+    const line = Math.floor(relY / (es.fontSize * es.lineHeight));
+    const char = Math.floor(relX / (es.fontSize * 0.6));
 
     if (line < 0 || char < 0) return;
 
@@ -396,7 +400,8 @@ function CodeView(props: {
       ([count, target]) => {
         if (!target || count === 0 || !scrollContainerRef) return;
         requestAnimationFrame(() => {
-          const lineHeight = 12 * 1.6; // font-size * line-height
+          const es = editorSettings();
+          const lineHeight = es.fontSize * es.lineHeight;
           const top = Math.max(0, (target - 1)) * lineHeight;
           scrollContainerRef!.scrollTop = top;
           if (gutterRef) gutterRef.scrollTop = top;
@@ -483,7 +488,8 @@ function CodeView(props: {
               const lineNo = () => idx() + 1;
               return (
                 <div
-                  class="editor-line-number leading-[1.6] text-[12px] font-mono relative group cursor-default"
+                  class="editor-line-number relative group cursor-default"
+                  style={{ "font-size": `${editorSettings().fontSize}px`, "line-height": editorSettings().lineHeight, "font-family": editorSettings().fontFamily }}
                   onMouseEnter={() => setHoveredLine(lineNo())}
                   onMouseLeave={() => setHoveredLine(null)}
                 >
@@ -513,7 +519,8 @@ function CodeView(props: {
           <For each={lines()}>
             {(_, idx) => (
               <div
-                class={`leading-[1.6] text-[12px] h-[1.6em] ${changeColor(idx() + 1)}`}
+                class={`${changeColor(idx() + 1)}`}
+                style={{ "line-height": editorSettings().lineHeight, "font-size": `${editorSettings().fontSize}px`, height: `${editorSettings().lineHeight}em` }}
                 title={lineChanges().get(idx() + 1) ?? ""}
               />
             )}
@@ -534,7 +541,7 @@ function CodeView(props: {
           aria-hidden="true"
         >
           <pre class="m-0 p-0">
-            <code class="font-mono text-[12px] leading-[1.6]">
+            <code style={{ "font-family": editorSettings().fontFamily, "font-size": `${editorSettings().fontSize}px`, "line-height": editorSettings().lineHeight }}>
               <For each={lines()}>
                 {(html) => <div class="editor-line whitespace-pre" innerHTML={html} />}
               </For>
@@ -545,8 +552,8 @@ function CodeView(props: {
         {/* Editable textarea overlay */}
         <textarea
           ref={textareaRef}
-          class="editor-textarea absolute inset-0 w-full h-full pt-3 pb-3 pl-4 pr-4 font-mono text-[12px] leading-[1.6] bg-transparent text-transparent resize-none outline-none border-none overflow-auto whitespace-pre"
-          style={{ "caret-color": "var(--foreground)" }}
+          class="editor-textarea absolute inset-0 w-full h-full pt-3 pb-3 pl-4 pr-4 bg-transparent text-transparent resize-none outline-none border-none overflow-auto whitespace-pre"
+          style={{ "caret-color": "var(--foreground)", "font-family": editorSettings().fontFamily, "font-size": `${editorSettings().fontSize}px`, "line-height": editorSettings().lineHeight }}
           spellcheck={false}
           autocapitalize="off"
           autocomplete="off"
@@ -569,7 +576,7 @@ function CodeView(props: {
           <div class="absolute inset-0 pt-3 pl-4 pointer-events-none" aria-hidden="true">
             <For each={diagnostics()}>
               {(diag) => {
-                const top = () => `${diag.range_start_line * 1.6}em`;
+                const top = () => `${diag.range_start_line * editorSettings().lineHeight}em`;
                 const sevColor = () => {
                   if (diag.severity === 1) return "var(--destructive)";
                   if (diag.severity === 2) return "var(--warning)";
