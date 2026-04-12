@@ -3,11 +3,11 @@ import { CheckCircle, Flag, Loader, Sparkles, RefreshCcw } from "lucide-solid";
 import type { ReviewChecklist } from "@/types/git";
 
 const categoryColors: Record<string, string> = {
-  security: "text-red-400",
-  performance: "text-amber-400",
-  correctness: "text-blue-400",
-  style: "text-purple-400",
-  testing: "text-green-400",
+  security: "text-destructive",
+  performance: "text-warning",
+  correctness: "text-info",
+  style: "text-primary",
+  testing: "text-success",
 };
 
 interface ReviewChecklistSectionProps {
@@ -60,8 +60,8 @@ export function ReviewChecklistSection(props: ReviewChecklistSectionProps) {
                       title="Mark as passed"
                       class={`p-0.5 rounded transition-colors ${
                         item.status === "passed"
-                          ? "text-green-500"
-                          : "text-muted-foreground hover:text-green-500"
+                          ? "text-success"
+                          : "text-muted-foreground hover:text-success"
                       }`}
                     >
                       <CheckCircle class="w-4 h-4" />
@@ -71,8 +71,8 @@ export function ReviewChecklistSection(props: ReviewChecklistSectionProps) {
                       title="Flag this item"
                       class={`p-0.5 rounded transition-colors ${
                         item.status === "flagged"
-                          ? "text-red-500"
-                          : "text-muted-foreground hover:text-red-500"
+                          ? "text-destructive"
+                          : "text-muted-foreground hover:text-destructive"
                       }`}
                     >
                       <Flag class="w-4 h-4" />

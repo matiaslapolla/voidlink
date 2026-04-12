@@ -1,8 +1,10 @@
-import { createSignal, For, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, For, Show, onCleanup } from "solid-js";
 import { Plus, X } from "lucide-solid";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { terminalApi } from "@/api/terminal";
 import { TerminalPane } from "./TerminalPane";
+import { pendingTerminalInput, consumeTerminalInput } from "@/store/terminal-bridge";
 
 interface TerminalTab {
   id: string;
@@ -53,6 +55,29 @@ export function TerminalView(props: TerminalViewProps) {
       setActiveTab(remaining.length > 0 ? remaining[remaining.length - 1].id : null);
     }
   };
+
+  // Consume pending terminal input and write to active PTY
+  createEffect(() => {
+    const input = pendingTerminalInput();
+    if (!input) return;
+    const active = activeTab();
+    const tab = tabs().find((t) => t.id === active);
+    if (tab) {
+      consumeTerminalInput();
+      void invoke("write_pty", { sessionId: tab.ptyId, data: input });
+    } else {
+      // No terminal open — create one, then write
+      (async () => {
+        await addTerminal();
+        const newActive = activeTab();
+        const newTab = tabs().find((t) => t.id === newActive);
+        if (newTab) {
+          consumeTerminalInput();
+          void invoke("write_pty", { sessionId: newTab.ptyId, data: input });
+        }
+      })();
+    }
+  });
 
   return (
     <div class="flex flex-col h-full overflow-hidden">

@@ -239,7 +239,7 @@ export function AgentChatView(props: AgentChatViewProps) {
                 <Loader class="w-4 h-4 text-primary animate-spin" />
               </Show>
               <Show when={state().status === "success"}>
-                <CheckCircle class="w-4 h-4 text-green-500" />
+                <CheckCircle class="w-4 h-4 text-success" />
               </Show>
               <Show when={state().status === "failed"}>
                 <AlertCircle class="w-4 h-4 text-destructive" />
@@ -322,9 +322,9 @@ export function AgentChatView(props: AgentChatViewProps) {
                           : msg.status === "error"
                             ? "bg-destructive/10 text-destructive border border-destructive/20 rounded-bl-md"
                             : msg.status === "success"
-                              ? "bg-green-500/10 text-green-400 border border-green-500/20 rounded-bl-md"
+                              ? "bg-success/10 text-success border border-success/20 rounded-bl-md"
                               : msg.status === "warn"
-                                ? "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 rounded-bl-md"
+                                ? "bg-warning/10 text-warning border border-warning/20 rounded-bl-md"
                                 : "bg-card border border-border rounded-bl-md"
                     }`}
                   >
@@ -349,9 +349,9 @@ export function AgentChatView(props: AgentChatViewProps) {
                 </div>
                 <div class="bg-card border border-border rounded-2xl rounded-bl-md px-4 py-3">
                   <div class="flex gap-1">
-                    <span class="w-2 h-2 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:0ms]" />
-                    <span class="w-2 h-2 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:150ms]" />
-                    <span class="w-2 h-2 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:300ms]" />
+                    <span class="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:0ms]" />
+                    <span class="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:150ms]" />
+                    <span class="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:300ms]" />
                   </div>
                 </div>
               </div>
@@ -410,8 +410,8 @@ export function AgentChatView(props: AgentChatViewProps) {
               <span class="text-xs font-semibold">Modified Files</span>
               <span class="text-xs text-muted-foreground">
                 {worktreeDiff()!.files.length} files ·{" "}
-                <span class="text-green-500">+{worktreeDiff()!.totalAdditions}</span>{" "}
-                <span class="text-red-400">-{worktreeDiff()!.totalDeletions}</span>
+                <span class="text-success">+{worktreeDiff()!.totalAdditions}</span>{" "}
+                <span class="text-destructive">-{worktreeDiff()!.totalDeletions}</span>
               </span>
             </div>
           </div>
@@ -435,9 +435,9 @@ function FileCard(props: { file: FileDiff; expanded: boolean; onToggle: (path: s
 
   const statusColor = () => {
     switch (props.file.status) {
-      case "added": return "text-green-500";
-      case "deleted": return "text-red-400";
-      default: return "text-blue-400";
+      case "added": return "text-success";
+      case "deleted": return "text-destructive";
+      default: return "text-info";
     }
   };
 
@@ -449,14 +449,15 @@ function FileCard(props: { file: FileDiff; expanded: boolean; onToggle: (path: s
         class="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-accent/30 transition-colors"
       >
         <ChevronRight
-          class={`w-3 h-3 text-muted-foreground transition-transform flex-shrink-0 ${
+          class={`w-3 h-3 text-muted-foreground flex-shrink-0 ${
             props.expanded ? "rotate-90" : ""
           }`}
+          style={{ transition: "transform 80ms var(--ease-out-expo)" }}
         />
         <FileText class={`w-3.5 h-3.5 flex-shrink-0 ${statusColor()}`} />
         <span class="text-xs font-mono truncate flex-1">{path()}</span>
-        <span class="text-xs text-green-500 flex-shrink-0">+{props.file.additions}</span>
-        <span class="text-xs text-red-400 flex-shrink-0">-{props.file.deletions}</span>
+        <span class="text-xs text-success flex-shrink-0">+{props.file.additions}</span>
+        <span class="text-xs text-destructive flex-shrink-0">-{props.file.deletions}</span>
       </button>
 
       {/* Inline diff */}
@@ -465,7 +466,7 @@ function FileCard(props: { file: FileDiff; expanded: boolean; onToggle: (path: s
           <For each={props.file.hunks}>
             {(hunk) => (
               <div>
-                <div class="px-3 py-1 text-xs text-blue-400/70 bg-blue-500/5 font-mono">
+                <div class="px-3 py-1 text-xs text-info/70 bg-info/5 font-mono">
                   {hunk.header}
                 </div>
                 <table class="w-full border-collapse font-mono text-xs">
@@ -475,25 +476,25 @@ function FileCard(props: { file: FileDiff; expanded: boolean; onToggle: (path: s
                         <tr
                           class={
                             line.origin === "+"
-                              ? "bg-green-500/8"
+                              ? "bg-success/8"
                               : line.origin === "-"
-                                ? "bg-red-500/8"
+                                ? "bg-destructive/8"
                                 : ""
                           }
                         >
-                          <td class="w-8 px-2 text-right text-muted-foreground/30 select-none border-r border-border/20 tabular-nums">
+                          <td class="w-8 px-2 text-right text-muted-foreground/40 select-none border-r border-border/20 tabular-nums">
                             {line.oldLineno ?? ""}
                           </td>
-                          <td class="w-8 px-2 text-right text-muted-foreground/30 select-none border-r border-border/20 tabular-nums">
+                          <td class="w-8 px-2 text-right text-muted-foreground/40 select-none border-r border-border/20 tabular-nums">
                             {line.newLineno ?? ""}
                           </td>
                           <td class="px-3 py-px whitespace-pre-wrap break-all">
                             <span
                               class={`select-none mr-1.5 ${
                                 line.origin === "+"
-                                  ? "text-green-400/60"
+                                  ? "text-success/60"
                                   : line.origin === "-"
-                                    ? "text-red-400/60"
+                                    ? "text-destructive/60"
                                     : "text-muted-foreground/20"
                               }`}
                             >
@@ -502,9 +503,9 @@ function FileCard(props: { file: FileDiff; expanded: boolean; onToggle: (path: s
                             <span
                               class={
                                 line.origin === "+"
-                                  ? "text-green-300"
+                                  ? "text-success/90"
                                   : line.origin === "-"
-                                    ? "text-red-300"
+                                    ? "text-destructive/90"
                                     : "text-foreground/80"
                               }
                             >

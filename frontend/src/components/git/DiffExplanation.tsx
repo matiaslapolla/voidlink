@@ -10,9 +10,9 @@ interface DiffExplanationProps {
 }
 
 const riskColors: Record<string, string> = {
-  low: "text-green-500",
-  medium: "text-amber-500",
-  high: "text-red-500",
+  low: "text-success",
+  medium: "text-warning",
+  high: "text-destructive",
 };
 
 export function DiffExplanationPanel(props: DiffExplanationProps) {

@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "./themes.css";
 
 
 :root {
@@ -9,38 +10,123 @@
   line-height: 1.5;
   color-scheme: dark;
   --window-radius: 16px;
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.809 0.105 251.813);
-  --chart-2: oklch(0.623 0.214 259.815);
-  --chart-3: oklch(0.546 0.245 262.881);
-  --chart-4: oklch(0.488 0.243 264.376);
-  --chart-5: oklch(0.424 0.199 265.638);
+
+  /* ── Surfaces  (dark → light, all carry a subtle indigo undertone) ────── */
+  --background: oklch(0.145 0.012 270);
+  --foreground: oklch(0.950 0.008 270);
+  --card: oklch(0.185 0.012 270);
+  --card-foreground: oklch(0.950 0.008 270);
+  --popover: oklch(0.195 0.014 270);
+  --popover-foreground: oklch(0.950 0.008 270);
+
+  /* ── Primary — signature indigo ───────────────────────────────────────── */
+  --primary: oklch(0.655 0.200 270);
+  --primary-foreground: oklch(0.980 0.010 270);
+
+  /* ── Secondary — muted violet surface ─────────────────────────────────── */
+  --secondary: oklch(0.245 0.020 270);
+  --secondary-foreground: oklch(0.920 0.010 270);
+
+  /* ── Muted — subtle background fills (badges, wells) ──────────────────── */
+  --muted: oklch(0.220 0.012 270);
+  --muted-foreground: oklch(0.680 0.025 270);
+
+  /* ── Accent — hover/focus surfaces (distinct from muted) ──────────────── */
+  --accent: oklch(0.250 0.025 270);
+  --accent-foreground: oklch(0.950 0.008 270);
+
+  /* ── Semantic ─────────────────────────────────────────────────────────── */
+  --destructive: oklch(0.650 0.210 25);
+  --success: oklch(0.680 0.175 155);
+  --warning: oklch(0.750 0.155 75);
+  --info: oklch(0.680 0.150 245);
+
+  /* ── Chrome ───────────────────────────────────────────────────────────── */
+  --border: oklch(1 0.008 270 / 12%);
+  --input: oklch(1 0.008 270 / 16%);
+  --ring: oklch(0.655 0.200 270);
+
+  /* ── Charts ───────────────────────────────────────────────────────────── */
+  --chart-1: oklch(0.750 0.140 270);
+  --chart-2: oklch(0.680 0.175 155);
+  --chart-3: oklch(0.750 0.155 75);
+  --chart-4: oklch(0.680 0.150 245);
+  --chart-5: oklch(0.650 0.210 25);
+
+  /* ── Nav icon colors — equal-luminance, distinct-hue palette ───────────── */
+  --icon-scan: oklch(0.74 0.16 55);
+  --icon-repository: oklch(0.74 0.16 235);
+  --icon-context: oklch(0.74 0.16 310);
+  --icon-workflow: oklch(0.74 0.16 160);
+  --icon-agent: oklch(0.74 0.16 270);
+  --icon-terminal: oklch(0.74 0.16 140);
+
   --radius: 0.625rem;
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+
+  /* ── Sidebar — slightly elevated surface ──────────────────────────────── */
+  --sidebar: oklch(0.160 0.014 270);
+  --sidebar-foreground: oklch(0.950 0.008 270);
+  --sidebar-primary: oklch(0.655 0.200 270);
+  --sidebar-primary-foreground: oklch(0.980 0.010 270);
+  --sidebar-accent: oklch(0.260 0.035 270);
+  --sidebar-accent-foreground: oklch(0.950 0.008 270);
+  --sidebar-border: oklch(1 0.008 270 / 14%);
+  --sidebar-ring: oklch(0.655 0.200 270);
+}
+
+/* ── Light theme ─────────────────────────────────────────────────────────── */
+:root.light {
+  color-scheme: light;
+
+  --background: oklch(0.980 0.006 270);
+  --foreground: oklch(0.145 0.012 270);
+  --card: oklch(0.965 0.006 270);
+  --card-foreground: oklch(0.145 0.012 270);
+  --popover: oklch(0.985 0.004 270);
+  --popover-foreground: oklch(0.145 0.012 270);
+
+  --primary: oklch(0.530 0.220 270);
+  --primary-foreground: oklch(0.985 0.006 270);
+
+  --secondary: oklch(0.935 0.012 270);
+  --secondary-foreground: oklch(0.250 0.020 270);
+
+  --muted: oklch(0.945 0.008 270);
+  --muted-foreground: oklch(0.440 0.020 270);
+
+  --accent: oklch(0.930 0.016 270);
+  --accent-foreground: oklch(0.200 0.015 270);
+
+  --destructive: oklch(0.570 0.220 25);
+  --success: oklch(0.550 0.180 155);
+  --warning: oklch(0.620 0.170 75);
+  --info: oklch(0.560 0.160 245);
+
+  --border: oklch(0 0.006 270 / 12%);
+  --input: oklch(0 0.006 270 / 10%);
+  --ring: oklch(0.530 0.220 270);
+
+  --chart-1: oklch(0.530 0.160 270);
+  --chart-2: oklch(0.550 0.180 155);
+  --chart-3: oklch(0.620 0.170 75);
+  --chart-4: oklch(0.560 0.160 245);
+  --chart-5: oklch(0.570 0.220 25);
+
+  --icon-scan: oklch(0.58 0.18 55);
+  --icon-repository: oklch(0.55 0.18 235);
+  --icon-context: oklch(0.58 0.18 310);
+  --icon-workflow: oklch(0.55 0.18 160);
+  --icon-agent: oklch(0.53 0.20 270);
+  --icon-terminal: oklch(0.55 0.18 140);
+
+  --sidebar: oklch(0.960 0.008 270);
+  --sidebar-foreground: oklch(0.145 0.012 270);
+  --sidebar-primary: oklch(0.530 0.220 270);
+  --sidebar-primary-foreground: oklch(0.985 0.006 270);
+  --sidebar-accent: oklch(0.920 0.020 270);
+  --sidebar-accent-foreground: oklch(0.145 0.012 270);
+  --sidebar-border: oklch(0 0.006 270 / 10%);
+  --sidebar-ring: oklch(0.530 0.220 270);
 }
 
 body {
@@ -68,6 +154,15 @@ body {
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-icon-scan: var(--icon-scan);
+  --color-icon-repository: var(--icon-repository);
+  --color-icon-context: var(--icon-context);
+  --color-icon-workflow: var(--icon-workflow);
+  --color-icon-agent: var(--icon-agent);
+  --color-icon-terminal: var(--icon-terminal);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -101,6 +196,53 @@ body {
   html {
     @apply font-sans;
   }
+}
+
+/* ─── Faster tw-animate durations ───────────────────────────��────────────────
+ * tw-animate-css defaults to 150–200ms. Override to 100ms for dialogs/popovers
+ * so modals pop into place instead of floating in.
+ */
+.animate-in {
+  --tw-duration: 100ms;
+  --tw-ease: cubic-bezier(.16, 1, .3, 1);
+}
+.animate-out {
+  --tw-duration: 60ms;
+  --tw-ease: linear;
+}
+
+/* ─── Snappy transition utilities ────────────────────────────────────────────
+ * Default Tailwind `transition-colors` uses 150ms ease — feels laggy for
+ * direct-manipulation UIs.  These overrides target interactive elements to
+ * make hover/focus feedback near-instant and layout shifts crisp.
+ *
+ * Easing reference (from fastest perceived to gentlest):
+ *   --ease-snap:      cubic-bezier(.2,0,0,1)  — panel collapse/expand, layout
+ *   --ease-out-expo:  cubic-bezier(.16,1,.3,1) — micro-interactions
+ *   --ease-out-quart: cubic-bezier(.25,1,.5,1) — softer settle
+ */
+:root {
+  --ease-snap: cubic-bezier(.2, 0, 0, 1);
+  --ease-out-expo: cubic-bezier(.16, 1, .3, 1);
+  --ease-out-quart: cubic-bezier(.25, 1, .5, 1);
+}
+
+/* Hover/focus color changes: 60ms is perceptually instant */
+.transition-colors {
+  transition-duration: 60ms !important;
+  transition-timing-function: linear !important;
+}
+
+/* Opacity reveals (group-hover show/hide): fast in, gentle out */
+.transition-opacity {
+  transition-duration: 80ms !important;
+  transition-timing-function: linear !important;
+}
+
+/* Generic transition-all: keep short */
+.transition-all {
+  transition-duration: 80ms !important;
+  transition-timing-function: var(--ease-out-expo) !important;
 }
 
 /* Transparency: make the window see-through.
@@ -155,14 +297,16 @@ body,
 
 /* Tab strip scrollbar — always visible, 4px height */
 .scrollbar-tab-strip {
+  overflow-x: auto !important;
   scrollbar-width: thin;
-  scrollbar-color: oklch(0.4 0 0 / 0.4) transparent;
+  scrollbar-color: oklch(0.4 0 0 / 0.35) oklch(0.3 0 0 / 0.15);
 }
 .scrollbar-tab-strip::-webkit-scrollbar {
   height: 4px;
+  display: block;
 }
 .scrollbar-tab-strip::-webkit-scrollbar-track {
-  background: transparent;
+  background: oklch(0.3 0 0 / 0.15);
   margin: 0 8px;
 }
 .scrollbar-tab-strip::-webkit-scrollbar-thumb {
@@ -171,4 +315,54 @@ body,
 }
 .scrollbar-tab-strip::-webkit-scrollbar-thumb:hover {
   background: oklch(0.6 0 0 / 0.6);
+}
+
+/* ─── Editor theme (mimics VS Code / Zed approach) ──────────────────────────
+ * The editor surface is intentionally slightly darker/different from app chrome
+ * to create visual separation. Gutter has reduced contrast for line numbers.
+ * This follows the same pattern as VS Code's `editor.background`,
+ * `editorLineNumber.foreground`, and `editorGutter.background` tokens.
+ */
+:root {
+  --editor-bg: oklch(0.130 0.010 270);
+  --editor-gutter-bg: oklch(0.130 0.010 270);
+  --editor-line-number: oklch(0.420 0.012 270);
+  --editor-line-number-active: oklch(0.700 0.020 270);
+  --editor-tab-bar-bg: oklch(0.155 0.012 270);
+  --editor-border: oklch(1 0.008 270 / 8%);
+}
+
+:root.light {
+  --editor-bg: oklch(0.990 0.003 270);
+  --editor-gutter-bg: oklch(0.975 0.005 270);
+  --editor-line-number: oklch(0.600 0.010 270);
+  --editor-line-number-active: oklch(0.350 0.015 270);
+  --editor-tab-bar-bg: oklch(0.970 0.006 270);
+  --editor-border: oklch(0 0.006 270 / 8%);
+}
+
+.editor-container {
+  background: var(--editor-bg);
+}
+
+.editor-tab-bar {
+  background: var(--editor-tab-bar-bg);
+  border-color: var(--editor-border);
+}
+
+.editor-content {
+  background: var(--editor-bg);
+}
+
+.editor-gutter {
+  background: var(--editor-gutter-bg);
+  border-color: var(--editor-border);
+}
+
+.editor-line-number {
+  color: var(--editor-line-number);
+}
+
+.editor-code-view {
+  background: var(--editor-bg);
 }

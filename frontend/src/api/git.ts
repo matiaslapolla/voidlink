@@ -84,4 +84,26 @@ export const gitApi = {
   explainDiff(repoPath: string, base: string, head: string): Promise<DiffExplanation[]> {
     return invoke<DiffExplanation[]>("git_explain_diff", { repoPath, base, head });
   },
+
+  blameFile(repoPath: string, filePath: string): Promise<BlameLineInfo[]> {
+    return invoke<BlameLineInfo[]>("git_blame_file", { repoPath, filePath });
+  },
+
+  diffFileLines(repoPath: string, filePath: string): Promise<LineChange[]> {
+    return invoke<LineChange[]>("git_diff_file_lines", { repoPath, filePath });
+  },
 };
+
+export interface BlameLineInfo {
+  startLine: number;
+  numLines: number;
+  author: string;
+  commitSha: string;
+  timestamp: number;
+  summary: string;
+}
+
+export interface LineChange {
+  line: number;
+  changeType: "added" | "modified" | "deleted";
+}

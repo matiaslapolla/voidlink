@@ -87,8 +87,11 @@ export function WorkspaceSidebar(props: WorkspaceSidebarProps) {
   return (
     <>
       <aside
-        class="border-r border-border bg-sidebar flex flex-col flex-shrink-0 overflow-hidden transition-[width] duration-150"
-        style={{ width: `${effectiveWidth()}px` }}
+        class="border-r border-border bg-sidebar flex flex-col flex-shrink-0 overflow-hidden will-change-[width]"
+        style={{
+          width: `${effectiveWidth()}px`,
+          transition: "width 100ms var(--ease-snap)",
+        }}
       >
         {/* Header */}
         <div class="px-2 py-2.5 border-b border-border flex items-center gap-2">

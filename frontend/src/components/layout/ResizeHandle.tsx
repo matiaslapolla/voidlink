@@ -43,11 +43,11 @@ export function ResizeHandle(props: ResizeHandleProps) {
   return (
     <div
       onPointerDown={onPointerDown}
-      class={`flex-shrink-0 ${
+      class={`flex-shrink-0 transition-colors ${
         isVertical()
           ? `w-1 cursor-col-resize ${dragging() ? "bg-primary/40" : "bg-transparent hover:bg-primary/20"}`
           : `h-1 cursor-row-resize ${dragging() ? "bg-primary/40" : "bg-transparent hover:bg-primary/20"}`
-      } transition-colors ${props.class ?? ""}`}
+      } ${props.class ?? ""}`}
     />
   );
 }

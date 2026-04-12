@@ -11,6 +11,7 @@ mod git_review;
 mod settings;
 mod agent_runner;
 mod shell_integration;
+mod lsp;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
@@ -34,6 +35,137 @@ pub(crate) type PtyChannels = Arc<DashMap<String, Channel>>;
 #[tauri::command]
 fn get_home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+}
+
+#[derive(serde::Serialize)]
+struct DirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+#[tauri::command]
+fn list_directory(path: String) -> Result<Vec<DirEntry>, String> {
+    let mut entries: Vec<DirEntry> = std::fs::read_dir(&path)
+        .map_err(|e| e.to_string())?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden files/dirs
+            if name.starts_with('.') {
+                return None;
+            }
+            let is_dir = entry.file_type().ok()?.is_dir();
+            Some(DirEntry {
+                name,
+                path: entry.path().to_string_lossy().to_string(),
+                is_dir,
+            })
+        })
+        .collect();
+    // Directories first, then alphabetical
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(entries)
+}
+
+#[tauri::command]
+fn read_file_content(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_file_base64(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+#[tauri::command]
+fn write_file_content(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
+    std::fs::rename(&old_path, &new_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn copy_path(src: String, dest: String) -> Result<(), String> {
+    let src_path = std::path::Path::new(&src);
+    if src_path.is_dir() {
+        copy_dir_recursive(src_path, std::path::Path::new(&dest))
+    } else {
+        std::fs::copy(&src, &dest).map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let target = dest.join(entry.file_name());
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_path(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.is_dir() {
+        std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+    } else {
+        std::fs::remove_file(p).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn duplicate_path(path: String) -> Result<String, String> {
+    let src = std::path::Path::new(&path);
+    let parent = src.parent().ok_or("No parent directory")?;
+    let stem = src.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let ext = src.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+
+    let mut copy_name = format!("{} copy{}", stem, ext);
+    let mut counter = 2u32;
+    while parent.join(&copy_name).exists() {
+        copy_name = format!("{} copy {}{}", stem, counter, ext);
+        counter += 1;
+    }
+
+    let dest = parent.join(&copy_name);
+    let dest_str = dest.to_string_lossy().to_string();
+
+    if src.is_dir() {
+        copy_dir_recursive(src, &dest)?;
+    } else {
+        std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    }
+
+    Ok(dest_str)
+}
+
+#[tauri::command]
+fn empty_directory(path: String) -> Result<(), String> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_dir() {
+        return Err("Not a directory".to_string());
+    }
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let p = entry.path();
+        if p.is_dir() {
+            std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -267,6 +399,7 @@ pub fn run() {
     let git_state = git::GitState::new();
     let git_agent_state = git_agent::GitAgentState::new();
     let agent_runner_state = agent_runner::AgentRunnerState::new();
+    let lsp_state = lsp::LspState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -277,6 +410,7 @@ pub fn run() {
         .manage(git_state)
         .manage(git_agent_state)
         .manage(agent_runner_state)
+        .manage(lsp_state)
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -290,6 +424,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_home_dir,
+            list_directory,
+            read_file_content,
+            read_file_base64,
+            write_file_content,
+            rename_path,
+            copy_path,
+            delete_path,
+            duplicate_path,
+            empty_directory,
             // BYOK settings
             settings::save_api_key,
             settings::load_api_key,
@@ -328,6 +471,8 @@ pub fn run() {
             git::git_diff_branches,
             git::git_diff_commit,
             git::git_explain_diff,
+            git::git_blame_file,
+            git::git_diff_file_lines,
             // Phase 4: AI agent
             git_agent::git_agent_start,
             git_agent::git_agent_status,
@@ -348,6 +493,14 @@ pub fn run() {
             agent_runner::agent_kill_session,
             agent_runner::agent_get_scrollback,
             agent_runner::agent_cleanup_session,
+            // LSP support
+            lsp::lsp_detect_servers,
+            lsp::lsp_start_server,
+            lsp::lsp_stop_server,
+            lsp::lsp_hover,
+            lsp::lsp_goto_definition,
+            lsp::lsp_did_open,
+            lsp::lsp_did_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

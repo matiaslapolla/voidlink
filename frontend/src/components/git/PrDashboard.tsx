@@ -8,9 +8,9 @@ interface PrDashboardProps {
 }
 
 const ciColors: Record<string, string> = {
-  success: "bg-green-500",
-  failure: "bg-red-500",
-  pending: "bg-amber-500",
+  success: "bg-success",
+  failure: "bg-destructive",
+  pending: "bg-warning",
 };
 
 function timeAgo(iso: string): string {
@@ -21,12 +21,20 @@ function timeAgo(iso: string): string {
   return `${days}d ago`;
 }
 
+const PR_FILTER_KEY = "voidlink-pr-filter";
+
 export function PrDashboard(props: PrDashboardProps) {
-  const [stateFilter, setStateFilter] = createSignal("open");
+  const stored = localStorage.getItem(PR_FILTER_KEY);
+  const [stateFilter, setStateFilter] = createSignal(stored || "open");
+
+  const updateFilter = (v: string) => {
+    setStateFilter(v);
+    localStorage.setItem(PR_FILTER_KEY, v);
+  };
 
   const [prs, { refetch }] = createResource(
-    () => ({ path: props.repoPath, filter: stateFilter() }),
-    (src) => gitReviewApi.listPrs(src.path, src.filter),
+    () => [props.repoPath, stateFilter()] as const,
+    ([path, filter]) => gitReviewApi.listPrs(path, filter),
   );
 
   return (
@@ -39,7 +47,7 @@ export function PrDashboard(props: PrDashboardProps) {
         <div class="flex items-center gap-2">
           <select
             value={stateFilter()}
-            onChange={(e) => setStateFilter(e.currentTarget.value)}
+            onChange={(e) => updateFilter(e.currentTarget.value)}
             class="rounded border border-border bg-background px-2 py-1 text-xs outline-none"
           >
             <option value="open">Open</option>
@@ -115,8 +123,8 @@ export function PrDashboard(props: PrDashboardProps) {
               </div>
 
               <div class="flex items-center gap-3 text-xs text-muted-foreground">
-                <span class="text-green-500">+{pr.additions}</span>
-                <span class="text-red-400">-{pr.deletions}</span>
+                <span class="text-success">+{pr.additions}</span>
+                <span class="text-destructive">-{pr.deletions}</span>
                 <span>{pr.changedFiles} files</span>
                 <Show when={pr.ciStatus}>
                   <span class="flex items-center gap-1">
