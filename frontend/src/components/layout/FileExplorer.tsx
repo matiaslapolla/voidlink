@@ -1,4 +1,4 @@
-import { For, Show, createSignal, createEffect, on, onCleanup } from "solid-js";
+import { For, Show, createSignal, createEffect, on, onCleanup, createMemo } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ChevronRight,
@@ -16,6 +16,8 @@ import {
   TerminalSquare,
   Pencil,
 } from "lucide-solid";
+import { gitApi } from "@/api/git";
+import type { GitFileStatus } from "@/types/git";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -54,6 +56,8 @@ const [clipboardMode, setClipboardMode] = createSignal<"copy" | "cut" | null>(nu
 
 // ─── Rename dialog state ─────────────────────────────────────────────────────
 
+type GitStatusMap = Map<string, GitFileStatus["status"]>;
+
 function FileNode(props: {
   entry: DirEntry;
   depth: number;
@@ -61,6 +65,8 @@ function FileNode(props: {
   onOpenFilePinned: (path: string) => void;
   onRefresh: () => void;
   explorerProps: FileExplorerProps;
+  gitStatusMap: GitStatusMap;
+  repoRoot: string | null;
 }) {
   const [expanded, setExpanded] = createSignal(false);
   const [children, setChildren] = createSignal<DirEntry[]>([]);
@@ -111,6 +117,44 @@ function FileNode(props: {
       await loadChildren();
     }
   };
+
+  // Git status for this file (relative path lookup)
+  const gitStatus = createMemo(() => {
+    const root = props.repoRoot;
+    if (!root) return null;
+    const rel = props.entry.path.startsWith(root + "/")
+      ? props.entry.path.slice(root.length + 1)
+      : props.entry.path;
+    return props.gitStatusMap.get(rel) ?? null;
+  });
+
+  const gitBadge = createMemo(() => {
+    const s = gitStatus();
+    if (!s) return null;
+    switch (s) {
+      case "modified": return { letter: "M", class: "text-yellow-400" };
+      case "untracked": return { letter: "U", class: "text-green-400" };
+      case "added": return { letter: "A", class: "text-green-400" };
+      case "deleted": return { letter: "D", class: "text-destructive" };
+      case "renamed": return { letter: "R", class: "text-blue-400" };
+      case "conflicted": return { letter: "C", class: "text-destructive" };
+      default: return null;
+    }
+  });
+
+  // Check if any child in this directory has git status (for folder indicators)
+  const dirHasChanges = createMemo(() => {
+    if (!props.entry.is_dir || !props.repoRoot) return false;
+    const root = props.repoRoot;
+    const rel = props.entry.path.startsWith(root + "/")
+      ? props.entry.path.slice(root.length + 1)
+      : props.entry.path;
+    const prefix = rel + "/";
+    for (const key of props.gitStatusMap.keys()) {
+      if (key.startsWith(prefix)) return true;
+    }
+    return false;
+  });
 
   const ext = () => {
     const i = props.entry.name.lastIndexOf(".");
@@ -266,6 +310,19 @@ function FileNode(props: {
                 </Show>
               </Show>
               <span class="truncate">{props.entry.name}</span>
+              <Show when={!props.entry.is_dir && gitBadge()}>
+                {(_badge) => {
+                  const b = gitBadge()!;
+                  return (
+                    <span class={`ml-auto text-[10px] font-bold shrink-0 ${b.class}`}>
+                      {b.letter}
+                    </span>
+                  );
+                }}
+              </Show>
+              <Show when={props.entry.is_dir && dirHasChanges()}>
+                <span class="ml-auto w-1.5 h-1.5 rounded-full bg-yellow-400 shrink-0" />
+              </Show>
               <Show when={loading()}>
                 <span class="ml-auto text-[10px] text-muted-foreground/50">...</span>
               </Show>
@@ -359,6 +416,8 @@ function FileNode(props: {
               onOpenFilePinned={props.onOpenFilePinned}
               onRefresh={props.onRefresh}
               explorerProps={props.explorerProps}
+              gitStatusMap={props.gitStatusMap}
+              repoRoot={props.repoRoot}
             />
           )}
         </For>
@@ -378,7 +437,21 @@ function FileNode(props: {
 export function FileExplorer(props: FileExplorerProps) {
   const [entries, setEntries] = createSignal<DirEntry[]>([]);
   const [loading, setLoading] = createSignal(false);
+  const [gitStatusMap, setGitStatusMap] = createSignal<GitStatusMap>(new Map());
   const [, actions] = useLayout();
+
+  const loadGitStatus = async (root: string) => {
+    try {
+      const statuses = await gitApi.fileStatus(root);
+      const map: GitStatusMap = new Map();
+      for (const s of statuses) {
+        map.set(s.path, s.status);
+      }
+      setGitStatusMap(map);
+    } catch {
+      setGitStatusMap(new Map());
+    }
+  };
 
   const loadEntries = async (root: string) => {
     setLoading(true);
@@ -398,15 +471,19 @@ export function FileExplorer(props: FileExplorerProps) {
       async (root) => {
         if (!root) {
           setEntries([]);
+          setGitStatusMap(new Map());
           return;
         }
-        await loadEntries(root);
+        await Promise.all([loadEntries(root), loadGitStatus(root)]);
       },
     ),
   );
 
   const handleRefresh = () => {
-    if (props.repoRoot) loadEntries(props.repoRoot);
+    if (props.repoRoot) {
+      loadEntries(props.repoRoot);
+      loadGitStatus(props.repoRoot);
+    }
   };
 
   const handleOpenFile = (filePath: string) => {
@@ -479,6 +556,8 @@ export function FileExplorer(props: FileExplorerProps) {
                 onOpenFilePinned={handleOpenFilePinned}
                 onRefresh={handleRefresh}
                 explorerProps={props}
+                gitStatusMap={gitStatusMap()}
+                repoRoot={props.repoRoot}
               />
             )}
           </For>

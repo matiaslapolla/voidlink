@@ -5,10 +5,13 @@ import {
   FolderGit2,
   GitPullRequest,
   History,
+  Columns2,
+  Rows3,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { ResizeHandle } from "@/components/layout/ResizeHandle";
 import { DiffViewer } from "./DiffViewer";
+import { SplitDiffViewer } from "./SplitDiffViewer";
 import { DiffFileList } from "./DiffFileList";
 import { DiffExplanationPanel } from "./DiffExplanation";
 import { WorktreePanel } from "./WorktreePanel";
@@ -51,6 +54,9 @@ export function GitTabContent(props: GitTabContentProps) {
   const [view, setView] = createSignal<GitView>(props.initialView ?? "status");
   const [reviewPr, setReviewPr] = createSignal<number | null>(null);
   const [selectedFile, setSelectedFile] = createSignal<string | null>(null);
+  const [diffMode, setDiffMode] = createSignal<"unified" | "split">(
+    (localStorage.getItem("voidlink-diff-mode") as "unified" | "split") ?? "unified",
+  );
 
   const stored = localStorage.getItem(GIT_SIDEBAR_KEY);
   const [sidebarWidth, setSidebarWidth] = createSignal(
@@ -118,28 +124,67 @@ export function GitTabContent(props: GitTabContentProps) {
       {/* Main content */}
       <div class="flex-1 overflow-hidden flex flex-col">
         <Show when={view() === "status"}>
-          <div class="flex-1 flex overflow-hidden">
-            <Show when={workingDiff()}>
-              {(diff) => (
-                <>
-                  <div class="w-48 flex-shrink-0">
-                    <DiffFileList
-                      files={diff().files}
-                      selectedFile={selectedFile() ?? undefined}
-                      onSelectFile={setSelectedFile}
-                    />
-                  </div>
-                  <div class="flex-1 overflow-y-auto p-3">
-                    <DiffViewer diff={diff()} onFileClick={setSelectedFile} onAddToContext={props.onAddToContext} />
-                  </div>
-                </>
-              )}
-            </Show>
-            <Show when={!workingDiff() && !workingDiff.loading}>
-              <div class="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-                Working tree is clean
-              </div>
-            </Show>
+          <div class="flex-1 flex flex-col overflow-hidden">
+            {/* Diff mode toggle bar */}
+            <div class="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-sidebar/50">
+              <span class="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground/70 mr-auto">
+                Changes
+              </span>
+              <button
+                onClick={() => { setDiffMode("unified"); localStorage.setItem("voidlink-diff-mode", "unified"); }}
+                class={`flex items-center gap-1 px-2 py-1 text-[11px] rounded transition-colors ${
+                  diffMode() === "unified"
+                    ? "bg-primary/15 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                }`}
+                title="Unified diff"
+              >
+                <Rows3 class="w-3 h-3" />
+                Unified
+              </button>
+              <button
+                onClick={() => { setDiffMode("split"); localStorage.setItem("voidlink-diff-mode", "split"); }}
+                class={`flex items-center gap-1 px-2 py-1 text-[11px] rounded transition-colors ${
+                  diffMode() === "split"
+                    ? "bg-primary/15 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                }`}
+                title="Side-by-side diff"
+              >
+                <Columns2 class="w-3 h-3" />
+                Split
+              </button>
+            </div>
+            <div class="flex-1 flex overflow-hidden">
+              <Show when={workingDiff()}>
+                {(diff) => (
+                  <>
+                    <div class="w-48 flex-shrink-0">
+                      <DiffFileList
+                        files={diff().files}
+                        selectedFile={selectedFile() ?? undefined}
+                        onSelectFile={setSelectedFile}
+                      />
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-3">
+                      <Show
+                        when={diffMode() === "split"}
+                        fallback={
+                          <DiffViewer diff={diff()} onFileClick={setSelectedFile} onAddToContext={props.onAddToContext} />
+                        }
+                      >
+                        <SplitDiffViewer diff={diff()} onFileClick={setSelectedFile} onAddToContext={props.onAddToContext} />
+                      </Show>
+                    </div>
+                  </>
+                )}
+              </Show>
+              <Show when={!workingDiff() && !workingDiff.loading}>
+                <div class="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+                  Working tree is clean
+                </div>
+              </Show>
+            </div>
           </div>
         </Show>
 
