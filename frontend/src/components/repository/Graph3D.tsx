@@ -73,7 +73,7 @@ export function Graph3D(props: Graph3DProps) {
 
     const ForceGraph3D = (await import("3d-force-graph")).default;
 
-    graph = ForceGraph3D()(containerRef)
+    graph = (ForceGraph3D as any)()(containerRef)
       .backgroundColor("#0a0a0f")
       .nodeId("id")
       .nodeLabel((node: any) => (node as GraphNode).filePath ?? (node as GraphNode).label)

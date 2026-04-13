@@ -1,5 +1,5 @@
 import { createEffect, on, onCleanup, onMount } from "solid-js";
-import ForceGraph, { type ForceGraphInstance } from "force-graph";
+import ForceGraph from "force-graph";
 import type { GraphNode, GraphEdge } from "@/types/migration";
 
 export interface GraphFilters {
@@ -76,12 +76,12 @@ function buildGraphData(nodes: GraphNode[], edges: GraphEdge[], filters: GraphFi
 
 export function Graph2D(props: Graph2DProps) {
   let containerRef: HTMLDivElement | undefined;
-  let graph: ForceGraphInstance | null = null;
+  let graph: any = null;
 
   onMount(() => {
     if (!containerRef) return;
 
-    graph = ForceGraph()(containerRef)
+    graph = (ForceGraph as any)()(containerRef)
       .backgroundColor("rgba(0,0,0,0)")
       .nodeId("id")
       .nodeLabel((node: any) => (node as GraphNode).filePath ?? (node as GraphNode).label)

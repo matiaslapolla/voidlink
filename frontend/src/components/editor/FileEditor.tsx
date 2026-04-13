@@ -9,13 +9,11 @@ import { useLayout } from "@/store/LayoutContext";
 import {
   getDiagnosticsForFile,
   notifyFileOpened,
-  notifyFileClosed,
   getHoverInfo,
   gotoDefinition,
   detectLspServers,
   initialized as lspInitialized,
 } from "@/store/lsp-state";
-import type { LspDiagnostic } from "@/api/lsp";
 
 interface FileEditorProps {
   filePath: string | null;
@@ -191,7 +189,7 @@ function SvgViewer(props: { filePath: string; content: string }) {
       <div class="flex-1 overflow-auto">
         <Show
           when={mode() === "preview"}
-          fallback={<CodeView filePath={props.filePath} content={props.content} />}
+          fallback={<CodeView filePath={props.filePath} content={props.content} editBuffer={props.content} onEdit={() => {}} />}
         >
           <div class="flex items-center justify-center h-full p-8">
             <div
@@ -365,7 +363,7 @@ function CodeView(props: {
             }
 
             const effectiveLang = hl.getLoadedLanguages().includes(lang as any) ? lang : "text";
-            const tokens = hl.codeToTokens(text, { lang: effectiveLang, theme: shikiTheme });
+            const tokens = hl.codeToTokens(text, { lang: effectiveLang as any, theme: shikiTheme });
 
             const htmlLines = tokens.tokens.map((lineTokens) => {
               if (lineTokens.length === 0) return "&nbsp;";

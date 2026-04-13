@@ -1,6 +1,6 @@
 .PHONY: help \
         docker-up docker-down docker-logs docker-rebuild \
-        backend frontend app \
+        backend frontend app bundle \
         dev check test-frontend test-backend test-tauri \
         version
 
@@ -19,6 +19,7 @@ help:
 	@echo "  make app             Run Tauri desktop app (cargo tauri dev)"
 	@echo ""
 	@echo "  make dev             docker-up + Tauri (full stack)"
+	@echo "  make bundle          Build release bundle (AppImage, deb)"
 	@echo ""
 
 # ── Docker ───────────────────────────────────────────────────────────────────
@@ -47,6 +48,17 @@ app:
 # ── Full-stack shortcut ───────────────────────────────────────────────────────
 dev: docker-up
 	WEBKIT_DISABLE_DMABUF_RENDERER=1 cargo tauri dev
+
+# ── Release bundle ────────────────────────────────────────────────────────
+# Builds deb + rpm + AppImage.
+# NO_STRIP=true prevents linuxdeploy's bundled strip from choking on
+# newer ELF sections (.relr.dyn) on Arch/CachyOS. Our Rust binary is
+# already stripped via [profile.release] strip = true.
+bundle:
+	WEBKIT_DISABLE_DMABUF_RENDERER=1 NO_STRIP=true cargo tauri build
+
+bundle-deb:
+	WEBKIT_DISABLE_DMABUF_RENDERER=1 cargo tauri build --bundles deb
 
 # ── Testing ──────────────────────────────────────────────────────────────────
 test-frontend:

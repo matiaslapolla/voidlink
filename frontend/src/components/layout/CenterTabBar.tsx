@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, createSignal } from "solid-js";
 import {
   X,
   DatabaseZap,
@@ -9,6 +9,7 @@ import {
   FileCode,
   Image,
   Code,
+  GitCompare,
 } from "lucide-solid";
 import { useLayout } from "@/store/LayoutContext";
 import type { CenterTabType, TabInstance } from "@/store/layout";
@@ -27,6 +28,7 @@ const TYPE_ICONS: Record<CenterTabType, Component<{ class?: string }>> = {
   file: FileCode,
   image: Image,
   svg: Code,
+  diff: GitCompare,
 };
 
 export function CenterTabBar(props: CenterTabBarProps) {

@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, For, Show } from "solid-js";
 import { Plus, X } from "lucide-solid";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";

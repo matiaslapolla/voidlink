@@ -22,7 +22,13 @@
         "fullscreen": false,
         "center": true,
         "hiddenTitle": true,
-        "titleBarStyle": "Overlay"
+        "titleBarStyle": "Overlay",
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["acrylic"],
+          "state": "active",
+          "color": [0, 0, 0, 40]
+        }
       }
     ],
     "security": {

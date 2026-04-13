@@ -243,7 +243,7 @@ export function LeftSidebar(props: LeftSidebarProps) {
 
   return (
     <aside
-      class="bg-sidebar flex flex-col flex-shrink-0 overflow-hidden will-change-[width]"
+      class="glass-panel flex flex-col flex-shrink-0 overflow-hidden will-change-[width]"
       style={{
         width: collapsed() ? "48px" : `${layout.leftWidth}px`,
         transition: "width 100ms var(--ease-snap)",

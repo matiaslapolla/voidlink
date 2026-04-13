@@ -39,10 +39,10 @@ export function AppShell(props: AppShellProps) {
   };
 
   return (
-    <div class="flex flex-col h-screen bg-background text-foreground overflow-hidden">
+    <div class="app-shell flex flex-col h-screen text-foreground overflow-hidden">
       {props.titleBar}
 
-      <div class="flex flex-1 overflow-hidden">
+      <div class="flex flex-1 overflow-hidden relative z-[1]">
         {/* Left sidebar + resize handle */}
         <div
           class="flex flex-shrink-0"

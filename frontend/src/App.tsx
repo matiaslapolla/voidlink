@@ -29,7 +29,6 @@ import type { WorkspaceState, PersistedWorkspace } from "@/types/workspace";
 import { createWorkspace } from "@/types/workspace";
 import type { ContextItem } from "@/types/context";
 import { contextItemFromSearch, contextItemFromText, contextItemFromDiff } from "@/types/context";
-import type { CenterTabType } from "@/store/layout";
 import { useTheme } from "@/store/theme";
 
 const STORAGE_KEY = "voidlink-repo-workspaces";
@@ -268,7 +267,7 @@ function App() {
       const name = ws.repoRoot.split("/").pop() ?? ws.repoRoot;
       parts.push(name);
     }
-    if (ws.scanStatus?.status === "scanning") parts.push("Scanning...");
+    if (ws.scanStatus?.status === "running") parts.push("Scanning...");
     if (ws.runningWorkflow) parts.push("Workflow running");
     return parts.join(" \u00b7 ") || "No repository selected";
   });
@@ -284,9 +283,9 @@ function App() {
     <LayoutContext.Provider value={[layoutStore, layoutActions]}>
       <AppShell
         titleBar={
-          <div class="flex items-center h-8 shrink-0 border-b border-border bg-background/70 select-none">
+          <div class="glass-title-bar flex items-center h-8 shrink-0 select-none">
             <div data-tauri-drag-region class="flex-1 flex items-center px-3 h-full">
-              <span class="text-xs font-bold tracking-wider text-primary/80">Voidlink</span>
+              <span class="text-xs font-semibold tracking-wide text-foreground/90">Voidlink</span>
             </div>
             <div class="flex items-center h-full text-muted-foreground">
               <button
