@@ -35,3 +35,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 git2 = { version = "0.19", features = ["vendored-libgit2"] }
 dashmap = "6.1.0"
 base64 = "0.22"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

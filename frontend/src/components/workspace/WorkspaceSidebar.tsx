@@ -17,8 +17,6 @@ const STORAGE_KEY = "voidlink-sidebar-width";
 const COLLAPSED_KEY = "voidlink-sidebar-collapsed";
 const MIN_WIDTH = 48;
 const DEFAULT_WIDTH = 264;
-const COLLAPSE_THRESHOLD = 80;
-
 /** Inline rename input that only commits on blur/Enter to avoid re-render loops. */
 function RenameInput(props: { name: string; onCommit: (name: string) => void }) {
   const [draft, setDraft] = createSignal(props.name);

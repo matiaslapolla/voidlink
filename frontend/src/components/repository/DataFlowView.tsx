@@ -2,7 +2,7 @@ import { createSignal, Show, For } from "solid-js";
 import { GitFork, ChevronDown, ChevronRight, FileText, Loader2, ArrowDown } from "lucide-solid";
 import { migrationApi } from "@/api/migration";
 import { useLayout } from "@/store/LayoutContext";
-import type { DataFlowAnalysisResult, DataPipeline, DataFlowStep } from "@/types/migration";
+import type { DataFlowAnalysisResult, DataPipeline } from "@/types/migration";
 
 interface DataFlowViewProps {
   repoPath: string;

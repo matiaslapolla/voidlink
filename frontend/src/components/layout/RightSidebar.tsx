@@ -3,7 +3,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   ChevronRight,
-  Layers,
   GitBranch,
   Circle,
   X,
@@ -17,7 +16,7 @@ import {
 import { gitApi } from "@/api/git";
 import { useLayout } from "@/store/LayoutContext";
 import type { WorkspaceState } from "@/types/workspace";
-import type { ContextItem, ContextItemKind } from "@/types/context";
+import type { ContextItemKind } from "@/types/context";
 import type { GitRepoInfo } from "@/types/git";
 
 interface RightSidebarProps {
@@ -116,7 +115,7 @@ export function RightSidebar(props: RightSidebarProps) {
     <Show
       when={!collapsed()}
       fallback={
-        <aside class="w-8 bg-sidebar flex flex-col items-center py-2 flex-shrink-0">
+        <aside class="w-8 glass-panel flex flex-col items-center py-2 flex-shrink-0">
           <button
             onClick={() => actions.toggleRight()}
             class="p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors"
@@ -128,7 +127,7 @@ export function RightSidebar(props: RightSidebarProps) {
       }
     >
       <aside
-        class="bg-sidebar flex flex-col flex-shrink-0 overflow-hidden"
+        class="glass-panel flex flex-col flex-shrink-0 overflow-hidden"
         style={{ width: `${layout.rightWidth}px` }}
       >
         {/* Header */}

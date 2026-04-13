@@ -17,7 +17,6 @@ export interface CommandMarker {
 }
 
 export class ShellIntegrationAddon implements ITerminalAddon {
-  private terminal: Terminal | null = null;
   private disposables: IDisposable[] = [];
   private commands: CommandMarker[] = [];
   private currentPromptMarker: IMarker | null = null;
@@ -27,8 +26,6 @@ export class ShellIntegrationAddon implements ITerminalAddon {
   public onCwdChange: ((cwd: string) => void) | null = null;
 
   activate(terminal: Terminal): void {
-    this.terminal = terminal;
-
     // OSC 133 — prompt marking (data tracking only, no DOM decorations)
     const osc133 = terminal.parser.registerOscHandler(133, (data: string) => {
       const cmd = data[0];
@@ -80,6 +77,5 @@ export class ShellIntegrationAddon implements ITerminalAddon {
     for (const d of this.disposables) d.dispose();
     this.disposables = [];
     this.commands = [];
-    this.terminal = null;
   }
 }

@@ -44,7 +44,7 @@ export function BottomBar(props: BottomBarProps) {
   });
 
   return (
-    <div class="h-7 shrink-0 border-t border-border bg-sidebar flex items-center px-1 text-xs text-muted-foreground select-none gap-0.5">
+    <div class="glass-bottom-bar h-7 shrink-0 flex items-center px-1 text-xs text-muted-foreground select-none gap-0.5">
       {/* Tab toggle buttons */}
       {TAB_BUTTONS.map((btn) => {
         const Icon = btn.icon;

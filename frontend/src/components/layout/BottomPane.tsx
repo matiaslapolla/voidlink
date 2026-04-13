@@ -1,4 +1,4 @@
-import { Show, createSignal } from "solid-js";
+import { createSignal } from "solid-js";
 import { useLayout } from "@/store/LayoutContext";
 import type { BottomTabId } from "@/store/layout";
 import type { JSX } from "solid-js";
@@ -41,9 +41,7 @@ export function BottomPane(props: BottomPaneProps) {
 
   return (
     <div
-      class={`flex flex-col flex-shrink-0 overflow-hidden will-change-[height] ${
-        layout.bottomPaneOpen ? "border-t border-border" : ""
-      }`}
+      class="glass-panel flex flex-col flex-shrink-0 overflow-hidden will-change-[height]"
       style={{
         height: layout.bottomPaneOpen ? `${layout.bottomPaneHeight}px` : "0px",
         transition: dragging() ? "none" : "height 100ms var(--ease-snap)",

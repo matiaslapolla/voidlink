@@ -1,4 +1,4 @@
-import { createSignal, createEffect } from "solid-js";
+import { createSignal } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import { lspApi, type LspDiagnostic, type LspDiagnosticEvent, type LspServerInfo } from "@/api/lsp";
 
@@ -27,7 +27,7 @@ const EXT_TO_LSP_LANGUAGE: Record<string, string> = {
   c: "c_cpp", cpp: "c_cpp", cc: "c_cpp", h: "c_cpp", hpp: "c_cpp",
 };
 
-const LANGUAGE_TO_LSP_ID: Record<string, string> = {
+export const LANGUAGE_TO_LSP_ID: Record<string, string> = {
   typescript: "typescript",
   rust: "rust",
   python: "python",

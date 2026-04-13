@@ -19,7 +19,6 @@ import { gitApi } from "@/api/git";
 import { ResizeHandle } from "@/components/layout/ResizeHandle";
 import { DiffViewer } from "./DiffViewer";
 import { SplitDiffViewer } from "./SplitDiffViewer";
-import { DiffFileList } from "./DiffFileList";
 import { DiffExplanationPanel } from "./DiffExplanation";
 import { WorktreePanel } from "./WorktreePanel";
 import { PrDashboard } from "./PrDashboard";
@@ -60,7 +59,7 @@ const DEFAULT_WIDTH = 160;
 export function GitTabContent(props: GitTabContentProps) {
   const [view, setView] = createSignal<GitView>(props.initialView ?? "status");
   const [reviewPr, setReviewPr] = createSignal<number | null>(null);
-  const [selectedFile, setSelectedFile] = createSignal<string | null>(null);
+  const [, setSelectedFile] = createSignal<string | null>(null);
   const [diffMode, setDiffMode] = createSignal<"unified" | "split">(
     (localStorage.getItem("voidlink-diff-mode") as "unified" | "split") ?? "unified",
   );

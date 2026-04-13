@@ -64,6 +64,15 @@
   --editor-line-number-active: oklch(0.700 0.015 240);
   --editor-tab-bar-bg: oklch(0.140 0.010 250);
   --editor-border: oklch(0.280 0.010 250);
+
+  --glass-bg: oklch(0.140 0.010 250 / 0.55);
+  --glass-border: oklch(1 0 0 / 0.06);
+  --glass-highlight: oklch(1 0 0 / 0.03);
+  --glow-primary: oklch(0.680 0.140 245 / 0.10);
+  --glow-secondary: oklch(0.680 0.175 155 / 0.07);
+  --shell-gradient-from: oklch(0.08 0.012 250);
+  --shell-gradient-via: oklch(0.10 0.014 260);
+  --shell-gradient-to: oklch(0.08 0.010 240);
 }
 
 /* ── GitHub Light ───────────────────────────────────────────────────────────
@@ -121,6 +130,15 @@
   --editor-line-number-active: oklch(0.350 0.012 250);
   --editor-tab-bar-bg: oklch(0.970 0.005 250);
   --editor-border: oklch(0.870 0.008 250);
+
+  --glass-bg: oklch(0.980 0.004 250 / 0.60);
+  --glass-border: oklch(0 0 0 / 0.06);
+  --glass-highlight: oklch(1 0 0 / 0.5);
+  --glow-primary: oklch(0.500 0.180 245 / 0.06);
+  --glow-secondary: oklch(0.550 0.180 155 / 0.05);
+  --shell-gradient-from: oklch(0.94 0.006 250);
+  --shell-gradient-via: oklch(0.96 0.008 260);
+  --shell-gradient-to: oklch(0.94 0.006 240);
 }
 
 /* ── Monokai ────────────────────────────────────────────────────────────────
@@ -178,6 +196,15 @@
   --editor-line-number-active: oklch(0.700 0.015 100);
   --editor-tab-bar-bg: oklch(0.220 0.015 100);
   --editor-border: oklch(0.310 0.012 95);
+
+  --glass-bg: oklch(0.220 0.015 100 / 0.55);
+  --glass-border: oklch(1 0 0 / 0.06);
+  --glass-highlight: oklch(1 0 0 / 0.03);
+  --glow-primary: oklch(0.820 0.200 130 / 0.10);
+  --glow-secondary: oklch(0.850 0.120 90 / 0.08);
+  --shell-gradient-from: oklch(0.14 0.015 100);
+  --shell-gradient-via: oklch(0.17 0.020 110);
+  --shell-gradient-to: oklch(0.14 0.012 90);
 }
 
 /* ── Solarized Dark ─────────────────────────────────────────────────────────
@@ -235,6 +262,15 @@
   --editor-line-number-active: oklch(0.640 0.025 200);
   --editor-tab-bar-bg: oklch(0.240 0.040 220);
   --editor-border: oklch(0.280 0.035 220);
+
+  --glass-bg: oklch(0.240 0.040 220 / 0.55);
+  --glass-border: oklch(1 0 0 / 0.06);
+  --glass-highlight: oklch(1 0 0 / 0.03);
+  --glow-primary: oklch(0.580 0.140 240 / 0.10);
+  --glow-secondary: oklch(0.620 0.160 155 / 0.07);
+  --shell-gradient-from: oklch(0.16 0.040 220);
+  --shell-gradient-via: oklch(0.19 0.042 230);
+  --shell-gradient-to: oklch(0.16 0.035 210);
 }
 
 /* ── Solarized Light ────────────────────────────────────────────────────────
@@ -292,6 +328,15 @@
   --editor-line-number-active: oklch(0.400 0.020 200);
   --editor-tab-bar-bg: oklch(0.955 0.016 90);
   --editor-border: oklch(0.935 0.012 85);
+
+  --glass-bg: oklch(0.960 0.016 90 / 0.60);
+  --glass-border: oklch(0 0 0 / 0.05);
+  --glass-highlight: oklch(1 0 0 / 0.4);
+  --glow-primary: oklch(0.580 0.140 240 / 0.06);
+  --glow-secondary: oklch(0.550 0.180 155 / 0.05);
+  --shell-gradient-from: oklch(0.92 0.016 90);
+  --shell-gradient-via: oklch(0.94 0.018 95);
+  --shell-gradient-to: oklch(0.92 0.014 85);
 }
 
 /* ── Nord ───────────────────────────────────────────────────────────────────
@@ -349,6 +394,15 @@
   --editor-line-number-active: oklch(0.700 0.012 240);
   --editor-tab-bar-bg: oklch(0.265 0.015 250);
   --editor-border: oklch(0.320 0.016 250);
+
+  --glass-bg: oklch(0.265 0.015 250 / 0.55);
+  --glass-border: oklch(1 0 0 / 0.06);
+  --glass-highlight: oklch(1 0 0 / 0.03);
+  --glow-primary: oklch(0.760 0.070 210 / 0.10);
+  --glow-secondary: oklch(0.720 0.120 155 / 0.07);
+  --shell-gradient-from: oklch(0.18 0.014 250);
+  --shell-gradient-via: oklch(0.21 0.016 260);
+  --shell-gradient-to: oklch(0.18 0.012 240);
 }
 
 /* ── Dracula ────────────────────────────────────────────────────────────────
@@ -406,6 +460,15 @@
   --editor-line-number-active: oklch(0.700 0.015 285);
   --editor-tab-bar-bg: oklch(0.235 0.020 285);
   --editor-border: oklch(0.340 0.020 280);
+
+  --glass-bg: oklch(0.235 0.020 285 / 0.55);
+  --glass-border: oklch(1 0 0 / 0.06);
+  --glass-highlight: oklch(1 0 0 / 0.03);
+  --glow-primary: oklch(0.720 0.170 300 / 0.10);
+  --glow-secondary: oklch(0.750 0.170 145 / 0.07);
+  --shell-gradient-from: oklch(0.15 0.020 285);
+  --shell-gradient-via: oklch(0.18 0.025 295);
+  --shell-gradient-to: oklch(0.15 0.018 275);
 }
 
 /* ── One Dark ───────────────────────────────────────────────────────────────
@@ -463,4 +526,13 @@
   --editor-line-number-active: oklch(0.700 0.012 250);
   --editor-tab-bar-bg: oklch(0.240 0.012 260);
   --editor-border: oklch(0.330 0.012 255);
+
+  --glass-bg: oklch(0.240 0.012 260 / 0.55);
+  --glass-border: oklch(1 0 0 / 0.06);
+  --glass-highlight: oklch(1 0 0 / 0.03);
+  --glow-primary: oklch(0.700 0.120 240 / 0.10);
+  --glow-secondary: oklch(0.700 0.160 150 / 0.07);
+  --shell-gradient-from: oklch(0.16 0.012 260);
+  --shell-gradient-via: oklch(0.19 0.015 270);
+  --shell-gradient-to: oklch(0.16 0.010 250);
 }
