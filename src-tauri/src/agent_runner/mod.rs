@@ -135,9 +135,14 @@ pub fn agent_get_scrollback(
     state
         .scrollback
         .lock()
-        .map(|sb| {
-            sb.get(&pty_id)
-                .map(|deque| deque.iter().copied().collect())
+        .map(|mut sb| {
+            sb.get_mut(&pty_id)
+                .map(|deque| {
+                    // make_contiguous arranges the ring buffer into a single slice,
+                    // then we copy once instead of element-by-element iteration.
+                    let slices = deque.make_contiguous();
+                    slices.to_vec()
+                })
                 .unwrap_or_default()
         })
         .unwrap_or_default()

@@ -47,7 +47,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       cursorStyle: settings.cursorStyle,
       scrollback: settings.scrollback,
       customGlyphs: true,
-      letterSpacing: -0.5,
+      letterSpacing: 0,
     });
 
     const fitAddon = new FitAddon();
@@ -56,11 +56,17 @@ export function TerminalPane(props: TerminalPaneProps) {
 
     requestAnimationFrame(() => fitAddon.fit());
 
-    // WebLinksAddon — clickable URLs, lazy-loaded to keep term.open() fast.
+    // Lazy-load addons to keep term.open() fast.
     // No WebGL: Tauri's Wry webview has known WebGL context loss and input
     // lag issues (tauri-apps/tauri#8020, #6559). Canvas renderer is fine.
     import("@xterm/addon-web-links").then(({ WebLinksAddon }) => {
       try { term.loadAddon(new WebLinksAddon()); } catch { /* ignore */ }
+    }).catch(() => {});
+    import("@xterm/addon-unicode-graphemes").then(({ UnicodeGraphemesAddon }) => {
+      try { term.loadAddon(new UnicodeGraphemesAddon()); } catch { /* ignore */ }
+    }).catch(() => {});
+    import("@xterm/addon-clipboard").then(({ ClipboardAddon }) => {
+      try { term.loadAddon(new ClipboardAddon()); } catch { /* ignore */ }
     }).catch(() => {});
 
     // Keyboard input → PTY
@@ -119,7 +125,7 @@ export function TerminalPane(props: TerminalPaneProps) {
     <div
       ref={container}
       class={props.class ?? "w-full h-full"}
-      style={{ padding: "4px", "box-sizing": "border-box" }}
+      style={{ padding: "8px 12px", "box-sizing": "border-box" }}
     />
   );
 }

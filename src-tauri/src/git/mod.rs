@@ -29,13 +29,15 @@ pub(crate) use worktree::{git_create_worktree_impl, git_remove_worktree_impl};
 // ─── State ────────────────────────────────────────────────────────────────────
 
 pub struct GitState {
-    path_cache: Arc<Mutex<HashMap<String, PathBuf>>>,
+    /// Caches `input_path → discovered_repo_root` so repeated commands for the
+    /// same working directory skip the filesystem walk in `Repository::discover()`.
+    pub repo_path_cache: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
 impl GitState {
     pub fn new() -> Self {
         Self {
-            path_cache: Arc::new(Mutex::new(HashMap::new())),
+            repo_path_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -157,188 +159,204 @@ pub struct DiffExplanation {
     pub suggestions: Vec<String>,
 }
 
-// ─── Tauri command wrappers ───────────────────────────────────────────────────
+// ─── Tauri command wrappers ──────────────────────────────────────────────────
+//
+// All git operations do filesystem / network I/O via libgit2 or subprocesses.
+// They MUST run on spawn_blocking to avoid stalling the Tokio async executor
+// (which would freeze the entire UI).
+
+macro_rules! blocking_git {
+    ($body:expr) => {
+        tauri::async_runtime::spawn_blocking(move || $body)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+}
 
 #[tauri::command]
 pub async fn git_repo_info(
     repo_path: String,
     _state: tauri::State<'_, GitState>,
 ) -> Result<GitRepoInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || git_repo_info_impl(repo_path))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking_git!(git_repo_info_impl(repo_path))
 }
 
 #[tauri::command]
-pub fn git_list_branches(
+pub async fn git_list_branches(
     repo_path: String,
     include_remote: Option<bool>,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<Vec<GitBranchInfo>, String> {
-    git_list_branches_impl(repo_path, include_remote.unwrap_or(false))
+    let include = include_remote.unwrap_or(false);
+    blocking_git!(git_list_branches_impl(repo_path, include))
 }
 
 #[tauri::command]
-pub fn git_file_status(
+pub async fn git_file_status(
     repo_path: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<Vec<GitFileStatus>, String> {
-    git_file_status_impl(repo_path)
+    blocking_git!(git_file_status_impl(repo_path))
 }
 
 #[tauri::command]
-pub fn git_log(
+pub async fn git_log(
     repo_path: String,
     branch: Option<String>,
     limit: Option<u32>,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<Vec<GitCommitInfo>, String> {
-    git_log_impl(repo_path, branch, limit.unwrap_or(50))
+    let lim = limit.unwrap_or(50);
+    blocking_git!(git_log_impl(repo_path, branch, lim))
 }
 
 #[tauri::command]
-pub fn git_checkout_branch(
+pub async fn git_checkout_branch(
     repo_path: String,
     branch: String,
     create: Option<bool>,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
-    git_checkout_branch_impl(repo_path, branch, create.unwrap_or(false))
+    let c = create.unwrap_or(false);
+    blocking_git!(git_checkout_branch_impl(repo_path, branch, c))
 }
 
 #[tauri::command]
-pub fn git_stage_files(
+pub async fn git_stage_files(
     repo_path: String,
     paths: Vec<String>,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
-    git_stage_files_impl(repo_path, paths)
+    blocking_git!(git_stage_files_impl(repo_path, paths))
 }
 
 #[tauri::command]
-pub fn git_unstage_files(
+pub async fn git_unstage_files(
     repo_path: String,
     paths: Vec<String>,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
-    git_unstage_files_impl(repo_path, paths)
+    blocking_git!(git_unstage_files_impl(repo_path, paths))
 }
 
 #[tauri::command]
-pub fn git_stage_all(
+pub async fn git_stage_all(
     repo_path: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
-    git_stage_all_impl(repo_path)
+    blocking_git!(git_stage_all_impl(repo_path))
 }
 
 #[tauri::command]
-pub fn git_commit(
+pub async fn git_commit(
     repo_path: String,
     message: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<String, String> {
-    git_commit_impl(repo_path, message)
+    blocking_git!(git_commit_impl(repo_path, message))
 }
 
 #[tauri::command]
-pub fn git_push(
+pub async fn git_push(
     repo_path: String,
     remote: Option<String>,
     branch: Option<String>,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
-    git_push_impl(repo_path, remote, branch)
+    blocking_git!(git_push_impl(repo_path, remote, branch))
 }
 
 #[tauri::command]
-pub fn git_create_worktree(
+pub async fn git_create_worktree(
     input: CreateWorktreeInput,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<WorktreeInfo, String> {
-    git_create_worktree_impl(input)
+    blocking_git!(git_create_worktree_impl(input))
 }
 
 #[tauri::command]
-pub fn git_list_worktrees(
+pub async fn git_list_worktrees(
     repo_path: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<Vec<WorktreeInfo>, String> {
-    git_list_worktrees_impl(repo_path)
+    blocking_git!(git_list_worktrees_impl(repo_path))
 }
 
 #[tauri::command]
-pub fn git_remove_worktree(
+pub async fn git_remove_worktree(
     repo_path: String,
     name: String,
     force: Option<bool>,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
-    git_remove_worktree_impl(repo_path, name, force.unwrap_or(false))
+    let f = force.unwrap_or(false);
+    blocking_git!(git_remove_worktree_impl(repo_path, name, f))
 }
 
 #[tauri::command]
-pub fn git_worktree_status(
+pub async fn git_worktree_status(
     repo_path: String,
     name: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<Vec<GitFileStatus>, String> {
-    git_worktree_status_impl(repo_path, name)
+    blocking_git!(git_worktree_status_impl(repo_path, name))
 }
 
 #[tauri::command]
-pub fn git_diff_working(
+pub async fn git_diff_working(
     repo_path: String,
     staged_only: Option<bool>,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<DiffResult, String> {
-    git_diff_working_impl(repo_path, staged_only.unwrap_or(false))
+    let staged = staged_only.unwrap_or(false);
+    blocking_git!(git_diff_working_impl(repo_path, staged))
 }
 
 #[tauri::command]
-pub fn git_diff_branches(
+pub async fn git_diff_branches(
     repo_path: String,
     base: String,
     head: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<DiffResult, String> {
-    git_diff_branches_impl(repo_path, base, head)
+    blocking_git!(git_diff_branches_impl(repo_path, base, head))
 }
 
 #[tauri::command]
-pub fn git_diff_commit(
+pub async fn git_diff_commit(
     repo_path: String,
     oid: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<DiffResult, String> {
-    git_diff_commit_impl(repo_path, oid)
+    blocking_git!(git_diff_commit_impl(repo_path, oid))
 }
 
 #[tauri::command]
-pub fn git_explain_diff(
+pub async fn git_explain_diff(
     repo_path: String,
     base: String,
     head: String,
-    _git_state: tauri::State<GitState>,
-    migration_state: tauri::State<crate::migration::MigrationState>,
+    _git_state: tauri::State<'_, GitState>,
+    migration_state: tauri::State<'_, crate::migration::MigrationState>,
 ) -> Result<Vec<DiffExplanation>, String> {
-    git_explain_diff_impl(repo_path, base, head, &migration_state)
+    let ms = migration_state.inner().clone();
+    blocking_git!(git_explain_diff_impl(repo_path, base, head, &ms))
 }
 
 #[tauri::command]
-pub fn git_blame_file(
+pub async fn git_blame_file(
     repo_path: String,
     file_path: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<Vec<blame::BlameLineInfo>, String> {
-    git_blame_file_impl(&repo_path, &file_path)
+    blocking_git!(git_blame_file_impl(&repo_path, &file_path))
 }
 
 #[tauri::command]
-pub fn git_diff_file_lines(
+pub async fn git_diff_file_lines(
     repo_path: String,
     file_path: String,
-    _state: tauri::State<GitState>,
+    _state: tauri::State<'_, GitState>,
 ) -> Result<Vec<blame::LineChange>, String> {
-    git_diff_file_lines_impl(&repo_path, &file_path)
+    blocking_git!(git_diff_file_lines_impl(&repo_path, &file_path))
 }

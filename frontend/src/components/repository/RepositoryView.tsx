@@ -156,9 +156,9 @@ export function RepositoryView(props: RepositoryViewProps) {
           })}
         </div>
 
-        {/* Sub-tab content */}
+        {/* Sub-tab content — always mounted via display:none to preserve state */}
         <div class="flex-1 overflow-hidden relative">
-          <Show when={subTab() === "search"}>
+          <div class="absolute inset-0" style={{ display: subTab() === "search" ? "block" : "none" }}>
             <SearchTab
               searchQuery={ws().searchQuery}
               searchResults={ws().searchResults}
@@ -175,16 +175,16 @@ export function RepositoryView(props: RepositoryViewProps) {
                 }
               }}
             />
-          </Show>
-          <Show when={subTab() === "graph"}>
+          </div>
+          <div class="absolute inset-0" style={{ display: subTab() === "graph" ? "block" : "none" }}>
             <GraphView repoPath={ws().repoRoot!} workspaceId={ws().id} />
-          </Show>
-          <Show when={subTab() === "entities"}>
+          </div>
+          <div class="absolute inset-0" style={{ display: subTab() === "entities" ? "block" : "none" }}>
             <EntityView repoPath={ws().repoRoot!} workspaceId={ws().id} />
-          </Show>
-          <Show when={subTab() === "dataflows"}>
+          </div>
+          <div class="absolute inset-0" style={{ display: subTab() === "dataflows" ? "block" : "none" }}>
             <DataFlowView repoPath={ws().repoRoot!} workspaceId={ws().id} />
-          </Show>
+          </div>
         </div>
       </Show>
     </div>

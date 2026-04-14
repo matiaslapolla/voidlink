@@ -60,6 +60,10 @@ pub(crate) fn run_agent_pipeline(
             );
             update_task(&tasks, &task_id, |t| {
                 t.events.push(ev);
+                // Cap events to avoid unbounded growth (keep most recent)
+                if t.events.len() > 500 {
+                    t.events.drain(..t.events.len() - 500);
+                }
             });
         }};
     }

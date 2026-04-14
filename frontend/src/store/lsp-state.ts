@@ -16,6 +16,9 @@ const [diagnosticsByFile, setDiagnosticsByFile] = createSignal<Record<string, Ls
 const [availableServers, setAvailableServers] = createSignal<LspServerInfo[]>([]);
 const [initialized, setInitialized] = createSignal(false);
 
+// Track listener unsubscribe functions to avoid accumulating leaked listeners
+const unlistenByLanguage: Record<string, () => void> = {};
+
 // ─── Language mapping ───────────────────────────────────────────────────────
 
 const EXT_TO_LSP_LANGUAGE: Record<string, string> = {
@@ -80,10 +83,15 @@ export async function ensureLspServer(language: string, rootPath: string): Promi
     const serverId = await lspApi.startServer(language, rootPath);
     setServers((prev) => ({ ...prev, [language]: serverId }));
 
+    // Clean up previous listener for this language if any
+    if (unlistenByLanguage[language]) unlistenByLanguage[language]();
+
     // Listen for diagnostics from this server
     listen<LspDiagnosticEvent>(`lsp-diagnostics:${serverId}`, (evt) => {
       const { uri, diagnostics } = evt.payload;
       setDiagnosticsByFile((prev) => ({ ...prev, [uri]: diagnostics }));
+    }).then((unlisten) => {
+      unlistenByLanguage[language] = unlisten;
     });
 
     return serverId;

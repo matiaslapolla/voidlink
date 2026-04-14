@@ -165,25 +165,34 @@ pub(crate) fn load_chunk_embeddings(
         return Ok(HashMap::new());
     }
 
-    let wanted = chunk_ids.iter().cloned().collect::<HashSet<_>>();
     let mut out = HashMap::<String, Vec<f32>>::new();
 
-    let mut stmt = conn
-        .prepare(
+    // Process in batches to stay within SQLite variable limits (max ~999 params)
+    for batch in chunk_ids.chunks(500) {
+        let placeholders = batch.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
             "SELECT owner_id, vector_json
              FROM embeddings
-             WHERE owner_type = 'chunk' AND model = ?1",
-        )
-        .map_err(|e| e.to_string())?;
-    let mut rows = stmt.query(params![model_id]).map_err(|e| e.to_string())?;
-    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let owner_id = row.get::<_, String>(0).map_err(|e| e.to_string())?;
-        if !wanted.contains(&owner_id) {
-            continue;
+             WHERE owner_type = 'chunk' AND model = ?1 AND owner_id IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+
+        // Build params: model_id first, then all chunk_ids in this batch
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(1 + batch.len());
+        param_values.push(Box::new(model_id.to_string()));
+        for id in batch {
+            param_values.push(Box::new(id.clone()));
         }
-        let vector_json = row.get::<_, String>(1).map_err(|e| e.to_string())?;
-        if let Ok(vector) = serde_json::from_str::<Vec<f32>>(&vector_json) {
-            out.insert(owner_id, vector);
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+
+        let mut rows = stmt.query(param_refs.as_slice()).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let owner_id = row.get::<_, String>(0).map_err(|e| e.to_string())?;
+            let vector_json = row.get::<_, String>(1).map_err(|e| e.to_string())?;
+            if let Ok(vector) = serde_json::from_str::<Vec<f32>>(&vector_json) {
+                out.insert(owner_id, vector);
+            }
         }
     }
     Ok(out)

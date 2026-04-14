@@ -81,14 +81,20 @@ export function RightSidebar(props: RightSidebarProps) {
     localStorage.setItem(SECTIONS_KEY, JSON.stringify(sections()));
   });
 
-  // Fetch git info
+  // Fetch git info (with abort flag to prevent stale promise races)
   createEffect(() => {
     const repo = props.repoPath;
     if (!repo) {
       setGitInfo(null);
       return;
     }
-    gitApi.repoInfo(repo).then(setGitInfo).catch(() => setGitInfo(null));
+    let cancelled = false;
+    gitApi.repoInfo(repo).then((info) => {
+      if (!cancelled) setGitInfo(info);
+    }).catch(() => {
+      if (!cancelled) setGitInfo(null);
+    });
+    onCleanup(() => { cancelled = true; });
   });
 
   // Keyboard shortcut: Ctrl+Shift+B

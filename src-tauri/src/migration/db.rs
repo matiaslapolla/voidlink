@@ -107,6 +107,14 @@ impl SqliteStore {
               created_at INTEGER NOT NULL,
               FOREIGN KEY(run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
             );
+
+            -- Indexes for search/embedding performance
+            CREATE INDEX IF NOT EXISTS idx_embeddings_lookup
+              ON embeddings(owner_type, model, owner_id);
+            CREATE INDEX IF NOT EXISTS idx_chunks_file
+              ON chunks(file_id);
+            CREATE INDEX IF NOT EXISTS idx_files_repo
+              ON files(repo_id);
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -124,20 +132,20 @@ impl SqliteStore {
 
     pub(crate) fn upsert_repo(&self, root_path: &str) -> Result<String, String> {
         let now = now_ms();
-        let repo_id = {
-            let conn = self.open()?;
-            conn.query_row(
+        let conn = self.open()?;
+
+        // Check + mutate in one connection (avoids TOCTOU race and extra opens)
+        let existing_id: Option<String> = conn
+            .query_row(
                 "SELECT id FROM repos WHERE root_path = ?1",
                 params![root_path],
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(|e| e.to_string())?
-        };
+            .map_err(|e| e.to_string())?;
 
-        match repo_id {
+        match existing_id {
             Some(id) => {
-                let conn = self.open()?;
                 conn.execute(
                     "UPDATE repos SET updated_at = ?1 WHERE id = ?2",
                     params![now, id],
@@ -147,7 +155,6 @@ impl SqliteStore {
             }
             None => {
                 let id = Uuid::new_v4().to_string();
-                let conn = self.open()?;
                 conn.execute(
                     "INSERT INTO repos (id, root_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
                     params![id, root_path, now, now],

@@ -68,6 +68,7 @@ function FileNode(props: {
   onRefresh: () => void;
   explorerProps: FileExplorerProps;
   gitStatusMap: GitStatusMap;
+  changedDirs: Set<string>;
   repoRoot: string | null;
 }) {
   const [expanded, setExpanded] = createSignal(false);
@@ -144,18 +145,14 @@ function FileNode(props: {
     }
   });
 
-  // Check if any child in this directory has git status (for folder indicators)
+  // Check if any child in this directory has git status (O(1) via pre-computed Set)
   const dirHasChanges = createMemo(() => {
     if (!props.entry.is_dir || !props.repoRoot) return false;
     const root = props.repoRoot;
     const rel = props.entry.path.startsWith(root + "/")
       ? props.entry.path.slice(root.length + 1)
       : props.entry.path;
-    const prefix = rel + "/";
-    for (const key of props.gitStatusMap.keys()) {
-      if (key.startsWith(prefix)) return true;
-    }
-    return false;
+    return props.changedDirs.has(rel);
   });
 
   const ext = () => {
@@ -426,6 +423,7 @@ function FileNode(props: {
               onRefresh={props.onRefresh}
               explorerProps={props.explorerProps}
               gitStatusMap={props.gitStatusMap}
+              changedDirs={props.changedDirs}
               repoRoot={props.repoRoot}
             />
           )}
@@ -448,6 +446,21 @@ export function FileExplorer(props: FileExplorerProps) {
   const [loading, setLoading] = createSignal(false);
   const [gitStatusMap, setGitStatusMap] = createSignal<GitStatusMap>(new Map());
   const [, actions] = useLayout();
+
+  // Pre-compute set of directories that contain changed files (O(1) lookup per dir)
+  const changedDirs = createMemo(() => {
+    const dirs = new Set<string>();
+    for (const key of gitStatusMap().keys()) {
+      let pos = key.lastIndexOf("/");
+      while (pos > 0) {
+        const dir = key.slice(0, pos);
+        if (dirs.has(dir)) break; // all parents already added
+        dirs.add(dir);
+        pos = dir.lastIndexOf("/");
+      }
+    }
+    return dirs;
+  });
 
   const loadGitStatus = async (root: string) => {
     try {
@@ -579,6 +592,7 @@ export function FileExplorer(props: FileExplorerProps) {
                 onRefresh={handleRefresh}
                 explorerProps={props}
                 gitStatusMap={gitStatusMap()}
+                changedDirs={changedDirs()}
                 repoRoot={props.repoRoot}
               />
             )}

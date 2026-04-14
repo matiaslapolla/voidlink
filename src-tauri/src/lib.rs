@@ -12,6 +12,7 @@ mod settings;
 mod agent_runner;
 mod shell_integration;
 mod lsp;
+mod buffer;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
@@ -424,6 +425,7 @@ pub fn run() {
     let git_agent_state = git_agent::GitAgentState::new();
     let agent_runner_state = agent_runner::AgentRunnerState::new();
     let lsp_state = lsp::LspState::new();
+    let buffer_state = buffer::BufferState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -435,6 +437,7 @@ pub fn run() {
         .manage(git_agent_state)
         .manage(agent_runner_state)
         .manage(lsp_state)
+        .manage(buffer_state)
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -529,6 +532,12 @@ pub fn run() {
             lsp::lsp_goto_definition,
             lsp::lsp_did_open,
             lsp::lsp_did_close,
+            // Buffer management (rope + syntect)
+            buffer::buffer_open,
+            buffer::buffer_highlight,
+            buffer::buffer_get_tokens,
+            buffer::buffer_save,
+            buffer::buffer_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
