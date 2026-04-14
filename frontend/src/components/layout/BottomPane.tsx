@@ -21,13 +21,18 @@ export function BottomPane(props: BottomPaneProps) {
     const startH = layout.bottomPaneHeight;
     const maxH = window.innerHeight * MAX_FRAC;
 
+    let rafId = 0;
     const onMove = (ev: PointerEvent) => {
-      const delta = startY - ev.clientY;
-      const next = Math.min(Math.max(startH + delta, MIN_HEIGHT), maxH);
-      actions.setBottomPaneHeight(next);
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const delta = startY - ev.clientY;
+        const next = Math.min(Math.max(startH + delta, MIN_HEIGHT), maxH);
+        actions.setBottomPaneHeight(next);
+      });
     };
 
     const onUp = () => {
+      cancelAnimationFrame(rafId);
       setDragging(false);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);

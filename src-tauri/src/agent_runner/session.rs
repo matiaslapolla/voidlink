@@ -104,20 +104,21 @@ pub(super) fn start_session(
                     break;
                 }
                 Ok(n) => {
-                    let chunk = buf[..n].to_vec();
-
                     // Update idle clock
                     last_output_reader.store(now_secs(), Ordering::Relaxed);
 
-                    // Append to scrollback (VecDeque: efficient front eviction)
+                    // Append to scrollback directly from stack buffer (no extra alloc)
                     if let Ok(mut sb) = scrollback_arc.lock() {
                         let entry = sb.entry(reader_pty_id.clone()).or_insert_with(VecDeque::new);
-                        entry.extend(chunk.iter().copied());
+                        entry.extend(&buf[..n]);
                         if entry.len() > MAX_SCROLLBACK_BYTES {
                             let excess = entry.len() - MAX_SCROLLBACK_BYTES;
                             drop(entry.drain(..excess));
                         }
                     }
+
+                    // Alloc once for the channel/event send
+                    let chunk = buf[..n].to_vec();
 
                     // Send via channel (raw binary) if subscribed, fall back to event
                     if let Some(ch) = reader_channels.get(&reader_pty_id) {

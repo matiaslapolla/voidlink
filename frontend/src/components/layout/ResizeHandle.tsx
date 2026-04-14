@@ -21,16 +21,21 @@ export function ResizeHandle(props: ResizeHandleProps) {
     setDragging(true);
     let lastPos = isVertical() ? e.clientX : e.clientY;
 
+    let rafId = 0;
     const onMove = (ev: PointerEvent) => {
-      const current = isVertical() ? ev.clientX : ev.clientY;
-      const delta = current - lastPos;
-      if (delta !== 0) {
-        props.onResize(delta);
-        lastPos = current;
-      }
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const current = isVertical() ? ev.clientX : ev.clientY;
+        const delta = current - lastPos;
+        if (delta !== 0) {
+          props.onResize(delta);
+          lastPos = current;
+        }
+      });
     };
 
     const onUp = () => {
+      cancelAnimationFrame(rafId);
       setDragging(false);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);

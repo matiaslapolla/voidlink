@@ -18,10 +18,14 @@ pub(crate) fn git_repo_info_impl(repo_path: String) -> Result<GitRepoInfo, Strin
     let head_oid = head.target().map(|o| o.to_string());
     let is_detached = repo.head_detached().unwrap_or(false);
 
+    // Use include_untracked but skip recursing dirs — just need to know if anything is dirty.
+    // This still collects all statuses; git2-rs doesn't expose a short-circuit callback.
+    // But we at least avoid recursing into untracked directories for faster results.
     let mut status_opts = StatusOptions::new();
     status_opts
         .include_untracked(true)
-        .recurse_untracked_dirs(false);
+        .recurse_untracked_dirs(false)
+        .include_ignored(false);
     let statuses = repo
         .statuses(Some(&mut status_opts))
         .map_err(|e| e.message().to_string())?;

@@ -40,6 +40,7 @@ pub(crate) fn git_blame_file_impl(
         .map_err(|e| e.message().to_string())?;
 
     let mut results = Vec::new();
+    let mut commit_cache = std::collections::HashMap::new();
     for i in 0..blame.len() {
         let hunk = blame.get_index(i).ok_or("Failed to get blame hunk")?;
         let sig = hunk.final_signature();
@@ -48,14 +49,19 @@ pub(crate) fn git_blame_file_impl(
             .unwrap_or("Unknown")
             .to_string();
         let commit_oid = hunk.final_commit_id();
-        let commit_sha = format!("{}", commit_oid)[..8.min(format!("{}", commit_oid).len())].to_string();
+        let oid_str = commit_oid.to_string();
+        let commit_sha = oid_str[..8.min(oid_str.len())].to_string();
         let timestamp = sig.when().seconds();
 
-        let summary = repo
-            .find_commit(commit_oid)
-            .ok()
-            .and_then(|c| c.summary().map(|s| s.to_string()))
-            .unwrap_or_default();
+        let summary = commit_cache
+            .entry(commit_oid)
+            .or_insert_with(|| {
+                repo.find_commit(commit_oid)
+                    .ok()
+                    .and_then(|c| c.summary().map(|s| s.to_string()))
+                    .unwrap_or_default()
+            })
+            .clone();
 
         results.push(BlameLineInfo {
             start_line: hunk.final_start_line() as u32,

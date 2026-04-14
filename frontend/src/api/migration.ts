@@ -9,7 +9,7 @@ import type {
   ScanOptions,
   ScanProgress,
   SearchOptions,
-  SearchQuery,
+  SearchQuerasdsadasy,
   SearchResult,
   WorkflowDsl,
 } from "@/types/migration";

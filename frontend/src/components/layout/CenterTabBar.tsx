@@ -1,4 +1,4 @@
-import { For, createSignal } from "solid-js";
+import { For, createSignal, createMemo } from "solid-js";
 import {
   X,
   DatabaseZap,
@@ -12,7 +12,7 @@ import {
   GitCompare,
 } from "lucide-solid";
 import { useLayout } from "@/store/LayoutContext";
-import type { CenterTabType, TabInstance } from "@/store/layout";
+import type { CenterTabType, CenterTabState, TabInstance } from "@/store/layout";
 import type { Component } from "solid-js";
 
 interface CenterTabBarProps {
@@ -31,15 +31,15 @@ const TYPE_ICONS: Record<CenterTabType, Component<{ class?: string }>> = {
   diff: GitCompare,
 };
 
+const EMPTY_TAB_STATE: CenterTabState = { tabs: [] as TabInstance[], activeTabId: "" };
+
 export function CenterTabBar(props: CenterTabBarProps) {
   const [layout, actions] = useLayout();
   const [dragIdx, setDragIdx] = createSignal<number | null>(null);
 
-  const tabState = () =>
-    layout.centerTabsByWorkspace[props.workspaceId] ?? {
-      tabs: [] as TabInstance[],
-      activeTabId: "",
-    };
+  const tabState = createMemo(() =>
+    layout.centerTabsByWorkspace[props.workspaceId] ?? EMPTY_TAB_STATE
+  );
 
   const handleDragStart = (idx: number, e: DragEvent) => {
     setDragIdx(idx);

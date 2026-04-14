@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show } from "solid-js";
+import { createSignal, createEffect, For, Show, batch } from "solid-js";
 import { Plus, X } from "lucide-solid";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -26,9 +26,11 @@ export function TerminalView(props: TerminalViewProps) {
     try {
       const ptyId = await terminalApi.createPty(props.cwd);
       const tab: TerminalTab = { id: ptyId, ptyId };
-      setTabs((prev) => [...prev, tab]);
-      setTabTitles((prev) => ({ ...prev, [ptyId]: `Terminal ${tabs().length}` }));
-      setActiveTab(tab.id);
+      batch(() => {
+        setTabs((prev) => [...prev, tab]);
+        setTabTitles((prev) => ({ ...prev, [ptyId]: `Terminal ${tabs().length}` }));
+        setActiveTab(tab.id);
+      });
 
       // Listen for PTY exit to mark tab as closed
       listen(`pty-exit:${ptyId}`, () => {
@@ -44,16 +46,18 @@ export function TerminalView(props: TerminalViewProps) {
     if (tab) {
       void terminalApi.closePty(tab.ptyId).catch(() => {});
     }
-    setTabs((prev) => prev.filter((t) => t.id !== id));
-    setTabTitles((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
+    batch(() => {
+      setTabs((prev) => prev.filter((t) => t.id !== id));
+      setTabTitles((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      if (activeTab() === id) {
+        const remaining = tabs().filter((t) => t.id !== id);
+        setActiveTab(remaining.length > 0 ? remaining[remaining.length - 1].id : null);
+      }
     });
-    if (activeTab() === id) {
-      const remaining = tabs().filter((t) => t.id !== id);
-      setActiveTab(remaining.length > 0 ? remaining[remaining.length - 1].id : null);
-    }
   };
 
   // Consume pending terminal input and write to active PTY

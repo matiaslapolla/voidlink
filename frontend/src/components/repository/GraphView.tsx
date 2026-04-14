@@ -1,10 +1,11 @@
-import { createSignal, createEffect, on, Show, lazy } from "solid-js";
+import { createSignal, createEffect, on, Show, lazy, Suspense } from "solid-js";
 import { FolderTree, Globe, ArrowRightLeft, GitFork, Loader2, Box, Layout } from "lucide-solid";
 import { migrationApi } from "@/api/migration";
-import { Graph2D, type GraphFilters } from "@/components/repository/Graph2D";
+import type { GraphFilters } from "@/components/repository/Graph2D";
 import { useLayout } from "@/store/LayoutContext";
 import type { GraphNode, RepoGraph } from "@/types/migration";
 
+const Graph2D = lazy(() => import("@/components/repository/Graph2D").then((m) => ({ default: m.Graph2D })));
 const Graph3D = lazy(() => import("@/components/repository/Graph3D").then((m) => ({ default: m.Graph3D })));
 
 interface GraphViewProps {

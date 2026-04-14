@@ -217,7 +217,8 @@ export function createLayoutStore() {
   const initial = loadPersistedLayout();
   const [store, setStore] = createStore<LayoutStoreState>(initial);
 
-  // Persist on change
+  // Persist on change (debounced to avoid blocking during rapid resize/drag)
+  let persistTimer: ReturnType<typeof setTimeout>;
   createEffect(() => {
     const snapshot = {
       columnOrder: store.columnOrder,
@@ -231,7 +232,10 @@ export function createLayoutStore() {
       centerTabsByWorkspace: store.centerTabsByWorkspace,
       leftTreeExpanded: store.leftTreeExpanded,
     };
-    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(snapshot));
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(snapshot));
+    }, 300);
   });
 
   const actions: LayoutStoreActions = {
