@@ -59,6 +59,7 @@
   --icon-context: oklch(0.74 0.16 310);
   --icon-workflow: oklch(0.74 0.16 160);
   --icon-agent: oklch(0.74 0.16 270);
+  --icon-prompt: oklch(0.74 0.16 40);
   --icon-terminal: oklch(0.74 0.16 140);
 
   --radius: 0.625rem;
@@ -134,6 +135,7 @@
   --icon-context: oklch(0.58 0.18 310);
   --icon-workflow: oklch(0.55 0.18 160);
   --icon-agent: oklch(0.53 0.20 270);
+  --icon-prompt: oklch(0.55 0.18 40);
   --icon-terminal: oklch(0.55 0.18 140);
 
   --sidebar: oklch(0.960 0.008 270);
@@ -194,6 +196,7 @@ body {
   --color-icon-context: var(--icon-context);
   --color-icon-workflow: var(--icon-workflow);
   --color-icon-agent: var(--icon-agent);
+  --color-icon-prompt: var(--icon-prompt);
   --color-icon-terminal: var(--icon-terminal);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);

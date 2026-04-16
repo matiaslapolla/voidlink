@@ -7,6 +7,7 @@ import { AgentChatView } from "@/components/agent/AgentChatView";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { FileEditor } from "@/components/editor/FileEditor";
 import { SplitDiffView } from "@/components/editor/SplitDiffView";
+import { PromptStudioView } from "@/components/prompt-studio/PromptStudioView";
 import { BreadcrumbBar } from "@/components/layout/BreadcrumbBar";
 import { CenterTabBar } from "@/components/layout/CenterTabBar";
 import { useLayout } from "@/store/LayoutContext";
@@ -30,7 +31,7 @@ interface CenterColumnProps {
   onScan: (full: boolean) => void;
 }
 
-const SINGLETON_TYPES = new Set(["repository", "contextBuilder", "workflow", "aiAgent"]);
+const SINGLETON_TYPES = new Set(["repository", "contextBuilder", "workflow", "aiAgent", "promptStudio"]);
 
 export function CenterColumn(props: CenterColumnProps) {
   const [layout] = useLayout();
@@ -105,6 +106,14 @@ export function CenterColumn(props: CenterColumnProps) {
             onGenerate={props.onGenerate}
             onRun={props.onRun}
           />
+        </div>
+
+        {/* Singleton: Prompt Studio */}
+        <div
+          class="absolute inset-0 h-full overflow-hidden"
+          style={{ display: activeType() === "promptStudio" ? "block" : "none" }}
+        >
+          <PromptStudioView />
         </div>
 
         {/* Singleton: AI Agent */}

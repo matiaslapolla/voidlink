@@ -11,6 +11,7 @@ export type CenterTabType =
   | "contextBuilder"
   | "workflow"
   | "aiAgent"
+  | "promptStudio"
   | "terminal"
   | "file"
   | "image"
@@ -101,7 +102,7 @@ export interface LayoutStoreActions {
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const SINGLETON_TYPES = new Set<CenterTabType>([
-  "repository", "contextBuilder", "workflow", "aiAgent",
+  "repository", "contextBuilder", "workflow", "aiAgent", "promptStudio",
 ]);
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
@@ -116,6 +117,7 @@ function labelForType(type: CenterTabType): string {
     contextBuilder: "Context Builder",
     workflow: "Workflow",
     aiAgent: "AI Agent",
+    promptStudio: "Prompt Studio",
     terminal: "Terminal",
     file: "File",
     image: "Image",
