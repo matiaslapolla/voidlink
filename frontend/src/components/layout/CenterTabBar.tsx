@@ -10,6 +10,7 @@ import {
   Image,
   Code,
   GitCompare,
+  Sparkles,
 } from "lucide-solid";
 import { useLayout } from "@/store/LayoutContext";
 import type { CenterTabType, CenterTabState, TabInstance } from "@/store/layout";
@@ -24,6 +25,7 @@ const TYPE_ICONS: Record<CenterTabType, Component<{ class?: string }>> = {
   contextBuilder: Layers,
   workflow: Workflow,
   aiAgent: Bot,
+  promptStudio: Sparkles,
   terminal: TerminalSquare,
   file: FileCode,
   image: Image,

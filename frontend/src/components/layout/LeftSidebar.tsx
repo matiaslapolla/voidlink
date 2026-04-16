@@ -8,6 +8,7 @@ import {
   Bot,
   TerminalSquare,
   Workflow,
+  Sparkles,
   ChevronDown,
   FilePlus2,
   Trash2,
@@ -211,6 +212,13 @@ export function LeftSidebar(props: LeftSidebarProps) {
         iconColor: "text-icon-agent",
         tabTarget: "aiAgent",
         disabled: !hasRepo,
+      },
+      {
+        id: "promptStudio",
+        label: "Prompt Studio",
+        icon: Sparkles,
+        iconColor: "text-icon-prompt",
+        tabTarget: "promptStudio",
       },
       {
         id: "terminal",

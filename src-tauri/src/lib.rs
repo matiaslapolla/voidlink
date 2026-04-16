@@ -13,6 +13,7 @@ mod agent_runner;
 mod shell_integration;
 mod lsp;
 mod buffer;
+mod prompt_studio;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
@@ -426,6 +427,8 @@ pub fn run() {
     let agent_runner_state = agent_runner::AgentRunnerState::new();
     let lsp_state = lsp::LspState::new();
     let buffer_state = buffer::BufferState::new();
+    let prompt_studio_state =
+        prompt_studio::PromptStudioState::new().expect("failed to initialize prompt studio state");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -438,6 +441,7 @@ pub fn run() {
         .manage(agent_runner_state)
         .manage(lsp_state)
         .manage(buffer_state)
+        .manage(prompt_studio_state)
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -538,6 +542,19 @@ pub fn run() {
             buffer::buffer_get_tokens,
             buffer::buffer_save,
             buffer::buffer_close,
+            // Prompt Studio
+            prompt_studio::prompt_list,
+            prompt_studio::prompt_get,
+            prompt_studio::prompt_save,
+            prompt_studio::prompt_delete,
+            prompt_studio::prompt_toggle_favorite,
+            prompt_studio::prompt_list_tags,
+            prompt_studio::prompt_get_versions,
+            prompt_studio::prompt_get_executions,
+            prompt_studio::prompt_rate_execution,
+            prompt_studio::prompt_execute,
+            prompt_studio::prompt_analyze,
+            prompt_studio::prompt_optimize,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
