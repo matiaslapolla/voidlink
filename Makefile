@@ -1,7 +1,8 @@
 .PHONY: help \
         docker-up docker-down docker-logs docker-rebuild \
         backend frontend app bundle \
-        dev check test-frontend test-backend test-tauri \
+        desktop-run desktop-dev \
+        dev check test-frontend test-backend test-tauri test-core \
         version
 
 # ── Default ──────────────────────────────────────────────────────────────────
@@ -17,6 +18,9 @@ help:
 	@echo "  make backend         Run FastAPI locally (uv, hot-reload)"
 	@echo "  make frontend        Run Vite dev server"
 	@echo "  make app             Run Tauri desktop app (cargo tauri dev)"
+	@echo ""
+	@echo "  make desktop-run     Run egui desktop app"
+	@echo "  make desktop-dev     docker-up + egui desktop app"
 	@echo ""
 	@echo "  make dev             docker-up + Tauri (full stack)"
 	@echo "  make bundle          Build release bundle (AppImage, deb)"
@@ -45,6 +49,13 @@ frontend:
 app:
 	WEBKIT_DISABLE_DMABUF_RENDERER=1 cargo tauri dev
 
+# ── egui desktop ──────────────────────────────────────────────────────────────
+desktop-run:
+	cargo run -p voidlink-desktop
+
+desktop-dev: docker-up
+	cargo run -p voidlink-desktop
+
 # ── Full-stack shortcut ───────────────────────────────────────────────────────
 dev: docker-up
 	WEBKIT_DISABLE_DMABUF_RENDERER=1 cargo tauri dev
@@ -70,7 +81,10 @@ test-backend:
 test-tauri:
 	cd src-tauri && cargo check && cargo test
 
-check: test-frontend test-backend test-tauri
+test-core:
+	cargo test -p voidlink-core
+
+check: test-core test-frontend test-backend test-tauri
 	@echo ""
 	@echo "  All checks passed."
 	@echo ""

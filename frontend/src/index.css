@@ -78,8 +78,8 @@
   --glass-bg: oklch(0.145 0.012 270 / 0.55);
   --glass-border: oklch(1 0 0 / 0.07);
   --glass-highlight: oklch(1 0 0 / 0.04);
-  --glass-blur: 20px;
-  --glass-saturate: 130%;
+  --glass-blur: 6px;
+  --glass-saturate: 120%;
 
   /* ── Ambient glow orbs ────────────────────────────────────────────────── */
   --glow-primary: oklch(0.655 0.200 270 / 0.10);
@@ -151,8 +151,8 @@
   --glass-bg: oklch(0.980 0.006 270 / 0.60);
   --glass-border: oklch(0 0 0 / 0.06);
   --glass-highlight: oklch(1 0 0 / 0.5);
-  --glass-blur: 20px;
-  --glass-saturate: 130%;
+  --glass-blur: 6px;
+  --glass-saturate: 120%;
 
   --glow-primary: oklch(0.530 0.220 270 / 0.08);
   --glow-secondary: oklch(0.550 0.180 155 / 0.06);
@@ -437,6 +437,7 @@ body,
   border-radius: 50%;
   pointer-events: none;
   z-index: 0;
+  will-change: transform;
 }
 
 /* Primary glow — top-left, follows primary hue */
@@ -446,7 +447,7 @@ body,
   top: -15%;
   left: -10%;
   background: radial-gradient(circle, var(--glow-primary) 0%, transparent 70%);
-  filter: blur(80px);
+  filter: blur(40px);
 }
 
 /* Secondary glow — bottom-right, complementary hue */
@@ -456,7 +457,7 @@ body,
   bottom: -10%;
   right: -8%;
   background: radial-gradient(circle, var(--glow-secondary) 0%, transparent 70%);
-  filter: blur(80px);
+  filter: blur(40px);
 }
 
 /* ── Glass panel — base class for translucent surfaces ──────────────────── */
@@ -470,16 +471,19 @@ body,
     0 1px 3px oklch(0 0 0 / 0.15);
   position: relative;
   z-index: 1;
+  contain: strict;
+  will-change: transform;
 }
 
 /* ── Glass title bar — more opaque for readability over glow orbs ────────── */
 .glass-title-bar {
   background: color-mix(in oklch, var(--background) 82%, transparent);
-  backdrop-filter: blur(12px) saturate(110%);
-  -webkit-backdrop-filter: blur(12px) saturate(110%);
+  backdrop-filter: blur(6px) saturate(110%);
+  -webkit-backdrop-filter: blur(6px) saturate(110%);
   border-bottom: 1px solid var(--glass-border);
   position: relative;
   z-index: 2;
+  will-change: transform;
 }
 
 /* ── Glass bottom bar ───────────────────────────────────────────────────── */
@@ -491,6 +495,7 @@ body,
   box-shadow: inset 0 1px 0 var(--glass-highlight);
   position: relative;
   z-index: 1;
+  will-change: transform;
 }
 
 /* Fallback for environments without backdrop-filter */
