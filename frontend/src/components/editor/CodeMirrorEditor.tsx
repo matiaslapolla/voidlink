@@ -104,7 +104,11 @@ function langExtension(filePath: string): Extension {
 // ─── Git diff gutter marker ─────────────────────────────────────────────────
 
 class DiffMarker extends GutterMarker {
-  constructor(readonly changeType: string) { super(); }
+  changeType: string;
+  constructor(changeType: string) {
+    super();
+    this.changeType = changeType;
+  }
   toDOM() {
     const el = document.createElement("div");
     el.style.width = "3px";
@@ -113,7 +117,7 @@ class DiffMarker extends GutterMarker {
     el.style.borderRadius = "1px";
     if (this.changeType === "added") el.style.background = "#2ea043";
     else if (this.changeType === "modified") el.style.background = "#0078d4";
-    else el.style.background = "#f85149";
+    else if (this.changeType === "removed") el.style.background = "#f85149";
     return el;
   }
 }
@@ -154,11 +158,7 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps) {
       const changeType = diffMap.get(lineNo);
       return changeType ? new DiffMarker(changeType) : null;
     },
-    initialSpacer: () => {
-      const el = document.createElement("div");
-      el.style.width = "3px";
-      return el;
-    },
+    initialSpacer: () => new DiffMarker("spacer"),
   });
 
   // Build theme: CSS-variable chrome + syntax highlighting
