@@ -26,6 +26,11 @@ const RESIZE_DEBOUNCE_MS = 150;
 interface TerminalPaneProps {
   ptyId: string;
   class?: string;
+  // When false, the pane is hidden (display:none) by the parent. We avoid
+  // fitting/resizing the PTY while hidden, and re-fit + repaint on show —
+  // otherwise stale grid dimensions or window resizes missed while hidden
+  // cause TUIs to redraw at the wrong width ("compressed, repeated" output).
+  active?: boolean;
   onExit?: () => void;
 }
 
@@ -182,6 +187,11 @@ export function TerminalPane(props: TerminalPaneProps) {
     let lastRows = term.rows;
 
     const doFit = () => {
+      // Never fit against a hidden container: getBoundingClientRect is 0×0
+      // under display:none, and a stray resize_pty would SIGWINCH the TUI to
+      // a tiny width and make it redraw garbled frames.
+      if (props.active === false) return;
+      if (!container.clientWidth || !container.clientHeight) return;
       try { fitAddon.fit(); } catch { return; }
       if (term.cols !== lastCols || term.rows !== lastRows) {
         lastCols = term.cols;
@@ -205,6 +215,30 @@ export function TerminalPane(props: TerminalPaneProps) {
     const ro = new ResizeObserver(scheduleFit);
     ro.observe(container);
 
+    // When the pane flips hidden → visible, ResizeObserver doesn't reliably
+    // fire (display:none → block isn't a content-box resize), and the window
+    // may have been resized while we were hidden. Re-fit synchronously on
+    // next frame (layout settled) and force a canvas repaint so the buffer
+    // re-renders at the current dimensions.
+    let wasActive = props.active !== false;
+    let pendingShowFrame: number | null = null;
+    createEffect(() => {
+      const active = props.active !== false;
+      if (active && !wasActive) {
+        if (fitTimer !== null) {
+          clearTimeout(fitTimer);
+          fitTimer = null;
+        }
+        if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
+        pendingShowFrame = requestAnimationFrame(() => {
+          pendingShowFrame = null;
+          doFit();
+          try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
+        });
+      }
+      wasActive = active;
+    });
+
     const outputChannel = new Channel<ArrayBuffer>();
     outputChannel.onmessage = (data: ArrayBuffer) => {
       term.write(new Uint8Array(data));
@@ -218,6 +252,7 @@ export function TerminalPane(props: TerminalPaneProps) {
 
     onCleanup(() => {
       if (fitTimer !== null) clearTimeout(fitTimer);
+      if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
       ro.disconnect();
       unlistenExit();
       try { ligaturesDisposer?.dispose?.(); } catch { /* ignore */ }

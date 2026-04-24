@@ -35,7 +35,7 @@ export function GitDiffView(props: GitDiffViewProps) {
           <span class="font-medium">{props.filePath}</span>
           <Show when={fileDiff()}>
             {(f) => (
-              <span class="ml-2 text-muted-foreground">
+              <span class="ml-2 text-muted-foreground tabular-nums">
                 <span class="text-success">+{f().additions}</span>{" "}
                 <span class="text-destructive">-{f().deletions}</span>
               </span>
@@ -44,6 +44,7 @@ export function GitDiffView(props: GitDiffViewProps) {
         </div>
         <button
           onClick={() => refetch()}
+          aria-label="Refresh diff"
           class="text-[11px] px-2 py-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
           title="Refresh diff"
         >
@@ -51,19 +52,23 @@ export function GitDiffView(props: GitDiffViewProps) {
         </button>
         <button
           onClick={() => actions.toggleIgnoreWhitespace()}
+          aria-label="Toggle ignore whitespace"
           class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border transition-colors ${
             state.ignoreWhitespace
               ? "bg-primary/15 border-primary/40 text-primary"
               : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
           }`}
           title="Ignore whitespace-only changes"
+          aria-pressed={state.ignoreWhitespace}
         >
           <Space class="w-3 h-3" />
           Ignore WS
         </button>
-        <div class="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+        <div role="group" aria-label="Diff view mode" class="flex items-center gap-0.5 rounded-md border border-border p-0.5">
           <button
             onClick={() => actions.setDiffMode("inline")}
+            aria-label="Inline (unified) view"
+            aria-pressed={state.diffMode === "inline"}
             class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors ${
               state.diffMode === "inline"
                 ? "bg-primary/15 text-primary"
@@ -76,6 +81,8 @@ export function GitDiffView(props: GitDiffViewProps) {
           </button>
           <button
             onClick={() => actions.setDiffMode("split")}
+            aria-label="Split (side by side) view"
+            aria-pressed={state.diffMode === "split"}
             class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors ${
               state.diffMode === "split"
                 ? "bg-primary/15 text-primary"
@@ -89,6 +96,7 @@ export function GitDiffView(props: GitDiffViewProps) {
         </div>
         <button
           onClick={props.onClose}
+          aria-label="Close diff"
           class="p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors"
           title="Close diff"
         >
@@ -196,8 +204,8 @@ function InlineRow(props: {
 }) {
   const bg = () => {
     switch (props.origin) {
-      case "+": return "bg-success/10 text-success";
-      case "-": return "bg-destructive/10 text-destructive";
+      case "+": return "bg-success/10 text-foreground/90";
+      case "-": return "bg-destructive/10 text-foreground/90";
       default: return "text-foreground/85";
     }
   };
@@ -430,8 +438,8 @@ function SplitCell(props: {
   };
   const rowBg = () => {
     switch (props.kind) {
-      case "deleted": return "bg-destructive/10 text-destructive";
-      case "added": return "bg-success/10 text-success";
+      case "deleted": return "bg-destructive/10 text-foreground/90";
+      case "added": return "bg-success/10 text-foreground/90";
       case "empty": return "bg-muted/20";
       default: return "text-foreground/85";
     }

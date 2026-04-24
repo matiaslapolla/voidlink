@@ -1,4 +1,5 @@
 import { For, Show, createMemo, createResource, createSignal, type Component } from "solid-js";
+import type { JSX } from "solid-js";
 import {
   GitBranch,
   GitCommit,
@@ -20,6 +21,19 @@ import { useAppStore } from "@/store/LayoutContext";
 import type { GitTab } from "@/store/layout";
 
 type LucideIcon = Component<{ class?: string }>;
+
+function IconBtn(props: { label: string; onClick: () => void; children: JSX.Element; class?: string }) {
+  return (
+    <button
+      onClick={props.onClick}
+      aria-label={props.label}
+      title={props.label}
+      class={`p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors ${props.class ?? ""}`}
+    >
+      {props.children}
+    </button>
+  );
+}
 
 interface GitSidebarProps {
   repoPath: string;
@@ -50,6 +64,8 @@ export function GitSidebar(props: GitSidebarProps) {
     return activeDiffTabs().find((t) => t.id === item.id)?.filePath ?? null;
   });
 
+  const isRefreshing = () => repoInfo.loading || status.loading;
+
   const refreshAll = () => {
     refetchStatus();
     refetchInfo();
@@ -67,20 +83,12 @@ export function GitSidebar(props: GitSidebarProps) {
           <span class="text-warning text-[10px]">• changes</span>
         </Show>
         <div class="ml-auto flex items-center gap-0.5">
-          <button
-            onClick={refreshAll}
-            class="p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors"
-            title="Refresh"
-          >
-            <RefreshCw class="w-3 h-3" />
-          </button>
-          <button
-            onClick={() => actions.toggleGitSidebar()}
-            class="p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors"
-            title="Collapse git panel"
-          >
+          <IconBtn label="Refresh" onClick={refreshAll}>
+            <RefreshCw class={`w-3 h-3 ${isRefreshing() ? "animate-spin" : ""}`} />
+          </IconBtn>
+          <IconBtn label="Collapse git panel" onClick={() => actions.toggleGitSidebar()}>
             <ChevronRight class="w-3.5 h-3.5" />
-          </button>
+          </IconBtn>
         </div>
       </div>
 
@@ -141,6 +149,7 @@ function ChangesPane(props: {
   const [commitError, setCommitError] = createSignal("");
   const [commitOk, setCommitOk] = createSignal(false);
   const [pushing, setPushing] = createSignal(false);
+  const [pushOk, setPushOk] = createSignal(false);
 
   const staged = () => (props.status ?? []).filter((f) => f.staged);
   const unstaged = () => (props.status ?? []).filter((f) => !f.staged);
@@ -177,8 +186,11 @@ function ChangesPane(props: {
   }
   async function push() {
     setPushing(true);
+    setPushOk(false);
     try {
       await gitApi.push(props.repoPath);
+      setPushOk(true);
+      setTimeout(() => setPushOk(false), 2000);
     } catch (e) {
       setCommitError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -194,7 +206,9 @@ function ChangesPane(props: {
     <div class="flex-1 flex flex-col overflow-hidden">
       {/* Commit form */}
       <div class="p-2 border-b border-border/50 space-y-1.5">
+        <label class="sr-only" for="commit-msg">Commit message</label>
         <textarea
+          id="commit-msg"
           placeholder="Commit message"
           value={commitMsg()}
           onInput={(e) => setCommitMsg(e.currentTarget.value)}
@@ -211,14 +225,16 @@ function ChangesPane(props: {
           <button
             disabled={committing() || staged().length === 0 || !commitMsg().trim()}
             onClick={() => void commit()}
-            class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            aria-label="Commit staged changes"
+            class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.96] transition-[background-color,color,transform,opacity]"
           >
-            <Show when={commitOk()} fallback={committing() ? "Committing…" : <>Commit ({staged().length})</>}>
+            <Show when={commitOk()} fallback={committing() ? "Committing…" : <>Commit (<span class="tabular-nums">{staged().length}</span>)</>}>
               <Check class="w-3 h-3" /> Done
             </Show>
           </button>
           <button
             onClick={() => void stageAll()}
+            aria-label="Stage all changes"
             title="Stage all"
             class="px-2 py-1 rounded-md text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
           >
@@ -227,10 +243,17 @@ function ChangesPane(props: {
           <button
             onClick={() => void push()}
             disabled={pushing()}
+            aria-label="Push to remote"
             title="Push"
-            class="px-2 py-1 rounded-md text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40"
+            class={`px-2 py-1 rounded-md text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              pushOk()
+                ? "text-success"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
           >
-            <Upload class="w-3 h-3" />
+            <Show when={pushOk()} fallback={<Upload class="w-3 h-3" />}>
+              <Check class="w-3 h-3" />
+            </Show>
           </button>
         </div>
         <Show when={commitError()}>
@@ -241,8 +264,8 @@ function ChangesPane(props: {
       <div class="flex-1 overflow-y-auto scrollbar-thin">
         <Show when={staged().length > 0}>
           <div class="border-b border-border/50">
-            <div class="px-2.5 py-1.5 text-[10px] uppercase tracking-wider font-semibold text-success/80">
-              Staged ({staged().length})
+            <div class="px-2.5 density-section ui-section-label text-success/80">
+              Staged (<span class="tabular-nums">{staged().length}</span>)
             </div>
             <For each={staged()}>
               {(f) => (
@@ -260,8 +283,8 @@ function ChangesPane(props: {
           </div>
         </Show>
 
-        <div class="px-2.5 py-1.5 text-[10px] uppercase tracking-wider font-semibold text-muted-foreground/70">
-          Changes ({unstaged().length})
+        <div class="px-2.5 density-section ui-section-label">
+          Changes (<span class="tabular-nums">{unstaged().length}</span>)
         </div>
         <Show when={unstaged().length === 0 && staged().length === 0}>
           <p class="px-2.5 py-2 text-[11px] text-muted-foreground">Working tree clean</p>
@@ -316,7 +339,8 @@ function BranchesPane(props: { repoPath: string; onCheckout: () => void }) {
           <button
             onClick={() => void checkout(b.name)}
             disabled={b.isHead}
-            class={`w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-left transition-colors ${
+            aria-label={b.isHead ? `${b.name} (current branch)` : `Checkout ${b.name}`}
+            class={`w-full flex items-center gap-2 rounded-md px-2 density-row text-[11px] text-left transition-colors ${
               b.isHead
                 ? "bg-primary/10 text-primary cursor-default"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -325,13 +349,13 @@ function BranchesPane(props: { repoPath: string; onCheckout: () => void }) {
             <GitBranch class="w-3 h-3 shrink-0" />
             <span class="truncate flex-1">{b.name}</span>
             <Show when={b.ahead > 0}>
-              <span class="text-success">↑{b.ahead}</span>
+              <span class="text-success tabular-nums">↑{b.ahead}</span>
             </Show>
             <Show when={b.behind > 0}>
-              <span class="text-destructive">↓{b.behind}</span>
+              <span class="text-destructive tabular-nums">↓{b.behind}</span>
             </Show>
             <Show when={b.isHead}>
-              <span class="text-[9px] uppercase tracking-wide text-primary/80">HEAD</span>
+              <span class="text-[10px] uppercase tracking-wide text-primary/80">HEAD</span>
             </Show>
           </button>
         )}
@@ -354,14 +378,17 @@ function HistoryPane(props: { repoPath: string }) {
     <div class="flex-1 overflow-y-auto scrollbar-thin p-1">
       <For each={log() ?? []}>
         {(c) => (
-          <div class="px-2 py-1.5 rounded-md text-[11px] hover:bg-accent/40 transition-colors">
+          <div
+            class="px-2 density-row rounded-md text-[11px] hover:bg-accent/40 transition-colors"
+            title={c.summary}
+          >
             <div class="flex items-center gap-2">
-              <span class="font-mono text-muted-foreground text-[10px]">
+              <span class="font-mono text-muted-foreground text-[10px] tabular-nums">
                 {c.oid.slice(0, 7)}
               </span>
               <span class="truncate flex-1 text-foreground">{c.summary}</span>
             </div>
-            <div class="text-[10px] text-muted-foreground/80 truncate">
+            <div class="text-[10px] text-muted-foreground/80 truncate tabular-nums">
               {c.authorName} · {new Date(c.time * 1000).toLocaleString()}
             </div>
           </div>
@@ -387,20 +414,27 @@ function FileRow(props: {
   const Icon = props.actionIcon;
   return (
     <div
-      class={`flex items-center gap-1.5 px-2.5 py-1 text-xs group cursor-pointer transition-colors ${
+      class={`group flex items-center text-xs transition-colors focus-within:bg-accent/40 ${
         props.selected ? "bg-accent/70 text-foreground" : "hover:bg-accent/40"
       }`}
-      onClick={props.onSelect}
     >
-      <StatusIcon status={props.status} />
-      <span class="flex-1 truncate">{props.file}</span>
+      <button
+        onClick={props.onSelect}
+        aria-label={`Open diff for ${props.file}`}
+        aria-pressed={props.selected}
+        class="flex-1 flex items-center gap-1.5 pl-2.5 density-row min-w-0 text-left cursor-pointer focus-visible:outline-none"
+      >
+        <StatusIcon status={props.status} />
+        <span class="flex-1 truncate">{props.file}</span>
+      </button>
       <button
         onClick={(e) => {
           e.stopPropagation();
           props.onAction();
         }}
-        class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent"
+        aria-label={`${props.actionTitle} ${props.file}`}
         title={props.actionTitle}
+        class="p-0.5 mr-2 rounded opacity-60 group-hover:opacity-100 hover:bg-accent focus-visible:opacity-100"
       >
         <Icon class="w-3 h-3 text-muted-foreground" />
       </button>
@@ -430,6 +464,7 @@ export function GitSidebarCollapsed(props: { onExpand: () => void }) {
     <div class="flex flex-col items-center w-8 border-l border-border bg-sidebar py-2 gap-2">
       <button
         onClick={props.onExpand}
+        aria-label="Expand git panel"
         class="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
         title="Expand git panel"
       >

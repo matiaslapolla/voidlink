@@ -42,6 +42,7 @@ export function TerminalSurface() {
               >
                 <TerminalPane
                   ptyId={term.ptyId}
+                  active={term.id === activeTerminalId()}
                   class="w-full h-full"
                   onExit={() => actions.removeTerminal(state.activeWorkspaceId, term.id)}
                 />

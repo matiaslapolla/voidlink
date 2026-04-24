@@ -25,6 +25,7 @@ export function TitleBar(props: TitleBarProps) {
       <div class="flex items-stretch text-muted-foreground">
         <button
           onClick={toggleTheme}
+          aria-label={mode() === "dark" ? "Switch to light theme" : "Switch to dark theme"}
           class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
           title={mode() === "dark" ? "Switch to light theme" : "Switch to dark theme"}
         >
@@ -34,6 +35,7 @@ export function TitleBar(props: TitleBarProps) {
         </button>
         <button
           onClick={props.onOpenSettings}
+          aria-label="Settings"
           class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
           title="Settings"
         >
@@ -41,6 +43,7 @@ export function TitleBar(props: TitleBarProps) {
         </button>
         <button
           onClick={() => void win.minimize()}
+          aria-label="Minimize"
           class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
           title="Minimize"
         >
@@ -48,6 +51,7 @@ export function TitleBar(props: TitleBarProps) {
         </button>
         <button
           onClick={() => void win.toggleMaximize()}
+          aria-label="Maximize"
           class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
           title="Maximize"
         >
@@ -55,6 +59,7 @@ export function TitleBar(props: TitleBarProps) {
         </button>
         <button
           onClick={() => void win.close()}
+          aria-label="Close"
           class="w-9 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground transition-colors"
           title="Close"
         >

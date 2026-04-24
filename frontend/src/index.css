@@ -155,6 +155,10 @@ body {
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
   }
+  button:focus-visible,
+  [role="tab"]:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-0;
+  }
 }
 
 html,
@@ -244,4 +248,26 @@ html:not([data-density]) {
 }
 .scrollbar-thin:hover::-webkit-scrollbar-thumb:hover {
   background: oklch(0.6 0 0 / 0.7);
+}
+
+/* ── Section label: text-[10px] uppercase tracking-wider font-semibold ──────── */
+.ui-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .transition-colors,
+  .transition-opacity,
+  .transition-all {
+    transition-duration: 0ms !important;
+  }
+  * {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

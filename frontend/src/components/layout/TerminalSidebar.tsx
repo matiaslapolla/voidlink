@@ -60,12 +60,11 @@ export function TerminalSidebar() {
 
       {/* Terminals */}
       <div class="flex items-center justify-between px-3 density-section border-b border-border/50">
-        <span class="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">
-          Terminals
-        </span>
+        <span class="ui-section-label">Terminals</span>
         <button
           onClick={() => void actions.spawnTerminal(state.activeWorkspaceId)}
           disabled={!activeWorkspace()?.repoRoot}
+          aria-label="New terminal"
           class="p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
           title="New terminal"
         >
@@ -100,10 +99,8 @@ export function TerminalSidebar() {
       {/* Diffs */}
       <Show when={activeDiffTabs().length > 0}>
         <div class="flex items-center justify-between px-3 density-section border-y border-border/50">
-          <span class="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">
-            Diffs
-          </span>
-          <span class="text-[10px] text-muted-foreground">{activeDiffTabs().length}</span>
+          <span class="ui-section-label">Diffs</span>
+          <span class="text-[10px] text-muted-foreground tabular-nums">{activeDiffTabs().length}</span>
         </div>
         <div class="flex-1 overflow-y-auto scrollbar-thin p-1.5 density-gap">
           <For each={activeDiffTabs()}>
@@ -159,34 +156,40 @@ function TerminalRow(props: {
 
   return (
     <div
-      class={`group flex items-center gap-2 rounded-md px-2 density-row cursor-pointer border transition-colors ${
+      class={`group flex items-center rounded-md border transition-colors focus-within:border-border ${
         props.active
           ? "bg-accent/60 border-border text-foreground"
-          : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30"
+          : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30 focus-within:text-foreground focus-within:bg-accent/30"
       }`}
-      onClick={props.onSelect}
     >
-      <LedDot active={props.active} busy={busy()} />
-      <div class="flex-1 min-w-0">
-        <div class="text-xs truncate">
-          <span>{props.term.label}</span>
-          <Show when={busy() && name()}>
-            <span class="text-muted-foreground"> ({name()})</span>
+      <button
+        onClick={props.onSelect}
+        aria-label={`Terminal: ${props.term.label}`}
+        class="flex-1 flex items-center gap-2 px-2 density-row min-w-0 text-left cursor-pointer focus-visible:outline-none"
+      >
+        <LedDot active={props.active} busy={busy()} />
+        <div class="flex-1 min-w-0">
+          <div class="text-xs truncate">
+            <span>{props.term.label}</span>
+            <Show when={busy() && name()}>
+              <span class="text-muted-foreground"> ({name()})</span>
+            </Show>
+          </div>
+          <Show when={cwd()}>
+            {(c) => (
+              <div class="text-[10px] text-muted-foreground truncate">{c()}</div>
+            )}
           </Show>
         </div>
-        <Show when={cwd()}>
-          {(c) => (
-            <div class="text-[10px] text-muted-foreground truncate">{c()}</div>
-          )}
-        </Show>
-      </div>
+      </button>
       <button
         onClick={(e) => {
           e.stopPropagation();
           props.onClose();
         }}
-        class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-all"
+        aria-label={`Kill terminal ${props.term.label}`}
         title="Kill terminal"
+        class="p-0.5 mr-1 rounded opacity-60 group-hover:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color] focus-visible:opacity-100"
       >
         <X class="w-3 h-3" />
       </button>
@@ -202,26 +205,32 @@ function DiffTabRow(props: {
 }) {
   return (
     <div
-      class={`group flex items-center gap-2 rounded-md px-2 density-row cursor-pointer border transition-colors ${
+      class={`group flex items-center rounded-md border transition-colors focus-within:border-border ${
         props.active
           ? "bg-accent/60 border-border text-foreground"
-          : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30"
+          : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30 focus-within:text-foreground focus-within:bg-accent/30"
       }`}
-      onClick={props.onSelect}
-      title={props.tab.filePath}
     >
-      <GitCompare class="w-3.5 h-3.5 shrink-0 text-info" />
-      <div class="flex-1 min-w-0 text-xs truncate">
-        <span class="text-muted-foreground">diff · </span>
-        {props.tab.filePath.split("/").pop()}
-      </div>
+      <button
+        onClick={props.onSelect}
+        aria-label={`Diff: ${props.tab.filePath}`}
+        title={props.tab.filePath}
+        class="flex-1 flex items-center gap-2 px-2 density-row min-w-0 text-left cursor-pointer focus-visible:outline-none"
+      >
+        <GitCompare class="w-3.5 h-3.5 shrink-0 text-info" />
+        <div class="flex-1 min-w-0 text-xs truncate">
+          <span class="text-muted-foreground">diff · </span>
+          {props.tab.filePath.split("/").pop()}
+        </div>
+      </button>
       <button
         onClick={(e) => {
           e.stopPropagation();
           props.onClose();
         }}
-        class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-all"
+        aria-label={`Close diff for ${props.tab.filePath}`}
         title="Close diff"
+        class="p-0.5 mr-1 rounded opacity-60 group-hover:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color] focus-visible:opacity-100"
       >
         <X class="w-3 h-3" />
       </button>

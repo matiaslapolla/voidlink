@@ -1,4 +1,4 @@
-import { Show, For, createSignal, type JSX } from "solid-js";
+import { Show, For, createSignal, createEffect, type JSX } from "solid-js";
 import { X } from "lucide-solid";
 import {
   useSettings,
@@ -17,21 +17,61 @@ type Tab = "ui" | "terminal";
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
   const { reset } = useSettings();
+  let dialogRef: HTMLDivElement | undefined;
+
+  createEffect(() => {
+    if (props.open) {
+      queueMicrotask(() => {
+        const focusable = dialogRef?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        focusable?.[0]?.focus();
+      });
+    }
+  });
+
+  const trapFocus = (e: KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    const focusable = [
+      ...(dialogRef?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      ) ?? []),
+    ];
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   return (
     <Show when={props.open}>
       <div
         class="fixed inset-0 z-[70] flex items-center justify-center bg-black/50"
         onClick={props.onClose}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.stopPropagation(); props.onClose(); }
+        }}
       >
         <div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-dialog-title"
           class="w-[560px] max-w-[92vw] max-h-[86vh] flex flex-col rounded-md border border-border bg-popover text-popover-foreground shadow-xl"
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={trapFocus}
         >
           <div class="flex items-center justify-between px-4 py-2.5 border-b border-border">
-            <h2 class="text-sm font-semibold">Settings</h2>
+            <h2 id="settings-dialog-title" class="text-sm font-semibold">Settings</h2>
             <button
               onClick={props.onClose}
+              aria-label="Close settings"
               class="p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors"
               title="Close"
             >
@@ -58,7 +98,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             </button>
             <button
               onClick={props.onClose}
-              class="px-3 py-1 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 transition-colors"
+              class="px-3 py-1 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 active:scale-[0.96] transition-[background-color,color,transform]"
             >
               Done
             </button>
@@ -241,9 +281,7 @@ function TerminalPane() {
 function Section(props: { title: string; children: JSX.Element }) {
   return (
     <section>
-      <h3 class="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground mb-2">
-        {props.title}
-      </h3>
+      <h3 class="ui-section-label mb-2">{props.title}</h3>
       <div class="space-y-3">{props.children}</div>
     </section>
   );
