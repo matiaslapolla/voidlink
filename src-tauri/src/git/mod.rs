@@ -1,48 +1,28 @@
-pub(crate) mod blame;
 pub(crate) mod branch;
 pub(crate) mod diff;
 pub(crate) mod push;
 pub(crate) mod repo;
 pub(crate) mod staging;
 pub(crate) mod status;
-pub(crate) mod worktree;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
-use blame::{git_blame_file_impl, git_diff_file_lines_impl};
 use branch::{git_checkout_branch_impl, git_list_branches_impl};
-use diff::{git_diff_commit_impl, git_diff_working_impl, git_explain_diff_impl};
+use diff::git_diff_working_impl;
 use repo::git_repo_info_impl;
-use staging::{git_stage_files_impl, git_unstage_files_impl};
+use staging::{git_commit_impl, git_stage_all_impl, git_stage_files_impl, git_unstage_files_impl};
 use status::{git_file_status_impl, git_log_impl};
-use worktree::{git_list_worktrees_impl, git_worktree_status_impl};
-
-// Re-exports: accessible to git_agent and git_review via `crate::git::`
-pub(crate) use diff::git_diff_branches_impl;
-pub(crate) use push::git_push_impl;
-pub(crate) use staging::{git_commit_impl, git_stage_all_impl};
-pub(crate) use worktree::{git_create_worktree_impl, git_remove_worktree_impl};
+use push::git_push_impl;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-pub struct GitState {
-    /// Caches `input_path → discovered_repo_root` so repeated commands for the
-    /// same working directory skip the filesystem walk in `Repository::discover()`.
-    pub repo_path_cache: Arc<Mutex<HashMap<String, PathBuf>>>,
-}
+pub struct GitState;
 
 impl GitState {
-    pub fn new() -> Self {
-        Self {
-            repo_path_cache: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
+    pub fn new() -> Self { Self }
 }
 
-// ─── Phase 1 types ───────────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,28 +68,6 @@ pub struct GitCommitInfo {
     pub parent_oids: Vec<String>,
 }
 
-// ─── Phase 2 types ───────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorktreeInfo {
-    pub name: String,
-    pub path: String,
-    pub branch: Option<String>,
-    pub is_locked: bool,
-    pub created_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateWorktreeInput {
-    pub repo_path: String,
-    pub branch_name: String,
-    pub base_ref: Option<String>,
-}
-
-// ─── Phase 3 types ───────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffLine {
@@ -150,20 +108,7 @@ pub struct DiffResult {
     pub total_deletions: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiffExplanation {
-    pub file_path: String,
-    pub summary: String,
-    pub risk_level: String,
-    pub suggestions: Vec<String>,
-}
-
 // ─── Tauri command wrappers ──────────────────────────────────────────────────
-//
-// All git operations do filesystem / network I/O via libgit2 or subprocesses.
-// They MUST run on spawn_blocking to avoid stalling the Tokio async executor
-// (which would freeze the entire UI).
 
 macro_rules! blocking_git {
     ($body:expr) => {
@@ -267,42 +212,6 @@ pub async fn git_push(
 }
 
 #[tauri::command]
-pub async fn git_create_worktree(
-    input: CreateWorktreeInput,
-    _state: tauri::State<'_, GitState>,
-) -> Result<WorktreeInfo, String> {
-    blocking_git!(git_create_worktree_impl(input))
-}
-
-#[tauri::command]
-pub async fn git_list_worktrees(
-    repo_path: String,
-    _state: tauri::State<'_, GitState>,
-) -> Result<Vec<WorktreeInfo>, String> {
-    blocking_git!(git_list_worktrees_impl(repo_path))
-}
-
-#[tauri::command]
-pub async fn git_remove_worktree(
-    repo_path: String,
-    name: String,
-    force: Option<bool>,
-    _state: tauri::State<'_, GitState>,
-) -> Result<(), String> {
-    let f = force.unwrap_or(false);
-    blocking_git!(git_remove_worktree_impl(repo_path, name, f))
-}
-
-#[tauri::command]
-pub async fn git_worktree_status(
-    repo_path: String,
-    name: String,
-    _state: tauri::State<'_, GitState>,
-) -> Result<Vec<GitFileStatus>, String> {
-    blocking_git!(git_worktree_status_impl(repo_path, name))
-}
-
-#[tauri::command]
 pub async fn git_diff_working(
     repo_path: String,
     staged_only: Option<bool>,
@@ -310,53 +219,4 @@ pub async fn git_diff_working(
 ) -> Result<DiffResult, String> {
     let staged = staged_only.unwrap_or(false);
     blocking_git!(git_diff_working_impl(repo_path, staged))
-}
-
-#[tauri::command]
-pub async fn git_diff_branches(
-    repo_path: String,
-    base: String,
-    head: String,
-    _state: tauri::State<'_, GitState>,
-) -> Result<DiffResult, String> {
-    blocking_git!(git_diff_branches_impl(repo_path, base, head))
-}
-
-#[tauri::command]
-pub async fn git_diff_commit(
-    repo_path: String,
-    oid: String,
-    _state: tauri::State<'_, GitState>,
-) -> Result<DiffResult, String> {
-    blocking_git!(git_diff_commit_impl(repo_path, oid))
-}
-
-#[tauri::command]
-pub async fn git_explain_diff(
-    repo_path: String,
-    base: String,
-    head: String,
-    _git_state: tauri::State<'_, GitState>,
-    migration_state: tauri::State<'_, crate::migration::MigrationState>,
-) -> Result<Vec<DiffExplanation>, String> {
-    let ms = migration_state.inner().clone();
-    blocking_git!(git_explain_diff_impl(repo_path, base, head, &ms))
-}
-
-#[tauri::command]
-pub async fn git_blame_file(
-    repo_path: String,
-    file_path: String,
-    _state: tauri::State<'_, GitState>,
-) -> Result<Vec<blame::BlameLineInfo>, String> {
-    blocking_git!(git_blame_file_impl(&repo_path, &file_path))
-}
-
-#[tauri::command]
-pub async fn git_diff_file_lines(
-    repo_path: String,
-    file_path: String,
-    _state: tauri::State<'_, GitState>,
-) -> Result<Vec<blame::LineChange>, String> {
-    blocking_git!(git_diff_file_lines_impl(&repo_path, &file_path))
 }

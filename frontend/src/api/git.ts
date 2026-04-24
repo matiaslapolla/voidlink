@@ -1,17 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  CreateWorktreeInput,
-  DiffExplanation,
   DiffResult,
   GitBranchInfo,
   GitCommitInfo,
   GitFileStatus,
   GitRepoInfo,
-  WorktreeInfo,
 } from "@/types/git";
 
 export const gitApi = {
-  // Phase 1
   repoInfo(repoPath: string): Promise<GitRepoInfo> {
     return invoke<GitRepoInfo>("git_repo_info", { repoPath });
   },
@@ -55,59 +51,7 @@ export const gitApi = {
     return invoke<void>("git_push", { repoPath, remote, branch });
   },
 
-  // Phase 2
-  createWorktree(input: CreateWorktreeInput): Promise<WorktreeInfo> {
-    return invoke<WorktreeInfo>("git_create_worktree", { input });
-  },
-
-  listWorktrees(repoPath: string): Promise<WorktreeInfo[]> {
-    return invoke<WorktreeInfo[]>("git_list_worktrees", { repoPath });
-  },
-
-  removeWorktree(repoPath: string, name: string, force?: boolean): Promise<void> {
-    return invoke<void>("git_remove_worktree", { repoPath, name, force });
-  },
-
-  worktreeStatus(repoPath: string, name: string): Promise<GitFileStatus[]> {
-    return invoke<GitFileStatus[]>("git_worktree_status", { repoPath, name });
-  },
-
-  // Phase 3
   diffWorking(repoPath: string, stagedOnly?: boolean): Promise<DiffResult> {
     return invoke<DiffResult>("git_diff_working", { repoPath, stagedOnly });
   },
-
-  diffBranches(repoPath: string, base: string, head: string): Promise<DiffResult> {
-    return invoke<DiffResult>("git_diff_branches", { repoPath, base, head });
-  },
-
-  diffCommit(repoPath: string, oid: string): Promise<DiffResult> {
-    return invoke<DiffResult>("git_diff_commit", { repoPath, oid });
-  },
-
-  explainDiff(repoPath: string, base: string, head: string): Promise<DiffExplanation[]> {
-    return invoke<DiffExplanation[]>("git_explain_diff", { repoPath, base, head });
-  },
-
-  blameFile(repoPath: string, filePath: string): Promise<BlameLineInfo[]> {
-    return invoke<BlameLineInfo[]>("git_blame_file", { repoPath, filePath });
-  },
-
-  diffFileLines(repoPath: string, filePath: string): Promise<LineChange[]> {
-    return invoke<LineChange[]>("git_diff_file_lines", { repoPath, filePath });
-  },
 };
-
-export interface BlameLineInfo {
-  startLine: number;
-  numLines: number;
-  author: string;
-  commitSha: string;
-  timestamp: number;
-  summary: string;
-}
-
-export interface LineChange {
-  line: number;
-  changeType: "added" | "modified" | "deleted";
-}

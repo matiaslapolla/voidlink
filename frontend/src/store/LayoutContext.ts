@@ -1,12 +1,10 @@
 import { createContext, useContext } from "solid-js";
-import type { LayoutStoreState, LayoutStoreActions } from "./layout";
+import type { AppStore } from "./layout";
 
-export const LayoutContext = createContext<
-  readonly [LayoutStoreState, LayoutStoreActions]
->();
+export const AppStoreContext = createContext<AppStore>();
 
-export function useLayout() {
-  const ctx = useContext(LayoutContext);
-  if (!ctx) throw new Error("useLayout must be used within LayoutContext.Provider");
+export function useAppStore(): AppStore {
+  const ctx = useContext(AppStoreContext);
+  if (!ctx) throw new Error("useAppStore must be used inside AppStoreContext.Provider");
   return ctx;
 }

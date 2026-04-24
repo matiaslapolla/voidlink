@@ -1,499 +1,307 @@
 import { createStore, produce } from "solid-js/store";
-import { createEffect } from "solid-js";
+import { createEffect, createMemo } from "solid-js";
+import { terminalApi } from "@/api/terminal";
+import {
+  type PersistedWorkspace,
+  type TerminalSession,
+  type Workspace,
+  makeWorkspace,
+} from "@/types/workspace";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+const WORKSPACES_KEY = "voidlink-workspaces";
+const ACTIVE_WS_KEY = "voidlink-active-workspace";
 
-export type ColumnId = "left" | "center" | "right";
-export type ColumnOrder = [ColumnId, ColumnId, ColumnId];
+export type DiffMode = "inline" | "split";
+export type GitTab = "changes" | "branches" | "history";
 
-export type CenterTabType =
-  | "repository"
-  | "contextBuilder"
-  | "workflow"
-  | "aiAgent"
-  | "promptStudio"
-  | "terminal"
-  | "file"
-  | "image"
-  | "svg"
-  | "diff";
-
-/** Kept for backward compat in NavTree tabTarget */
-export type CenterTabId = CenterTabType;
-
-export type BottomTabId = "terminal" | "git" | "logs" | "agentOutput";
-
-export interface TabMeta {
-  filePath?: string;
-  cwd?: string;
-  ptyId?: string;
-  scrollToLine?: number;
-}
-
-export interface TabInstance {
+export interface DiffTab {
   id: string;
-  type: CenterTabType;
-  label: string;
-  meta: TabMeta;
-  pinned?: boolean;
-  /** Preview tabs are replaced when another file is single-clicked */
-  preview?: boolean;
+  filePath: string;
 }
 
-export interface CenterTabState {
-  tabs: TabInstance[];
-  activeTabId: string;
+export type ActiveItem =
+  | { type: "terminal"; id: string }
+  | { type: "diff"; id: string };
+
+interface AppStoreState {
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
+  terminalsByWorkspace: Record<string, TerminalSession[]>;
+  diffTabsByWorkspace: Record<string, DiffTab[]>;
+  activeItemByWorkspace: Record<string, ActiveItem | null>;
+  gitSidebarCollapsed: boolean;
+  diffMode: DiffMode;
+  gitTab: GitTab;
+  ignoreWhitespace: boolean;
 }
 
-export interface LayoutStoreState {
-  columnOrder: ColumnOrder;
-  leftCollapsed: boolean;
-  rightCollapsed: boolean;
-  leftWidth: number;
-  rightWidth: number;
+const GIT_PREFS_KEY = "voidlink-git-prefs";
 
-  bottomPaneOpen: boolean;
-  bottomPaneHeight: number;
-  activeBottomTab: BottomTabId;
-
-  centerTabsByWorkspace: Record<string, CenterTabState>;
-
-  leftTreeExpanded: Record<string, boolean>;
+interface GitPrefs {
+  gitSidebarCollapsed: boolean;
+  diffMode: DiffMode;
+  gitTab: GitTab;
+  ignoreWhitespace: boolean;
 }
 
-export interface LayoutStoreActions {
-  setColumnOrder: (order: ColumnOrder) => void;
-  toggleLeft: () => void;
-  toggleRight: () => void;
-  setLeftWidth: (w: number) => void;
-  setRightWidth: (w: number) => void;
-
-  /** Open or focus a tab instance. For singletons, focuses existing. */
-  openTab: (wsId: string, tab: TabInstance) => void;
-  closeTab: (wsId: string, tabId: string) => void;
-  setActiveTab: (wsId: string, tabId: string) => void;
-  reorderTabs: (wsId: string, tabIds: string[]) => void;
-  initWorkspaceTabs: (wsId: string, defaultType?: CenterTabType) => void;
-  removeWorkspaceTabs: (wsId: string) => void;
-
-  /** Open a file as a preview tab (single-click). Replaces any existing preview tab. */
-  openFile: (wsId: string, filePath: string) => void;
-
-  /** Open a file as a pinned tab (double-click). Promotes preview if it matches. */
-  openFilePinned: (wsId: string, filePath: string) => void;
-
-  /** Open a file and scroll to a specific line. */
-  openFileAtLine: (wsId: string, filePath: string, line: number) => void;
-
-  /** Pin a tab (convert from preview to permanent). */
-  pinTab: (wsId: string, tabId: string) => void;
-
-  /** Convenience: open a singleton tab (repository, workflow, etc.) */
-  openSingleton: (wsId: string, type: CenterTabType, label?: string) => void;
-
-  toggleBottomPane: (tabId: BottomTabId) => void;
-  setBottomPaneHeight: (h: number) => void;
-  setActiveBottomTab: (tabId: BottomTabId) => void;
-  closeBottomPane: () => void;
-
-  toggleLeftTreeNode: (nodeId: string) => void;
-}
-
-// ─── Constants ──────────────────────────────────────────────────────────────
-
-const SINGLETON_TYPES = new Set<CenterTabType>([
-  "repository", "contextBuilder", "workflow", "aiAgent", "promptStudio",
-]);
-
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
-
-function singletonId(type: CenterTabType): string {
-  return `singleton:${type}`;
-}
-
-function labelForType(type: CenterTabType): string {
-  const map: Record<CenterTabType, string> = {
-    repository: "Repository",
-    contextBuilder: "Context Builder",
-    workflow: "Workflow",
-    aiAgent: "AI Agent",
-    promptStudio: "Prompt Studio",
-    terminal: "Terminal",
-    file: "File",
-    image: "Image",
-    svg: "SVG",
-    diff: "Diff",
-  };
-  return map[type] || type;
-}
-
-function makeSingletonTab(type: CenterTabType, label?: string): TabInstance {
-  return {
-    id: singletonId(type),
-    type,
-    label: label ?? labelForType(type),
-    meta: {},
-    pinned: true,
-  };
-}
-
-// ─── Defaults ────────────────────────────────────────────────────────────────
-
-const DEFAULT_LEFT_WIDTH = 264;
-const DEFAULT_RIGHT_WIDTH = 280;
-const DEFAULT_BOTTOM_HEIGHT = 240;
-
-const DEFAULT_LAYOUT: LayoutStoreState = {
-  columnOrder: ["left", "center", "right"],
-  leftCollapsed: false,
-  rightCollapsed: false,
-  leftWidth: DEFAULT_LEFT_WIDTH,
-  rightWidth: DEFAULT_RIGHT_WIDTH,
-  bottomPaneOpen: false,
-  bottomPaneHeight: DEFAULT_BOTTOM_HEIGHT,
-  activeBottomTab: "terminal",
-  centerTabsByWorkspace: {},
-  leftTreeExpanded: {},
-};
-
-// ─── Persistence ─────────────────────────────────────────────────────────────
-
-const LAYOUT_STORAGE_KEY = "voidlink-layout-v2";
-const LAYOUT_STORAGE_KEY_V1 = "voidlink-layout-v1";
-
-function migrateV1(raw: any): LayoutStoreState {
-  const state = { ...DEFAULT_LAYOUT, ...raw };
-  // Convert old CenterTabId[] format to TabInstance[]
-  if (state.centerTabsByWorkspace) {
-    const migrated: Record<string, CenterTabState> = {};
-    for (const [wsId, entry] of Object.entries(state.centerTabsByWorkspace)) {
-      const old = entry as any;
-      if (Array.isArray(old.tabs) && typeof old.tabs[0] === "string") {
-        // Old format: tabs is string[]
-        const tabs: TabInstance[] = (old.tabs as string[])
-          .filter((t: string) => t !== "editor" && t !== "promptStudio")
-          .map((t: string) => makeSingletonTab(t as CenterTabType));
-        const activeType = old.activeTab === "editor" || old.activeTab === "promptStudio"
-          ? "repository" : old.activeTab;
-        migrated[wsId] = {
-          tabs: tabs.length > 0 ? tabs : [makeSingletonTab("repository")],
-          activeTabId: singletonId(activeType),
-        };
-      } else {
-        // Already new format or unknown
-        migrated[wsId] = old;
-      }
-    }
-    state.centerTabsByWorkspace = migrated;
-  }
-  // Remove deprecated fields
-  delete state.editorFilePath;
-  return state;
-}
-
-function loadPersistedLayout(): LayoutStoreState {
+function loadGitPrefs(): GitPrefs {
   try {
-    // Try v2 first
-    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    const raw = localStorage.getItem(GIT_PREFS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw);
-      return { ...DEFAULT_LAYOUT, ...parsed };
-    }
-    // Migrate from v1
-    const v1 = localStorage.getItem(LAYOUT_STORAGE_KEY_V1);
-    if (v1) {
-      const parsed = JSON.parse(v1);
-      const migrated = migrateV1(parsed);
-      localStorage.removeItem(LAYOUT_STORAGE_KEY_V1);
-      return migrated;
+      const parsed = JSON.parse(raw) as Partial<GitPrefs>;
+      return {
+        gitSidebarCollapsed: parsed.gitSidebarCollapsed ?? false,
+        diffMode: parsed.diffMode === "split" ? "split" : "inline",
+        gitTab:
+          parsed.gitTab === "branches" || parsed.gitTab === "history"
+            ? parsed.gitTab
+            : "changes",
+        ignoreWhitespace: parsed.ignoreWhitespace ?? false,
+      };
     }
   } catch {
-    // ignore corrupted data
+    // ignore
   }
-  return { ...DEFAULT_LAYOUT };
+  return {
+    gitSidebarCollapsed: false,
+    diffMode: "inline",
+    gitTab: "changes",
+    ignoreWhitespace: false,
+  };
 }
 
-// ─── Store factory ───────────────────────────────────────────────────────────
+function loadWorkspaces(): { workspaces: Workspace[]; activeId: string } {
+  try {
+    const raw = localStorage.getItem(WORKSPACES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as PersistedWorkspace[];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const workspaces = parsed.map((p) => ({
+          id: p.id,
+          name: p.name,
+          repoRoot: p.repoRoot ?? null,
+        }));
+        const stored = localStorage.getItem(ACTIVE_WS_KEY);
+        const activeId =
+          stored && workspaces.some((w) => w.id === stored) ? stored : workspaces[0].id;
+        return { workspaces, activeId };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  const first = makeWorkspace("Main");
+  return { workspaces: [first], activeId: first.id };
+}
 
-export function createLayoutStore() {
-  const initial = loadPersistedLayout();
-  const [store, setStore] = createStore<LayoutStoreState>(initial);
-
-  // Persist on change (debounced to avoid blocking during rapid resize/drag)
-  let persistTimer: ReturnType<typeof setTimeout>;
-  createEffect(() => {
-    const snapshot = {
-      columnOrder: store.columnOrder,
-      leftCollapsed: store.leftCollapsed,
-      rightCollapsed: store.rightCollapsed,
-      leftWidth: store.leftWidth,
-      rightWidth: store.rightWidth,
-      bottomPaneOpen: store.bottomPaneOpen,
-      bottomPaneHeight: store.bottomPaneHeight,
-      activeBottomTab: store.activeBottomTab,
-      centerTabsByWorkspace: store.centerTabsByWorkspace,
-      leftTreeExpanded: store.leftTreeExpanded,
-    };
-    clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => {
-      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(snapshot));
-    }, 300);
+export function createAppStore() {
+  const { workspaces, activeId } = loadWorkspaces();
+  const gitPrefs = loadGitPrefs();
+  const [state, setState] = createStore<AppStoreState>({
+    workspaces,
+    activeWorkspaceId: activeId,
+    terminalsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
+    diffTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
+    activeItemByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, null])),
+    gitSidebarCollapsed: gitPrefs.gitSidebarCollapsed,
+    diffMode: gitPrefs.diffMode,
+    gitTab: gitPrefs.gitTab,
+    ignoreWhitespace: gitPrefs.ignoreWhitespace,
   });
 
-  const actions: LayoutStoreActions = {
-    setColumnOrder: (order) => setStore("columnOrder", order),
+  createEffect(() => {
+    const serialized: PersistedWorkspace[] = state.workspaces.map((w) => ({
+      id: w.id,
+      name: w.name,
+      repoRoot: w.repoRoot,
+    }));
+    localStorage.setItem(WORKSPACES_KEY, JSON.stringify(serialized));
+    localStorage.setItem(ACTIVE_WS_KEY, state.activeWorkspaceId);
+  });
 
-    toggleLeft: () => setStore("leftCollapsed", (v) => !v),
-    toggleRight: () => setStore("rightCollapsed", (v) => !v),
-    setLeftWidth: (w) => setStore("leftWidth", w),
-    setRightWidth: (w) => setStore("rightWidth", w),
+  createEffect(() => {
+    localStorage.setItem(
+      GIT_PREFS_KEY,
+      JSON.stringify({
+        gitSidebarCollapsed: state.gitSidebarCollapsed,
+        diffMode: state.diffMode,
+        gitTab: state.gitTab,
+        ignoreWhitespace: state.ignoreWhitespace,
+      } satisfies GitPrefs),
+    );
+  });
 
-    openTab: (wsId, tab) => {
-      setStore(
-        produce((s) => {
-          if (!s.centerTabsByWorkspace[wsId]) {
-            s.centerTabsByWorkspace[wsId] = { tabs: [tab], activeTabId: tab.id };
-            return;
-          }
-          const entry = s.centerTabsByWorkspace[wsId];
-          const existing = entry.tabs.find((t) => t.id === tab.id);
-          if (!existing) entry.tabs.push(tab);
-          entry.activeTabId = tab.id;
-        }),
-      );
+  const activeWorkspace = createMemo(
+    () => state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? null,
+  );
+  const activeTerminals = createMemo(
+    () => state.terminalsByWorkspace[state.activeWorkspaceId] ?? [],
+  );
+  const activeDiffTabs = createMemo(
+    () => state.diffTabsByWorkspace[state.activeWorkspaceId] ?? [],
+  );
+  const activeItem = createMemo(
+    () => state.activeItemByWorkspace[state.activeWorkspaceId] ?? null,
+  );
+
+  // Keep the previous default: a fresh workspace with one terminal focuses it.
+  // Items are focused directly by their spawn/select actions below.
+
+  const actions = {
+    // ── Workspaces ──────────────────────────────────────────────────────
+    addWorkspace(name?: string) {
+      const count = state.workspaces.length + 1;
+      const ws = makeWorkspace(name ?? `Workspace ${count}`);
+      setState(produce((s) => {
+        s.workspaces.push(ws);
+        s.terminalsByWorkspace[ws.id] = [];
+        s.diffTabsByWorkspace[ws.id] = [];
+        s.activeItemByWorkspace[ws.id] = null;
+        s.activeWorkspaceId = ws.id;
+      }));
+      return ws.id;
     },
 
-    closeTab: (wsId, tabId) => {
-      setStore(
-        produce((s) => {
-          const entry = s.centerTabsByWorkspace[wsId];
-          if (!entry) return;
-          const idx = entry.tabs.findIndex((t) => t.id === tabId);
-          if (idx === -1) return;
-          entry.tabs.splice(idx, 1);
-          if (entry.activeTabId === tabId) {
-            const newIdx = Math.min(idx, entry.tabs.length - 1);
-            entry.activeTabId = entry.tabs[newIdx]?.id ?? "";
-            if (entry.tabs.length === 0) {
-              const repo = makeSingletonTab("repository");
-              entry.tabs.push(repo);
-              entry.activeTabId = repo.id;
-            }
-          }
-        }),
-      );
+    removeWorkspace(id: string) {
+      const terms = state.terminalsByWorkspace[id] ?? [];
+      for (const t of terms) void terminalApi.closePty(t.ptyId).catch(() => {});
+      setState(produce((s) => {
+        s.workspaces = s.workspaces.filter((w) => w.id !== id);
+        delete s.terminalsByWorkspace[id];
+        delete s.diffTabsByWorkspace[id];
+        delete s.activeItemByWorkspace[id];
+        if (s.workspaces.length === 0) {
+          const fresh = makeWorkspace("Main");
+          s.workspaces.push(fresh);
+          s.terminalsByWorkspace[fresh.id] = [];
+          s.diffTabsByWorkspace[fresh.id] = [];
+          s.activeItemByWorkspace[fresh.id] = null;
+          s.activeWorkspaceId = fresh.id;
+        } else if (s.activeWorkspaceId === id) {
+          s.activeWorkspaceId = s.workspaces[s.workspaces.length - 1].id;
+        }
+      }));
     },
 
-    setActiveTab: (wsId, tabId) => {
-      setStore(
-        produce((s) => {
-          if (!s.centerTabsByWorkspace[wsId]) return;
-          s.centerTabsByWorkspace[wsId].activeTabId = tabId;
-        }),
-      );
+    renameWorkspace(id: string, name: string) {
+      setState("workspaces", (w) => w.id === id, "name", name.trim() || "Workspace");
     },
 
-    reorderTabs: (wsId, tabIds) => {
-      setStore(
-        produce((s) => {
-          const entry = s.centerTabsByWorkspace[wsId];
-          if (!entry) return;
-          const tabMap = new Map(entry.tabs.map((t) => [t.id, t]));
-          entry.tabs = tabIds.map((id) => tabMap.get(id)!).filter(Boolean);
-        }),
-      );
+    selectWorkspace(id: string) {
+      setState("activeWorkspaceId", id);
     },
 
-    initWorkspaceTabs: (wsId, defaultType) => {
-      setStore(
-        produce((s) => {
-          if (!s.centerTabsByWorkspace[wsId]) {
-            const type = defaultType ?? "repository";
-            const tab = SINGLETON_TYPES.has(type)
-              ? makeSingletonTab(type)
-              : makeSingletonTab("repository");
-            s.centerTabsByWorkspace[wsId] = {
-              tabs: [tab],
-              activeTabId: tab.id,
-            };
-          }
-        }),
-      );
+    setRepoRoot(id: string, repoRoot: string | null) {
+      setState("workspaces", (w) => w.id === id, "repoRoot", repoRoot);
     },
 
-    removeWorkspaceTabs: (wsId) => {
-      setStore(
-        produce((s) => {
-          delete s.centerTabsByWorkspace[wsId];
-        }),
-      );
+    // ── Terminals ───────────────────────────────────────────────────────
+    async spawnTerminal(wsId: string) {
+      const ws = state.workspaces.find((w) => w.id === wsId);
+      if (!ws?.repoRoot) return null;
+      const ptyId = await terminalApi.createPty(ws.repoRoot);
+      const count = (state.terminalsByWorkspace[wsId]?.length ?? 0) + 1;
+      const term: TerminalSession = {
+        id: crypto.randomUUID(),
+        ptyId,
+        label: `Terminal ${count}`,
+        cwd: ws.repoRoot,
+      };
+      setState(produce((s) => {
+        s.terminalsByWorkspace[wsId] = [...(s.terminalsByWorkspace[wsId] ?? []), term];
+        s.activeItemByWorkspace[wsId] = { type: "terminal", id: term.id };
+      }));
+      return term.id;
     },
 
-    openFile: (wsId, filePath) => {
-      setStore(
-        produce((s) => {
-          if (!s.centerTabsByWorkspace[wsId]) {
-            s.centerTabsByWorkspace[wsId] = { tabs: [], activeTabId: "" };
-          }
-          const entry = s.centerTabsByWorkspace[wsId];
-          // If there's already a pinned tab for this file, just activate it
-          const existing = entry.tabs.find(
-            (t) => (t.type === "file" || t.type === "image" || t.type === "svg") &&
-              t.meta.filePath === filePath,
-          );
-          if (existing) {
-            entry.activeTabId = existing.id;
-            return;
-          }
-          // Determine type from extension
-          const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-          const type: CenterTabType = IMAGE_EXTS.has(ext)
-            ? "image"
-            : ext === "svg"
-              ? "svg"
-              : "file";
-          const label = filePath.split("/").pop() ?? filePath;
-          const tab: TabInstance = {
-            id: crypto.randomUUID(),
-            type,
-            label,
-            meta: { filePath },
-            preview: true,
-          };
-          // Replace existing preview tab if any
-          const previewIdx = entry.tabs.findIndex((t) => t.preview);
-          if (previewIdx !== -1) {
-            entry.tabs.splice(previewIdx, 1, tab);
-          } else {
-            entry.tabs.push(tab);
-          }
-          entry.activeTabId = tab.id;
-        }),
-      );
+    removeTerminal(wsId: string, termId: string) {
+      const list = state.terminalsByWorkspace[wsId] ?? [];
+      const term = list.find((t) => t.id === termId);
+      if (term) void terminalApi.closePty(term.ptyId).catch(() => {});
+      setState(produce((s) => {
+        const arr = s.terminalsByWorkspace[wsId] ?? [];
+        const idx = arr.findIndex((t) => t.id === termId);
+        if (idx === -1) return;
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorkspace[wsId];
+        if (active?.type === "terminal" && active.id === termId) {
+          // fall back to another terminal, else a diff tab, else nothing
+          const nextTerm = arr[arr.length - 1];
+          const diffs = s.diffTabsByWorkspace[wsId] ?? [];
+          s.activeItemByWorkspace[wsId] = nextTerm
+            ? { type: "terminal", id: nextTerm.id }
+            : diffs[0]
+              ? { type: "diff", id: diffs[0].id }
+              : null;
+        }
+      }));
     },
 
-    openFileAtLine: (wsId, filePath, line) => {
-      setStore(
-        produce((s) => {
-          if (!s.centerTabsByWorkspace[wsId]) {
-            s.centerTabsByWorkspace[wsId] = { tabs: [], activeTabId: "" };
-          }
-          const entry = s.centerTabsByWorkspace[wsId];
-          // If there's already a tab for this file, activate it and set scrollToLine
-          const existing = entry.tabs.find(
-            (t) => (t.type === "file" || t.type === "image" || t.type === "svg") &&
-              t.meta.filePath === filePath,
-          );
-          if (existing) {
-            existing.meta.scrollToLine = line;
-            entry.activeTabId = existing.id;
-            return;
-          }
-          const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-          const type: CenterTabType = IMAGE_EXTS.has(ext)
-            ? "image"
-            : ext === "svg"
-              ? "svg"
-              : "file";
-          const label = filePath.split("/").pop() ?? filePath;
-          const tab: TabInstance = {
-            id: crypto.randomUUID(),
-            type,
-            label,
-            meta: { filePath, scrollToLine: line },
-            preview: true,
-          };
-          const previewIdx = entry.tabs.findIndex((t) => t.preview);
-          if (previewIdx !== -1) {
-            entry.tabs.splice(previewIdx, 1, tab);
-          } else {
-            entry.tabs.push(tab);
-          }
-          entry.activeTabId = tab.id;
-        }),
-      );
+    selectTerminal(wsId: string, termId: string) {
+      setState("activeItemByWorkspace", wsId, { type: "terminal", id: termId });
     },
 
-    openFilePinned: (wsId, filePath) => {
-      setStore(
-        produce((s) => {
-          if (!s.centerTabsByWorkspace[wsId]) {
-            s.centerTabsByWorkspace[wsId] = { tabs: [], activeTabId: "" };
-          }
-          const entry = s.centerTabsByWorkspace[wsId];
-          // If tab already exists for this file, pin it and activate
-          const existing = entry.tabs.find(
-            (t) => (t.type === "file" || t.type === "image" || t.type === "svg") &&
-              t.meta.filePath === filePath,
-          );
-          if (existing) {
-            existing.preview = false;
-            entry.activeTabId = existing.id;
-            return;
-          }
-          // Create new pinned tab
-          const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-          const type: CenterTabType = IMAGE_EXTS.has(ext)
-            ? "image"
-            : ext === "svg"
-              ? "svg"
-              : "file";
-          const label = filePath.split("/").pop() ?? filePath;
-          const tab: TabInstance = {
-            id: crypto.randomUUID(),
-            type,
-            label,
-            meta: { filePath },
-          };
-          entry.tabs.push(tab);
-          entry.activeTabId = tab.id;
-        }),
-      );
+    // ── Diff tabs ───────────────────────────────────────────────────────
+    openDiffTab(wsId: string, filePath: string) {
+      const existing = (state.diffTabsByWorkspace[wsId] ?? []).find((d) => d.filePath === filePath);
+      if (existing) {
+        setState("activeItemByWorkspace", wsId, { type: "diff", id: existing.id });
+        return existing.id;
+      }
+      const tab: DiffTab = { id: crypto.randomUUID(), filePath };
+      setState(produce((s) => {
+        s.diffTabsByWorkspace[wsId] = [...(s.diffTabsByWorkspace[wsId] ?? []), tab];
+        s.activeItemByWorkspace[wsId] = { type: "diff", id: tab.id };
+      }));
+      return tab.id;
     },
 
-    pinTab: (wsId, tabId) => {
-      setStore(
-        produce((s) => {
-          const entry = s.centerTabsByWorkspace[wsId];
-          if (!entry) return;
-          const tab = entry.tabs.find((t) => t.id === tabId);
-          if (tab) tab.preview = false;
-        }),
-      );
+    closeDiffTab(wsId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.diffTabsByWorkspace[wsId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorkspace[wsId];
+        if (active?.type === "diff" && active.id === tabId) {
+          const nextDiff = arr[arr.length - 1];
+          const terms = s.terminalsByWorkspace[wsId] ?? [];
+          s.activeItemByWorkspace[wsId] = nextDiff
+            ? { type: "diff", id: nextDiff.id }
+            : terms[0]
+              ? { type: "terminal", id: terms[0].id }
+              : null;
+        }
+      }));
     },
 
-    openSingleton: (wsId, type, label) => {
-      const tab = makeSingletonTab(type, label);
-      actions.openTab(wsId, tab);
+    selectDiffTab(wsId: string, tabId: string) {
+      setState("activeItemByWorkspace", wsId, { type: "diff", id: tabId });
     },
 
-    toggleBottomPane: (tabId) => {
-      setStore(
-        produce((s) => {
-          if (!s.bottomPaneOpen) {
-            s.bottomPaneOpen = true;
-            s.activeBottomTab = tabId;
-          } else if (s.activeBottomTab === tabId) {
-            s.bottomPaneOpen = false;
-          } else {
-            s.activeBottomTab = tabId;
-          }
-        }),
-      );
+    // ── Git sidebar ─────────────────────────────────────────────────────
+    toggleGitSidebar() {
+      setState("gitSidebarCollapsed", (v) => !v);
     },
-
-    setBottomPaneHeight: (h) => setStore("bottomPaneHeight", h),
-    setActiveBottomTab: (tabId) => setStore("activeBottomTab", tabId),
-    closeBottomPane: () => setStore("bottomPaneOpen", false),
-
-    toggleLeftTreeNode: (nodeId) => {
-      setStore(
-        produce((s) => {
-          s.leftTreeExpanded[nodeId] = !s.leftTreeExpanded[nodeId];
-        }),
-      );
+    setGitTab(tab: GitTab) {
+      setState("gitTab", tab);
+    },
+    setDiffMode(mode: DiffMode) {
+      setState("diffMode", mode);
+    },
+    toggleIgnoreWhitespace() {
+      setState("ignoreWhitespace", (v) => !v);
     },
   };
 
-  return [store, actions] as const;
+  return {
+    state,
+    activeWorkspace,
+    activeTerminals,
+    activeDiffTabs,
+    activeItem,
+    actions,
+  } as const;
 }
+
+export type AppStore = ReturnType<typeof createAppStore>;
