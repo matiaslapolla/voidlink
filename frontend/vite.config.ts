@@ -21,6 +21,7 @@ export default defineConfig({
             "@xterm/addon-clipboard",
             "@xterm/addon-unicode-graphemes",
           ],
+          "vendor-monaco": ["monaco-editor"],
         },
       },
     },

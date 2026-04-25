@@ -13,6 +13,7 @@ const ACTIVE_WS_KEY = "voidlink-active-workspace";
 
 export type DiffMode = "inline" | "split";
 export type GitTab = "changes" | "branches" | "history";
+export type SidebarTab = "files" | "terminals";
 
 export interface DiffTab {
   id: string;
@@ -21,18 +22,28 @@ export interface DiffTab {
 
 export type ActiveItem =
   | { type: "terminal"; id: string }
-  | { type: "diff"; id: string };
+  | { type: "diff"; id: string }
+  | { type: "file"; id: string; path: string };
+
+export interface OpenFileTab {
+  id: string;
+  path: string;
+}
 
 interface AppStoreState {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   terminalsByWorkspace: Record<string, TerminalSession[]>;
   diffTabsByWorkspace: Record<string, DiffTab[]>;
+  openFilesByWorkspace: Record<string, OpenFileTab[]>;
   activeItemByWorkspace: Record<string, ActiveItem | null>;
   gitSidebarCollapsed: boolean;
   diffMode: DiffMode;
   gitTab: GitTab;
   ignoreWhitespace: boolean;
+  sidebarTab: SidebarTab;
+  gitSections: { changes: boolean; branches: boolean; history: boolean; openedDiffs: boolean };
+  sidebarSections: { files: boolean; terminals: boolean };
 }
 
 const GIT_PREFS_KEY = "voidlink-git-prefs";
@@ -42,6 +53,9 @@ interface GitPrefs {
   diffMode: DiffMode;
   gitTab: GitTab;
   ignoreWhitespace: boolean;
+  sidebarTab: SidebarTab;
+  gitSections: { changes: boolean; branches: boolean; history: boolean; openedDiffs: boolean };
+  sidebarSections: { files: boolean; terminals: boolean };
 }
 
 function loadGitPrefs(): GitPrefs {
@@ -57,6 +71,17 @@ function loadGitPrefs(): GitPrefs {
             ? parsed.gitTab
             : "changes",
         ignoreWhitespace: parsed.ignoreWhitespace ?? false,
+        sidebarTab: parsed.sidebarTab === "files" ? "files" : "terminals",
+        gitSections: {
+          changes: parsed.gitSections?.changes ?? true,
+          branches: parsed.gitSections?.branches ?? true,
+          history: parsed.gitSections?.history ?? true,
+          openedDiffs: parsed.gitSections?.openedDiffs ?? true,
+        },
+        sidebarSections: {
+          files: parsed.sidebarSections?.files ?? true,
+          terminals: parsed.sidebarSections?.terminals ?? true,
+        },
       };
     }
   } catch {
@@ -67,6 +92,9 @@ function loadGitPrefs(): GitPrefs {
     diffMode: "inline",
     gitTab: "changes",
     ignoreWhitespace: false,
+    sidebarTab: "terminals",
+    gitSections: { changes: true, branches: true, history: true, openedDiffs: true },
+    sidebarSections: { files: true, terminals: true },
   };
 }
 
@@ -102,11 +130,15 @@ export function createAppStore() {
     activeWorkspaceId: activeId,
     terminalsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     diffTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
+    openFilesByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     activeItemByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, null])),
     gitSidebarCollapsed: gitPrefs.gitSidebarCollapsed,
     diffMode: gitPrefs.diffMode,
     gitTab: gitPrefs.gitTab,
     ignoreWhitespace: gitPrefs.ignoreWhitespace,
+    sidebarTab: gitPrefs.sidebarTab,
+    gitSections: gitPrefs.gitSections,
+    sidebarSections: gitPrefs.sidebarSections,
   });
 
   createEffect(() => {
@@ -127,6 +159,9 @@ export function createAppStore() {
         diffMode: state.diffMode,
         gitTab: state.gitTab,
         ignoreWhitespace: state.ignoreWhitespace,
+        sidebarTab: state.sidebarTab,
+        gitSections: state.gitSections,
+        sidebarSections: state.sidebarSections,
       } satisfies GitPrefs),
     );
   });
@@ -139,6 +174,9 @@ export function createAppStore() {
   );
   const activeDiffTabs = createMemo(
     () => state.diffTabsByWorkspace[state.activeWorkspaceId] ?? [],
+  );
+  const activeOpenFiles = createMemo(
+    () => state.openFilesByWorkspace[state.activeWorkspaceId] ?? [],
   );
   const activeItem = createMemo(
     () => state.activeItemByWorkspace[state.activeWorkspaceId] ?? null,
@@ -156,6 +194,7 @@ export function createAppStore() {
         s.workspaces.push(ws);
         s.terminalsByWorkspace[ws.id] = [];
         s.diffTabsByWorkspace[ws.id] = [];
+        s.openFilesByWorkspace[ws.id] = [];
         s.activeItemByWorkspace[ws.id] = null;
         s.activeWorkspaceId = ws.id;
       }));
@@ -169,12 +208,14 @@ export function createAppStore() {
         s.workspaces = s.workspaces.filter((w) => w.id !== id);
         delete s.terminalsByWorkspace[id];
         delete s.diffTabsByWorkspace[id];
+        delete s.openFilesByWorkspace[id];
         delete s.activeItemByWorkspace[id];
         if (s.workspaces.length === 0) {
           const fresh = makeWorkspace("Main");
           s.workspaces.push(fresh);
           s.terminalsByWorkspace[fresh.id] = [];
           s.diffTabsByWorkspace[fresh.id] = [];
+          s.openFilesByWorkspace[fresh.id] = [];
           s.activeItemByWorkspace[fresh.id] = null;
           s.activeWorkspaceId = fresh.id;
         } else if (s.activeWorkspaceId === id) {
@@ -292,6 +333,62 @@ export function createAppStore() {
     toggleIgnoreWhitespace() {
       setState("ignoreWhitespace", (v) => !v);
     },
+
+    // ── File tabs ────────────────────────────────────────────────────────
+    openFileTab(wsId: string, path: string) {
+      const existing = (state.openFilesByWorkspace[wsId] ?? []).find((f) => f.path === path);
+      if (existing) {
+        setState("activeItemByWorkspace", wsId, { type: "file", id: existing.id, path });
+        return existing.id;
+      }
+      const tab: OpenFileTab = { id: crypto.randomUUID(), path };
+      setState(produce((s) => {
+        s.openFilesByWorkspace[wsId] = [...(s.openFilesByWorkspace[wsId] ?? []), tab];
+        s.activeItemByWorkspace[wsId] = { type: "file", id: tab.id, path };
+      }));
+      return tab.id;
+    },
+
+    closeFileTab(wsId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.openFilesByWorkspace[wsId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorkspace[wsId];
+        if (active?.type === "file" && active.id === tabId) {
+          const nextFile = arr[arr.length - 1];
+          const diffs = s.diffTabsByWorkspace[wsId] ?? [];
+          const terms = s.terminalsByWorkspace[wsId] ?? [];
+          s.activeItemByWorkspace[wsId] = nextFile
+            ? { type: "file", id: nextFile.id, path: nextFile.path }
+            : diffs[0]
+              ? { type: "diff", id: diffs[0].id }
+              : terms[0]
+                ? { type: "terminal", id: terms[0].id }
+                : null;
+        }
+      }));
+    },
+
+    selectFileTab(wsId: string, tabId: string, path: string) {
+      setState("activeItemByWorkspace", wsId, { type: "file", id: tabId, path });
+    },
+
+    // ── Sidebar tab ──────────────────────────────────────────────────────
+    setSidebarTab(tab: SidebarTab) {
+      setState("sidebarTab", tab);
+    },
+
+    // ── Git collapsible sections ─────────────────────────────────────────
+    toggleGitSection(section: keyof AppStoreState["gitSections"]) {
+      setState("gitSections", section, (v) => !v);
+    },
+
+    // ── Left sidebar collapsible sections ────────────────────────────────
+    toggleSidebarSection(section: keyof AppStoreState["sidebarSections"]) {
+      setState("sidebarSections", section, (v) => !v);
+    },
   };
 
   return {
@@ -299,6 +396,7 @@ export function createAppStore() {
     activeWorkspace,
     activeTerminals,
     activeDiffTabs,
+    activeOpenFiles,
     activeItem,
     actions,
   } as const;

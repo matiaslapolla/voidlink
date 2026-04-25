@@ -27,6 +27,7 @@ portable-pty = "0.8"
 uuid = { version = "1", features = ["v4"] }
 git2 = { version = "0.19", features = ["vendored-libgit2"] }
 dashmap = "6.1.0"
+ignore = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

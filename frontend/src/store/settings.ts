@@ -95,7 +95,7 @@ createEffect(() => {
 });
 
 // ── UI effects: apply textSize + density to <html> so CSS rules can react.
-const TEXT_SIZE_PX: Record<UiTextSize, number> = { sm: 13, base: 15, xl: 17 };
+const TEXT_SIZE_PX: Record<UiTextSize, number> = { sm: 14, base: 16, xl: 18 };
 
 createEffect(() => {
   const html = document.documentElement;

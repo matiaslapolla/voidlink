@@ -8,29 +8,29 @@
   color-scheme: dark;
 
   /* ── Surfaces ─────────────────────────────────────────────────────────── */
-  --background: oklch(0.145 0.012 270);
-  --foreground: oklch(0.950 0.008 270);
-  --card: oklch(0.185 0.012 270);
-  --card-foreground: oklch(0.950 0.008 270);
-  --popover: oklch(0.195 0.014 270);
-  --popover-foreground: oklch(0.950 0.008 270);
+  --background: oklch(0.200 0.005 270);
+  --foreground: oklch(0.950 0.006 270);
+  --card: oklch(0.228 0.005 270);
+  --card-foreground: oklch(0.950 0.006 270);
+  --popover: oklch(0.238 0.006 270);
+  --popover-foreground: oklch(0.950 0.006 270);
 
   --primary: oklch(0.655 0.200 270);
   --primary-foreground: oklch(0.980 0.010 270);
-  --secondary: oklch(0.245 0.020 270);
-  --secondary-foreground: oklch(0.920 0.010 270);
-  --muted: oklch(0.220 0.012 270);
-  --muted-foreground: oklch(0.680 0.025 270);
-  --accent: oklch(0.250 0.025 270);
-  --accent-foreground: oklch(0.950 0.008 270);
+  --secondary: oklch(0.265 0.008 270);
+  --secondary-foreground: oklch(0.920 0.008 270);
+  --muted: oklch(0.250 0.005 270);
+  --muted-foreground: oklch(0.640 0.012 270);
+  --accent: oklch(0.272 0.010 270);
+  --accent-foreground: oklch(0.950 0.006 270);
 
   --destructive: oklch(0.650 0.210 25);
   --success: oklch(0.680 0.175 155);
   --warning: oklch(0.750 0.155 75);
   --info: oklch(0.680 0.150 245);
 
-  --border: oklch(1 0.008 270 / 12%);
-  --input: oklch(1 0.008 270 / 16%);
+  --border: oklch(1 0.006 270 / 10%);
+  --input: oklch(1 0.006 270 / 14%);
   --ring: oklch(0.655 0.200 270);
 
   --chart-1: oklch(0.750 0.140 270);
@@ -41,13 +41,13 @@
 
   --radius: 0.625rem;
 
-  --sidebar: oklch(0.160 0.014 270);
-  --sidebar-foreground: oklch(0.950 0.008 270);
+  --sidebar: oklch(0.213 0.005 270);
+  --sidebar-foreground: oklch(0.950 0.006 270);
   --sidebar-primary: oklch(0.655 0.200 270);
   --sidebar-primary-foreground: oklch(0.980 0.010 270);
-  --sidebar-accent: oklch(0.260 0.035 270);
-  --sidebar-accent-foreground: oklch(0.950 0.008 270);
-  --sidebar-border: oklch(1 0.008 270 / 14%);
+  --sidebar-accent: oklch(0.278 0.010 270);
+  --sidebar-accent-foreground: oklch(0.950 0.006 270);
+  --sidebar-border: oklch(1 0.006 270 / 10%);
   --sidebar-ring: oklch(0.655 0.200 270);
 }
 
@@ -250,9 +250,9 @@ html:not([data-density]) {
   background: oklch(0.6 0 0 / 0.7);
 }
 
-/* ── Section label: text-[10px] uppercase tracking-wider font-semibold ──────── */
+/* ── Section label: uppercase tracking-wider font-semibold ──────────────────── */
 .ui-section-label {
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 600;

@@ -5,6 +5,7 @@ use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 mod git;
+mod fs;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
@@ -291,6 +292,13 @@ pub fn run() {
             git::git_commit,
             git::git_push,
             git::git_diff_working,
+            fs::fs_list_dir,
+            fs::fs_read_file,
+            fs::fs_write_file,
+            fs::fs_create_file,
+            fs::fs_create_dir,
+            fs::fs_rename,
+            fs::fs_delete,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
