@@ -17,6 +17,14 @@ export function FileTree(props: { root: string; onOpenFile?: (path: string) => v
   const refresh = () => setRefreshKey(k => k + 1);
   const closeMenu = () => setContextMenu(null);
 
+  // External writers (the New Tab menu, future flows) dispatch this to ask
+  // the tree to re-list its dirs without re-mounting.
+  onMount(() => {
+    const handler = () => refresh();
+    window.addEventListener("voidlink:refresh-files", handler);
+    onCleanup(() => window.removeEventListener("voidlink:refresh-files", handler));
+  });
+
   async function handleNewFile(parentDir: string) {
     closeMenu();
     const name = prompt("New file name:");
