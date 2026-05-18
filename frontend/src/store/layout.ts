@@ -31,9 +31,15 @@ export type ActiveItem =
   | { type: "file"; id: string; path: string }
   | { type: "compare"; id: string }
   | { type: "stack"; id: string }
-  | { type: "conflict"; id: string };
+  | { type: "conflict"; id: string }
+  | { type: "preview"; id: string; path: string };
 
 export interface ConflictTab {
+  id: string;
+  filePath: string;
+}
+
+export interface PreviewTab {
   id: string;
   filePath: string;
 }
@@ -93,6 +99,7 @@ interface AppStoreState {
   compareTabsByWorkspace: Record<string, CompareTab[]>;
   stackTabsByWorkspace: Record<string, StackTab[]>;
   conflictTabsByWorkspace: Record<string, ConflictTab[]>;
+  previewTabsByWorkspace: Record<string, PreviewTab[]>;
   /// LIFO stack of recently closed tabs, capped at CLOSED_TAB_HISTORY_LIMIT.
   /// Lives in memory only — closing the app drops the history (matches
   /// what most editors do with reopen-last-closed).
@@ -306,6 +313,7 @@ export function createAppStore() {
     compareTabsByWorkspace: loadCompareTabs(workspaces.map((w) => w.id)),
     stackTabsByWorkspace: loadStackTabs(workspaces.map((w) => w.id)),
     conflictTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
+    previewTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     closedTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     pinnedTabsByWorkspace: loadPinnedTabs(workspaces.map((w) => w.id)),
     activeItemByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, null])),
@@ -389,6 +397,9 @@ export function createAppStore() {
   const activeConflictTabs = createMemo(
     () => state.conflictTabsByWorkspace[state.activeWorkspaceId] ?? [],
   );
+  const activePreviewTabs = createMemo(
+    () => state.previewTabsByWorkspace[state.activeWorkspaceId] ?? [],
+  );
   const activeItem = createMemo(
     () => state.activeItemByWorkspace[state.activeWorkspaceId] ?? null,
   );
@@ -457,6 +468,7 @@ export function createAppStore() {
         s.compareTabsByWorkspace[ws.id] = [];
         s.stackTabsByWorkspace[ws.id] = [];
         s.conflictTabsByWorkspace[ws.id] = [];
+        s.previewTabsByWorkspace[ws.id] = [];
         s.closedTabsByWorkspace[ws.id] = [];
         s.pinnedTabsByWorkspace[ws.id] = [];
         s.activeItemByWorkspace[ws.id] = null;
@@ -476,6 +488,7 @@ export function createAppStore() {
         delete s.compareTabsByWorkspace[id];
         delete s.stackTabsByWorkspace[id];
         delete s.conflictTabsByWorkspace[id];
+        delete s.previewTabsByWorkspace[id];
         delete s.closedTabsByWorkspace[id];
         delete s.pinnedTabsByWorkspace[id];
         delete s.activeItemByWorkspace[id];
@@ -488,6 +501,7 @@ export function createAppStore() {
           s.compareTabsByWorkspace[fresh.id] = [];
           s.stackTabsByWorkspace[fresh.id] = [];
           s.conflictTabsByWorkspace[fresh.id] = [];
+          s.previewTabsByWorkspace[fresh.id] = [];
           s.closedTabsByWorkspace[fresh.id] = [];
           s.pinnedTabsByWorkspace[fresh.id] = [];
           s.activeItemByWorkspace[fresh.id] = null;
@@ -956,6 +970,63 @@ export function createAppStore() {
       setState("activeItemByWorkspace", wsId, { type: "conflict", id: tabId });
     },
 
+    // ── Preview tabs (markdown preview) ─────────────────────────────────
+    openPreviewTab(wsId: string, filePath: string) {
+      const existing = (state.previewTabsByWorkspace[wsId] ?? []).find(
+        (t) => t.filePath === filePath,
+      );
+      if (existing) {
+        setState("activeItemByWorkspace", wsId, {
+          type: "preview",
+          id: existing.id,
+          path: filePath,
+        });
+        return existing.id;
+      }
+      const tab: PreviewTab = { id: crypto.randomUUID(), filePath };
+      setState(produce((s) => {
+        s.previewTabsByWorkspace[wsId] = [
+          ...(s.previewTabsByWorkspace[wsId] ?? []),
+          tab,
+        ];
+        s.activeItemByWorkspace[wsId] = { type: "preview", id: tab.id, path: filePath };
+      }));
+      return tab.id;
+    },
+
+    closePreviewTab(wsId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.previewTabsByWorkspace[wsId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        unpin(s, wsId, tabId);
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorkspace[wsId];
+        if (active?.type === "preview" && active.id === tabId) {
+          const nextPreview = arr[arr.length - 1];
+          const files = s.openFilesByWorkspace[wsId] ?? [];
+          const terms = s.terminalsByWorkspace[wsId] ?? [];
+          s.activeItemByWorkspace[wsId] = nextPreview
+            ? { type: "preview", id: nextPreview.id, path: nextPreview.filePath }
+            : files[0]
+              ? { type: "file", id: files[0].id, path: files[0].path }
+              : terms[0]
+                ? { type: "terminal", id: terms[0].id }
+                : null;
+        }
+      }));
+    },
+
+    selectPreviewTab(wsId: string, tabId: string) {
+      const tab = (state.previewTabsByWorkspace[wsId] ?? []).find((t) => t.id === tabId);
+      if (!tab) return;
+      setState("activeItemByWorkspace", wsId, {
+        type: "preview",
+        id: tabId,
+        path: tab.filePath,
+      });
+    },
+
     // ── Workspace snapshots ──────────────────────────────────────────────
     /// Capture the current open-state of `wsId` into a named snapshot.
     /// Re-saving with the same name overwrites. Pinned/active are stored
@@ -1220,7 +1291,7 @@ export function createAppStore() {
     /// types stay consistent.
     reorderItemTab(
       wsId: string,
-      kind: "file" | "terminal" | "diff" | "compare" | "stack",
+      kind: "file" | "terminal" | "diff" | "compare" | "stack" | "preview",
       fromId: string,
       toId: string | null,
     ) {
@@ -1233,7 +1304,9 @@ export function createAppStore() {
               ? "diffTabsByWorkspace"
               : kind === "compare"
                 ? "compareTabsByWorkspace"
-                : "stackTabsByWorkspace";
+                : kind === "stack"
+                  ? "stackTabsByWorkspace"
+                  : "previewTabsByWorkspace";
       setState(produce((s) => {
         const arr = (s[key] as Record<string, { id: string }[]>)[wsId];
         if (!arr) return;
@@ -1263,6 +1336,7 @@ export function createAppStore() {
     activeCompareTabs,
     activeStackTabs,
     activeConflictTabs,
+    activePreviewTabs,
     activeItem,
     activeClosedTabs,
     activePinnedTabs,

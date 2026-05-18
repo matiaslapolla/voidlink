@@ -273,6 +273,72 @@ html:not([data-density]) {
   opacity: 0.85;
 }
 
+/* ── Markdown preview ───────────────────────────────────────────────────────── */
+.markdown-body { word-wrap: break-word; }
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 1.6em;
+  margin-bottom: 0.6em;
+  color: var(--foreground);
+}
+.markdown-body h1 { font-size: 1.9em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.markdown-body h2 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.25em; }
+.markdown-body h3 { font-size: 1.25em; }
+.markdown-body h4 { font-size: 1.05em; }
+.markdown-body h5 { font-size: 0.95em; }
+.markdown-body h6 { font-size: 0.85em; color: var(--muted-foreground); }
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body pre,
+.markdown-body table { margin: 0 0 1em; }
+.markdown-body ul,
+.markdown-body ol { padding-left: 1.6em; }
+.markdown-body li + li { margin-top: 0.25em; }
+.markdown-body a { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-body a:hover { opacity: 0.85; }
+.markdown-body blockquote {
+  border-left: 3px solid var(--border);
+  padding: 0 1em;
+  color: var(--muted-foreground);
+}
+.markdown-body code {
+  font-family: 'Geist Mono Variable', 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--muted);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+.markdown-body pre {
+  background: var(--muted);
+  padding: 0.85em 1em;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.markdown-body pre code { background: transparent; padding: 0; font-size: inherit; }
+.markdown-body hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
+}
+.markdown-body table { border-collapse: collapse; width: 100%; }
+.markdown-body th,
+.markdown-body td { border: 1px solid var(--border); padding: 0.45em 0.8em; text-align: left; }
+.markdown-body th { background: var(--muted); font-weight: 600; }
+.markdown-body img { max-width: 100%; height: auto; border-radius: 4px; }
+.markdown-body input[type="checkbox"] { margin-right: 0.4em; vertical-align: middle; }
+
 /* ── Reduced motion ─────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .transition-colors,

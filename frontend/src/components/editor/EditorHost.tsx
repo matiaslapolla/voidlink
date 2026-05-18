@@ -1,4 +1,4 @@
-import { onCleanup, onMount } from "solid-js";
+import { createEffect, onCleanup, onMount } from "solid-js";
 import { editorController } from "./editorController";
 import { useTheme } from "@/store/theme";
 
@@ -13,6 +13,12 @@ export function EditorHost(props: EditorHostProps) {
   onMount(async () => {
     const theme = mode() === "light" ? "vs" : "vs-dark";
     await editorController.init(containerRef, theme);
+
+    // Keep Monaco's theme in sync with the app theme. init() already
+    // applied the current value; this effect handles future toggles.
+    createEffect(() => {
+      editorController.setTheme(mode() === "light" ? "vs" : "vs-dark");
+    });
 
     const onSave = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {

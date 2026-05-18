@@ -6,6 +6,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 import { useSettings } from "@/store/settings";
+import { useTheme } from "@/store/theme";
 import { markActive, recordKeystroke } from "@/commands/terminalHistory";
 
 // Prior perf learning (commit 0b9bfe7): in Tauri's WebKitGTK webview, xterm
@@ -44,7 +45,8 @@ interface TerminalPaneProps {
 
 // xterm canvas is always rendered opaque: canvas-transparency is unreliable
 // across WebKitGTK and caused visible gaps around the grid.
-const TERMINAL_BG = "#09090b";
+const DARK_BG = "#09090b";
+const LIGHT_BG = "#fdf6e3"; // solarized-base3
 
 /// `path/to/file.ext:line[:column]`. The path can include letters, digits,
 /// `.`, `_`, `-`, `+`, `/`, `@`, and `~`. Requires a `:` followed by a
@@ -59,8 +61,8 @@ const PATH_LINE_REGEX =
 /// match inside e.g. a long hash-prefixed filename.
 const SHA_REGEX = /\b[0-9a-f]{7,40}\b/g;
 
-const TERMINAL_THEME = {
-  background: TERMINAL_BG,
+const DARK_THEME = {
+  background: DARK_BG,
   foreground: "#e4e4e7",
   cursor: "#e4e4e7",
   selectionBackground: "#3f3f46",
@@ -82,9 +84,39 @@ const TERMINAL_THEME = {
   brightWhite: "#fafafa",
 } as const;
 
+/// Solarized-light tuned for terminal readability against the warm
+/// off-white background. ANSI 0–7 use the standard solarized accents at
+/// their darker (base0x) variants so they stay legible on the light bg;
+/// bright 8–15 brighten the same hues. base0/base00 control body text.
+const LIGHT_THEME = {
+  background: LIGHT_BG,
+  foreground: "#586e75",            // base01
+  cursor: "#586e75",
+  selectionBackground: "#eee8d5",   // base2
+  black: "#073642",                 // base02
+  red: "#dc322f",
+  green: "#859900",
+  yellow: "#b58900",
+  blue: "#268bd2",
+  magenta: "#d33682",
+  cyan: "#2aa198",
+  white: "#eee8d5",                 // base2
+  brightBlack: "#657b83",           // base00
+  brightRed: "#cb4b16",
+  brightGreen: "#586e75",           // base01
+  brightYellow: "#657b83",          // base00
+  brightBlue: "#839496",            // base0
+  brightMagenta: "#6c71c4",
+  brightCyan: "#93a1a1",            // base1
+  brightWhite: "#fdf6e3",           // base3
+} as const;
+
 export function TerminalPane(props: TerminalPaneProps) {
   let container!: HTMLDivElement;
   const { settings } = useSettings();
+  const { mode } = useTheme();
+  const palette = () => (mode() === "light" ? LIGHT_THEME : DARK_THEME);
+  const paneBg = () => (mode() === "light" ? LIGHT_BG : DARK_BG);
 
   onMount(async () => {
     const ptyId = props.ptyId;
@@ -99,7 +131,7 @@ export function TerminalPane(props: TerminalPaneProps) {
     const term = new Terminal({
       // Required for `term.unicode.activeVersion` (used below).
       allowProposedApi: true,
-      theme: TERMINAL_THEME,
+      theme: palette(),
       fontFamily: t.fontFamily,
       fontSize: t.fontSize,
       lineHeight: t.lineHeight,
@@ -221,6 +253,14 @@ export function TerminalPane(props: TerminalPaneProps) {
       } catch { /* ignore */ }
     });
 
+    // Theme swap on app light/dark toggle. xterm rebuilds its color
+    // cache when `options.theme` is reassigned; a refresh forces a
+    // canvas repaint so already-rendered cells pick up the new palette.
+    createEffect(() => {
+      term.options.theme = palette();
+      try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
+    });
+
     term.onData((data) => {
       recordKeystroke(ptyId, data);
       void invoke("write_pty", { sessionId: ptyId, data });
@@ -318,7 +358,7 @@ export function TerminalPane(props: TerminalPaneProps) {
     <div
       ref={container}
       class={props.class ?? "w-full h-full"}
-      style={{ "background-color": TERMINAL_BG }}
+      style={{ "background-color": paneBg() }}
     />
   );
 }

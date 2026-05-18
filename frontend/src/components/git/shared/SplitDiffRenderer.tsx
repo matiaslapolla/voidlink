@@ -85,7 +85,11 @@ function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
     <div>
       <For each={props.file.hunks}>
         {(hunk, i) => (
-          <div>
+          // `min-w-max` makes the hunk wrapper size to the widest row inside
+          // it. Header bar and every +/- row then stretch to that width, so
+          // their colored backgrounds extend across the full horizontally-
+          // scrolled area instead of cutting off at the viewport edge.
+          <div class="min-w-max">
             <HunkHeader
               hunk={hunk}
               file={props.file}

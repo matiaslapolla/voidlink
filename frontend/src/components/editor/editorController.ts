@@ -154,6 +154,10 @@ class EditorController {
   getActivePath() { return this.activePath; }
   layout() { this.editor?.layout(); }
 
+  setTheme(theme: "vs-dark" | "vs") {
+    this.monaco?.editor.setTheme(theme);
+  }
+
   subscribe(fn: ChangeListener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);

@@ -1,11 +1,12 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, TerminalSquare, FileCode, GitCompare, GitBranchPlus, Layers, Plus, FilePlus2, Pin, PinOff, ChevronsRight, GitMerge } from "lucide-solid";
+import { X, TerminalSquare, FileCode, GitCompare, GitBranchPlus, Layers, Plus, FilePlus2, Pin, PinOff, ChevronsRight, GitMerge, Eye } from "lucide-solid";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { GitDiffView } from "@/components/git/GitDiffView";
 import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTab";
 import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { ConflictTab as ConflictTabView } from "@/components/git/conflict/ConflictTab";
+import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import { EditorHost } from "@/components/editor/EditorHost";
 import { editorController } from "@/components/editor/editorController";
 import { useOpenFiles } from "@/components/editor/useOpenFiles";
@@ -27,6 +28,7 @@ export function MainSurface() {
     activeCompareTabs,
     activeStackTabs,
     activeConflictTabs,
+    activePreviewTabs,
     activeItem,
     activePinnedTabs,
     actions,
@@ -51,6 +53,7 @@ export function MainSurface() {
   const visibleCompares = createMemo(() => pinnedFirst(activeCompareTabs()));
   const visibleStacks = createMemo(() => pinnedFirst(activeStackTabs()));
   const visibleConflicts = createMemo(() => pinnedFirst(activeConflictTabs()));
+  const visiblePreviews = createMemo(() => pinnedFirst(activePreviewTabs()));
 
   /// Context menu state. One menu element rendered in a Portal; tabs
   /// trigger it via right-click with their own kind+id+label so the menu
@@ -142,6 +145,7 @@ export function MainSurface() {
     void visibleDiffs().length;
     void visibleCompares().length;
     void visibleStacks().length;
+    void visiblePreviews().length;
     queueMicrotask(recomputeOverflow);
   });
 
@@ -203,8 +207,24 @@ export function MainSurface() {
   const activeCompareId  = () => { const a = activeItem(); return a?.type === "compare"  ? a.id : null; };
   const activeStackId    = () => { const a = activeItem(); return a?.type === "stack"    ? a.id : null; };
   const activeConflictId = () => { const a = activeItem(); return a?.type === "conflict" ? a.id : null; };
+  const activePreviewId  = () => { const a = activeItem(); return a?.type === "preview"  ? a.id : null; };
 
   const showEditor = () => activeFileId() !== null;
+
+  /// The eye button in the tab bar opens a live markdown preview for the
+  /// currently-active file. Only meaningful when the active tab is a .md
+  /// file — the button hides otherwise (Zed parity).
+  const activeMarkdownPath = (): string | null => {
+    const a = activeItem();
+    if (a?.type !== "file") return null;
+    return /\.(md|markdown|mdown|mkdn|mkd)$/i.test(a.path) ? a.path : null;
+  };
+
+  function openPreviewForActive() {
+    const path = activeMarkdownPath();
+    if (!path) return;
+    actions.openPreviewTab(state.activeWorkspaceId, path);
+  }
 
   const nothingOpen = () =>
     activeTerminals().length === 0 &&
@@ -212,7 +232,8 @@ export function MainSurface() {
     activeOpenFiles().length === 0 &&
     activeCompareTabs().length === 0 &&
     activeStackTabs().length === 0 &&
-    activeConflictTabs().length === 0;
+    activeConflictTabs().length === 0 &&
+    activePreviewTabs().length === 0;
 
   const hasAnyTab = () =>
     activeOpenFiles().length > 0 ||
@@ -220,7 +241,8 @@ export function MainSurface() {
     activeDiffTabs().length > 0 ||
     activeCompareTabs().length > 0 ||
     activeStackTabs().length > 0 ||
-    activeConflictTabs().length > 0;
+    activeConflictTabs().length > 0 ||
+    activePreviewTabs().length > 0;
 
   const repoRoot = () => activeWorkspace()?.repoRoot ?? null;
 
@@ -233,7 +255,7 @@ export function MainSurface() {
   /// (file/terminal/diff/compare/stack) cannot be reordered across each
   /// other — `dragKind` records the source kind so dragover handlers can
   /// reject cross-kind drops cleanly.
-  type ItemKind = "file" | "terminal" | "diff" | "compare" | "stack";
+  type ItemKind = "file" | "terminal" | "diff" | "compare" | "stack" | "preview";
   const [dragRef, setDragRef] = createSignal<{ kind: ItemKind; id: string } | null>(null);
   const [dropRef, setDropRef] = createSignal<{ kind: ItemKind; id: string } | null>(null);
 
@@ -558,6 +580,51 @@ export function MainSurface() {
             }}
           </For>
 
+          {/* Markdown preview tabs */}
+          <For each={visiblePreviews()}>
+            {(tab) => {
+              const isActive = () => tab.id === activePreviewId();
+              const fileName = () => tab.filePath.split("/").pop() ?? tab.filePath;
+              return (
+                <div
+                  draggable
+                  onDragStart={(e) => onTabDragStart(e, "preview", tab.id)}
+                  onDragOver={(e) => onTabDragOver(e, "preview", tab.id)}
+                  onDrop={(e) => onTabDrop(e, "preview", tab.id)}
+                  onDragEnd={resetTabDrag}
+                  class={tabClasses("preview", tab.id, isActive())}
+                  onClick={() => actions.selectPreviewTab(state.activeWorkspaceId, tab.id)}
+                  onMouseDown={(e) => {
+                    if (e.button === 1 && !isPinned(tab.id)) {
+                      e.preventDefault();
+                      actions.closePreviewTab(state.activeWorkspaceId, tab.id);
+                    }
+                  }}
+                  title={`Previewing ${tab.filePath}`}
+                >
+                  <Show
+                    when={isPinned(tab.id)}
+                    fallback={<Eye class="w-3.5 h-3.5 shrink-0 text-info opacity-80" />}
+                  >
+                    <Pin class="w-3 h-3 shrink-0 text-primary" />
+                  </Show>
+                  <span class="max-w-[200px] truncate">
+                    <span class="text-muted-foreground text-[11px]">previewing </span>{fileName()}
+                  </span>
+                  <Show when={!isPinned(tab.id)}>
+                    <button
+                      onClick={e => { e.stopPropagation(); actions.closePreviewTab(state.activeWorkspaceId, tab.id); }}
+                      class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
+                      aria-label={`Close preview ${fileName()}`}
+                    >
+                      <X class="w-3 h-3" />
+                    </button>
+                  </Show>
+                </div>
+              );
+            }}
+          </For>
+
           {/* Stack tabs */}
           <For each={visibleStacks()}>
             {(tab) => {
@@ -605,6 +672,18 @@ export function MainSurface() {
           </For>
 
           </div>
+
+          {/* Markdown preview button — shown only when the active tab is a .md file. */}
+          <Show when={activeMarkdownPath()}>
+            <button
+              onClick={openPreviewForActive}
+              title={`Preview markdown: ${activeMarkdownPath()?.split("/").pop() ?? ""}`}
+              aria-label="Preview markdown"
+              class="mx-0.5 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors shrink-0"
+            >
+              <Eye class="w-3.5 h-3.5" />
+            </button>
+          </Show>
 
           {/* Overflow chevron — only visible when the scroll region overflows */}
           <Show when={overflowing()}>
@@ -764,6 +843,15 @@ export function MainSurface() {
                 </div>
               )}
             </Show>
+          )}
+        </For>
+
+        {/* Preview tabs */}
+        <For each={activePreviewTabs()}>
+          {(tab) => (
+            <div class="absolute inset-0" style={{ display: tab.id === activePreviewId() ? "block" : "none" }}>
+              <MarkdownPreview filePath={tab.filePath} />
+            </div>
           )}
         </For>
 

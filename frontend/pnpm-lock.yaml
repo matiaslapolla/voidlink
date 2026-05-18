@@ -47,9 +47,15 @@ importers:
       diff:
         specifier: ^9.0.0
         version: 9.0.0
+      dompurify:
+        specifier: ^3.4.5
+        version: 3.4.5
       lucide-solid:
         specifier: ^0.576.0
         version: 0.576.0(solid-js@1.9.12)
+      marked:
+        specifier: ^18.0.3
+        version: 18.0.3
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
@@ -842,6 +848,9 @@ packages:
   dompurify@3.2.7:
     resolution: {integrity: sha512-WhL/YuveyGXJaerVlMYGWhvQswa7myDG17P7Vu65EWC05o8vfeNbvNf4d/BOvH99+ZW+LlQsc1GDKMa1vNK6dw==}
 
+  dompurify@3.4.5:
+    resolution: {integrity: sha512-OrwIBKsdNSVEeubdJ1HBv/wNENRM9ytAVCv7YXt//A3vPdVMNuACRqK9mXCGCBW2ln7BT/A4X0jXHo2Gu89miA==}
+
   electron-to-chromium@1.5.349:
     resolution: {integrity: sha512-QsWVGyRuY07Aqb234QytTfwd5d9AJlfNIQ5wIOl1L+PZDzI9d9+Fn0FRale/QYlFxt/bUnB0/nLd1jFPGxGK1A==}
 
@@ -1154,6 +1163,11 @@ packages:
   marked@14.0.0:
     resolution: {integrity: sha512-uIj4+faQ+MgHgwUW1l2PsPglZLOLOT1uErt06dAPtx2kjteLAkbsd/0FiYg/MGS+i7ZKLb7w2WClxHkzOOuryQ==}
     engines: {node: '>= 18'}
+    hasBin: true
+
+  marked@18.0.3:
+    resolution: {integrity: sha512-7VT90JOkDeaRWpfjOReRGPEKn0ecdARBkDGL+tT1wZY0efPPqkUxLUSmzy/C7TIylQYJC9STISEsCHrqb/7VIA==}
+    engines: {node: '>= 20'}
     hasBin: true
 
   merge-anything@5.1.7:
@@ -2092,6 +2106,10 @@ snapshots:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
+  dompurify@3.4.5:
+    optionalDependencies:
+      '@types/trusted-types': 2.0.7
+
   electron-to-chromium@1.5.349: {}
 
   enhanced-resolve@5.21.0:
@@ -2384,6 +2402,8 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   marked@14.0.0: {}
+
+  marked@18.0.3: {}
 
   merge-anything@5.1.7:
     dependencies:
