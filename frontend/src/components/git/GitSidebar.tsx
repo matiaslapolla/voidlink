@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createResource, createSignal, type Component, type JSX } from "solid-js";
+import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import {
   GitBranch,
@@ -17,10 +17,23 @@ import {
   Upload,
   RefreshCw,
   GitCompare,
+  Sparkles,
+  Layers,
   X,
 } from "lucide-solid";
+import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
+import { useSettings } from "@/store/settings";
+import { scanStagedDiff, type SecretFinding } from "@/commands/secretScan";
+import { SecretScanDialog } from "@/commands/SecretScanDialog";
+import { pushToast } from "@/commands/toast";
+import {
+  AI_COMMIT_REQUEST_EVENT,
+  aiCommitState,
+  draftCommitMessage,
+} from "@/commands/aiCommit";
+import { recordBranchUse, sortBranchesByMru } from "@/commands/branchMru";
 import type { GitCommitInfo } from "@/types/git";
 
 type LucideIcon = Component<{ class?: string }>;
@@ -91,7 +104,7 @@ export function GitSidebar(props: GitSidebarProps) {
   const { state, activeDiffTabs, activeItem, actions } = useAppStore();
 
   const [sidebarWidth, setSidebarWidth] = createSignal(320);
-  const [sectionHeights, setSectionHeights] = createSignal({ changes: 200, branches: 140, history: 200, openedDiffs: 140 });
+  const [sectionHeights, setSectionHeights] = createSignal({ changes: 200, branches: 140, stack: 160, history: 200, openedDiffs: 140 });
 
   function startWidthResize(e: MouseEvent) {
     e.preventDefault();
@@ -152,9 +165,29 @@ export function GitSidebar(props: GitSidebarProps) {
     refetchInfo();
   };
 
+  // Palette action "Refresh git status" / cross-pane refreshes (e.g. after
+  // hunk staging) fan out through a window event so callers don't need a
+  // direct reference to this component.
+  onMount(() => {
+    const handler = () => refreshAll();
+    window.addEventListener("voidlink:refresh-git", handler);
+    onCleanup(() => window.removeEventListener("voidlink:refresh-git", handler));
+  });
+
+  function openUpstreamCompare() {
+    const info = repoInfo();
+    if (!info?.currentBranch) return;
+    const base = info.upstream ?? "main";
+    actions.openCompareTab(props.workspaceId, {
+      baseRef: base,
+      headRef: info.currentBranch,
+      useMergeBase: false,
+    });
+  }
+
   // Determine which sections are open (in order) to find the last one
   const lastOpenSection = createMemo(() => {
-    const order = ["changes", "branches", "history", "openedDiffs"] as const;
+    const order = ["changes", "branches", "stack", "history", "openedDiffs"] as const;
     const openKeys = order.filter(k => state.gitSections[k]);
     return openKeys[openKeys.length - 1] ?? null;
   });
@@ -176,6 +209,25 @@ export function GitSidebar(props: GitSidebarProps) {
         <span class="font-medium truncate">
           {repoInfo()?.currentBranch ?? "—"}
         </span>
+        <Show when={(repoInfo()?.ahead ?? 0) > 0 || (repoInfo()?.behind ?? 0) > 0}>
+          <button
+            onClick={openUpstreamCompare}
+            title={
+              repoInfo()?.upstream
+                ? `Compare with ${repoInfo()!.upstream}`
+                : "Compare with main"
+            }
+            aria-label="Compare with upstream"
+            class="flex items-center gap-1 px-1 rounded hover:bg-accent/60 transition-colors tabular-nums"
+          >
+            <Show when={(repoInfo()?.ahead ?? 0) > 0}>
+              <span class="text-success">↑{repoInfo()!.ahead}</span>
+            </Show>
+            <Show when={(repoInfo()?.behind ?? 0) > 0}>
+              <span class="text-destructive">↓{repoInfo()!.behind}</span>
+            </Show>
+          </button>
+        </Show>
         <Show when={repoInfo()?.isClean === false}>
           <span class="text-warning text-xs">• changes</span>
         </Show>
@@ -222,6 +274,18 @@ export function GitSidebar(props: GitSidebarProps) {
         </Section>
 
         <Section
+          label="Stack"
+          icon={<Layers class="w-3 h-3" />}
+          open={state.gitSections.stack}
+          isLast={lastOpenSection() === "stack"}
+          onToggle={() => actions.toggleGitSection("stack")}
+          contentHeight={sectionHeights().stack}
+          onResizeStart={startSectionResize("stack")}
+        >
+          <StackSidebarSection repoPath={props.repoPath} workspaceId={props.workspaceId} />
+        </Section>
+
+        <Section
           label="History"
           icon={<History class="w-3 h-3" />}
           open={state.gitSections.history}
@@ -230,7 +294,7 @@ export function GitSidebar(props: GitSidebarProps) {
           contentHeight={sectionHeights().history}
           onResizeStart={startSectionResize("history")}
         >
-          <HistoryPane repoPath={props.repoPath} />
+          <HistoryPane repoPath={props.repoPath} workspaceId={props.workspaceId} />
         </Section>
 
         <Section
@@ -267,15 +331,37 @@ function ChangesPane(props: {
   onRefresh: () => void;
 }) {
   const { actions } = useAppStore();
+  const { settings } = useSettings();
   const [commitMsg, setCommitMsg] = createSignal("");
   const [committing, setCommitting] = createSignal(false);
   const [commitError, setCommitError] = createSignal("");
   const [commitOk, setCommitOk] = createSignal(false);
   const [pushing, setPushing] = createSignal(false);
   const [pushOk, setPushOk] = createSignal(false);
+  const [pendingFindings, setPendingFindings] = createSignal<SecretFinding[]>([]);
 
-  const staged = () => (props.status ?? []).filter((f) => f.staged);
-  const unstaged = () => (props.status ?? []).filter((f) => !f.staged);
+  /// True while *this* sidebar's repo is the one being drafted. We scope
+  /// off the global state so switching workspaces mid-draft doesn't
+  /// confuse the visual indicator on the new repo's sidebar.
+  const drafting = () => {
+    const s = aiCommitState();
+    return s.kind === "drafting" && s.repoPath === props.repoPath;
+  };
+  /// Show the "Regenerate" affordance only briefly after a successful
+  /// draft so the button doesn't clutter the steady state.
+  const recentDraftMs = () => {
+    const s = aiCommitState();
+    if (s.kind !== "success" || s.repoPath !== props.repoPath) return null;
+    return s.ms;
+  };
+
+  const staged = () => (props.status ?? []).filter((f) => f.staged && f.status !== "conflicted");
+  const unstaged = () => (props.status ?? []).filter((f) => !f.staged && f.status !== "conflicted");
+  const conflicted = () => (props.status ?? []).filter((f) => f.status === "conflicted");
+
+  function openConflict(path: string) {
+    actions.openConflictTab(props.workspaceId, path);
+  }
 
   async function stageFile(path: string) {
     await gitApi.stageFiles(props.repoPath, [path]);
@@ -289,9 +375,7 @@ function ChangesPane(props: {
     await gitApi.stageAll(props.repoPath);
     props.onRefresh();
   }
-  async function commit() {
-    const msg = commitMsg().trim();
-    if (!msg || staged().length === 0) return;
+  async function performCommit(msg: string) {
     setCommitting(true);
     setCommitError("");
     setCommitOk(false);
@@ -307,6 +391,51 @@ function ChangesPane(props: {
       setCommitting(false);
     }
   }
+  async function commit() {
+    const msg = commitMsg().trim();
+    if (!msg || staged().length === 0) return;
+    // Secret scan on the staged diff before any commit goes out. A finding
+    // pauses the flow and lets the user inspect or commit-anyway.
+    try {
+      const diff = await gitApi.diffWorking(props.repoPath, true);
+      const findings = scanStagedDiff(diff);
+      if (findings.length > 0) {
+        setPendingFindings(findings);
+        return;
+      }
+    } catch (e) {
+      // If the diff fetch fails we don't want to block committing on a
+      // scanner glitch — log and continue.
+      console.warn("Pre-commit secret scan failed:", e);
+    }
+    await performCommit(msg);
+  }
+  async function draftAiCommit() {
+    if (staged().length === 0) {
+      pushToast("Stage some changes first", "warning");
+      return;
+    }
+    if (drafting()) return;
+    const result = await draftCommitMessage(
+      props.repoPath,
+      settings.ai.commitCommand,
+    );
+    if (result.ok && result.message) {
+      const current = commitMsg().trim();
+      // Preserve any in-progress message by appending — drafts are
+      // suggestions, not blunt overwrites.
+      setCommitMsg(current ? `${current}\n\n${result.message}` : result.message);
+    }
+  }
+
+  // Listen for global "draft commit" requests (palette / shortcut). The
+  // sidebar is the only component that owns the textarea, so it's the
+  // natural home for the actual work.
+  onMount(() => {
+    const handler = () => void draftAiCommit();
+    window.addEventListener(AI_COMMIT_REQUEST_EVENT, handler);
+    onCleanup(() => window.removeEventListener(AI_COMMIT_REQUEST_EVENT, handler));
+  });
   async function push() {
     setPushing(true);
     setPushOk(false);
@@ -332,11 +461,13 @@ function ChangesPane(props: {
         <label class="sr-only" for="commit-msg">Commit message</label>
         <textarea
           id="commit-msg"
-          placeholder="Commit message"
+          placeholder={drafting() ? "Drafting commit message…" : "Commit message"}
           value={commitMsg()}
           onInput={(e) => setCommitMsg(e.currentTarget.value)}
           rows={3}
-          class="w-full rounded-md bg-muted/50 border border-border/60 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          class={`w-full rounded-md bg-muted/50 border border-border/60 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-ring transition-colors ${
+            drafting() ? "border-primary/40 placeholder:animate-pulse" : ""
+          }`}
           onKeyDown={(e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
               e.preventDefault();
@@ -354,6 +485,25 @@ function ChangesPane(props: {
             <Show when={commitOk()} fallback={committing() ? "Committing…" : <>Commit (<span class="tabular-nums">{staged().length}</span>)</>}>
               <Check class="w-3 h-3" /> Done
             </Show>
+          </button>
+          <button
+            onClick={() => void draftAiCommit()}
+            disabled={drafting() || staged().length === 0}
+            aria-label={recentDraftMs() !== null ? "Regenerate commit message" : "Draft commit message with AI"}
+            title={
+              !settings.ai.commitCommand.trim()
+                ? "Configure AI command in Settings → AI"
+                : recentDraftMs() !== null
+                  ? `Regenerate (last draft: ${recentDraftMs()}ms)`
+                  : "Draft commit message with AI (⌘⇧M)"
+            }
+            class={`px-2 py-1 rounded-md text-[13px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              recentDraftMs() !== null
+                ? "text-primary hover:text-primary hover:bg-primary/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
+          >
+            <Sparkles class={`w-3 h-3 ${drafting() ? "animate-pulse" : ""}`} />
           </button>
           <button
             onClick={() => void stageAll()}
@@ -383,6 +533,28 @@ function ChangesPane(props: {
           <p class="text-xs text-destructive truncate" title={commitError()}>{commitError()}</p>
         </Show>
       </div>
+
+      <Show when={conflicted().length > 0}>
+        <div class="border-b border-border/50">
+          <div class="px-2.5 density-section ui-section-label text-warning/90 flex items-center gap-1.5">
+            <GitCompare class="w-3 h-3" />
+            Conflicts (<span class="tabular-nums">{conflicted().length}</span>)
+          </div>
+          <For each={conflicted()}>
+            {(f) => (
+              <button
+                onClick={() => openConflict(`${props.repoPath}/${f.path}`)}
+                title={`Resolve conflict in ${f.path}`}
+                class="w-full flex items-center gap-2 px-2.5 density-row text-[13px] text-left text-warning hover:bg-warning/10 transition-colors"
+              >
+                <FileText class="w-3 h-3 shrink-0" />
+                <span class="flex-1 truncate font-mono">{f.path}</span>
+                <span class="text-[10px] uppercase tracking-wide opacity-70">resolve</span>
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
 
       <Show when={staged().length > 0}>
         <div class="border-b border-border/50">
@@ -424,6 +596,15 @@ function ChangesPane(props: {
           />
         )}
       </For>
+
+      <SecretScanDialog
+        findings={pendingFindings()}
+        onCancel={() => setPendingFindings([])}
+        onCommitAnyway={() => {
+          setPendingFindings([]);
+          void performCommit(commitMsg().trim());
+        }}
+      />
     </div>
   );
 }
@@ -438,11 +619,20 @@ function BranchesPane(props: { repoPath: string; onCheckout: () => void }) {
     (p) => gitApi.listBranches(p, true),
   );
   const [error, setError] = createSignal("");
+  const [filter, setFilter] = createSignal("");
 
   async function checkout(name: string) {
     setError("");
     try {
-      await gitApi.checkoutBranch(props.repoPath, name);
+      const result = await gitApi.safeCheckout(props.repoPath, name);
+      recordBranchUse(props.repoPath, name);
+      if (result.autoStashed) {
+        pushToast(
+          `Switched to ${name}. Auto-stashed your changes — restore with \`git stash pop\`.`,
+          "info",
+          5000,
+        );
+      }
       refetch();
       props.onCheckout();
     } catch (e) {
@@ -450,12 +640,44 @@ function BranchesPane(props: { repoPath: string; onCheckout: () => void }) {
     }
   }
 
+  /// Fuzzy match: substring first (preferred), then in-order character
+  /// subsequence as a fallback. Matches the spirit of the file/command
+  /// pickers already in the app.
+  function fuzzy(name: string, query: string): boolean {
+    if (!query) return true;
+    const n = name.toLowerCase();
+    const q = query.toLowerCase();
+    if (n.includes(q)) return true;
+    let i = 0;
+    for (const ch of q) {
+      const idx = n.indexOf(ch, i);
+      if (idx === -1) return false;
+      i = idx + 1;
+    }
+    return true;
+  }
+
+  const filtered = createMemo(() => {
+    const all = branches() ?? [];
+    const sorted = sortBranchesByMru(all, props.repoPath);
+    const q = filter().trim();
+    return q ? sorted.filter((b) => fuzzy(b.name, q)) : sorted;
+  });
+
   return (
     <div class="p-2 space-y-1">
+      <input
+        type="text"
+        value={filter()}
+        onInput={(e) => setFilter(e.currentTarget.value)}
+        placeholder="Filter branches…"
+        class="w-full px-2 py-1 text-[12px] bg-muted/50 border border-border/60 rounded-md outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60"
+        aria-label="Filter branches"
+      />
       <Show when={error()}>
         <p class="text-xs text-destructive px-1">{error()}</p>
       </Show>
-      <For each={branches() ?? []}>
+      <For each={filtered()}>
         {(b) => (
           <button
             onClick={() => void checkout(b.name)}
@@ -481,6 +703,9 @@ function BranchesPane(props: { repoPath: string; onCheckout: () => void }) {
           </button>
         )}
       </For>
+      <Show when={(branches()?.length ?? 0) > 0 && filtered().length === 0}>
+        <p class="text-[11px] text-muted-foreground px-1 py-1">No matches.</p>
+      </Show>
     </div>
   );
 }
@@ -490,11 +715,36 @@ function BranchesPane(props: { repoPath: string; onCheckout: () => void }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function CommitHoverPopover(props: { commit: GitCommitInfo; x: number; y: number }) {
+  let popRef: HTMLDivElement | undefined;
+  const [pos, setPos] = createSignal({ left: props.x + 14, top: props.y - 8 });
+
+  // After mount and on every move, clamp to viewport and flip horizontally
+  // if there isn't room on the right. Without this, hovering near the
+  // window's right/bottom edge clips the popover under the chrome.
+  createEffect(() => {
+    const x = props.x;
+    const y = props.y;
+    const el = popRef;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const pad = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = x + 14;
+    let top = y - 8;
+    if (left + rect.width + pad > vw) left = x - rect.width - 14;
+    if (left < pad) left = pad;
+    if (top + rect.height + pad > vh) top = vh - rect.height - pad;
+    if (top < pad) top = pad;
+    setPos({ left, top });
+  });
+
   return (
     <Portal>
       <div
-        class="fixed z-50 bg-popover border border-border rounded-lg shadow-xl p-3 text-xs max-w-xs pointer-events-none"
-        style={{ left: `${props.x + 14}px`, top: `${props.y - 8}px` }}
+        ref={popRef}
+        class="fixed z-[9999] bg-popover border border-border rounded-lg shadow-xl p-3 text-xs max-w-xs pointer-events-none"
+        style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
       >
         <div class="font-mono text-muted-foreground mb-1 text-[10px] tracking-wide">{props.commit.oid.slice(0, 12)}</div>
         <div class="font-medium text-foreground mb-1.5 leading-snug">{props.commit.summary}</div>
@@ -513,89 +763,147 @@ function CommitHoverPopover(props: { commit: GitCommitInfo; x: number; y: number
   );
 }
 
-function CommitDetailView(props: { commit: GitCommitInfo; onBack: () => void }) {
-  return (
-    <div class="flex flex-col h-full p-2 text-xs">
-      <button
-        onClick={props.onBack}
-        class="flex items-center gap-1 mb-3 text-muted-foreground hover:text-foreground transition-colors w-fit"
-      >
-        <ChevronLeft class="w-3 h-3" />
-        Back to history
-      </button>
-      <div class="font-mono text-muted-foreground text-[10px] tracking-wide mb-1">{props.commit.oid}</div>
-      <div class="font-medium text-foreground text-sm leading-snug mb-3">{props.commit.summary}</div>
-      <Show when={props.commit.body}>
-        {(body) => (
-          <div class="text-muted-foreground mb-4 whitespace-pre-wrap leading-relaxed border-b border-border/50 pb-3">{body()}</div>
-        )}
-      </Show>
-      <div class="space-y-2 text-muted-foreground">
-        <div class="flex gap-2">
-          <span class="text-muted-foreground/60 w-12 shrink-0">Author</span>
-          <span class="text-foreground">{props.commit.authorName}</span>
-        </div>
-        <div class="flex gap-2">
-          <span class="text-muted-foreground/60 w-12 shrink-0">Email</span>
-          <span class="text-foreground truncate">{props.commit.authorEmail}</span>
-        </div>
-        <div class="flex gap-2">
-          <span class="text-muted-foreground/60 w-12 shrink-0">Date</span>
-          <span class="text-foreground">{new Date(props.commit.time * 1000).toLocaleString()}</span>
-        </div>
-        <Show when={props.commit.parentOids.length > 0}>
-          <div class="flex gap-2">
-            <span class="text-muted-foreground/60 w-12 shrink-0">Parents</span>
-            <span class="font-mono text-foreground/80">{props.commit.parentOids.map(p => p.slice(0, 7)).join(", ")}</span>
-          </div>
-        </Show>
-      </div>
-    </div>
-  );
+/// A commit + lane assignment used to render the DAG column. `preLanes`
+/// is the set of "expected next commit" OIDs that exist BEFORE this
+/// commit is processed; `postLanes` is the same after. `laneIndex` is
+/// the column slot this commit's circle should be drawn in.
+interface PositionedCommit {
+  commit: GitCommitInfo;
+  laneIndex: number;
+  preLanes: (string | null)[];
+  postLanes: (string | null)[];
 }
 
-function HistoryPane(props: { repoPath: string }) {
+/// Compute lane positions for a chronological commit list (newest first).
+/// Algorithm: walk top-down, each lane carries the OID it's expecting
+/// next. When we see a commit, we find which lane was expecting it
+/// (creating one if none), then replace that lane's expectation with
+/// the commit's first parent. Additional parents either reuse an
+/// existing lane that was already waiting on that parent (merge) or
+/// open a new lane to the right.
+function layoutDag(commits: GitCommitInfo[]): {
+  rows: PositionedCommit[];
+  maxLanes: number;
+} {
+  let lanes: (string | null)[] = [];
+  const rows: PositionedCommit[] = [];
+  let maxLanes = 0;
+  for (const c of commits) {
+    const preLanes = [...lanes];
+
+    let laneIdx = lanes.findIndex((l) => l === c.oid);
+    if (laneIdx === -1) {
+      laneIdx = lanes.length;
+      lanes.push(c.oid);
+    }
+
+    const parents = c.parentOids;
+    lanes = lanes.map((l, i) => {
+      if (i === laneIdx) return parents[0] ?? null;
+      // Another lane was also expecting this commit → collapse it
+      // (a merge with multiple converging paths).
+      if (l === c.oid) return null;
+      return l;
+    });
+
+    // Additional parents land in the first available null slot or
+    // open a fresh lane on the right.
+    for (let i = 1; i < parents.length; i++) {
+      const existing = lanes.findIndex((l) => l === parents[i]);
+      if (existing !== -1) continue;
+      const empty = lanes.findIndex((l) => l === null);
+      if (empty !== -1) lanes[empty] = parents[i];
+      else lanes.push(parents[i]);
+    }
+
+    // Trim trailing nulls to keep the column compact.
+    while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop();
+
+    const postLanes = [...lanes];
+    maxLanes = Math.max(maxLanes, preLanes.length, postLanes.length);
+    rows.push({ commit: c, laneIndex: laneIdx, preLanes, postLanes });
+  }
+  return { rows, maxLanes };
+}
+
+const LANE_WIDTH = 12;
+const LANE_X_OFFSET = 8;
+const ROW_HEIGHT = 36;
+const COMMIT_RADIUS = 3;
+
+/// Color palette cycled per lane index. Keeps adjacent branches visually
+/// distinct without needing a per-branch color map.
+const LANE_COLORS = [
+  "#60a5fa", // blue
+  "#a78bfa", // violet
+  "#34d399", // emerald
+  "#fbbf24", // amber
+  "#f472b6", // pink
+  "#22d3ee", // cyan
+  "#fb923c", // orange
+];
+
+function laneX(i: number): number {
+  return LANE_X_OFFSET + i * LANE_WIDTH;
+}
+
+function laneColor(i: number): string {
+  return LANE_COLORS[i % LANE_COLORS.length];
+}
+
+function HistoryPane(props: { repoPath: string; workspaceId: string }) {
+  const { actions } = useAppStore();
   const [log] = createResource(
     () => props.repoPath,
-    (p) => gitApi.log(p, undefined, 50),
+    (p) => gitApi.log(p, undefined, 80),
   );
 
-  const [selectedCommit, setSelectedCommit] = createSignal<GitCommitInfo | null>(null);
+  const layout = createMemo(() => layoutDag(log() ?? []));
+
   const [hoveredCommit, setHoveredCommit] = createSignal<GitCommitInfo | null>(null);
   const [hoverPos, setHoverPos] = createSignal({ x: 0, y: 0 });
 
+  function openCommitCompare(c: GitCommitInfo) {
+    const base = c.parentOids[0] ?? c.oid;
+    actions.openCompareTab(props.workspaceId, {
+      baseRef: base,
+      headRef: c.oid,
+      useMergeBase: false,
+    });
+  }
+
   return (
     <div class="h-full relative">
-      <Show when={selectedCommit()}>
-        {(commit) => (
-          <CommitDetailView commit={commit()} onBack={() => setSelectedCommit(null)} />
-        )}
-      </Show>
-      <Show when={!selectedCommit()}>
-        <div class="p-1">
-          <For each={log() ?? []}>
-            {(c) => (
-              <div
-                class="px-2 density-row rounded-md text-[13px] hover:bg-accent/40 transition-colors cursor-pointer select-none"
-                onClick={() => setSelectedCommit(c)}
-                onMouseEnter={(e) => { setHoveredCommit(c); setHoverPos({ x: e.clientX, y: e.clientY }); }}
-                onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
-                onMouseLeave={() => setHoveredCommit(null)}
-              >
+      <div class="p-1">
+        <For each={layout().rows}>
+          {(row) => (
+            <div
+              class="flex items-stretch rounded-md hover:bg-accent/40 transition-colors cursor-pointer select-none"
+              onClick={() => openCommitCompare(row.commit)}
+              onMouseEnter={(e) => {
+                setHoveredCommit(row.commit);
+                setHoverPos({ x: e.clientX, y: e.clientY });
+              }}
+              onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
+              onMouseLeave={() => setHoveredCommit(null)}
+              title="Open commit diff"
+            >
+              <DagColumn row={row} maxLanes={layout().maxLanes} />
+              <div class="flex-1 min-w-0 px-2 py-1.5 text-[13px]">
                 <div class="flex items-center gap-2">
                   <span class="font-mono text-muted-foreground text-xs tabular-nums shrink-0">
-                    {c.oid.slice(0, 7)}
+                    {row.commit.oid.slice(0, 7)}
                   </span>
-                  <span class="truncate flex-1 text-foreground">{c.summary}</span>
+                  <span class="truncate flex-1 text-foreground">{row.commit.summary}</span>
                 </div>
                 <div class="text-xs text-muted-foreground/80 truncate tabular-nums">
-                  {c.authorName} · {new Date(c.time * 1000).toLocaleString()}
+                  {row.commit.authorName} · {new Date(row.commit.time * 1000).toLocaleString()}
                 </div>
               </div>
-            )}
-          </For>
-        </div>
-      </Show>
+            </div>
+          )}
+        </For>
+      </div>
 
       <Show when={hoveredCommit()}>
         {(commit) => (
@@ -603,6 +911,98 @@ function HistoryPane(props: { repoPath: string }) {
         )}
       </Show>
     </div>
+  );
+}
+
+/// Per-row DAG cell. Renders an SVG with:
+///   - vertical lines for every pre-lane that continues into post-lanes
+///   - diagonals from pre-lanes that converged into THIS commit (merges)
+///   - diagonals from this commit out to NEW lanes (branches)
+///   - a circle at this commit's lane index
+function DagColumn(props: { row: PositionedCommit; maxLanes: number }) {
+  const width = () => Math.max(1, props.maxLanes) * LANE_WIDTH + LANE_X_OFFSET;
+  const mid = ROW_HEIGHT / 2;
+  const r = props.row;
+
+  /// Pre-lane top-half lines: each pre-lane that survives into the post
+  /// set (and isn't the lane being landed by this commit) is a straight
+  /// vertical line from top to mid. Pre-lanes that *converge* on this
+  /// commit are diagonals from their x to the commit's x.
+  const topSegments = () => {
+    const segs: Array<{ from: number; to: number; color: string }> = [];
+    r.preLanes.forEach((oid, i) => {
+      if (oid === null) return;
+      if (oid === r.commit.oid) {
+        // Merging into this commit — line slopes toward the commit lane.
+        segs.push({ from: i, to: r.laneIndex, color: laneColor(i) });
+      } else {
+        segs.push({ from: i, to: i, color: laneColor(i) });
+      }
+    });
+    return segs;
+  };
+
+  /// Bottom-half lines: for each post-lane that's non-null, draw from
+  /// (post lane x, mid) down to (post lane x, bottom). New parent lanes
+  /// (not present in preLanes at the same index OR with a different OID)
+  /// slope out from this commit's circle.
+  const bottomSegments = () => {
+    const segs: Array<{ from: number; to: number; color: string }> = [];
+    r.postLanes.forEach((oid, i) => {
+      if (oid === null) return;
+      const wasInPre = r.preLanes[i] === oid;
+      if (wasInPre) {
+        segs.push({ from: i, to: i, color: laneColor(i) });
+      } else {
+        // New lane created by this commit — slope out from its circle.
+        segs.push({ from: r.laneIndex, to: i, color: laneColor(i) });
+      }
+    });
+    return segs;
+  };
+
+  return (
+    <svg
+      width={width()}
+      height={ROW_HEIGHT}
+      viewBox={`0 0 ${width()} ${ROW_HEIGHT}`}
+      class="shrink-0"
+    >
+      <For each={topSegments()}>
+        {(seg) => (
+          <line
+            x1={laneX(seg.from)}
+            y1={0}
+            x2={laneX(seg.to)}
+            y2={mid}
+            stroke={seg.color}
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+        )}
+      </For>
+      <For each={bottomSegments()}>
+        {(seg) => (
+          <line
+            x1={laneX(seg.from)}
+            y1={mid}
+            x2={laneX(seg.to)}
+            y2={ROW_HEIGHT}
+            stroke={seg.color}
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+        )}
+      </For>
+      <circle
+        cx={laneX(r.laneIndex)}
+        cy={mid}
+        r={COMMIT_RADIUS}
+        fill={laneColor(r.laneIndex)}
+        stroke="var(--background)"
+        stroke-width="1.5"
+      />
+    </svg>
   );
 }
 

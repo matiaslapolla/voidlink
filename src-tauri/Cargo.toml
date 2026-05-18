@@ -13,24 +13,31 @@ name = "voidlink_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.5.6", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.10.3", features = [] }
+tauri = { version = "2.11", features = [] }
 tauri-plugin-log = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2.7"
+tauri-plugin-fs = "2.5"
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4"] }
 git2 = { version = "0.19", features = ["vendored-libgit2"] }
 dashmap = "6.1.0"
 ignore = "0.4"
+# Stack submit (Wave D) uses the blocking client so the existing
+# spawn_blocking wrapper in command handlers is sufficient — no Tokio runtime
+# tangled into GitHub HTTP calls. rustls keeps us off OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 strip = true

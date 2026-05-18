@@ -5,6 +5,7 @@ import { WindowFrame } from "@/components/layout/WindowFrame";
 import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
 import { TerminalSidebar } from "@/components/layout/TerminalSidebar";
 import { MainSurface } from "@/components/layout/MainSurface";
+import { StatusBar } from "@/components/layout/StatusBar";
 import { GitSidebar, GitSidebarCollapsed } from "@/components/git/GitSidebar";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
@@ -26,9 +27,21 @@ import {
 import { useKeybindings } from "@/commands/keybindings";
 import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
+import { requestAiCommitDraft } from "@/commands/aiCommit";
+import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
+import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/blameOverlay";
+import type { ActiveItem } from "@/store/layout";
 
 function AppInner(props: { onOpenSettings: () => void }) {
   const { state, activeWorkspace, actions } = useAppStore();
+
+  // Tell the blame overlay how to find the repo for a given file path.
+  // The overlay needs this any time the editor's active model changes
+  // so it can refresh without going through MainSurface's effect.
+  configureBlame((filePath) => {
+    const ws = state.workspaces.find((w) => w.repoRoot && filePath.startsWith(w.repoRoot));
+    return ws?.repoRoot ?? activeWorkspace()?.repoRoot ?? null;
+  });
 
   async function handleOpenFile(path: string) {
     const wsId = state.activeWorkspaceId;
@@ -254,16 +267,217 @@ function AppInner(props: { onOpenSettings: () => void }) {
         group: "App",
         run: () => props.onOpenSettings(),
       },
+      {
+        id: "view.toggle-blame",
+        label: blameEnabled() ? "Disable inline blame" : "Enable inline blame",
+        description: "Show per-line author + commit summary in the editor",
+        group: "View",
+        shortcutLabel: "⌘⌥B",
+        run: () => toggleBlame(),
+      },
+      {
+        id: "git.ai-draft-commit",
+        label: "Draft commit message with AI",
+        description: "Pipe staged diff to your configured CLI",
+        group: "Git",
+        shortcutLabel: "⌘⇧M",
+        enabled: () => !!repo,
+        run: () => requestAiCommitDraft(),
+      },
+      {
+        id: "workspace.new",
+        label: "New workspace",
+        group: "Workspace",
+        shortcutLabel: "⌘T",
+        run: () => actions.addWorkspace(),
+      },
+      {
+        id: "workspace.next",
+        label: "Next workspace",
+        group: "Workspace",
+        shortcutLabel: "⌘⇧→",
+        enabled: () => state.workspaces.length > 1,
+        run: () => cycleWorkspace(1),
+      },
+      {
+        id: "workspace.prev",
+        label: "Previous workspace",
+        group: "Workspace",
+        shortcutLabel: "⌘⇧←",
+        enabled: () => state.workspaces.length > 1,
+        run: () => cycleWorkspace(-1),
+      },
+      {
+        id: "tab.next",
+        label: "Next tab",
+        group: "View",
+        shortcutLabel: "⌘⌥→",
+        enabled: () => allItems().length > 1,
+        run: () => cycleTab(1),
+      },
+      {
+        id: "tab.prev",
+        label: "Previous tab",
+        group: "View",
+        shortcutLabel: "⌘⌥←",
+        enabled: () => allItems().length > 1,
+        run: () => cycleTab(-1),
+      },
+      {
+        id: "tab.reopen-last",
+        label: "Reopen last closed tab",
+        description: "File / diff / compare / stack — terminals can't be reopened",
+        group: "View",
+        shortcutLabel: "⌘⇧T",
+        enabled: () => (state.closedTabsByWorkspace[state.activeWorkspaceId] ?? []).length > 0,
+        run: () => void reopenLastClosed(),
+      },
+      // ── Workspace snapshots ──────────────────────────────────────────
+      {
+        id: "snapshot.save",
+        label: "Snapshot: save current as…",
+        description: "Save tabs + terminals + sidebar state under a name",
+        group: "Workspace",
+        run: () => {
+          const name = window.prompt("Snapshot name:")?.trim();
+          if (!name) return;
+          actions.saveWorkspaceSnapshot(state.activeWorkspaceId, name);
+          pushToast(`Snapshot "${name}" saved`, "success");
+        },
+      },
+      // Dynamic entries — one restore + one delete per saved snapshot for
+      // the active workspace. Re-registers each effect run.
+      ...snapshotsFor(state.activeWorkspaceId).flatMap<Action>((snap) => [
+        {
+          id: `snapshot.restore.${snap.name}`,
+          label: `Snapshot: restore "${snap.name}"`,
+          description: `${snap.files.length} files · ${snap.terminals.length} terminals · ${snap.compares.length} compares`,
+          group: "Workspace",
+          run: async () => {
+            const ok = await actions.restoreWorkspaceSnapshot(state.activeWorkspaceId, snap.name);
+            if (!ok) pushToast(`Snapshot "${snap.name}" not found`, "error");
+            else pushToast(`Restored "${snap.name}"`, "success");
+          },
+        },
+        {
+          id: `snapshot.delete.${snap.name}`,
+          label: `Snapshot: delete "${snap.name}"`,
+          group: "Workspace",
+          run: () => {
+            removeSnapshot(state.activeWorkspaceId, snap.name);
+            pushToast(`Deleted "${snap.name}"`, "info");
+          },
+        },
+      ]),
     ];
     const dispose = registerActions(list);
     // Re-register on next change.
     return dispose;
   });
 
+  /// Build the ordered list of tabs in the same order MainSurface renders
+  /// them (files → terminals → diffs → compares → stacks). Used by the
+  /// Cmd+Alt+Arrow cycle shortcut so the wrap order matches what the user
+  /// sees in the unified tab bar.
+  function allItems(): ActiveItem[] {
+    const wsId = state.activeWorkspaceId;
+    const items: ActiveItem[] = [];
+    for (const f of state.openFilesByWorkspace[wsId] ?? [])
+      items.push({ type: "file", id: f.id, path: f.path });
+    for (const t of state.terminalsByWorkspace[wsId] ?? [])
+      items.push({ type: "terminal", id: t.id });
+    for (const d of state.diffTabsByWorkspace[wsId] ?? [])
+      items.push({ type: "diff", id: d.id });
+    for (const c of state.compareTabsByWorkspace[wsId] ?? [])
+      items.push({ type: "compare", id: c.id });
+    for (const s of state.stackTabsByWorkspace[wsId] ?? [])
+      items.push({ type: "stack", id: s.id });
+    for (const c of state.conflictTabsByWorkspace[wsId] ?? [])
+      items.push({ type: "conflict", id: c.id });
+    return items;
+  }
+
+  function activateItem(item: ActiveItem) {
+    const wsId = state.activeWorkspaceId;
+    switch (item.type) {
+      case "file":
+        actions.selectFileTab(wsId, item.id, item.path);
+        void editorController.setActive(item.path);
+        break;
+      case "terminal":
+        actions.selectTerminal(wsId, item.id);
+        break;
+      case "diff":
+        actions.selectDiffTab(wsId, item.id);
+        break;
+      case "compare":
+        actions.selectCompareTab(wsId, item.id);
+        break;
+      case "stack":
+        actions.selectStackTab(wsId, item.id);
+        break;
+      case "conflict":
+        actions.selectConflictTab(wsId, item.id);
+        break;
+    }
+  }
+
+  function cycleTab(direction: 1 | -1) {
+    const items = allItems();
+    if (items.length === 0) return;
+    const cur = state.activeItemByWorkspace[state.activeWorkspaceId];
+    const idx = cur ? items.findIndex((i) => i.type === cur.type && i.id === cur.id) : -1;
+    // -1 → first ArrowRight starts at the head, ArrowLeft jumps to tail.
+    const next = idx === -1
+      ? direction === 1 ? 0 : items.length - 1
+      : (idx + direction + items.length) % items.length;
+    activateItem(items[next]);
+  }
+
+  /// Reopen the most-recently closed tab AND, when it's a file, kick
+  /// the Monaco controller to load+activate the model. The store
+  /// action alone only restores the tab record — without this, the
+  /// reopened file tab appears but the editor stays parked on
+  /// whatever model was active before.
+  async function reopenLastClosed() {
+    const popped = actions.reopenLastClosedTab(state.activeWorkspaceId);
+    if (!popped) {
+      pushToast("No recently closed tab", "warning");
+      return;
+    }
+    if (popped.type === "file") {
+      await editorController.openFile(popped.path);
+    }
+  }
+
+  function cycleWorkspace(direction: 1 | -1) {
+    const list = state.workspaces;
+    if (list.length < 2) return;
+    const idx = list.findIndex((w) => w.id === state.activeWorkspaceId);
+    if (idx === -1) return;
+    const next = (idx + direction + list.length) % list.length;
+    actions.selectWorkspace(list[next].id);
+  }
+
+  function selectWorkspaceByIndex(i: number) {
+    const ws = state.workspaces[i];
+    if (ws) actions.selectWorkspace(ws.id);
+  }
+
   function closeActiveTab() {
     const wsId = state.activeWorkspaceId;
     const item = state.activeItemByWorkspace[wsId];
-    if (!item) return;
+    if (!item) {
+      // No tabs open in this workspace → Cmd+W collapses the workspace
+      // itself. removeWorkspace handles the "this is the last one"
+      // edge case (creates a fresh empty Main).
+      actions.removeWorkspace(wsId);
+      return;
+    }
+    if (actions.isTabPinned(wsId, item.id)) {
+      pushToast("Tab is pinned — right-click to unpin", "warning");
+      return;
+    }
     switch (item.type) {
       case "file": {
         editorController.closeFile(item.path);
@@ -281,6 +495,9 @@ function AppInner(props: { onOpenSettings: () => void }) {
         break;
       case "stack":
         actions.closeStackTab(wsId, item.id);
+        break;
+      case "conflict":
+        actions.closeConflictTab(wsId, item.id);
         break;
     }
   }
@@ -314,10 +531,88 @@ function AppInner(props: { onOpenSettings: () => void }) {
     {
       meta: true,
       shift: true,
+      key: "t",
+      run: () => void reopenLastClosed(),
+    },
+    {
+      meta: true,
+      shift: true,
       key: "r",
       run: async () => {
         const result = await repeatLastCommand();
         if (!result.ok) pushToast(result.reason ?? "Nothing to repeat", "warning");
+      },
+    },
+    // ── Workspace navigation ────────────────────────────────────────────
+    ...Array.from({ length: 9 }, (_, i) => ({
+      meta: true,
+      key: String(i + 1),
+      run: () => selectWorkspaceByIndex(i),
+    })),
+    {
+      meta: true,
+      key: "t",
+      run: () => actions.addWorkspace(),
+    },
+    {
+      meta: true,
+      shift: true,
+      key: "ArrowRight",
+      run: () => cycleWorkspace(1),
+    },
+    {
+      meta: true,
+      shift: true,
+      key: "ArrowLeft",
+      run: () => cycleWorkspace(-1),
+    },
+    // ── Tab navigation within the active workspace ──────────────────────
+    {
+      meta: true,
+      alt: true,
+      key: "ArrowRight",
+      run: () => cycleTab(1),
+    },
+    {
+      meta: true,
+      alt: true,
+      key: "ArrowLeft",
+      run: () => cycleTab(-1),
+    },
+    // ── Sidebar toggles ─────────────────────────────────────────────────
+    {
+      meta: true,
+      key: "b",
+      run: () => actions.toggleLeftSidebar(),
+    },
+    {
+      meta: true,
+      key: "j",
+      run: () => actions.toggleGitSidebar(),
+    },
+    {
+      meta: true,
+      key: "\\",
+      run: () => actions.toggleSidebarsSwapped(),
+    },
+    // ── Editor overlays ─────────────────────────────────────────────────
+    {
+      meta: true,
+      alt: true,
+      key: "b",
+      run: () => toggleBlame(),
+    },
+    // ── AI commit draft ─────────────────────────────────────────────────
+    {
+      meta: true,
+      shift: true,
+      key: "m",
+      run: () => {
+        if (!activeWorkspace()?.repoRoot) {
+          pushToast("Open a repository first", "warning");
+          return;
+        }
+        requestAiCommitDraft();
       },
     },
   ]);
@@ -348,6 +643,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         sidebar={state.sidebarsSwapped ? rightPane() : leftPane()}
         main={<MainSurface />}
         rightSidebar={state.sidebarsSwapped ? leftPane() : rightPane()}
+        statusBar={<StatusBar />}
       />
       <CommandPalette />
       <FileFinder

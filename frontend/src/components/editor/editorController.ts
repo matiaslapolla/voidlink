@@ -25,14 +25,14 @@ class EditorController {
     (window as any).MonacoEnvironment = {
       getWorker(_: unknown, label: string) {
         if (label === "json")
-          return new Worker(new URL("monaco-editor/esm/vs/language/json/json.worker", import.meta.url), { type: "module" });
+          return new Worker(new URL("monaco-editor/esm/vs/language/json/json.worker.js", import.meta.url), { type: "module" });
         if (label === "css" || label === "scss" || label === "less")
-          return new Worker(new URL("monaco-editor/esm/vs/language/css/css.worker", import.meta.url), { type: "module" });
+          return new Worker(new URL("monaco-editor/esm/vs/language/css/css.worker.js", import.meta.url), { type: "module" });
         if (label === "html" || label === "handlebars" || label === "razor")
-          return new Worker(new URL("monaco-editor/esm/vs/language/html/html.worker", import.meta.url), { type: "module" });
+          return new Worker(new URL("monaco-editor/esm/vs/language/html/html.worker.js", import.meta.url), { type: "module" });
         if (label === "typescript" || label === "javascript")
-          return new Worker(new URL("monaco-editor/esm/vs/language/typescript/ts.worker", import.meta.url), { type: "module" });
-        return new Worker(new URL("monaco-editor/esm/vs/editor/editor.worker", import.meta.url), { type: "module" });
+          return new Worker(new URL("monaco-editor/esm/vs/language/typescript/ts.worker.js", import.meta.url), { type: "module" });
+        return new Worker(new URL("monaco-editor/esm/vs/editor/editor.worker.js", import.meta.url), { type: "module" });
       },
     };
 
@@ -127,9 +127,29 @@ class EditorController {
     this.notify();
   }
 
+  /// Reveal a 1-based (line, col) in the currently-active editor and
+  /// place the cursor there. No-op if no model is active. Used by the
+  /// terminal deep-link provider to jump from `path:42` in scrollback
+  /// to that exact line in Monaco.
+  revealPosition(line: number, column = 1) {
+    if (!this.editor) return;
+    const safeLine = Math.max(1, line);
+    const safeCol = Math.max(1, column);
+    this.editor.revealLineInCenter(safeLine);
+    this.editor.setPosition({ lineNumber: safeLine, column: safeCol });
+    this.editor.focus();
+  }
+
   getOpenFiles(): OpenFilesMeta[] {
     return this.openOrder.map(p => ({ path: p, dirty: this.models.get(p)?.dirty ?? false }));
   }
+
+  /// Expose the underlying Monaco objects so external overlays (inline
+  /// blame, search-result highlights, future linter squiggles) can hook
+  /// into the editor without us replicating Monaco's decoration API.
+  getMonaco() { return this.monaco; }
+  getEditor() { return this.editor; }
+  getModel(path: string) { return this.models.get(path)?.model ?? null; }
 
   getActivePath() { return this.activePath; }
   layout() { this.editor?.layout(); }

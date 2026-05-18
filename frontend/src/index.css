@@ -259,6 +259,20 @@ html:not([data-density]) {
   color: var(--muted-foreground);
 }
 
+/* ── Inline blame annotation (Monaco decoration) ────────────────────────────── */
+/* Applied to the `after` content of per-line decorations. We dim the chrome
+ * to muted-foreground tone so the annotation reads as metadata, not code. */
+.voidlink-blame {
+  color: var(--muted-foreground);
+  opacity: 0.6;
+  font-style: italic;
+  font-size: 0.85em;
+}
+.voidlink-blame-uncommitted {
+  color: var(--warning);
+  opacity: 0.85;
+}
+
 /* ── Reduced motion ─────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .transition-colors,

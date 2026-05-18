@@ -1,10 +1,14 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import { Plus, X, FolderOpen, TerminalSquare, Files, ChevronRight, ChevronDown } from "lucide-solid";
+import { Plus, X, FolderOpen, TerminalSquare, Files, ChevronRight, ChevronDown, GitBranchPlus, Bell } from "lucide-solid";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "@/store/LayoutContext";
 import { terminalApi } from "@/api/terminal";
+import { fsApi } from "@/api/fs";
 import type { TerminalSession } from "@/types/workspace";
 import { FileTree } from "@/components/files/FileTree";
+import { pushToast } from "@/commands/toast";
+import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 
 const POLL_MS = 1500;
 
@@ -32,6 +36,21 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
     if (!ws) return;
     const selected = await open({ directory: true, multiple: false, title: "Select repository root" });
     if (!selected || Array.isArray(selected)) return;
+    // Walk upward for a .git so picking any subdir of a repo Just Works.
+    // If the picked dir already is the root, we still get back the same path.
+    try {
+      const detected = await fsApi.findRepoRoot(selected);
+      if (detected && detected !== selected) {
+        pushToast(
+          `Using repo root: ${detected.split("/").pop()} (detected from selected folder)`,
+          "info",
+        );
+        actions.setRepoRoot(ws.id, detected);
+        return;
+      }
+    } catch {
+      // Detection failure is non-fatal — fall through and use the raw pick.
+    }
     actions.setRepoRoot(ws.id, selected);
   }
 
@@ -166,6 +185,26 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
         </Show>
       </div>
 
+      {/* Compare branches — quick action */}
+      <div class="border-t border-border/50 px-2 py-1.5 shrink-0">
+        <button
+          onClick={() => {
+            if (!activeWorkspace()?.repoRoot) return;
+            actions.openCompareTab(state.activeWorkspaceId);
+          }}
+          disabled={!activeWorkspace()?.repoRoot}
+          class={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed transition-colors text-[12px] ${
+            activeWorkspace()?.repoRoot
+              ? "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 hover:border-border/80"
+              : "border-border/40 text-muted-foreground/40 cursor-not-allowed"
+          }`}
+          title="Compare two branches, tags, or commits"
+        >
+          <GitBranchPlus class="w-3.5 h-3.5 shrink-0" />
+          Compare branches
+        </button>
+      </div>
+
       {/* Resize handle on right edge */}
       <div
         class="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-primary/30 transition-colors"
@@ -184,6 +223,9 @@ function TerminalRow(props: {
   const [busy, setBusy] = createSignal(false);
   const [name, setName] = createSignal<string | null>(null);
   const [cwd, setCwd] = createSignal<string | null>(null);
+  const [hasNotification, setHasNotification] = createSignal(false);
+  let prevBusy = false;
+  let prevName: string | null = null;
 
   onMount(() => {
     let alive = true;
@@ -191,6 +233,17 @@ function TerminalRow(props: {
       try {
         const info = await terminalApi.processInfo(props.term.ptyId);
         if (!alive) return;
+        // Busy → idle transition while the tab is unfocused: badge it and
+        // (best-effort) fire a system notification so the user notices a
+        // long-running command finished. We pass the previous foreground
+        // process name as the body for context, since once busy goes false
+        // the foreground process is gone.
+        if (prevBusy && !info.busy && !props.active) {
+          setHasNotification(true);
+          maybeNotify(props.term.label, prevName);
+        }
+        prevBusy = info.busy;
+        prevName = info.name;
         setBusy(info.busy);
         setName(info.name);
         setCwd(info.cwd);
@@ -200,11 +253,21 @@ function TerminalRow(props: {
     };
     void tick();
     const timer = setInterval(tick, POLL_MS);
+    const unlistenExit = listen<unknown>(`pty-exit:${props.term.ptyId}`, () => {
+      forgetTerminalHistory(props.term.ptyId);
+    });
     onCleanup(() => {
       alive = false;
       clearInterval(timer);
+      void unlistenExit.then((u) => u());
     });
   });
+
+  // Selecting a tab clears its pending notification badge.
+  const select = () => {
+    setHasNotification(false);
+    props.onSelect();
+  };
 
   return (
     <div
@@ -215,16 +278,19 @@ function TerminalRow(props: {
       }`}
     >
       <button
-        onClick={props.onSelect}
-        aria-label={`Terminal: ${props.term.label}`}
+        onClick={select}
+        aria-label={`Terminal: ${props.term.label}${hasNotification() ? " (command finished)" : ""}`}
         class="flex-1 flex items-center gap-2 px-2 density-row min-w-0 text-left cursor-pointer focus-visible:outline-none"
       >
         <LedDot active={props.active} busy={busy()} />
         <div class="flex-1 min-w-0">
-          <div class="text-xs truncate">
+          <div class="text-xs truncate flex items-center gap-1.5">
             <span>{props.term.label}</span>
             <Show when={busy() && name()}>
               <span class="text-muted-foreground"> ({name()})</span>
+            </Show>
+            <Show when={hasNotification()}>
+              <Bell class="w-2.5 h-2.5 text-warning shrink-0" />
             </Show>
           </div>
           <Show when={cwd()}>
@@ -247,6 +313,18 @@ function TerminalRow(props: {
       </button>
     </div>
   );
+}
+
+function maybeNotify(label: string, lastProcess: string | null) {
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission === "granted") {
+    new Notification(`${label} finished`, {
+      body: lastProcess ? `\`${lastProcess}\` completed` : undefined,
+    });
+  } else if (Notification.permission === "default") {
+    // Don't auto-request — we asked nothing, no permission popup spam.
+    // The in-app bell badge still works.
+  }
 }
 
 function LedDot(props: { active: boolean; busy: boolean }) {

@@ -134,3 +134,29 @@ pub fn fs_delete(path: String) -> Result<(), String> {
         std::fs::remove_file(p).map_err(|e| e.to_string())
     }
 }
+
+/// Walk upward from `path` looking for a `.git` entry (directory or worktree
+/// file). Returns the directory containing it, or None if no repo is found
+/// before hitting filesystem root.
+#[tauri::command]
+pub fn fs_find_repo_root(path: String) -> Result<Option<String>, String> {
+    let mut current = Path::new(&path).to_path_buf();
+    if !current.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+    // If a file was passed, start from its parent dir.
+    if current.is_file() {
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        }
+    }
+    loop {
+        if current.join(".git").exists() {
+            return Ok(Some(current.to_string_lossy().to_string()));
+        }
+        match current.parent() {
+            Some(p) if p != current => current = p.to_path_buf(),
+            _ => return Ok(None),
+        }
+    }
+}

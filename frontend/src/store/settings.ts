@@ -17,12 +17,10 @@ export interface TerminalSettings {
   cursorBlink: boolean;
   cursorWidth: number;
   scrollback: number;
-  tabStopWidth: number;
   drawBoldTextInBrightColors: boolean;
   minimumContrastRatio: number;
   macOptionIsMeta: boolean;
   rightClickSelectsWord: boolean;
-  wordSeparator: string;
   scrollSensitivity: number;
   scrollOnUserInput: boolean;
 }
@@ -32,9 +30,17 @@ export interface UiSettings {
   density: UiDensity;
 }
 
+/// AI is BYO-CLI: voidlink shells out to whatever generative-text command the
+/// user already has installed. `commitCommand` is the shell template; the
+/// staged diff is piped to stdin and stdout becomes the suggested message.
+export interface AiSettings {
+  commitCommand: string;
+}
+
 export interface AppSettings {
   ui: UiSettings;
   terminal: TerminalSettings;
+  ai: AiSettings;
 }
 
 const STORAGE_KEY = "voidlink-settings";
@@ -58,14 +64,15 @@ const DEFAULTS: AppSettings = {
     cursorBlink: true,
     cursorWidth: 1,
     scrollback: 5000,
-    tabStopWidth: 8,
     drawBoldTextInBrightColors: true,
     minimumContrastRatio: 1,
     macOptionIsMeta: false,
     rightClickSelectsWord: false,
-    wordSeparator: " ()[]{}',\"`",
     scrollSensitivity: 1,
     scrollOnUserInput: true,
+  },
+  ai: {
+    commitCommand: "",
   },
 };
 
@@ -82,6 +89,7 @@ function load(): AppSettings {
     return {
       ui: mergeDefaults(DEFAULTS.ui, parsed.ui),
       terminal: mergeDefaults(DEFAULTS.terminal, parsed.terminal),
+      ai: mergeDefaults(DEFAULTS.ai, parsed.ai),
     };
   } catch {
     return JSON.parse(JSON.stringify(DEFAULTS));
@@ -111,6 +119,9 @@ export function useSettings() {
     },
     updateUi(patch: Partial<UiSettings>) {
       setSettings("ui", patch);
+    },
+    updateAi(patch: Partial<AiSettings>) {
+      setSettings("ai", patch);
     },
     reset() {
       setSettings(JSON.parse(JSON.stringify(DEFAULTS)));

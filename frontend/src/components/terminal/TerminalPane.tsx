@@ -6,6 +6,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 import { useSettings } from "@/store/settings";
+import { markActive, recordKeystroke } from "@/commands/terminalHistory";
 
 // Prior perf learning (commit 0b9bfe7): in Tauri's WebKitGTK webview, xterm
 // addons beyond FitAddon hook the data pipeline and cause stutter / glitches.
@@ -32,11 +33,31 @@ interface TerminalPaneProps {
   // cause TUIs to redraw at the wrong width ("compressed, repeated" output).
   active?: boolean;
   onExit?: () => void;
+  /// Click handler for `path[:line[:column]]` matches in scrollback. The
+  /// path is whatever the regex captured — may be relative; the caller
+  /// is responsible for resolving against the workspace root.
+  onOpenPath?: (path: string, line?: number, column?: number) => void;
+  /// Click handler for 7+ hex-digit SHA matches in scrollback. The caller
+  /// chooses how to interpret (typically: open a compare tab at sha^..sha).
+  onOpenSha?: (sha: string) => void;
 }
 
 // xterm canvas is always rendered opaque: canvas-transparency is unreliable
 // across WebKitGTK and caused visible gaps around the grid.
 const TERMINAL_BG = "#09090b";
+
+/// `path/to/file.ext:line[:column]`. The path can include letters, digits,
+/// `.`, `_`, `-`, `+`, `/`, `@`, and `~`. Requires a `:` followed by a
+/// digit run so we don't link arbitrary path-shaped text like
+/// `--include=foo/bar.txt`. The extension whitelist is broad enough to
+/// cover typical project files but excludes binary types so the cursor
+/// doesn't turn into a link over `assets/logo.png` etc.
+const PATH_LINE_REGEX =
+  /([\w@~+\-./]+\.(?:ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|html|css|scss|json|yaml|yml|md|toml|sh|sql)):(\d+)(?::(\d+))?/g;
+
+/// Loose 7–40 hex digit SHA-1. We require word boundaries so we don't
+/// match inside e.g. a long hash-prefixed filename.
+const SHA_REGEX = /\b[0-9a-f]{7,40}\b/g;
 
 const TERMINAL_THEME = {
   background: TERMINAL_BG,
@@ -89,12 +110,10 @@ export function TerminalPane(props: TerminalPaneProps) {
       cursorStyle: t.cursorStyle,
       cursorWidth: t.cursorWidth,
       scrollback: t.scrollback,
-      tabStopWidth: t.tabStopWidth,
       drawBoldTextInBrightColors: t.drawBoldTextInBrightColors,
       minimumContrastRatio: t.minimumContrastRatio,
       macOptionIsMeta: t.macOptionIsMeta,
       rightClickSelectsWord: t.rightClickSelectsWord,
-      wordSeparator: t.wordSeparator,
       scrollSensitivity: t.scrollSensitivity,
       scrollOnUserInput: t.scrollOnUserInput,
     });
@@ -115,6 +134,33 @@ export function TerminalPane(props: TerminalPaneProps) {
     term.open(container);
     fitAddon.fit();
     term.focus();
+
+    // ── Deep-link providers (path:line, SHAs) ─────────────────────────
+    // Use the native xterm link-provider API rather than the web-links
+    // addon — it sidesteps the data-pipeline hook called out at the top
+    // of this file and gives us full control over the click handler.
+    const linkDisposers: { dispose: () => void }[] = [];
+    if (props.onOpenPath || props.onOpenSha) {
+      // Two providers — one per pattern. Keeps regex complexity low and
+      // lets the path provider win precedence on overlapping spans.
+      if (props.onOpenPath) {
+        linkDisposers.push(
+          buildLinkProvider(term, PATH_LINE_REGEX, (match) => {
+            const path = match[1];
+            const line = match[2] ? parseInt(match[2], 10) : undefined;
+            const column = match[3] ? parseInt(match[3], 10) : undefined;
+            props.onOpenPath?.(path, line, column);
+          }),
+        );
+      }
+      if (props.onOpenSha) {
+        linkDisposers.push(
+          buildLinkProvider(term, SHA_REGEX, (match) => {
+            props.onOpenSha?.(match[0]);
+          }),
+        );
+      }
+    }
 
     // The PTY was created at a hardcoded 80x24 on the Rust side. Tell it the
     // real dimensions now — without this, TUIs launched immediately after
@@ -162,12 +208,10 @@ export function TerminalPane(props: TerminalPaneProps) {
       term.options.cursorStyle = s.cursorStyle;
       term.options.cursorWidth = s.cursorWidth;
       term.options.scrollback = s.scrollback;
-      term.options.tabStopWidth = s.tabStopWidth;
       term.options.drawBoldTextInBrightColors = s.drawBoldTextInBrightColors;
       term.options.minimumContrastRatio = s.minimumContrastRatio;
       term.options.macOptionIsMeta = s.macOptionIsMeta;
       term.options.rightClickSelectsWord = s.rightClickSelectsWord;
-      term.options.wordSeparator = s.wordSeparator;
       term.options.scrollSensitivity = s.scrollSensitivity;
       term.options.scrollOnUserInput = s.scrollOnUserInput;
       void ensureLigatures(s.ligatures);
@@ -178,8 +222,14 @@ export function TerminalPane(props: TerminalPaneProps) {
     });
 
     term.onData((data) => {
+      recordKeystroke(ptyId, data);
       void invoke("write_pty", { sessionId: ptyId, data });
     });
+
+    // First focus → mark as the "most recent" PTY so global Cmd+Shift+R
+    // knows where to send the repeated command. Also re-mark whenever the
+    // pane becomes active.
+    markActive(ptyId);
 
     // ── Resize: debounced so fit() + resize_pty only fire after drag ends.
     let fitTimer: number | null = null;
@@ -235,6 +285,7 @@ export function TerminalPane(props: TerminalPaneProps) {
           doFit();
           try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
         });
+        markActive(ptyId);
       }
       wasActive = active;
     });
@@ -255,6 +306,9 @@ export function TerminalPane(props: TerminalPaneProps) {
       if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
       ro.disconnect();
       unlistenExit();
+      for (const d of linkDisposers) {
+        try { d.dispose(); } catch { /* ignore */ }
+      }
       try { ligaturesDisposer?.dispose?.(); } catch { /* ignore */ }
       term.dispose();
     });
@@ -267,4 +321,59 @@ export function TerminalPane(props: TerminalPaneProps) {
       style={{ "background-color": TERMINAL_BG }}
     />
   );
+}
+
+/// Build an xterm link provider that matches `regex` against each
+/// buffer line and calls `onClick` when a link is invoked. Returns the
+/// disposable so the caller can clean up on terminal teardown.
+function buildLinkProvider(
+  term: Terminal,
+  regex: RegExp,
+  onClick: (match: RegExpMatchArray) => void,
+): { dispose: () => void } {
+  const provider = {
+    provideLinks(
+      bufferLineNumber: number,
+      callback: (links: TerminalLink[] | undefined) => void,
+    ) {
+      const line = term.buffer.active.getLine(bufferLineNumber - 1);
+      if (!line) {
+        callback(undefined);
+        return;
+      }
+      const text = line.translateToString(true);
+      if (!text) {
+        callback(undefined);
+        return;
+      }
+      const links: TerminalLink[] = [];
+      for (const m of text.matchAll(regex)) {
+        if (m.index === undefined) continue;
+        const start = m.index + 1; // xterm uses 1-based columns
+        const length = m[0].length;
+        const captured = m;
+        links.push({
+          range: {
+            start: { x: start, y: bufferLineNumber },
+            end: { x: start + length - 1, y: bufferLineNumber },
+          },
+          text: m[0],
+          activate: () => onClick(captured),
+        });
+      }
+      callback(links.length > 0 ? links : undefined);
+    },
+  };
+  return term.registerLinkProvider(provider);
+}
+
+/// xterm.js link shape — re-declared locally to avoid importing the
+/// full ITerminalAddon type bundle into this file.
+interface TerminalLink {
+  range: {
+    start: { x: number; y: number };
+    end: { x: number; y: number };
+  };
+  text: string;
+  activate: (event: MouseEvent, text: string) => void;
 }

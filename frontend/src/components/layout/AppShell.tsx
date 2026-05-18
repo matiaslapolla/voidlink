@@ -6,6 +6,7 @@ interface AppShellProps {
   sidebar: JSX.Element;
   main: JSX.Element;
   rightSidebar: JSX.Element;
+  statusBar: JSX.Element;
 }
 
 export function AppShell(props: AppShellProps) {
@@ -18,6 +19,7 @@ export function AppShell(props: AppShellProps) {
         <div class="flex-1 flex flex-col overflow-hidden min-w-0 relative">{props.main}</div>
         <div class="flex-shrink-0 flex">{props.rightSidebar}</div>
       </div>
+      {props.statusBar}
     </div>
   );
 }

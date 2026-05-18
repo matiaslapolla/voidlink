@@ -1,15 +1,35 @@
+pub(crate) mod ai_commit;
+pub(crate) mod apply_hunk;
+pub(crate) mod blame;
 pub(crate) mod branch;
+pub(crate) mod compare;
+pub(crate) mod conflict;
 pub(crate) mod diff;
+pub(crate) mod ls_files;
 pub(crate) mod push;
+pub(crate) mod refs;
 pub(crate) mod repo;
+pub(crate) mod safe_checkout;
+pub(crate) mod stack;
 pub(crate) mod staging;
 pub(crate) mod status;
 
 use serde::{Deserialize, Serialize};
 
+use ai_commit::git_ai_generate_commit_impl;
+use apply_hunk::git_apply_hunk_impl;
+use blame::{git_blame_file_impl, BlameLine};
 use branch::{git_checkout_branch_impl, git_list_branches_impl};
+use compare::git_diff_refs_impl;
+use conflict::{
+    git_conflict_versions_impl, git_list_conflicts_impl, git_resolve_conflict_impl,
+    ConflictVersions,
+};
 use diff::git_diff_working_impl;
+use ls_files::git_ls_files_impl;
+use refs::git_list_refs_impl;
 use repo::git_repo_info_impl;
+use safe_checkout::{git_safe_checkout_impl, SafeCheckoutResult};
 use staging::{git_commit_impl, git_stage_all_impl, git_stage_files_impl, git_unstage_files_impl};
 use status::{git_file_status_impl, git_log_impl};
 use push::git_push_impl;
@@ -33,6 +53,12 @@ pub struct GitRepoInfo {
     pub is_detached: bool,
     pub is_clean: bool,
     pub remote_url: Option<String>,
+    /// Tracked upstream of the current branch, e.g. "origin/main". None when no upstream is set.
+    pub upstream: Option<String>,
+    /// Commits the current branch has that upstream does not. 0 if no upstream.
+    pub ahead: u32,
+    /// Commits upstream has that the current branch does not. 0 if no upstream.
+    pub behind: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +132,23 @@ pub struct DiffResult {
     pub files: Vec<FileDiff>,
     pub total_additions: u32,
     pub total_deletions: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentCommit {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub time: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefList {
+    pub branches: Vec<String>,
+    pub tags: Vec<String>,
+    pub recent_commits: Vec<RecentCommit>,
 }
 
 // ─── Tauri command wrappers ──────────────────────────────────────────────────
@@ -219,4 +262,100 @@ pub async fn git_diff_working(
 ) -> Result<DiffResult, String> {
     let staged = staged_only.unwrap_or(false);
     blocking_git!(git_diff_working_impl(repo_path, staged))
+}
+
+#[tauri::command]
+pub async fn git_diff_refs(
+    repo_path: String,
+    base_ref: String,
+    head_ref: String,
+    use_merge_base: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<DiffResult, String> {
+    let merge_base = use_merge_base.unwrap_or(true);
+    blocking_git!(git_diff_refs_impl(repo_path, base_ref, head_ref, merge_base))
+}
+
+#[tauri::command]
+pub async fn git_list_refs(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<RefList, String> {
+    blocking_git!(git_list_refs_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_ls_files(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Vec<String>, String> {
+    blocking_git!(git_ls_files_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_safe_checkout(
+    repo_path: String,
+    branch: String,
+    create: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<SafeCheckoutResult, String> {
+    let c = create.unwrap_or(false);
+    blocking_git!(git_safe_checkout_impl(repo_path, branch, c))
+}
+
+#[tauri::command]
+pub async fn git_apply_hunk(
+    repo_path: String,
+    file: FileDiff,
+    hunk_index: usize,
+    reverse: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    let rev = reverse.unwrap_or(false);
+    blocking_git!(git_apply_hunk_impl(repo_path, file, hunk_index, rev))
+}
+
+#[tauri::command]
+pub async fn git_ai_generate_commit(
+    repo_path: String,
+    command_template: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<String, String> {
+    blocking_git!(git_ai_generate_commit_impl(repo_path, command_template))
+}
+
+#[tauri::command]
+pub async fn git_blame_file(
+    repo_path: String,
+    file_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Vec<BlameLine>, String> {
+    blocking_git!(git_blame_file_impl(repo_path, file_path))
+}
+
+#[tauri::command]
+pub async fn git_list_conflicts(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Vec<String>, String> {
+    blocking_git!(git_list_conflicts_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_conflict_versions(
+    repo_path: String,
+    file_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<ConflictVersions, String> {
+    blocking_git!(git_conflict_versions_impl(repo_path, file_path))
+}
+
+#[tauri::command]
+pub async fn git_resolve_conflict(
+    repo_path: String,
+    file_path: String,
+    content: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_resolve_conflict_impl(repo_path, file_path, content))
 }

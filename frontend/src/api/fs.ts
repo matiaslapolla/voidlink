@@ -36,4 +36,8 @@ export const fsApi = {
   delete(path: string): Promise<void> {
     return invoke<void>("fs_delete", { path });
   },
+
+  findRepoRoot(path: string): Promise<string | null> {
+    return invoke<string | null>("fs_find_repo_root", { path });
+  },
 };

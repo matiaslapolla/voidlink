@@ -1,18 +1,21 @@
-import { Show, For, createSignal, createEffect, type JSX } from "solid-js";
-import { X } from "lucide-solid";
+import { Show, For, createResource, createSignal, createEffect, type JSX } from "solid-js";
+import { Layers, X } from "lucide-solid";
 import {
   useSettings,
   type CursorStyle,
   type UiDensity,
   type UiTextSize,
 } from "@/store/settings";
+import { useAppStore } from "@/store/LayoutContext";
+import { stackApi } from "@/api/stack";
+import { pushToast } from "@/commands/toast";
 
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
 }
 
-type Tab = "ui" | "terminal";
+type Tab = "ui" | "terminal" | "ai" | "stack";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -82,11 +85,15 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <div class="flex items-center gap-1 border-b border-border px-2 py-1 text-xs">
             <TabButton active={tab() === "ui"} onClick={() => setTab("ui")}>UI</TabButton>
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
+            <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
+            <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
           </div>
 
           <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs">
             <Show when={tab() === "ui"}><UiPane /></Show>
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
+            <Show when={tab() === "ai"}><AiPane /></Show>
+            <Show when={tab() === "stack"}><StackPane /></Show>
           </div>
 
           <div class="flex items-center justify-between px-4 py-2.5 border-t border-border">
@@ -250,8 +257,6 @@ function TerminalPane() {
       </Section>
 
       <Section title="Behavior">
-        <SliderRow label="Tab width" value={settings.terminal.tabStopWidth} min={2} max={16} step={1}
-          format={(v) => `${v} cols`} onInput={(v) => updateTerminal({ tabStopWidth: v })} />
         <SliderRow label="Min contrast" value={settings.terminal.minimumContrastRatio} min={1} max={21} step={0.5}
           format={(v) => v.toFixed(1)} onInput={(v) => updateTerminal({ minimumContrastRatio: v })} />
         <ToggleRow label="Bold is bright" value={settings.terminal.drawBoldTextInBrightColors}
@@ -260,8 +265,6 @@ function TerminalPane() {
           onChange={(v) => updateTerminal({ macOptionIsMeta: v })} />
         <ToggleRow label="Right-click selects word" value={settings.terminal.rightClickSelectsWord}
           onChange={(v) => updateTerminal({ rightClickSelectsWord: v })} />
-        <TextRow label="Word separator" value={settings.terminal.wordSeparator}
-          onInput={(v) => updateTerminal({ wordSeparator: v })} />
       </Section>
 
       <Section title="Scroll">
@@ -389,5 +392,173 @@ function SegmentedRow<T extends string>(props: {
         </For>
       </div>
     </div>
+  );
+}
+
+// ─── AI Pane ────────────────────────────────────────────────────────────────
+
+const AI_COMMAND_PRESETS: { label: string; command: string }[] = [
+  {
+    label: "Claude CLI",
+    command:
+      'claude --no-tools -p "You are a senior engineer. Write a concise, imperative-mood git commit message (50-char title, optional body) for the following staged diff. Output ONLY the message."',
+  },
+  {
+    label: "Ollama (llama3.2)",
+    command:
+      'ollama run llama3.2 "Write a concise imperative-mood git commit message for this diff. Output ONLY the message:"',
+  },
+  {
+    label: "OpenAI Codex CLI",
+    command:
+      'codex exec -m gpt-5 "Write a concise imperative-mood git commit message (50-char title, optional body) for this staged diff. Output ONLY the message."',
+  },
+];
+
+function AiPane() {
+  const { settings, updateAi } = useSettings();
+  return (
+    <div class="space-y-4">
+      <p class="text-[11px] text-muted-foreground leading-relaxed">
+        VoidLink doesn't ship an LLM. Configure any local CLI you already have
+        installed; the staged diff is piped to its stdin and stdout becomes the
+        commit-message draft. No keys are stored here — your CLI handles auth.
+      </p>
+      <Section title="Commit messages">
+        <TextRow
+          label="Command"
+          value={settings.ai.commitCommand}
+          placeholder={'e.g. claude --no-tools -p "Write a git commit message:"'}
+          onInput={(v) => updateAi({ commitCommand: v })}
+        />
+        <div class="flex flex-wrap gap-1 pl-28">
+          <For each={AI_COMMAND_PRESETS}>
+            {(p) => (
+              <button
+                onClick={() => updateAi({ commitCommand: p.command })}
+                class="px-2 py-0.5 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                title={p.command}
+              >
+                {p.label}
+              </button>
+            )}
+          </For>
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// ─── Stack Pane ─────────────────────────────────────────────────────────────
+
+const DEFAULT_TRUNK_HINT = "main, master, develop, trunk";
+
+function StackPane() {
+  const { activeWorkspace } = useAppStore();
+  const repoPath = () => activeWorkspace()?.repoRoot ?? null;
+
+  // Load the per-repo trunk override list when a repo is active. The key
+  // resets across workspace switches so the input always reflects the
+  // active repo's `.git/config`.
+  const [trunks, { refetch }] = createResource(
+    () => repoPath(),
+    async (p): Promise<string[] | null> => (p ? await stackApi.getTrunks(p) : null),
+  );
+
+  const [draft, setDraft] = createSignal("");
+  const [saving, setSaving] = createSignal(false);
+
+  // Mirror the loaded list into the editable input whenever the resource
+  // resolves for a new repo.
+  createEffect(() => {
+    const t = trunks();
+    if (Array.isArray(t)) setDraft(t.join(", "));
+  });
+
+  async function onSave() {
+    const path = repoPath();
+    if (!path) return;
+    setSaving(true);
+    try {
+      const list = draft()
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      await stackApi.setTrunks(path, list);
+      pushToast(
+        list.length === 0
+          ? "Trunk override cleared — defaults restored"
+          : `Saved ${list.length} trunk override${list.length === 1 ? "" : "s"}`,
+        "success",
+      );
+      // Discovery in the sidebar reads trunks fresh; broadcast so STACK
+      // section adopts the new rule immediately.
+      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+      refetch();
+    } catch (e) {
+      pushToast(String(e), "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Show
+      when={repoPath()}
+      fallback={
+        <div class="flex flex-col items-center justify-center gap-2 py-10 text-muted-foreground">
+          <Layers class="w-5 h-5 opacity-60" />
+          <p>Select a workspace with a repo to configure its stack settings.</p>
+        </div>
+      }
+    >
+      <div class="space-y-6">
+        <Section title="Trunk branches">
+          <p class="text-muted-foreground leading-snug pb-1">
+            Comma-separated branch names that voidlink treats as trunks for the
+            active repo. Trunks anchor a stack — they never have a parent and
+            are never restacked. The built-in defaults ({DEFAULT_TRUNK_HINT})
+            and <span class="font-mono">origin/HEAD</span> always apply on top
+            of whatever you set here.
+          </p>
+          <Show
+            when={!trunks.loading}
+            fallback={<div class="text-muted-foreground">Loading…</div>}
+          >
+            <div class="flex items-center gap-3">
+              <span class="w-28 text-muted-foreground shrink-0">Overrides</span>
+              <input
+                type="text"
+                value={draft()}
+                onInput={(e) => setDraft(e.currentTarget.value)}
+                placeholder="release/v2, staging"
+                class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+            <div class="flex items-center justify-end gap-2 pl-28">
+              <Show when={(trunks() ?? []).length > 0}>
+                <button
+                  onClick={() => {
+                    setDraft("");
+                    void onSave();
+                  }}
+                  disabled={saving()}
+                  class="px-3 py-1 rounded text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50"
+                >
+                  Clear
+                </button>
+              </Show>
+              <button
+                onClick={() => void onSave()}
+                disabled={saving()}
+                class="px-3 py-1 rounded bg-primary text-primary-foreground text-[11px] hover:bg-primary/90 disabled:opacity-50"
+              >
+                {saving() ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </Show>
+        </Section>
+      </div>
+    </Show>
   );
 }

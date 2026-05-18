@@ -58,6 +58,32 @@ async fn create_pty(
         let mut cmd = portable_pty::CommandBuilder::new(&shell);
         cmd.args(["-l", "-i"]);
         cmd.cwd(&cwd);
+
+        // ── Environment wiring ────────────────────────────────────────────
+        // When Tauri is launched from Finder / Dock / a non-shell launcher,
+        // it inherits a minimal env (PATH=/usr/bin:/bin:/usr/sbin:/sbin and
+        // missing version-manager / homebrew bits). If we then inherit that
+        // env into the PTY, the shell's login startup scripts (zprofile,
+        // bash_profile) see a pre-populated PATH and only *append* to it —
+        // so user tools like `claude`, `node`, `mise`-installed binaries
+        // resolve to stale system copies or aren't found at all.
+        //
+        // Fix: clear env and re-export only variables that aren't path-like
+        // or app-launcher-specific. PATH and friends are intentionally
+        // dropped so the login shell + /etc/zprofile's path_helper rebuild
+        // them from scratch, identical to how Terminal.app spawns a shell.
+        cmd.env_clear();
+        const PASSTHROUGH: &[&str] = &[
+            "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+            "LC_MESSAGES", "LC_COLLATE", "LC_NUMERIC", "LC_TIME", "LC_MONETARY",
+            "TZ", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR", "DISPLAY", "WAYLAND_DISPLAY", "SSH_AUTH_SOCK",
+        ];
+        for key in PASSTHROUGH {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
 
@@ -292,6 +318,26 @@ pub fn run() {
             git::git_commit,
             git::git_push,
             git::git_diff_working,
+            git::git_diff_refs,
+            git::git_list_refs,
+            git::git_ls_files,
+            git::git_safe_checkout,
+            git::git_apply_hunk,
+            git::git_ai_generate_commit,
+            git::git_blame_file,
+            git::git_list_conflicts,
+            git::git_conflict_versions,
+            git::git_resolve_conflict,
+            git::stack::git_stack_current,
+            git::stack::git_stack_list,
+            git::stack::git_stack_create_branch,
+            git::stack::git_stack_set_parent,
+            git::stack::git_stack_untrack,
+            git::stack::git_stack_restack,
+            git::stack::git_stack_restack_all,
+            git::stack::git_stack_submit,
+            git::stack::git_stack_get_trunks,
+            git::stack::git_stack_set_trunks,
             fs::fs_list_dir,
             fs::fs_read_file,
             fs::fs_write_file,
@@ -299,6 +345,7 @@ pub fn run() {
             fs::fs_create_dir,
             fs::fs_rename,
             fs::fs_delete,
+            fs::fs_find_repo_root,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

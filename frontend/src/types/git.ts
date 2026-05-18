@@ -5,6 +5,14 @@ export interface GitRepoInfo {
   isDetached: boolean;
   isClean: boolean;
   remoteUrl: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+}
+
+export interface SafeCheckoutResult {
+  branch: string;
+  autoStashed: string | null;
 }
 
 export interface GitBranchInfo {
@@ -64,4 +72,35 @@ export interface DiffResult {
   files: FileDiff[];
   totalAdditions: number;
   totalDeletions: number;
+}
+
+export interface RecentCommit {
+  oid: string;
+  shortOid: string;
+  summary: string;
+  time: number;
+}
+
+export interface RefList {
+  branches: string[];
+  tags: string[];
+  recentCommits: RecentCommit[];
+}
+
+export interface BlameLine {
+  line: number;
+  commitOid: string;
+  shortOid: string;
+  authorName: string;
+  authorEmail: string;
+  time: number;
+  summary: string;
+  uncommitted: boolean;
+}
+
+export interface ConflictVersions {
+  base: string | null;
+  ours: string | null;
+  theirs: string | null;
+  working: string;
 }
