@@ -7,19 +7,13 @@
 Editor, terminal, and a Graphite-grade Git suite in one native window —
 with optional AI that uses **your own CLI**. No cloud. No API keys. No telemetry.
 
-<br/>
-
-![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=white)
-![Rust](https://img.shields.io/badge/Rust-1.77+-000000?logo=rust&logoColor=white)
-![SolidJS](https://img.shields.io/badge/SolidJS-1.9-2C4F7C?logo=solid&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
-
 </div>
 
 ---
 
-> _Screenshot / demo GIF goes here — drop a capture of the app into `docs/` and link it._
+![VoidLink screenshot](docs/picture-1.jpg)
+
+![VoidLink screenshot](docs/picture-2.jpg)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
