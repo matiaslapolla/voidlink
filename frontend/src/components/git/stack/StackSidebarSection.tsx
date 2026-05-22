@@ -4,6 +4,7 @@ import { stackApi } from "@/api/stack";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
 import { pushToast } from "@/commands/toast";
+import { textPrompt } from "@/commands/prompt";
 import type { Stack, StackBranch } from "@/types/stack";
 
 interface StackSidebarSectionProps {
@@ -35,7 +36,12 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
   }
 
   async function branchOnTop(parent: string) {
-    const name = window.prompt(`New branch on top of ${parent}:`)?.trim();
+    const name = await textPrompt({
+      title: "New branch",
+      label: `Create on top of ${parent}`,
+      placeholder: "feature/my-branch",
+      confirmLabel: "Create",
+    });
     if (!name) return;
     try {
       await stackApi.createBranch(props.repoPath, name, parent);

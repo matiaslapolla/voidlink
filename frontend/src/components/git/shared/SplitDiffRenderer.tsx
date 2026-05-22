@@ -11,6 +11,9 @@ export interface HunkActions {
   onStageHunk?: (hunkIndex: number) => void | Promise<void>;
   stageLabel?: string;
   stageReverse?: boolean;
+  /// Called when the user clicks "Discard hunk" — reverts just this hunk in
+  /// the working tree. Only shown for unstaged working-tree diffs.
+  onDiscardHunk?: (hunkIndex: number) => void | Promise<void>;
 }
 
 // JetBrains-style diff renderer used by both working-tree and ref-vs-ref
@@ -254,8 +257,23 @@ function HunkHeader(props: {
     }
   }
 
+  async function discard() {
+    if (!props.actions?.onDiscardHunk || running()) return;
+    setRunning(true);
+    try {
+      await props.actions.onDiscardHunk(props.hunkIndex);
+    } finally {
+      setRunning(false);
+    }
+  }
+
   return (
-    <div class="flex group">
+    // Sticky so the current hunk's `@@ … @@` context (file + enclosing
+    // function) stays pinned to the top of the scroll area as you read a
+    // long hunk, handing off to the next hunk's header as it scrolls in.
+    // `bg-background` makes the otherwise-translucent bar opaque so diff
+    // rows don't bleed through while it floats; z-10 keeps it above them.
+    <div class="flex group sticky top-0 z-10 bg-background">
       <div class="w-1 shrink-0 bg-primary/40" />
       <div class="flex-1 px-3 py-0.5 bg-muted/40 text-muted-foreground text-[11px] border-y border-border flex items-center gap-2">
         <span class="truncate">{props.hunk.header}</span>
@@ -275,6 +293,18 @@ function HunkHeader(props: {
                 <Minus class="w-2.5 h-2.5" />
               </Show>
               {props.actions?.stageLabel ?? "Stage hunk"}
+            </button>
+          </Show>
+          <Show when={props.actions?.onDiscardHunk}>
+            <button
+              onClick={() => void discard()}
+              disabled={running()}
+              title="Discard hunk (revert in working tree)"
+              aria-label="Discard hunk"
+              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-destructive/15 hover:text-destructive transition-colors"
+            >
+              <Minus class="w-2.5 h-2.5" />
+              Discard
             </button>
           </Show>
           <button

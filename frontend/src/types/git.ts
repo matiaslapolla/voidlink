@@ -8,11 +8,35 @@ export interface GitRepoInfo {
   upstream: string | null;
   ahead: number;
   behind: number;
+  operation: "merge" | "rebase" | "cherry-pick" | "revert" | null;
+  hasConflicts: boolean;
 }
 
 export interface SafeCheckoutResult {
   branch: string;
   autoStashed: string | null;
+}
+
+export interface PullResult {
+  ok: boolean;
+  conflicted: boolean;
+  message: string;
+}
+
+/// Result of a conflict-capable operation (merge/rebase/cherry-pick/revert).
+export interface OpResult {
+  ok: boolean;
+  conflicted: boolean;
+  message: string;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string | null;
+  head: string | null;
+  isMain: boolean;
+  isLocked: boolean;
+  isDetached: boolean;
 }
 
 export interface GitBranchInfo {
@@ -103,4 +127,16 @@ export interface ConflictVersions {
   ours: string | null;
   theirs: string | null;
   working: string;
+}
+
+export interface StashEntry {
+  index: number;
+  message: string;
+  oid: string;
+}
+
+export interface RemoteInfo {
+  name: string;
+  url: string | null;
+  pushUrl: string | null;
 }

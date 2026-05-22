@@ -1,38 +1,78 @@
+pub(crate) mod agent;
 pub(crate) mod ai_commit;
 pub(crate) mod apply_hunk;
+pub(crate) mod auth;
 pub(crate) mod blame;
 pub(crate) mod branch;
+pub(crate) mod cli;
+pub(crate) mod cmd;
 pub(crate) mod compare;
 pub(crate) mod conflict;
 pub(crate) mod diff;
+pub(crate) mod discard;
+pub(crate) mod fetch;
 pub(crate) mod ls_files;
+pub(crate) mod merge;
+pub(crate) mod pick;
 pub(crate) mod push;
+pub(crate) mod rebase;
 pub(crate) mod refs;
+pub(crate) mod remote;
+pub(crate) mod reset;
 pub(crate) mod repo;
 pub(crate) mod safe_checkout;
 pub(crate) mod stack;
 pub(crate) mod staging;
+pub(crate) mod stash;
 pub(crate) mod status;
+pub(crate) mod tag;
+pub(crate) mod worktree;
 
 use serde::{Deserialize, Serialize};
 
+use agent::git_agent_query_impl;
 use ai_commit::git_ai_generate_commit_impl;
-use apply_hunk::git_apply_hunk_impl;
+use apply_hunk::{git_apply_hunk_impl, git_discard_hunk_impl};
 use blame::{git_blame_file_impl, BlameLine};
-use branch::{git_checkout_branch_impl, git_list_branches_impl};
+use branch::{
+    git_checkout_branch_impl, git_create_branch_impl, git_delete_branch_impl,
+    git_list_branches_impl, git_rename_branch_impl,
+};
 use compare::git_diff_refs_impl;
 use conflict::{
     git_conflict_versions_impl, git_list_conflicts_impl, git_resolve_conflict_impl,
     ConflictVersions,
 };
+use cmd::OpResult;
 use diff::git_diff_working_impl;
+use discard::{git_discard_all_impl, git_discard_file_impl};
+use fetch::{git_fetch_impl, git_pull_impl, PullResult};
 use ls_files::git_ls_files_impl;
+use merge::{git_merge_abort_impl, git_merge_impl};
+use pick::{
+    git_cherry_pick_abort_impl, git_cherry_pick_continue_impl, git_cherry_pick_impl,
+    git_revert_abort_impl, git_revert_continue_impl, git_revert_impl,
+};
+use rebase::{git_rebase_abort_impl, git_rebase_continue_impl, git_rebase_impl};
+use reset::{git_amend_impl, git_reset_impl, git_undo_last_commit_impl};
 use refs::git_list_refs_impl;
+use remote::{
+    git_add_remote_impl, git_list_remotes_impl, git_remove_remote_impl, git_rename_remote_impl,
+    git_set_remote_url_impl, RemoteInfo,
+};
 use repo::git_repo_info_impl;
 use safe_checkout::{git_safe_checkout_impl, SafeCheckoutResult};
 use staging::{git_commit_impl, git_stage_all_impl, git_stage_files_impl, git_unstage_files_impl};
+use stash::{
+    git_stash_apply_impl, git_stash_drop_impl, git_stash_list_impl, git_stash_pop_impl,
+    git_stash_save_impl, git_stash_show_impl, StashEntry,
+};
 use status::{git_file_status_impl, git_log_impl};
+use tag::{git_create_tag_impl, git_delete_tag_impl, git_push_tag_impl};
 use push::git_push_impl;
+use worktree::{
+    git_add_worktree_impl, git_list_worktrees_impl, git_remove_worktree_impl, WorktreeInfo,
+};
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +99,13 @@ pub struct GitRepoInfo {
     pub ahead: u32,
     /// Commits upstream has that the current branch does not. 0 if no upstream.
     pub behind: u32,
+    /// A multi-step operation currently in progress, detected from `.git`
+    /// marker files: one of "merge" | "rebase" | "cherry-pick" | "revert".
+    /// None when the working tree is in a normal state.
+    pub operation: Option<String>,
+    /// Whether the index currently has any conflicted entries. Drives the
+    /// "resolve before continue" gate on the operation banner.
+    pub has_conflicts: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +302,54 @@ pub async fn git_push(
 }
 
 #[tauri::command]
+pub async fn git_fetch(
+    repo_path: String,
+    remote: Option<String>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_fetch_impl(repo_path, remote))
+}
+
+#[tauri::command]
+pub async fn git_pull(
+    repo_path: String,
+    mode: Option<String>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<PullResult, String> {
+    let m = mode.unwrap_or_else(|| "ff-only".to_string());
+    blocking_git!(git_pull_impl(repo_path, m))
+}
+
+#[tauri::command]
+pub async fn git_discard_file(
+    repo_path: String,
+    path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_discard_file_impl(repo_path, path))
+}
+
+#[tauri::command]
+pub async fn git_discard_all(
+    repo_path: String,
+    include_untracked: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    let inc = include_untracked.unwrap_or(false);
+    blocking_git!(git_discard_all_impl(repo_path, inc))
+}
+
+#[tauri::command]
+pub async fn git_discard_hunk(
+    repo_path: String,
+    file: FileDiff,
+    hunk_index: usize,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_discard_hunk_impl(repo_path, file, hunk_index))
+}
+
+#[tauri::command]
 pub async fn git_diff_working(
     repo_path: String,
     staged_only: Option<bool>,
@@ -358,4 +453,345 @@ pub async fn git_resolve_conflict(
     _state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
     blocking_git!(git_resolve_conflict_impl(repo_path, file_path, content))
+}
+
+#[tauri::command]
+pub async fn git_agent_query(
+    repo_path: String,
+    command_template: String,
+    prompt: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<String, String> {
+    blocking_git!(git_agent_query_impl(repo_path, command_template, prompt))
+}
+
+// ─── Branch lifecycle ────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn git_create_branch(
+    repo_path: String,
+    name: String,
+    start_point: Option<String>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_create_branch_impl(repo_path, name, start_point))
+}
+
+#[tauri::command]
+pub async fn git_delete_branch(
+    repo_path: String,
+    name: String,
+    force: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    let f = force.unwrap_or(false);
+    blocking_git!(git_delete_branch_impl(repo_path, name, f))
+}
+
+#[tauri::command]
+pub async fn git_rename_branch(
+    repo_path: String,
+    old_name: String,
+    new_name: String,
+    force: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    let f = force.unwrap_or(false);
+    blocking_git!(git_rename_branch_impl(repo_path, old_name, new_name, f))
+}
+
+// ─── Tags ────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn git_create_tag(
+    repo_path: String,
+    name: String,
+    target: Option<String>,
+    message: Option<String>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_create_tag_impl(repo_path, name, target, message))
+}
+
+#[tauri::command]
+pub async fn git_delete_tag(
+    repo_path: String,
+    name: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_delete_tag_impl(repo_path, name))
+}
+
+#[tauri::command]
+pub async fn git_push_tag(
+    repo_path: String,
+    name: String,
+    remote: Option<String>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_push_tag_impl(repo_path, name, remote))
+}
+
+// ─── Stash ───────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn git_stash_list(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Vec<StashEntry>, String> {
+    blocking_git!(git_stash_list_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_stash_save(
+    repo_path: String,
+    message: Option<String>,
+    keep_index: Option<bool>,
+    include_untracked: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<String, String> {
+    let keep = keep_index.unwrap_or(false);
+    let untracked = include_untracked.unwrap_or(false);
+    blocking_git!(git_stash_save_impl(repo_path, message, keep, untracked))
+}
+
+#[tauri::command]
+pub async fn git_stash_apply(
+    repo_path: String,
+    index: usize,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_stash_apply_impl(repo_path, index))
+}
+
+#[tauri::command]
+pub async fn git_stash_pop(
+    repo_path: String,
+    index: usize,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_stash_pop_impl(repo_path, index))
+}
+
+#[tauri::command]
+pub async fn git_stash_drop(
+    repo_path: String,
+    index: usize,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_stash_drop_impl(repo_path, index))
+}
+
+#[tauri::command]
+pub async fn git_stash_show(
+    repo_path: String,
+    index: usize,
+    _state: tauri::State<'_, GitState>,
+) -> Result<DiffResult, String> {
+    blocking_git!(git_stash_show_impl(repo_path, index))
+}
+
+// ─── Remotes ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn git_list_remotes(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Vec<RemoteInfo>, String> {
+    blocking_git!(git_list_remotes_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_add_remote(
+    repo_path: String,
+    name: String,
+    url: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_add_remote_impl(repo_path, name, url))
+}
+
+#[tauri::command]
+pub async fn git_remove_remote(
+    repo_path: String,
+    name: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_remove_remote_impl(repo_path, name))
+}
+
+#[tauri::command]
+pub async fn git_rename_remote(
+    repo_path: String,
+    old_name: String,
+    new_name: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_rename_remote_impl(repo_path, old_name, new_name))
+}
+
+#[tauri::command]
+pub async fn git_set_remote_url(
+    repo_path: String,
+    name: String,
+    url: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_set_remote_url_impl(repo_path, name, url))
+}
+
+// ─── Merge / rebase / cherry-pick / revert ───────────────────────────────────
+
+#[tauri::command]
+pub async fn git_merge(
+    repo_path: String,
+    branch: String,
+    no_ff: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<OpResult, String> {
+    let nf = no_ff.unwrap_or(false);
+    blocking_git!(git_merge_impl(repo_path, branch, nf))
+}
+
+#[tauri::command]
+pub async fn git_merge_abort(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_merge_abort_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_rebase(
+    repo_path: String,
+    onto: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<OpResult, String> {
+    blocking_git!(git_rebase_impl(repo_path, onto))
+}
+
+#[tauri::command]
+pub async fn git_rebase_continue(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<OpResult, String> {
+    blocking_git!(git_rebase_continue_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_rebase_abort(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_rebase_abort_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_cherry_pick(
+    repo_path: String,
+    oid: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<OpResult, String> {
+    blocking_git!(git_cherry_pick_impl(repo_path, oid))
+}
+
+#[tauri::command]
+pub async fn git_cherry_pick_continue(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<OpResult, String> {
+    blocking_git!(git_cherry_pick_continue_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_cherry_pick_abort(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_cherry_pick_abort_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_revert(
+    repo_path: String,
+    oid: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<OpResult, String> {
+    blocking_git!(git_revert_impl(repo_path, oid))
+}
+
+#[tauri::command]
+pub async fn git_revert_continue(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<OpResult, String> {
+    blocking_git!(git_revert_continue_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_revert_abort(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_revert_abort_impl(repo_path))
+}
+
+// ─── Amend / undo / reset ────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn git_amend(
+    repo_path: String,
+    message: Option<String>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<String, String> {
+    blocking_git!(git_amend_impl(repo_path, message))
+}
+
+#[tauri::command]
+pub async fn git_undo_last_commit(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_undo_last_commit_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_reset(
+    repo_path: String,
+    target: String,
+    mode: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_reset_impl(repo_path, target, mode))
+}
+
+#[tauri::command]
+pub async fn git_list_worktrees(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Vec<WorktreeInfo>, String> {
+    blocking_git!(git_list_worktrees_impl(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_add_worktree(
+    repo_path: String,
+    path: String,
+    branch: Option<String>,
+    new_branch: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<WorktreeInfo, String> {
+    let nb = new_branch.unwrap_or(false);
+    blocking_git!(git_add_worktree_impl(repo_path, path, branch, nb))
+}
+
+#[tauri::command]
+pub async fn git_remove_worktree(
+    repo_path: String,
+    path: String,
+    force: Option<bool>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    let f = force.unwrap_or(false);
+    blocking_git!(git_remove_worktree_impl(repo_path, path, f))
 }

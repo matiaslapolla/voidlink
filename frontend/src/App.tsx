@@ -14,6 +14,8 @@ import { editorController } from "@/components/editor/editorController";
 import { CommandPalette } from "@/commands/CommandPalette";
 import { FileFinder } from "@/commands/FileFinder";
 import { ToastViewport } from "@/commands/ToastViewport";
+import { PromptHost } from "@/commands/PromptHost";
+import { textPrompt } from "@/commands/prompt";
 import {
   closeFileFinder,
   closePalette,
@@ -28,6 +30,8 @@ import { useKeybindings } from "@/commands/keybindings";
 import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { requestAiCommitDraft } from "@/commands/aiCommit";
+import { toggleAgentPanel } from "@/commands/agent";
+import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
 import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/blameOverlay";
 import type { ActiveItem } from "@/store/layout";
@@ -101,6 +105,39 @@ function AppInner(props: { onOpenSettings: () => void }) {
         },
       },
       {
+        id: "git.fetch",
+        label: "Fetch from origin",
+        group: "Git",
+        enabled: () => !!repo,
+        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-fetch")),
+      },
+      {
+        id: "git.pull",
+        label: "Pull from origin",
+        group: "Git",
+        enabled: () => !!repo,
+        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-pull")),
+      },
+      {
+        id: "git.remotes",
+        label: "Manage remotes…",
+        group: "Git",
+        enabled: () => !!repo,
+        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-remotes")),
+      },
+      {
+        id: "git.undo-last-commit",
+        label: "Undo last commit (soft)",
+        group: "Git",
+        enabled: () => !!repo,
+        run: async () => {
+          if (!repo) return;
+          const { gitApi } = await import("@/api/git");
+          await gitApi.undoLastCommit(repo);
+          window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+        },
+      },
+      {
         id: "git.compare",
         label: "Compare branches…",
         group: "Git",
@@ -124,7 +161,12 @@ function AppInner(props: { onOpenSettings: () => void }) {
               pushToast("HEAD is detached — check out a branch first", "warning");
               return;
             }
-            const name = window.prompt(`New branch on top of ${parent}:`)?.trim();
+            const name = await textPrompt({
+              title: "New branch",
+              label: `Create on top of ${parent}`,
+              placeholder: "feature/my-branch",
+              confirmLabel: "Create",
+            });
             if (!name) return;
             await stackApi.createBranch(repo, name, parent);
             pushToast(`Created ${name} on top of ${parent}`, "success");
@@ -285,6 +327,15 @@ function AppInner(props: { onOpenSettings: () => void }) {
         run: () => requestAiCommitDraft(),
       },
       {
+        id: "agent.toggle",
+        label: "Toggle repo agent",
+        description: "Ask a CLI grounded in this workspace's git state",
+        group: "AI",
+        shortcutLabel: "⌘⇧A",
+        enabled: () => !!repo,
+        run: () => toggleAgentPanel(),
+      },
+      {
         id: "workspace.new",
         label: "New workspace",
         group: "Workspace",
@@ -338,8 +389,13 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "Snapshot: save current as…",
         description: "Save tabs + terminals + sidebar state under a name",
         group: "Workspace",
-        run: () => {
-          const name = window.prompt("Snapshot name:")?.trim();
+        run: async () => {
+          const name = await textPrompt({
+            title: "Save snapshot",
+            label: "Name this snapshot of tabs, terminals, and sidebar state",
+            placeholder: "before-refactor",
+            confirmLabel: "Save",
+          });
           if (!name) return;
           actions.saveWorkspaceSnapshot(state.activeWorkspaceId, name);
           pushToast(`Snapshot "${name}" saved`, "success");
@@ -615,6 +671,19 @@ function AppInner(props: { onOpenSettings: () => void }) {
         requestAiCommitDraft();
       },
     },
+    // ── Repo agent ──────────────────────────────────────────────────────
+    {
+      meta: true,
+      shift: true,
+      key: "a",
+      run: () => {
+        if (!activeWorkspace()?.repoRoot) {
+          pushToast("Open a repository first", "warning");
+          return;
+        }
+        toggleAgentPanel();
+      },
+    },
   ]);
 
   const leftPane = () =>
@@ -650,7 +719,9 @@ function AppInner(props: { onOpenSettings: () => void }) {
         repoPath={activeWorkspace()?.repoRoot ?? null}
         onOpenFile={(p) => void handleOpenFile(p)}
       />
+      <AgentPanel onOpenSettings={props.onOpenSettings} />
       <ToastViewport />
+      <PromptHost />
       <WindowFrame />
     </>
   );

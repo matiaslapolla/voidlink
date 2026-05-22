@@ -33,8 +33,12 @@ export interface UiSettings {
 /// AI is BYO-CLI: voidlink shells out to whatever generative-text command the
 /// user already has installed. `commitCommand` is the shell template; the
 /// staged diff is piped to stdin and stdout becomes the suggested message.
+/// `agentCommand` is the (optional) template for the repo agent — a grounded
+/// prompt is piped to stdin. When empty, the agent falls back to
+/// `commitCommand` so a single configured CLI powers both.
 export interface AiSettings {
   commitCommand: string;
+  agentCommand: string;
 }
 
 export interface AppSettings {
@@ -73,6 +77,7 @@ const DEFAULTS: AppSettings = {
   },
   ai: {
     commitCommand: "",
+    agentCommand: "",
   },
 };
 

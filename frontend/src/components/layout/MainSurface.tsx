@@ -14,6 +14,9 @@ import { blameEnabled, clearBlameFor, refreshBlameFor } from "@/components/edito
 import { useAppStore } from "@/store/LayoutContext";
 import { terminalApi } from "@/api/terminal";
 import { fsApi } from "@/api/fs";
+import { gitApi } from "@/api/git";
+import { recordBranchUse } from "@/commands/branchMru";
+import { pushToast } from "@/commands/toast";
 import type { TerminalSession } from "@/types/workspace";
 
 const POLL_MS = 1500;
@@ -245,6 +248,60 @@ export function MainSurface() {
     activePreviewTabs().length > 0;
 
   const repoRoot = () => activeWorkspace()?.repoRoot ?? null;
+
+  /// Local branch names for the active repo. Feeds the terminal's branch
+  /// deep-link provider so only real branches get linkified. Refreshed on
+  /// repo change and on the same `voidlink:refresh-git` pulse the sidebar
+  /// uses after a checkout/commit.
+  const [branchNames, setBranchNames] = createSignal<string[]>([]);
+  async function refreshBranchNames() {
+    const root = repoRoot();
+    if (!root) {
+      setBranchNames([]);
+      return;
+    }
+    try {
+      const branches = await gitApi.listBranches(root, false);
+      setBranchNames(branches.map((b) => b.name));
+    } catch {
+      setBranchNames([]);
+    }
+  }
+  createEffect(() => {
+    // Re-fetch whenever the active repo changes.
+    repoRoot();
+    void refreshBranchNames();
+  });
+  onMount(() => {
+    const handler = () => void refreshBranchNames();
+    window.addEventListener("voidlink:refresh-git", handler);
+    onCleanup(() => window.removeEventListener("voidlink:refresh-git", handler));
+  });
+
+  /// Switch to `branch` from a terminal deep-link. Mirrors the git sidebar's
+  /// safe-checkout flow: auto-stash feedback, MRU bump, and a refresh pulse
+  /// so every pane (sidebar, status bar, blame) re-reads HEAD.
+  async function openBranchFromTerminal(branch: string) {
+    const root = repoRoot();
+    if (!root) return;
+    try {
+      const result = await gitApi.safeCheckout(root, branch);
+      recordBranchUse(root, branch);
+      if (result.autoStashed) {
+        pushToast(
+          `Switched to ${branch}. Auto-stashed your changes — restore with \`git stash pop\`.`,
+          "info",
+          5000,
+        );
+      } else {
+        pushToast(`Switched to ${branch}.`, "info", 2500);
+      }
+      window.dispatchEvent(new CustomEvent("voidlink:refresh-files"));
+      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e), "error", 5000);
+    }
+  }
 
   const [menuOpen, setMenuOpen] = createSignal(false);
   const [newFileMode, setNewFileMode] = createSignal(false);
@@ -790,6 +847,8 @@ export function MainSurface() {
                     useMergeBase: false,
                   });
                 }}
+                branchNames={branchNames}
+                onOpenBranch={(branch) => void openBranchFromTerminal(branch)}
               />
             </div>
           )}

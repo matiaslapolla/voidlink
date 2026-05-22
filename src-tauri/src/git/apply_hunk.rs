@@ -46,6 +46,30 @@ pub(crate) fn git_apply_hunk_impl(
     Ok(())
 }
 
+/// Discard a single unstaged hunk from the working tree by applying the
+/// inverted patch to the workdir — the on-disk file loses just that hunk's
+/// change. Mirrors `git checkout -p` choosing "discard this hunk". Operates on
+/// the working tree only (ApplyLocation::WorkDir), never the index.
+pub(crate) fn git_discard_hunk_impl(
+    repo_path: String,
+    file: FileDiff,
+    hunk_index: usize,
+) -> Result<(), String> {
+    let repo = open_repo(&repo_path)?;
+    let hunk = file
+        .hunks
+        .get(hunk_index)
+        .ok_or_else(|| format!("hunk index {} out of range", hunk_index))?;
+
+    let inverted = build_unified_patch_inverted(&file, hunk);
+    let diff = Diff::from_buffer(inverted.as_bytes()).map_err(|e| e.message().to_string())?;
+    let mut opts = ApplyOptions::new();
+    opts.check(false);
+    repo.apply(&diff, ApplyLocation::WorkDir, Some(&mut opts))
+        .map_err(|e| e.message().to_string())?;
+    Ok(())
+}
+
 fn build_unified_patch(file: &FileDiff, hunk: &DiffHunk) -> String {
     let old_path = file
         .old_path

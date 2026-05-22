@@ -115,7 +115,7 @@ interface AppStoreState {
   gitTab: GitTab;
   ignoreWhitespace: boolean;
   sidebarTab: SidebarTab;
-  gitSections: { changes: boolean; branches: boolean; stack: boolean; history: boolean; openedDiffs: boolean };
+  gitSections: { changes: boolean; branches: boolean; worktrees: boolean; stack: boolean; stashes: boolean; history: boolean; openedDiffs: boolean };
   sidebarSections: { files: boolean; terminals: boolean };
 }
 
@@ -129,7 +129,7 @@ interface GitPrefs {
   gitTab: GitTab;
   ignoreWhitespace: boolean;
   sidebarTab: SidebarTab;
-  gitSections: { changes: boolean; branches: boolean; stack: boolean; history: boolean; openedDiffs: boolean };
+  gitSections: { changes: boolean; branches: boolean; worktrees: boolean; stack: boolean; stashes: boolean; history: boolean; openedDiffs: boolean };
   sidebarSections: { files: boolean; terminals: boolean };
 }
 
@@ -152,7 +152,9 @@ function loadGitPrefs(): GitPrefs {
         gitSections: {
           changes: parsed.gitSections?.changes ?? true,
           branches: parsed.gitSections?.branches ?? true,
+          worktrees: parsed.gitSections?.worktrees ?? false,
           stack: parsed.gitSections?.stack ?? true,
+          stashes: parsed.gitSections?.stashes ?? false,
           history: parsed.gitSections?.history ?? true,
           openedDiffs: parsed.gitSections?.openedDiffs ?? true,
         },
@@ -173,7 +175,7 @@ function loadGitPrefs(): GitPrefs {
     gitTab: "changes",
     ignoreWhitespace: false,
     sidebarTab: "terminals",
-    gitSections: { changes: true, branches: true, stack: true, history: true, openedDiffs: true },
+    gitSections: { changes: true, branches: true, worktrees: false, stack: true, stashes: false, history: true, openedDiffs: true },
     sidebarSections: { files: true, terminals: true },
   };
 }

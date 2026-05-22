@@ -1,9 +1,10 @@
-import { createEffect, onMount, onCleanup } from "solid-js";
+import { createEffect, createSignal, onMount, onCleanup } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
 import { useSettings } from "@/store/settings";
 import { useTheme } from "@/store/theme";
@@ -41,6 +42,14 @@ interface TerminalPaneProps {
   /// Click handler for 7+ hex-digit SHA matches in scrollback. The caller
   /// chooses how to interpret (typically: open a compare tab at sha^..sha).
   onOpenSha?: (sha: string) => void;
+  /// Click handler for branch-name matches in scrollback. Only tokens that
+  /// exactly equal a name returned by `branchNames` are linkified — we never
+  /// guess at arbitrary words, since branch names are ordinary text and free
+  /// matching would underline half the screen.
+  onOpenBranch?: (branch: string) => void;
+  /// Live list of real branch names in the repo. Read at link-resolution
+  /// time (per buffer line) so it stays current as branches come and go.
+  branchNames?: () => string[];
 }
 
 // xterm canvas is always rendered opaque: canvas-transparency is unreliable
@@ -117,6 +126,27 @@ export function TerminalPane(props: TerminalPaneProps) {
   const { mode } = useTheme();
   const palette = () => (mode() === "light" ? LIGHT_THEME : DARK_THEME);
   const paneBg = () => (mode() === "light" ? LIGHT_BG : DARK_BG);
+  // Highlight ring while a file is dragged over the pane.
+  const [dragOver, setDragOver] = createSignal(false);
+
+  /// Type the dropped paths onto the shell input line. Each path is
+  /// shell-quoted (so spaces / parens don't break the command) and a
+  /// trailing space lets the user keep typing. We write straight to the
+  /// PTY rather than xterm so the bytes reach the running shell.
+  function injectPaths(paths: string[]) {
+    const text = paths.map(quoteForShell).join(" ");
+    if (!text) return;
+    void invoke("write_pty", { sessionId: props.ptyId, data: text + " " });
+  }
+
+  /// True when the screen point (client coords) lands inside this pane's
+  /// box. Hidden panes are display:none → 0×0 rect → always false, so this
+  /// also doubles as the "am I the visible terminal?" check for OS drops.
+  function pointInPane(clientX: number, clientY: number): boolean {
+    const r = container.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return false;
+    return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+  }
 
   onMount(async () => {
     const ptyId = props.ptyId;
@@ -172,6 +202,13 @@ export function TerminalPane(props: TerminalPaneProps) {
     // addon — it sidesteps the data-pipeline hook called out at the top
     // of this file and gives us full control over the click handler.
     const linkDisposers: { dispose: () => void }[] = [];
+    if (props.onOpenBranch && props.branchNames) {
+      linkDisposers.push(
+        buildBranchLinkProvider(term, props.branchNames, (branch) => {
+          props.onOpenBranch?.(branch);
+        }),
+      );
+    }
     if (props.onOpenPath || props.onOpenSha) {
       // Two providers — one per pattern. Keeps regex complexity low and
       // lets the path provider win precedence on overlapping spans.
@@ -341,11 +378,35 @@ export function TerminalPane(props: TerminalPaneProps) {
 
     const unlistenExit = await listen(`pty-exit:${ptyId}`, () => props.onExit?.());
 
+    // OS file drops (Finder/Explorer). Tauri intercepts these before the
+    // webview's HTML5 drop fires (dragDropEnabled defaults on), so we go
+    // through the webview drag-drop event. Position is physical px relative
+    // to the webview top-left; divide by devicePixelRatio to compare with
+    // getBoundingClientRect. Every mounted pane gets this listener, but only
+    // the one whose box contains the cursor (i.e. the visible one) injects.
+    const dpr = () => window.devicePixelRatio || 1;
+    const unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+      const p = event.payload;
+      if (p.type === "over") {
+        setDragOver(pointInPane(p.position.x / dpr(), p.position.y / dpr()));
+      } else if (p.type === "drop") {
+        const inside = pointInPane(p.position.x / dpr(), p.position.y / dpr());
+        setDragOver(false);
+        if (inside && p.paths.length > 0) {
+          term.focus();
+          injectPaths(p.paths);
+        }
+      } else {
+        setDragOver(false);
+      }
+    });
+
     onCleanup(() => {
       if (fitTimer !== null) clearTimeout(fitTimer);
       if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
       ro.disconnect();
       unlistenExit();
+      unlistenDrop();
       for (const d of linkDisposers) {
         try { d.dispose(); } catch { /* ignore */ }
       }
@@ -357,10 +418,38 @@ export function TerminalPane(props: TerminalPaneProps) {
   return (
     <div
       ref={container}
-      class={props.class ?? "w-full h-full"}
+      class={`${props.class ?? "w-full h-full"} ${dragOver() ? "ring-2 ring-inset ring-primary/70" : ""}`}
       style={{ "background-color": paneBg() }}
+      onDragOver={(e) => {
+        // In-app drags (from the file tree) arrive as HTML5 DnD. Allow the
+        // drop and show the same ring as OS drops.
+        if (e.dataTransfer?.types.includes("application/x-voidlink-path") ||
+            e.dataTransfer?.types.includes("text/plain")) {
+          e.preventDefault();
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        const dt = e.dataTransfer;
+        if (!dt) return;
+        const path =
+          dt.getData("application/x-voidlink-path") || dt.getData("text/plain");
+        if (!path) return;
+        e.preventDefault();
+        setDragOver(false);
+        injectPaths([path]);
+      }}
     />
   );
+}
+
+/// Quote a path for a POSIX shell input line. Bare when it only contains
+/// safe chars; otherwise single-quoted with embedded quotes escaped. Keeps
+/// dropped paths with spaces or parens from breaking the typed command.
+function quoteForShell(p: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(p)) return p;
+  return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
 /// Build an xterm link provider that matches `regex` against each
@@ -399,6 +488,84 @@ function buildLinkProvider(
           },
           text: m[0],
           activate: () => onClick(captured),
+        });
+      }
+      callback(links.length > 0 ? links : undefined);
+    },
+  };
+  return term.registerLinkProvider(provider);
+}
+
+/// Branch chars per `git check-ref-format`: word chars plus `/`, `.`, `-`.
+/// We treat these as the "inside a branch token" set for boundary checks so
+/// `main` inside `domain` or `feat/x` inside `feat/xyz` never falsely links.
+const BRANCH_CHAR = /[\w/.-]/;
+
+/// Build a link provider that linkifies occurrences of *known* branch names.
+/// The name list is read live (`getNames`) and the alternation is rebuilt
+/// only when the set changes, so adding/deleting branches stays cheap. Names
+/// are sorted longest-first so `feat/auth` wins over a bare `feat`, and each
+/// is regex-escaped. Boundaries are checked manually (no lookbehind) to keep
+/// this working on older WebKitGTK builds.
+function buildBranchLinkProvider(
+  term: Terminal,
+  getNames: () => string[],
+  onClick: (branch: string) => void,
+): { dispose: () => void } {
+  let cacheKey = "";
+  let regex: RegExp | null = null;
+
+  const ensureRegex = (): RegExp | null => {
+    const names = getNames().filter((n) => n.length > 0);
+    const key = names.join("\n");
+    if (key === cacheKey) return regex;
+    cacheKey = key;
+    if (names.length === 0) {
+      regex = null;
+      return null;
+    }
+    const alt = [...names]
+      .sort((a, b) => b.length - a.length)
+      .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|");
+    regex = new RegExp(`(?:${alt})`, "g");
+    return regex;
+  };
+
+  const provider = {
+    provideLinks(
+      bufferLineNumber: number,
+      callback: (links: TerminalLink[] | undefined) => void,
+    ) {
+      const re = ensureRegex();
+      if (!re) {
+        callback(undefined);
+        return;
+      }
+      const line = term.buffer.active.getLine(bufferLineNumber - 1);
+      const text = line?.translateToString(true);
+      if (!text) {
+        callback(undefined);
+        return;
+      }
+      const links: TerminalLink[] = [];
+      re.lastIndex = 0;
+      for (const m of text.matchAll(re)) {
+        if (m.index === undefined) continue;
+        const before = m.index > 0 ? text[m.index - 1] : "";
+        const afterIdx = m.index + m[0].length;
+        const after = afterIdx < text.length ? text[afterIdx] : "";
+        // Reject matches glued to more branch-y chars on either side.
+        if (BRANCH_CHAR.test(before) || BRANCH_CHAR.test(after)) continue;
+        const start = m.index + 1; // xterm uses 1-based columns
+        const branch = m[0];
+        links.push({
+          range: {
+            start: { x: start, y: bufferLineNumber },
+            end: { x: start + branch.length - 1, y: bufferLineNumber },
+          },
+          text: branch,
+          activate: () => onClick(branch),
         });
       }
       callback(links.length > 0 ? links : undefined);

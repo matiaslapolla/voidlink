@@ -86,6 +86,76 @@ pub(crate) fn git_list_branches_impl(
     Ok(branches)
 }
 
+/// Create a branch at `start_point` (default HEAD) WITHOUT switching to it.
+/// Distinct from checkout-with-create: this just adds the ref.
+pub(crate) fn git_create_branch_impl(
+    repo_path: String,
+    name: String,
+    start_point: Option<String>,
+) -> Result<(), String> {
+    let repo = open_repo(&repo_path)?;
+    let start = start_point.as_deref().unwrap_or("HEAD");
+    let target = repo
+        .revparse_single(start)
+        .map_err(|e| format!("could not resolve '{start}': {}", e.message()))?
+        .peel_to_commit()
+        .map_err(|e| e.message().to_string())?;
+    repo.branch(&name, &target, false)
+        .map_err(|e| e.message().to_string())?;
+    Ok(())
+}
+
+/// Delete a local branch. Refuses the current HEAD. When the branch isn't fully
+/// merged into its upstream/HEAD, returns a recognizable "not fully merged"
+/// error unless `force` is set — the UI keys off that to offer a force path.
+pub(crate) fn git_delete_branch_impl(
+    repo_path: String,
+    name: String,
+    force: bool,
+) -> Result<(), String> {
+    let repo = open_repo(&repo_path)?;
+    let mut branch = repo
+        .find_branch(&name, BranchType::Local)
+        .map_err(|e| e.message().to_string())?;
+    if branch.is_head() {
+        return Err("cannot delete the current branch".to_string());
+    }
+
+    if !force {
+        // Consider a branch "merged" when HEAD is a descendant of its tip.
+        let merged = match (branch.get().target(), repo.head().ok().and_then(|h| h.target())) {
+            (Some(branch_oid), Some(head_oid)) => repo
+                .graph_descendant_of(head_oid, branch_oid)
+                .unwrap_or(false)
+                || branch_oid == head_oid,
+            _ => false,
+        };
+        if !merged {
+            return Err(format!(
+                "branch '{name}' is not fully merged — force to delete anyway"
+            ));
+        }
+    }
+
+    branch.delete().map_err(|e| e.message().to_string())
+}
+
+pub(crate) fn git_rename_branch_impl(
+    repo_path: String,
+    old_name: String,
+    new_name: String,
+    force: bool,
+) -> Result<(), String> {
+    let repo = open_repo(&repo_path)?;
+    let mut branch = repo
+        .find_branch(&old_name, BranchType::Local)
+        .map_err(|e| e.message().to_string())?;
+    branch
+        .rename(&new_name, force)
+        .map_err(|e| e.message().to_string())?;
+    Ok(())
+}
+
 pub(crate) fn git_checkout_branch_impl(
     repo_path: String,
     branch: String,

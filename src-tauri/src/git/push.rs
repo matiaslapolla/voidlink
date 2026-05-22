@@ -1,5 +1,6 @@
-use git2::{Cred, CredentialType, PushOptions, RemoteCallbacks};
+use git2::PushOptions;
 
+use super::auth::default_remote_callbacks;
 use super::repo::open_repo;
 
 pub(crate) fn git_push_impl(
@@ -29,27 +30,8 @@ pub(crate) fn git_push_impl(
         .find_remote(remote_name)
         .map_err(|e| e.message().to_string())?;
 
-    let mut tried_ssh = false;
-    let mut tried_token = false;
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(move |_url, username_from_url, allowed_types| {
-        if allowed_types.contains(CredentialType::SSH_KEY) && !tried_ssh {
-            tried_ssh = true;
-            return Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
-        }
-        if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) && !tried_token {
-            tried_token = true;
-            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-                return Cred::userpass_plaintext("x-access-token", &token);
-            }
-        }
-        Err(git2::Error::from_str(
-            "push auth failed: set GITHUB_TOKEN or configure SSH agent",
-        ))
-    });
-
     let mut push_opts = PushOptions::new();
-    push_opts.remote_callbacks(callbacks);
+    push_opts.remote_callbacks(default_remote_callbacks());
 
     remote_obj
         .push(&[&refspec], Some(&mut push_opts))

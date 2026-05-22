@@ -24,6 +24,8 @@ import { stackApi } from "@/api/stack";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
 import { pushToast } from "@/commands/toast";
+import { textPrompt } from "@/commands/prompt";
+import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import type { StackTab as StackTabState } from "@/store/layout";
 import type { RestackResult, StackBranch, SubmitResult } from "@/types/stack";
 
@@ -83,7 +85,12 @@ export function StackTab(props: Props) {
   }
 
   async function onBranchOnTop(parent: string) {
-    const name = window.prompt(`New branch on top of ${parent}:`)?.trim();
+    const name = await textPrompt({
+      title: "New branch",
+      label: `Create on top of ${parent}`,
+      placeholder: "feature/my-branch",
+      confirmLabel: "Create",
+    });
     if (!name) return;
     try {
       await stackApi.createBranch(props.repoPath, name, parent);
@@ -95,7 +102,11 @@ export function StackTab(props: Props) {
   }
 
   async function onUntrack(branch: string) {
-    if (!window.confirm(`Stop tracking ${branch} as part of this stack?`)) return;
+    const ok = await dialogConfirm(`Stop tracking ${branch} as part of this stack?`, {
+      title: "Untrack branch",
+      kind: "warning",
+    });
+    if (!ok) return;
     try {
       await stackApi.untrack(props.repoPath, branch);
       pushToast(`Untracked ${branch}`, "info");

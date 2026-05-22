@@ -8,6 +8,8 @@ import {
   applyIgnoreWhitespace,
 } from "@/components/git/shared/SplitDiffRenderer";
 import { pushToast } from "@/commands/toast";
+import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
+import { emitGitRefsChanged } from "@/commands/gitEvents";
 
 interface GitDiffViewProps {
   repoPath: string;
@@ -70,6 +72,37 @@ export function GitDiffView(props: GitDiffViewProps) {
         `Could not stage hunk: ${e instanceof Error ? e.message : String(e)}`,
         "error",
       );
+    }
+  }
+
+  /// Map a filtered hunk index back to the raw one (same logic as stageHunk),
+  /// confirm, then revert just that hunk in the working tree.
+  async function discardHunk(filteredIndex: number) {
+    const raw = rawFileDiff();
+    const filtered = fileDiff();
+    if (!raw || !filtered) return;
+    const filteredHunk = filtered.hunks[filteredIndex];
+    if (!filteredHunk) return;
+    const rawIndex = raw.hunks.findIndex(
+      (h) =>
+        h.oldStart === filteredHunk.oldStart && h.newStart === filteredHunk.newStart,
+    );
+    if (rawIndex === -1) {
+      pushToast("Could not locate hunk in unfiltered diff. Disable Ignore WS and retry.", "error");
+      return;
+    }
+    const ok = await dialogConfirm("Discard this hunk? The change is reverted in the working tree and cannot be undone.", {
+      title: "Discard hunk",
+      kind: "warning",
+    });
+    if (!ok) return;
+    try {
+      await gitApi.discardHunk(props.repoPath, raw, rawIndex);
+      pushToast("Discarded hunk", "info", 1800);
+      refetch();
+      emitGitRefsChanged();
+    } catch (e) {
+      pushToast(`Could not discard hunk: ${e instanceof Error ? e.message : String(e)}`, "error");
     }
   }
 
@@ -173,6 +206,7 @@ export function GitDiffView(props: GitDiffViewProps) {
               hunkActions={{
                 onStageHunk: (idx) => void stageHunk(idx),
                 stageLabel: "Stage hunk",
+                onDiscardHunk: (idx) => void discardHunk(idx),
               }}
             />
           )}

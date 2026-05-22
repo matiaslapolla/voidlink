@@ -30,6 +30,22 @@ pub(crate) fn git_repo_info_impl(repo_path: String) -> Result<GitRepoInfo, Strin
         .statuses(Some(&mut status_opts))
         .map_err(|e| e.message().to_string())?;
     let is_clean = statuses.is_empty();
+    let has_conflicts = statuses.iter().any(|e| e.status().is_conflicted());
+
+    // Detect an in-progress multi-step operation from the marker files git
+    // writes into the git dir. `repo.path()` is that dir (e.g. `.git/`).
+    let git_dir = repo.path();
+    let operation = if git_dir.join("MERGE_HEAD").exists() {
+        Some("merge".to_string())
+    } else if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        Some("rebase".to_string())
+    } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        Some("cherry-pick".to_string())
+    } else if git_dir.join("REVERT_HEAD").exists() {
+        Some("revert".to_string())
+    } else {
+        None
+    };
 
     let remote_url = repo
         .find_remote("origin")
@@ -67,5 +83,7 @@ pub(crate) fn git_repo_info_impl(repo_path: String) -> Result<GitRepoInfo, Strin
         upstream,
         ahead,
         behind,
+        operation,
+        has_conflicts,
     })
 }
