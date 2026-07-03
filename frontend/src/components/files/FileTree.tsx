@@ -1,4 +1,6 @@
-import { For, Show, createSignal, createResource, createEffect, onCleanup, onMount } from "solid-js";
+import { For, Show, createSignal, createMemo, createEffect, on, onCleanup, onMount } from "solid-js";
+import { createStore } from "solid-js/store";
+import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Portal } from "solid-js/web";
 import { ChevronRight, ChevronDown, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare } from "lucide-solid";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
@@ -22,6 +24,16 @@ type EditState =
   | { kind: "newFile"; parentDir: string }
   | { kind: "newFolder"; parentDir: string }
   | { kind: "rename"; path: string; initialName: string };
+
+// One flattened, windowed tree row. `depth` drives indentation exactly as the
+// old recursive nodes did: a row's own nesting level for real entries (root's
+// children = 1), and the parent dir's depth for the loading/empty placeholders.
+type Row =
+  | { kind: "dir"; path: string; name: string; depth: number; expanded: boolean }
+  | { kind: "file"; path: string; name: string; depth: number }
+  | { kind: "draft"; depth: number; draftKind: "file" | "folder" }
+  | { kind: "loading"; depth: number }
+  | { kind: "empty"; depth: number };
 
 export function FileTree(props: { root: string; onOpenFile?: (path: string) => void }) {
   const { state, actions } = useAppStore();
@@ -123,19 +135,217 @@ export function FileTree(props: { root: string; onOpenFile?: (path: string) => v
     catch (e) { pushToast(e instanceof Error ? e.message : String(e), "error", 6000); }
   }
 
+  // ── Virtualized tree model ──────────────────────────────────────────────────
+  // The tree is windowed with @tanstack/solid-virtual: we flatten the expanded
+  // hierarchy into a linear list and mount only on-screen rows so large repos
+  // scroll natively instead of rendering every row. The per-dir listing + expand
+  // state — previously local to each recursive TreeDir — has to live here so the
+  // flattener can walk it.
+
+  // Expanded directory paths (absolute). The root is always expanded; its own
+  // row is never rendered, only its contents.
+  const [expanded, setExpanded] = createSignal<Set<string>>(new Set([props.root]));
+  // Directory listings, keyed by absolute path. Key present → its entries
+  // ([] = listed-and-empty); key absent → not listed yet.
+  const [dirCache, setDirCache] = createStore<Record<string, FsEntry[]>>({});
+  const [loadingDirs, setLoadingDirs] = createSignal<Set<string>>(new Set());
+
+  const isExpanded = (path: string) => expanded().has(path);
+  const toggleDir = (path: string) =>
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+
+  // List (or re-list) one directory into the cache.
+  async function loadDir(path: string) {
+    setLoadingDirs(s => new Set(s).add(path));
+    try {
+      const entries = await fsApi.listDir(path);
+      setDirCache(path, entries);
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+    } finally {
+      setLoadingDirs(s => { const n = new Set(s); n.delete(path); return n; });
+    }
+  }
+
+  // Lazily list any expanded dir we haven't cached yet (initial mount + expands).
+  createEffect(() => {
+    for (const path of expanded()) {
+      if (dirCache[path] === undefined && !loadingDirs().has(path)) void loadDir(path);
+    }
+  });
+  // A refresh (create/rename/delete, or the external voidlink:refresh-files
+  // event) re-lists every currently expanded dir. `defer` skips the mount run,
+  // which the effect above already covers.
+  createEffect(on(refreshKey, () => {
+    for (const path of expanded()) void loadDir(path);
+  }, { defer: true }));
+
+  // A new-file/folder draft targeting a dir. Expand that dir so its inline input
+  // is visible even when it was collapsed (preserves the old per-dir behavior).
+  const draft = () => {
+    const e = edit();
+    return e && (e.kind === "newFile" || e.kind === "newFolder") ? e : null;
+  };
+  createEffect(() => {
+    const d = draft();
+    if (d && !isExpanded(d.parentDir)) setExpanded(prev => new Set(prev).add(d.parentDir));
+  });
+
+  // Flatten the expanded hierarchy into the linear list the virtualizer windows.
+  // `depth` is the row's own nesting level (root's children = 1), matching the
+  // original indentation math; placeholder rows carry the parent's depth.
+  const rows = createMemo<Row[]>(() => {
+    const out: Row[] = [];
+    const activeDraft = draft();
+    const byName = (a: FsEntry, b: FsEntry) => a.name.localeCompare(b.name);
+    const draftRow = (depth: number): Row =>
+      ({ kind: "draft", depth, draftKind: activeDraft!.kind === "newFolder" ? "folder" : "file" });
+
+    const walk = (dirPath: string, depth: number) => {
+      const parentDepth = depth - 1;
+      const entries = dirCache[dirPath];
+      // Not listed yet: show the loading placeholder (plus any draft input that
+      // forced this dir open), then stop — we have nothing to recurse into.
+      if (entries === undefined) {
+        out.push({ kind: "loading", depth: parentDepth });
+        if (activeDraft?.parentDir === dirPath) out.push(draftRow(depth));
+        return;
+      }
+      if (activeDraft?.parentDir === dirPath) out.push(draftRow(depth));
+      for (const e of entries.filter(x => x.isDir).sort(byName)) {
+        const exp = isExpanded(e.path);
+        out.push({ kind: "dir", path: e.path, name: e.name, depth, expanded: exp });
+        if (exp) walk(e.path, depth + 1);
+      }
+      for (const e of entries.filter(x => !x.isDir).sort(byName))
+        out.push({ kind: "file", path: e.path, name: e.name, depth });
+      // "Empty" only for real subdirs (never the root), matching the old tree.
+      if (entries.length === 0 && parentDepth > 0) out.push({ kind: "empty", depth: parentDepth });
+    };
+
+    walk(props.root, 1);
+    return out;
+  });
+
+  // The virtualizer. The outer <div> is the scroll container; rows are compact
+  // and near-uniform, so we estimate a fixed height and let measureElement
+  // correct any variance (e.g. the slightly taller rename/new-entry input row).
+  let scrollRef: HTMLDivElement | undefined;
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    get count() { return rows().length; },
+    getScrollElement: () => scrollRef ?? null,
+    estimateSize: () => 24,
+    overscan: 12,
+  });
+
+  // Render one flattened row. Kept in-scope so it can reach the tree's handlers
+  // directly instead of drilling them through props like the old node components.
+  function renderRow(r: Row | undefined) {
+    if (!r) return null;
+    switch (r.kind) {
+      case "loading":
+        return (
+          <div class="text-xs text-muted-foreground/50 py-0.5" style={{ "padding-left": `calc(24px + ${r.depth * 12}px)` }}>
+            Loading…
+          </div>
+        );
+      case "empty":
+        return (
+          <div class="text-xs text-muted-foreground/50 py-0.5" style={{ "padding-left": `calc(24px + ${r.depth * 12}px)` }}>
+            Empty
+          </div>
+        );
+      case "draft":
+        return (
+          <TreeInput
+            depth={r.depth}
+            kind={r.draftKind}
+            onCommit={commitEdit}
+            onCancel={cancelEdit}
+          />
+        );
+      case "dir":
+        return (
+          <button
+            onClick={() => toggleDir(r.path)}
+            onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, path: r.path, isDir: true, name: r.name }); }}
+            class="w-full flex items-center gap-1 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors"
+            style={{ "padding-left": `calc(8px + ${r.depth * 12}px)` }}
+          >
+            <span class="shrink-0 w-3 h-3 text-muted-foreground/60">
+              {r.expanded ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
+            </span>
+            {r.expanded
+              ? <FolderOpen class="w-3.5 h-3.5 shrink-0 text-warning/80" />
+              : <Folder    class="w-3.5 h-3.5 shrink-0 text-warning/80" />
+            }
+            <span class="truncate text-[13px]">{r.name}</span>
+          </button>
+        );
+      case "file": {
+        const e = edit();
+        // A rename in progress replaces the file row with the inline editor.
+        if (e && e.kind === "rename" && e.path === r.path) {
+          return (
+            <TreeInput
+              depth={r.depth}
+              kind="file"
+              initialValue={r.name}
+              onCommit={commitEdit}
+              onCancel={cancelEdit}
+            />
+          );
+        }
+        return (
+          <button
+            draggable={true}
+            onDragStart={(ev) => {
+              // Carry the absolute path so a terminal pane can inject it on drop.
+              // A custom mime keeps us from colliding with arbitrary text drags;
+              // text/plain is the fallback for non-aware drop targets.
+              ev.dataTransfer?.setData("application/x-voidlink-path", r.path);
+              ev.dataTransfer?.setData("text/plain", r.path);
+              if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "copy";
+            }}
+            onClick={() => props.onOpenFile?.(r.path)}
+            onContextMenu={ev => { ev.preventDefault(); setContextMenu({ x: ev.clientX, y: ev.clientY, path: r.path, isDir: false, name: r.name }); }}
+            class="w-full flex items-center gap-1.5 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors"
+            style={{ "padding-left": `calc(20px + ${r.depth * 12}px)` }}
+            title={r.path}
+          >
+            <File class="w-3.5 h-3.5 shrink-0 opacity-60" />
+            <span class="truncate text-[13px]">{r.name}</span>
+          </button>
+        );
+      }
+    }
+  }
+
   return (
-    <div class="flex-1 h-full overflow-y-auto scrollbar-thin py-1">
-      <TreeDir
-        path={props.root}
-        depth={0}
-        defaultExpanded
-        refreshKey={refreshKey()}
-        edit={edit}
-        onCommitEdit={commitEdit}
-        onCancelEdit={cancelEdit}
-        onOpenFile={props.onOpenFile}
-        onContextMenu={setContextMenu}
-      />
+    <div ref={scrollRef} class="flex-1 h-full overflow-y-auto scrollbar-thin py-1">
+      {/* Inner spacer sized to the full list so the native scrollbar thumb stays
+          proportional; only the windowed rows are absolutely positioned within. */}
+      <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+        <For each={virtualizer.getVirtualItems()}>
+          {(vi) => {
+            const row = () => rows()[vi.index];
+            return (
+              <div
+                data-index={vi.index}
+                ref={virtualizer.measureElement}
+                class="absolute left-0 top-0 w-full"
+                style={{ transform: `translateY(${vi.start}px)` }}
+              >
+                {renderRow(row())}
+              </div>
+            );
+          }}
+        </For>
+      </div>
 
       <Show when={contextMenu()}>
         {(m) => (
@@ -218,164 +428,6 @@ function MenuBtn(props: { icon: any; onClick: () => void; danger?: boolean; chil
       <Icon class="w-3.5 h-3.5 shrink-0 opacity-70" />
       {props.children}
     </button>
-  );
-}
-
-// ── Tree nodes ────────────────────────────────────────────────────────────────
-
-function TreeDir(props: {
-  path: string;
-  depth: number;
-  defaultExpanded?: boolean;
-  label?: string;
-  refreshKey: number;
-  edit: () => EditState | null;
-  onCommitEdit: (value: string) => void;
-  onCancelEdit: () => void;
-  onOpenFile?: (path: string) => void;
-  onContextMenu: (state: ContextMenuState) => void;
-}) {
-  const [expanded, setExpanded] = createSignal(props.defaultExpanded ?? false);
-
-  const [entries] = createResource(
-    () => expanded() ? `${props.path}::${props.refreshKey}` : null,
-    (key) => fsApi.listDir(key.split("::")[0]),
-  );
-
-  // A new-file/folder draft targeting this dir.
-  const draft = () => {
-    const e = props.edit();
-    return e && (e.kind === "newFile" || e.kind === "newFolder") && e.parentDir === props.path ? e : null;
-  };
-  // Expand so the draft input is visible when creating into a collapsed dir.
-  createEffect(() => { if (draft()) setExpanded(true); });
-
-  const name = () => props.label ?? props.path.split("/").pop() ?? props.path;
-  const dirs  = () => (entries() ?? []).filter(e =>  e.isDir).sort((a, b) => a.name.localeCompare(b.name));
-  const files = () => (entries() ?? []).filter(e => !e.isDir).sort((a, b) => a.name.localeCompare(b.name));
-  const indent = () => `${props.depth * 12}px`;
-
-  return (
-    <>
-      <Show when={props.depth > 0}>
-        <button
-          onClick={() => setExpanded(v => !v)}
-          onContextMenu={e => { e.preventDefault(); props.onContextMenu({ x: e.clientX, y: e.clientY, path: props.path, isDir: true, name: name() }); }}
-          class="w-full flex items-center gap-1 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors"
-          style={{ "padding-left": `calc(8px + ${indent()})` }}
-        >
-          <span class="shrink-0 w-3 h-3 text-muted-foreground/60">
-            {expanded() ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
-          </span>
-          {expanded()
-            ? <FolderOpen class="w-3.5 h-3.5 shrink-0 text-warning/80" />
-            : <Folder    class="w-3.5 h-3.5 shrink-0 text-warning/80" />
-          }
-          <span class="truncate text-[13px]">{name()}</span>
-        </button>
-      </Show>
-
-      <Show when={expanded() || props.depth === 0}>
-        <Show when={entries.loading}>
-          <div class="text-xs text-muted-foreground/50 py-0.5" style={{ "padding-left": `calc(24px + ${indent()})` }}>
-            Loading…
-          </div>
-        </Show>
-        <Show when={draft()}>
-          {(d) => (
-            <TreeInput
-              depth={props.depth + 1}
-              kind={d().kind === "newFolder" ? "folder" : "file"}
-              onCommit={props.onCommitEdit}
-              onCancel={props.onCancelEdit}
-            />
-          )}
-        </Show>
-        <For each={dirs()}>
-          {(entry) => (
-            <TreeDir
-              path={entry.path}
-              depth={props.depth + 1}
-              label={entry.name}
-              refreshKey={props.refreshKey}
-              edit={props.edit}
-              onCommitEdit={props.onCommitEdit}
-              onCancelEdit={props.onCancelEdit}
-              onOpenFile={props.onOpenFile}
-              onContextMenu={props.onContextMenu}
-            />
-          )}
-        </For>
-        <For each={files()}>
-          {(entry) => (
-            <TreeFile
-              entry={entry}
-              depth={props.depth + 1}
-              edit={props.edit}
-              onCommitEdit={props.onCommitEdit}
-              onCancelEdit={props.onCancelEdit}
-              onOpenFile={props.onOpenFile}
-              onContextMenu={props.onContextMenu}
-            />
-          )}
-        </For>
-        <Show when={!entries.loading && (entries() ?? []).length === 0 && props.depth > 0}>
-          <div class="text-xs text-muted-foreground/50 py-0.5" style={{ "padding-left": `calc(24px + ${indent()})` }}>
-            Empty
-          </div>
-        </Show>
-      </Show>
-    </>
-  );
-}
-
-function TreeFile(props: {
-  entry: FsEntry;
-  depth: number;
-  edit: () => EditState | null;
-  onCommitEdit: (value: string) => void;
-  onCancelEdit: () => void;
-  onOpenFile?: (path: string) => void;
-  onContextMenu: (state: ContextMenuState) => void;
-}) {
-  const indent = () => `${props.depth * 12}px`;
-  const renaming = () => {
-    const e = props.edit();
-    return e && e.kind === "rename" && e.path === props.entry.path;
-  };
-  return (
-    <Show
-      when={!renaming()}
-      fallback={
-        <TreeInput
-          depth={props.depth}
-          kind="file"
-          initialValue={props.entry.name}
-          onCommit={props.onCommitEdit}
-          onCancel={props.onCancelEdit}
-        />
-      }
-    >
-    <button
-      draggable={true}
-      onDragStart={(e) => {
-        // Carry the absolute path so a terminal pane can inject it on drop.
-        // A custom mime keeps us from colliding with arbitrary text drags;
-        // text/plain is the fallback for non-aware drop targets.
-        e.dataTransfer?.setData("application/x-voidlink-path", props.entry.path);
-        e.dataTransfer?.setData("text/plain", props.entry.path);
-        if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
-      }}
-      onClick={() => props.onOpenFile?.(props.entry.path)}
-      onContextMenu={e => { e.preventDefault(); props.onContextMenu({ x: e.clientX, y: e.clientY, path: props.entry.path, isDir: false, name: props.entry.name }); }}
-      class="w-full flex items-center gap-1.5 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors"
-      style={{ "padding-left": `calc(20px + ${indent()})` }}
-      title={props.entry.path}
-    >
-      <File class="w-3.5 h-3.5 shrink-0 opacity-60" />
-      <span class="truncate text-[13px]">{props.entry.name}</span>
-    </button>
-    </Show>
   );
 }
 
