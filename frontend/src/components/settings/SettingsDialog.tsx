@@ -1,11 +1,12 @@
 import { Show, For, createResource, createSignal, createEffect, type JSX } from "solid-js";
-import { Layers, X } from "lucide-solid";
+import { Check, Layers, X } from "lucide-solid";
 import {
   useSettings,
   type CursorStyle,
   type UiDensity,
   type UiTextSize,
 } from "@/store/settings";
+import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
 import { stackApi } from "@/api/stack";
 import { pushToast } from "@/commands/toast";
@@ -15,7 +16,7 @@ interface SettingsDialogProps {
   onClose: () => void;
 }
 
-type Tab = "ui" | "terminal" | "ai" | "stack";
+type Tab = "ui" | "theme" | "terminal" | "ai" | "stack";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -84,6 +85,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
 
           <div class="flex items-center gap-1 border-b border-border px-2 py-1 text-xs">
             <TabButton active={tab() === "ui"} onClick={() => setTab("ui")}>UI</TabButton>
+            <TabButton active={tab() === "theme"} onClick={() => setTab("theme")}>Theme</TabButton>
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
@@ -91,6 +93,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
 
           <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs">
             <Show when={tab() === "ui"}><UiPane /></Show>
+            <Show when={tab() === "theme"}><ThemePane /></Show>
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
             <Show when={tab() === "ai"}><AiPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>
@@ -159,6 +162,106 @@ function UiPane() {
         onChange={(v) => updateUi({ density: v })}
       />
     </div>
+  );
+}
+
+// ─── Theme Pane ──────────────────────────────────────────────────────────────
+
+function ThemePane() {
+  const { theme, setTheme, THEMES } = useTheme();
+  let gridRef: HTMLDivElement | undefined;
+
+  // Roving arrow-key navigation across the theme grid. The cards are native
+  // <button>s, so Tab focus and Enter/Space activation come for free; this only
+  // layers grid-style arrow movement on top (2-column layout).
+  const COLS = 2;
+  const onGridKeyDown = (e: KeyboardEvent) => {
+    if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(e.key)) return;
+    const btns = [
+      ...(gridRef?.querySelectorAll<HTMLButtonElement>("button[data-theme-option]") ?? []),
+    ];
+    const idx = btns.indexOf(document.activeElement as HTMLButtonElement);
+    if (idx === -1) return;
+    e.preventDefault();
+    let next = idx;
+    if (e.key === "ArrowRight") next = (idx + 1) % btns.length;
+    else if (e.key === "ArrowLeft") next = (idx - 1 + btns.length) % btns.length;
+    else if (e.key === "ArrowDown") next = Math.min(idx + COLS, btns.length - 1);
+    else if (e.key === "ArrowUp") next = Math.max(idx - COLS, 0);
+    btns[next]?.focus();
+  };
+
+  return (
+    <div class="space-y-4">
+      <p class="text-[11px] text-muted-foreground leading-relaxed">
+        Pick a color theme. Applied instantly across the whole app and remembered
+        across restarts. Each swatch previews that palette's background,
+        foreground, primary, and border.
+      </p>
+      <div
+        ref={gridRef}
+        role="radiogroup"
+        aria-label="Color theme"
+        onKeyDown={onGridKeyDown}
+        class="grid grid-cols-2 gap-2"
+      >
+        <For each={THEMES}>
+          {(t) => {
+            const selected = () => theme() === t.id;
+            return (
+              <button
+                data-theme-option
+                role="radio"
+                aria-checked={selected()}
+                onClick={() => setTheme(t.id)}
+                title={t.label}
+                class={`group flex items-center gap-2.5 rounded-md border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  selected()
+                    ? "border-primary/60 bg-primary/10"
+                    : "border-border hover:bg-accent/40"
+                }`}
+              >
+                <ThemeSwatch preview={t.preview} />
+                <span
+                  class={`flex-1 truncate text-[11px] ${
+                    selected() ? "text-primary" : "text-foreground/90"
+                  }`}
+                >
+                  {t.label}
+                </span>
+                <Show when={selected()}>
+                  <Check class="w-3.5 h-3.5 shrink-0 text-primary" />
+                </Show>
+              </button>
+            );
+          }}
+        </For>
+      </div>
+    </div>
+  );
+}
+
+function ThemeSwatch(props: { preview: [string, string, string, string] }) {
+  // The four reference colors come straight from the theme's own definition in
+  // the store — deliberately NOT from CSS tokens. Semantic tokens (--background
+  // etc.) only resolve to a theme's values under the matching [data-theme] on
+  // <html>, so a token-driven swatch would paint every card in the *currently
+  // active* theme. Rendering the literal palette values inline is the only way
+  // each card can preview its own palette regardless of what's active. (The raw
+  // values live in the store, not this component — MASTER §4's "no raw hex in
+  // components" is about semantic UI color, which the ring/check below honor.)
+  const [bg, fg, primary, border] = props.preview;
+  return (
+    <span
+      aria-hidden="true"
+      class="flex h-9 w-9 shrink-0 flex-col items-center justify-center gap-0.5 rounded border"
+      style={{ "background-color": bg, "border-color": border }}
+    >
+      <span class="text-[11px] font-semibold leading-none" style={{ color: fg }}>
+        Aa
+      </span>
+      <span class="h-1 w-4 rounded-full" style={{ "background-color": primary }} />
+    </span>
   );
 }
 
