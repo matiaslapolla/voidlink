@@ -18,6 +18,17 @@ pub struct WorktreeInfo {
     pub is_locked: bool,
     /// Detached HEAD (no branch checked out). Mutually exclusive with `branch`.
     pub is_detached: bool,
+    /// The worktree whose canonicalized path equals the `repo_path` the UI is
+    /// currently viewing. At most one entry is `true`.
+    pub is_current: bool,
+    /// Has uncommitted changes (`git status --porcelain` produced any output).
+    pub is_dirty: bool,
+    /// Commits on this worktree's branch not on its upstream. 0 when there is no
+    /// upstream or the HEAD is detached.
+    pub ahead: u32,
+    /// Commits on the upstream not on this worktree's branch. 0 when there is no
+    /// upstream or the HEAD is detached.
+    pub behind: u32,
 }
 
 /// Parse `git worktree list --porcelain`. Records are blank-line separated;
@@ -50,6 +61,10 @@ pub(crate) fn git_list_worktrees_impl(repo_path: String) -> Result<Vec<WorktreeI
                 is_main: first,
                 is_locked: false,
                 is_detached: false,
+                is_current: false,
+                is_dirty: false,
+                ahead: 0,
+                behind: 0,
             });
             first = false;
         } else if let Some(wt) = cur.as_mut() {
@@ -65,6 +80,41 @@ pub(crate) fn git_list_worktrees_impl(repo_path: String) -> Result<Vec<WorktreeI
         }
     }
     flush(&mut cur, &mut out);
+
+    // Enrich each worktree with per-directory status. Every extra `run_git`
+    // targets the worktree's *own* path and is guarded: a failure (e.g. no
+    // upstream, detached HEAD, transient error) degrades that field to its
+    // default and never aborts the whole listing.
+    let repo_canon = std::fs::canonicalize(&repo_path).ok();
+    for wt in out.iter_mut() {
+        // Current = the worktree the UI is viewing. Compare canonicalized paths
+        // so symlinks / trailing slashes don't cause a false miss; fall back to
+        // raw string equality when either path can't be canonicalized.
+        wt.is_current = match (repo_canon.as_ref(), std::fs::canonicalize(&wt.path).ok()) {
+            (Some(a), Some(b)) => *a == b,
+            _ => Path::new(&wt.path) == Path::new(&repo_path),
+        };
+
+        // Dirty = any porcelain output (staged, unstaged, or untracked).
+        if let Ok(status) = run_git(&wt.path, &["status", "--porcelain"]) {
+            wt.is_dirty = !status.trim().is_empty();
+        }
+
+        // Ahead/behind vs upstream. `<upstream>...HEAD` with `--left-right
+        // --count` prints "<behind>\t<ahead>" (left = commits only on upstream,
+        // right = commits only on HEAD). Fails with no upstream / detached HEAD,
+        // which we let fall through to the 0/0 default.
+        if let Ok(counts) = run_git(
+            &wt.path,
+            &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+        ) {
+            let mut parts = counts.split_whitespace();
+            if let (Some(behind), Some(ahead)) = (parts.next(), parts.next()) {
+                wt.behind = behind.parse().unwrap_or(0);
+                wt.ahead = ahead.parse().unwrap_or(0);
+            }
+        }
+    }
 
     Ok(out)
 }

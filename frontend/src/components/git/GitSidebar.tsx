@@ -1241,11 +1241,51 @@ function WorktreesPane(props: { repoPath: string }) {
         {(wt) => {
           const label = () => wt.branch ?? (wt.isDetached ? "(detached)" : wt.path);
           return (
-            <div class="group w-full flex items-center gap-2 rounded-md px-2 density-row text-[13px] text-muted-foreground hover:bg-accent/30">
-              <FolderGit2 class="w-3 h-3 shrink-0 opacity-70" />
+            <div
+              class={`group w-full flex items-center gap-2 rounded-md px-2 density-row text-[13px] hover:bg-accent/30 ${
+                wt.isCurrent ? "text-foreground" : "text-muted-foreground"
+              }`}
+            >
+              <Show
+                when={wt.isCurrent}
+                fallback={<FolderGit2 class="w-3 h-3 shrink-0 opacity-70" />}
+              >
+                <span
+                  class="w-1.5 h-1.5 rounded-full bg-primary shrink-0"
+                  title="Current worktree"
+                  aria-label="current worktree"
+                />
+              </Show>
               <span class="truncate flex-1" title={wt.path}>
                 {label()}
               </span>
+              <Show when={wt.isDirty}>
+                <span
+                  class="text-warning shrink-0"
+                  title="Uncommitted changes"
+                  aria-label="uncommitted changes"
+                >
+                  ●
+                </span>
+              </Show>
+              <Show when={wt.ahead > 0}>
+                <span
+                  class="text-success tabular-nums shrink-0"
+                  title={`${wt.ahead} commit(s) ahead of upstream`}
+                  aria-label={`${wt.ahead} ahead`}
+                >
+                  ↑{wt.ahead}
+                </span>
+              </Show>
+              <Show when={wt.behind > 0}>
+                <span
+                  class="text-destructive tabular-nums shrink-0"
+                  title={`${wt.behind} commit(s) behind upstream`}
+                  aria-label={`${wt.behind} behind`}
+                >
+                  ↓{wt.behind}
+                </span>
+              </Show>
               <Show when={wt.isLocked}>
                 <Lock class="w-3 h-3 text-muted-foreground/70" aria-label="locked" />
               </Show>

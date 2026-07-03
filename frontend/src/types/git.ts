@@ -37,6 +37,14 @@ export interface WorktreeInfo {
   isMain: boolean;
   isLocked: boolean;
   isDetached: boolean;
+  /** The worktree currently open in this view. At most one is true. */
+  isCurrent: boolean;
+  /** Has uncommitted changes. */
+  isDirty: boolean;
+  /** Commits ahead of upstream (0 when no upstream / detached). */
+  ahead: number;
+  /** Commits behind upstream (0 when no upstream / detached). */
+  behind: number;
 }
 
 export interface GitBranchInfo {
