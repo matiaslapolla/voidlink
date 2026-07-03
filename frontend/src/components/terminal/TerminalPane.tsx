@@ -2,6 +2,7 @@ import { createEffect, createSignal, onMount, onCleanup } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -196,6 +197,38 @@ export function TerminalPane(props: TerminalPaneProps) {
     term.open(container);
     fitAddon.fit();
     term.focus();
+
+    // ── WebGL renderer ────────────────────────────────────────────────
+    // xterm's default DOM renderer is the slowest path; the WebGL addon is
+    // the biggest terminal-perf win (GPU-composited glyph atlas). It must be
+    // loaded AFTER open() so the canvas/context exists. WebGL2 support varies
+    // across our two webviews — WebKitGTK on Linux can ship without a usable
+    // GL context, and even on macOS WKWebView construction can throw — so we
+    // feature-detect first and wrap construction in try/catch. On any failure
+    // we silently leave the DOM renderer in place; the pane must never blank.
+    //
+    // Ligatures stay compatible: the ligatures addon works via xterm's
+    // character-joiner API, which the WebGL renderer honours (unlike the old
+    // canvas renderer), so the existing opt-in ligatures path below is
+    // unaffected and we don't need to gate it.
+    let webglAddon: WebglAddon | null = null;
+    if (webgl2Available()) {
+      try {
+        const addon = new WebglAddon();
+        // A lost GL context (OOM, GPU reset, system suspend) would otherwise
+        // leave a blank canvas. Dispose the addon so xterm falls back to the
+        // DOM renderer, and null our ref so cleanup doesn't double-dispose.
+        addon.onContextLoss(() => {
+          try { addon.dispose(); } catch { /* ignore */ }
+          webglAddon = null;
+        });
+        term.loadAddon(addon);
+        webglAddon = addon;
+      } catch {
+        // Construction failed (no context, driver quirk) — keep DOM renderer.
+        webglAddon = null;
+      }
+    }
 
     // ── Deep-link providers (path:line, SHAs) ─────────────────────────
     // Use the native xterm link-provider API rather than the web-links
@@ -411,6 +444,8 @@ export function TerminalPane(props: TerminalPaneProps) {
         try { d.dispose(); } catch { /* ignore */ }
       }
       try { ligaturesDisposer?.dispose?.(); } catch { /* ignore */ }
+      // May already be null if onContextLoss disposed it — never double-dispose.
+      try { webglAddon?.dispose(); } catch { /* ignore */ }
       term.dispose();
     });
   });
@@ -442,6 +477,19 @@ export function TerminalPane(props: TerminalPaneProps) {
       }}
     />
   );
+}
+
+/// Probe for a usable WebGL2 context before we try to construct the WebGL
+/// renderer. WebKitGTK (Linux) and WKWebView (macOS) don't both guarantee
+/// WebGL2, and calling getContext on a throwaway canvas is the cheapest way
+/// to know without risking a mid-construction throw inside the addon.
+function webgl2Available(): boolean {
+  try {
+    const canvas = document.createElement("canvas");
+    return !!canvas.getContext("webgl2");
+  } catch {
+    return false;
+  }
 }
 
 /// Quote a path for a POSIX shell input line. Bare when it only contains
