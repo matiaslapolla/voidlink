@@ -311,6 +311,7 @@ pub fn run() {
             git::git_list_branches,
             git::git_file_status,
             git::git_log,
+            git::git_commit_graph,
             git::git_checkout_branch,
             git::git_stage_files,
             git::git_unstage_files,

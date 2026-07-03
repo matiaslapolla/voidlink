@@ -1,11 +1,12 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, TerminalSquare, FileCode, GitCompare, GitBranchPlus, Layers, Plus, FilePlus2, Pin, PinOff, ChevronsRight, GitMerge, Eye } from "lucide-solid";
+import { X, TerminalSquare, FileCode, GitCompare, GitBranchPlus, Layers, Plus, FilePlus2, Pin, PinOff, ChevronsRight, GitMerge, Eye, GitCommitHorizontal } from "lucide-solid";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { GitDiffView } from "@/components/git/GitDiffView";
 import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTab";
 import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { ConflictTab as ConflictTabView } from "@/components/git/conflict/ConflictTab";
+import { CommitGraph } from "@/components/git/history/CommitGraph";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import { EditorHost } from "@/components/editor/EditorHost";
 import { editorController } from "@/components/editor/editorController";
@@ -31,6 +32,7 @@ export function MainSurface() {
     activeCompareTabs,
     activeStackTabs,
     activeConflictTabs,
+    activeHistoryTabs,
     activePreviewTabs,
     activeItem,
     activePinnedTabs,
@@ -210,6 +212,7 @@ export function MainSurface() {
   const activeCompareId  = () => { const a = activeItem(); return a?.type === "compare"  ? a.id : null; };
   const activeStackId    = () => { const a = activeItem(); return a?.type === "stack"    ? a.id : null; };
   const activeConflictId = () => { const a = activeItem(); return a?.type === "conflict" ? a.id : null; };
+  const activeHistoryId  = () => { const a = activeItem(); return a?.type === "history"  ? a.id : null; };
   const activePreviewId  = () => { const a = activeItem(); return a?.type === "preview"  ? a.id : null; };
 
   const showEditor = () => activeFileId() !== null;
@@ -236,6 +239,7 @@ export function MainSurface() {
     activeCompareTabs().length === 0 &&
     activeStackTabs().length === 0 &&
     activeConflictTabs().length === 0 &&
+    activeHistoryTabs().length === 0 &&
     activePreviewTabs().length === 0;
 
   const hasAnyTab = () =>
@@ -245,6 +249,7 @@ export function MainSurface() {
     activeCompareTabs().length > 0 ||
     activeStackTabs().length > 0 ||
     activeConflictTabs().length > 0 ||
+    activeHistoryTabs().length > 0 ||
     activePreviewTabs().length > 0;
 
   const repoRoot = () => activeWorkspace()?.repoRoot ?? null;
@@ -276,6 +281,21 @@ export function MainSurface() {
     const handler = () => void refreshBranchNames();
     window.addEventListener("voidlink:refresh-git", handler);
     onCleanup(() => window.removeEventListener("voidlink:refresh-git", handler));
+  });
+
+  /// The ⌘K "Open commit graph" command (registered in commands/registry.ts)
+  /// broadcasts this event so it can stay decoupled from the store. We open
+  /// the graph tab for the active workspace when a repo is selected.
+  onMount(() => {
+    const handler = () => {
+      if (!repoRoot()) {
+        pushToast("Open a repository first", "warning");
+        return;
+      }
+      actions.openHistoryTab(state.activeWorkspaceId);
+    };
+    window.addEventListener("voidlink:open-commit-graph", handler);
+    onCleanup(() => window.removeEventListener("voidlink:open-commit-graph", handler));
   });
 
   /// Switch to `branch` from a terminal deep-link. Mirrors the git sidebar's
@@ -637,6 +657,42 @@ export function MainSurface() {
             }}
           </For>
 
+          {/* Commit graph (history) tabs — repo-wide, non-draggable. */}
+          <For each={activeHistoryTabs()}>
+            {(tab) => {
+              const isActive = () => tab.id === activeHistoryId();
+              return (
+                <div
+                  class={`group flex items-center gap-1.5 px-3 h-full border-r border-border shrink-0 text-[13px] cursor-pointer select-none transition-colors ${
+                    isActive()
+                      ? "bg-background text-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
+                  }`}
+                  onClick={() => actions.selectHistoryTab(state.activeWorkspaceId, tab.id)}
+                  onMouseDown={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      actions.closeHistoryTab(state.activeWorkspaceId, tab.id);
+                    }
+                  }}
+                  title="Commit graph"
+                >
+                  <GitCommitHorizontal class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />
+                  <span class="max-w-[160px] truncate">
+                    <span class="text-muted-foreground text-[11px]">graph</span>
+                  </span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); actions.closeHistoryTab(state.activeWorkspaceId, tab.id); }}
+                    class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
+                    aria-label="Close commit graph"
+                  >
+                    <X class="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            }}
+          </For>
+
           {/* Markdown preview tabs */}
           <For each={visiblePreviews()}>
             {(tab) => {
@@ -925,6 +981,30 @@ export function MainSurface() {
                     filePath={tab.filePath}
                     workspaceId={state.activeWorkspaceId}
                     onResolved={() => actions.closeConflictTab(state.activeWorkspaceId, tab.id)}
+                  />
+                </div>
+              )}
+            </Show>
+          )}
+        </For>
+
+        {/* Commit graph tabs */}
+        <For each={activeHistoryTabs()}>
+          {(tab) => (
+            <Show when={activeWorkspace()?.repoRoot}>
+              {(repo) => (
+                <div class="absolute inset-0" style={{ display: tab.id === activeHistoryId() ? "block" : "none" }}>
+                  <CommitGraph
+                    repoPath={repo()}
+                    onOpenCommit={(oid) => {
+                      // Reuse the existing commit-diff path: a compare tab of
+                      // <oid>^..<oid> shows exactly what the commit changed.
+                      actions.openCompareTab(state.activeWorkspaceId, {
+                        baseRef: `${oid}^`,
+                        headRef: oid,
+                        useMergeBase: false,
+                      });
+                    }}
                   />
                 </div>
               )}

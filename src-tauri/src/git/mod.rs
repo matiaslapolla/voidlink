@@ -11,6 +11,7 @@ pub(crate) mod conflict;
 pub(crate) mod diff;
 pub(crate) mod discard;
 pub(crate) mod fetch;
+pub(crate) mod graph;
 pub(crate) mod ls_files;
 pub(crate) mod merge;
 pub(crate) mod pick;
@@ -47,6 +48,7 @@ use cmd::OpResult;
 use diff::git_diff_working_impl;
 use discard::{git_discard_all_impl, git_discard_file_impl};
 use fetch::{git_fetch_impl, git_pull_impl, PullResult};
+use graph::{git_commit_graph_impl, GraphCommit};
 use ls_files::git_ls_files_impl;
 use merge::{git_merge_abort_impl, git_merge_impl};
 use pick::{
@@ -243,6 +245,16 @@ pub async fn git_log(
 ) -> Result<Vec<GitCommitInfo>, String> {
     let lim = limit.unwrap_or(50);
     blocking_git!(git_log_impl(repo_path, branch, lim))
+}
+
+#[tauri::command]
+pub async fn git_commit_graph(
+    repo_path: String,
+    limit: Option<u32>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Vec<GraphCommit>, String> {
+    let lim = limit.unwrap_or(200);
+    blocking_git!(git_commit_graph_impl(repo_path, lim))
 }
 
 #[tauri::command]

@@ -63,6 +63,24 @@ export function isFileFinderOpen() {
   return fileFinderOpen();
 }
 
+// ─── Built-in commands ────────────────────────────────────────────────────
+// "Open commit graph" lives here (not in App.tsx's store-scoped catalog)
+// because it needs no store closure — it broadcasts an event that
+// MainSurface picks up to open the graph tab for the active workspace,
+// keeping the palette entry decoupled from the layout store. Registered at
+// module load; App.tsx's own catalog re-registers independently by id.
+registerActions([
+  {
+    id: "git.commit-graph",
+    label: "Open commit graph",
+    description: "Visualize the commit history DAG with lanes and ref decorations",
+    group: "Git",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("voidlink:open-commit-graph"));
+    },
+  },
+]);
+
 export function openFileFinder() {
   setFileFinderOpen(true);
 }

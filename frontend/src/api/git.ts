@@ -16,6 +16,7 @@ import type {
   StashEntry,
   WorktreeInfo,
 } from "@/types/git";
+import type { GraphCommit } from "@/types/history";
 
 export const gitApi = {
   repoInfo(repoPath: string): Promise<GitRepoInfo> {
@@ -35,6 +36,10 @@ export const gitApi = {
 
   log(repoPath: string, branch?: string, limit?: number): Promise<GitCommitInfo[]> {
     return invoke<GitCommitInfo[]>("git_log", { repoPath, branch, limit });
+  },
+
+  commitGraph(repoPath: string, limit?: number): Promise<GraphCommit[]> {
+    return invoke<GraphCommit[]>("git_commit_graph", { repoPath, limit });
   },
 
   checkoutBranch(repoPath: string, branch: string, create?: boolean): Promise<void> {

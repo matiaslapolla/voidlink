@@ -32,11 +32,18 @@ export type ActiveItem =
   | { type: "compare"; id: string }
   | { type: "stack"; id: string }
   | { type: "conflict"; id: string }
+  | { type: "history"; id: string }
   | { type: "preview"; id: string; path: string };
 
 export interface ConflictTab {
   id: string;
   filePath: string;
+}
+
+/// A commit-graph tab. Repo-wide (the graph spans every branch), so it
+/// carries no params beyond its id — one per workspace is enough.
+export interface HistoryTab {
+  id: string;
 }
 
 export interface PreviewTab {
@@ -99,6 +106,7 @@ interface AppStoreState {
   compareTabsByWorkspace: Record<string, CompareTab[]>;
   stackTabsByWorkspace: Record<string, StackTab[]>;
   conflictTabsByWorkspace: Record<string, ConflictTab[]>;
+  historyTabsByWorkspace: Record<string, HistoryTab[]>;
   previewTabsByWorkspace: Record<string, PreviewTab[]>;
   /// LIFO stack of recently closed tabs, capped at CLOSED_TAB_HISTORY_LIMIT.
   /// Lives in memory only — closing the app drops the history (matches
@@ -315,6 +323,7 @@ export function createAppStore() {
     compareTabsByWorkspace: loadCompareTabs(workspaces.map((w) => w.id)),
     stackTabsByWorkspace: loadStackTabs(workspaces.map((w) => w.id)),
     conflictTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
+    historyTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     previewTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     closedTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     pinnedTabsByWorkspace: loadPinnedTabs(workspaces.map((w) => w.id)),
@@ -399,6 +408,9 @@ export function createAppStore() {
   const activeConflictTabs = createMemo(
     () => state.conflictTabsByWorkspace[state.activeWorkspaceId] ?? [],
   );
+  const activeHistoryTabs = createMemo(
+    () => state.historyTabsByWorkspace[state.activeWorkspaceId] ?? [],
+  );
   const activePreviewTabs = createMemo(
     () => state.previewTabsByWorkspace[state.activeWorkspaceId] ?? [],
   );
@@ -470,6 +482,7 @@ export function createAppStore() {
         s.compareTabsByWorkspace[ws.id] = [];
         s.stackTabsByWorkspace[ws.id] = [];
         s.conflictTabsByWorkspace[ws.id] = [];
+        s.historyTabsByWorkspace[ws.id] = [];
         s.previewTabsByWorkspace[ws.id] = [];
         s.closedTabsByWorkspace[ws.id] = [];
         s.pinnedTabsByWorkspace[ws.id] = [];
@@ -490,6 +503,7 @@ export function createAppStore() {
         delete s.compareTabsByWorkspace[id];
         delete s.stackTabsByWorkspace[id];
         delete s.conflictTabsByWorkspace[id];
+        delete s.historyTabsByWorkspace[id];
         delete s.previewTabsByWorkspace[id];
         delete s.closedTabsByWorkspace[id];
         delete s.pinnedTabsByWorkspace[id];
@@ -503,6 +517,7 @@ export function createAppStore() {
           s.compareTabsByWorkspace[fresh.id] = [];
           s.stackTabsByWorkspace[fresh.id] = [];
           s.conflictTabsByWorkspace[fresh.id] = [];
+          s.historyTabsByWorkspace[fresh.id] = [];
           s.previewTabsByWorkspace[fresh.id] = [];
           s.closedTabsByWorkspace[fresh.id] = [];
           s.pinnedTabsByWorkspace[fresh.id] = [];
@@ -972,6 +987,47 @@ export function createAppStore() {
       setState("activeItemByWorkspace", wsId, { type: "conflict", id: tabId });
     },
 
+    // ── History (commit graph) tab ───────────────────────────────────────
+    /// Open the commit-graph tab for the workspace, focusing the existing
+    /// one if present. The graph is repo-wide so a single tab per workspace
+    /// is all we ever need.
+    openHistoryTab(wsId: string) {
+      const existing = (state.historyTabsByWorkspace[wsId] ?? [])[0];
+      if (existing) {
+        setState("activeItemByWorkspace", wsId, { type: "history", id: existing.id });
+        return existing.id;
+      }
+      const tab: HistoryTab = { id: crypto.randomUUID() };
+      setState(produce((s) => {
+        s.historyTabsByWorkspace[wsId] = [...(s.historyTabsByWorkspace[wsId] ?? []), tab];
+        s.activeItemByWorkspace[wsId] = { type: "history", id: tab.id };
+      }));
+      return tab.id;
+    },
+
+    closeHistoryTab(wsId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.historyTabsByWorkspace[wsId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorkspace[wsId];
+        if (active?.type === "history" && active.id === tabId) {
+          const terms = s.terminalsByWorkspace[wsId] ?? [];
+          const files = s.openFilesByWorkspace[wsId] ?? [];
+          s.activeItemByWorkspace[wsId] = files[0]
+            ? { type: "file", id: files[0].id, path: files[0].path }
+            : terms[0]
+              ? { type: "terminal", id: terms[0].id }
+              : null;
+        }
+      }));
+    },
+
+    selectHistoryTab(wsId: string, tabId: string) {
+      setState("activeItemByWorkspace", wsId, { type: "history", id: tabId });
+    },
+
     // ── Preview tabs (markdown preview) ─────────────────────────────────
     openPreviewTab(wsId: string, filePath: string) {
       const existing = (state.previewTabsByWorkspace[wsId] ?? []).find(
@@ -1338,6 +1394,7 @@ export function createAppStore() {
     activeCompareTabs,
     activeStackTabs,
     activeConflictTabs,
+    activeHistoryTabs,
     activePreviewTabs,
     activeItem,
     activeClosedTabs,
