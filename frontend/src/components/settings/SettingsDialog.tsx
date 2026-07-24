@@ -1,5 +1,6 @@
 import { Show, For, createResource, createSignal, createEffect, type JSX } from "solid-js";
 import { Check, Layers, X } from "lucide-solid";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   useSettings,
   type CursorStyle,
@@ -16,7 +17,7 @@ interface SettingsDialogProps {
   onClose: () => void;
 }
 
-type Tab = "ui" | "theme" | "terminal" | "ai" | "stack";
+type Tab = "ui" | "theme" | "terminal" | "ai" | "stack" | "brain";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -89,6 +90,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
+            <TabButton active={tab() === "brain"} onClick={() => setTab("brain")}>Brain</TabButton>
           </div>
 
           <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs">
@@ -97,6 +99,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
             <Show when={tab() === "ai"}><AiPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>
+            <Show when={tab() === "brain"}><BrainPane /></Show>
           </div>
 
           <div class="flex items-center justify-between px-4 py-2.5 border-t border-border">
@@ -560,6 +563,51 @@ function AiPane() {
           state — branch, status, recent log, staged diff, open files — is piped
           to stdin; stdout is the answer. Leave blank to reuse the commit command.
         </p>
+      </Section>
+    </div>
+  );
+}
+
+// ─── Brain Pane ─────────────────────────────────────────────────────────────
+
+function BrainPane() {
+  const { settings, updateBrain } = useSettings();
+
+  const pickVaultPath = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Select the brain-kb vault folder",
+    });
+    if (!selected || Array.isArray(selected)) return;
+    updateBrain({ vaultPath: selected });
+  };
+
+  return (
+    <div class="space-y-4">
+      <p class="text-[11px] text-muted-foreground leading-relaxed">
+        A local git clone of your brain-kb vault (typed entries + notes). This
+        must be the same directory the <code>brain</code> CLI writes to — its
+        own path lives separately in <code>~/.config/brain/config.json</code>,
+        so the two have to be pointed at each other by hand.
+      </p>
+      <Section title="Vault">
+        <div class="flex items-center gap-3">
+          <span class="w-28 text-muted-foreground shrink-0">Path</span>
+          <input
+            type="text"
+            value={settings.brain.vaultPath}
+            placeholder="/path/to/brain-kb"
+            onInput={(e) => updateBrain({ vaultPath: e.currentTarget.value })}
+            class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <button
+            onClick={pickVaultPath}
+            class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+          >
+            Browse…
+          </button>
+        </div>
       </Section>
     </div>
   );

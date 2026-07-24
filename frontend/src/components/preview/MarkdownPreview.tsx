@@ -1,8 +1,7 @@
 import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
 import { fsApi } from "@/api/fs";
 import { editorController } from "@/components/editor/editorController";
+import { renderMarkdown } from "@/components/preview/markdown";
 
 interface MarkdownPreviewProps {
   filePath: string;
@@ -16,8 +15,7 @@ export function MarkdownPreview(props: MarkdownPreviewProps) {
   const [html, setHtml] = createSignal("");
 
   function renderFrom(source: string) {
-    const raw = marked.parse(source, { async: false, breaks: false, gfm: true }) as string;
-    setHtml(DOMPurify.sanitize(raw));
+    setHtml(renderMarkdown(source));
   }
 
   onMount(() => {

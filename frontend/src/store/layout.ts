@@ -33,7 +33,8 @@ export type ActiveItem =
   | { type: "stack"; id: string }
   | { type: "conflict"; id: string }
   | { type: "history"; id: string }
-  | { type: "preview"; id: string; path: string };
+  | { type: "preview"; id: string; path: string }
+  | { type: "brain"; id: string };
 
 export interface ConflictTab {
   id: string;
@@ -49,6 +50,13 @@ export interface HistoryTab {
 export interface PreviewTab {
   id: string;
   filePath: string;
+}
+
+/// A Brain (second-brain vault browser) tab. Reads a single vault path from
+/// settings, not per-tab state, so — like HistoryTab — one per workspace is
+/// all we ever need.
+export interface BrainTab {
+  id: string;
 }
 
 export interface OpenFileTab {
@@ -108,6 +116,7 @@ interface AppStoreState {
   conflictTabsByWorkspace: Record<string, ConflictTab[]>;
   historyTabsByWorkspace: Record<string, HistoryTab[]>;
   previewTabsByWorkspace: Record<string, PreviewTab[]>;
+  brainTabsByWorkspace: Record<string, BrainTab[]>;
   /// LIFO stack of recently closed tabs, capped at CLOSED_TAB_HISTORY_LIMIT.
   /// Lives in memory only — closing the app drops the history (matches
   /// what most editors do with reopen-last-closed).
@@ -325,6 +334,7 @@ export function createAppStore() {
     conflictTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     historyTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     previewTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
+    brainTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     closedTabsByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, []])),
     pinnedTabsByWorkspace: loadPinnedTabs(workspaces.map((w) => w.id)),
     activeItemByWorkspace: Object.fromEntries(workspaces.map((w) => [w.id, null])),
@@ -414,6 +424,9 @@ export function createAppStore() {
   const activePreviewTabs = createMemo(
     () => state.previewTabsByWorkspace[state.activeWorkspaceId] ?? [],
   );
+  const activeBrainTabs = createMemo(
+    () => state.brainTabsByWorkspace[state.activeWorkspaceId] ?? [],
+  );
   const activeItem = createMemo(
     () => state.activeItemByWorkspace[state.activeWorkspaceId] ?? null,
   );
@@ -484,6 +497,7 @@ export function createAppStore() {
         s.conflictTabsByWorkspace[ws.id] = [];
         s.historyTabsByWorkspace[ws.id] = [];
         s.previewTabsByWorkspace[ws.id] = [];
+        s.brainTabsByWorkspace[ws.id] = [];
         s.closedTabsByWorkspace[ws.id] = [];
         s.pinnedTabsByWorkspace[ws.id] = [];
         s.activeItemByWorkspace[ws.id] = null;
@@ -505,6 +519,7 @@ export function createAppStore() {
         delete s.conflictTabsByWorkspace[id];
         delete s.historyTabsByWorkspace[id];
         delete s.previewTabsByWorkspace[id];
+        delete s.brainTabsByWorkspace[id];
         delete s.closedTabsByWorkspace[id];
         delete s.pinnedTabsByWorkspace[id];
         delete s.activeItemByWorkspace[id];
@@ -519,6 +534,7 @@ export function createAppStore() {
           s.conflictTabsByWorkspace[fresh.id] = [];
           s.historyTabsByWorkspace[fresh.id] = [];
           s.previewTabsByWorkspace[fresh.id] = [];
+          s.brainTabsByWorkspace[fresh.id] = [];
           s.closedTabsByWorkspace[fresh.id] = [];
           s.pinnedTabsByWorkspace[fresh.id] = [];
           s.activeItemByWorkspace[fresh.id] = null;
@@ -1028,6 +1044,47 @@ export function createAppStore() {
       setState("activeItemByWorkspace", wsId, { type: "history", id: tabId });
     },
 
+    // ── Brain (second-brain vault browser) tab ──────────────────────────
+    /// Open the Brain tab for the workspace, focusing the existing one if
+    /// present. It reads from settings.brain.vaultPath, not per-tab state,
+    /// so a single tab per workspace is all we ever need.
+    openBrainTab(wsId: string) {
+      const existing = (state.brainTabsByWorkspace[wsId] ?? [])[0];
+      if (existing) {
+        setState("activeItemByWorkspace", wsId, { type: "brain", id: existing.id });
+        return existing.id;
+      }
+      const tab: BrainTab = { id: crypto.randomUUID() };
+      setState(produce((s) => {
+        s.brainTabsByWorkspace[wsId] = [...(s.brainTabsByWorkspace[wsId] ?? []), tab];
+        s.activeItemByWorkspace[wsId] = { type: "brain", id: tab.id };
+      }));
+      return tab.id;
+    },
+
+    closeBrainTab(wsId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.brainTabsByWorkspace[wsId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorkspace[wsId];
+        if (active?.type === "brain" && active.id === tabId) {
+          const terms = s.terminalsByWorkspace[wsId] ?? [];
+          const files = s.openFilesByWorkspace[wsId] ?? [];
+          s.activeItemByWorkspace[wsId] = files[0]
+            ? { type: "file", id: files[0].id, path: files[0].path }
+            : terms[0]
+              ? { type: "terminal", id: terms[0].id }
+              : null;
+        }
+      }));
+    },
+
+    selectBrainTab(wsId: string, tabId: string) {
+      setState("activeItemByWorkspace", wsId, { type: "brain", id: tabId });
+    },
+
     // ── Preview tabs (markdown preview) ─────────────────────────────────
     openPreviewTab(wsId: string, filePath: string) {
       const existing = (state.previewTabsByWorkspace[wsId] ?? []).find(
@@ -1396,6 +1453,7 @@ export function createAppStore() {
     activeConflictTabs,
     activeHistoryTabs,
     activePreviewTabs,
+    activeBrainTabs,
     activeItem,
     activeClosedTabs,
     activePinnedTabs,

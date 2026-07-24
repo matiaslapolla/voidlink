@@ -6,6 +6,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 
 mod git;
 mod fs;
+mod brain;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
@@ -387,6 +388,9 @@ pub fn run() {
             fs::fs_rename,
             fs::fs_delete,
             fs::fs_find_repo_root,
+            brain::brain_list_entries,
+            brain::brain_read_entry,
+            brain::brain_save_entry,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

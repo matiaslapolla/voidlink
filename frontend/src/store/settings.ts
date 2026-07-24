@@ -41,10 +41,18 @@ export interface AiSettings {
   agentCommand: string;
 }
 
+/// The local path to the brain-kb vault (a git-cloned second-brain content
+/// repo). Independent of the `brain` CLI's own `~/.config/brain/config.json`
+/// vaultPath — the two must be pointed at the same directory by hand.
+export interface BrainSettings {
+  vaultPath: string;
+}
+
 export interface AppSettings {
   ui: UiSettings;
   terminal: TerminalSettings;
   ai: AiSettings;
+  brain: BrainSettings;
 }
 
 const STORAGE_KEY = "voidlink-settings";
@@ -79,6 +87,9 @@ const DEFAULTS: AppSettings = {
     commitCommand: "",
     agentCommand: "",
   },
+  brain: {
+    vaultPath: "",
+  },
 };
 
 function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | undefined): T {
@@ -95,6 +106,7 @@ function load(): AppSettings {
       ui: mergeDefaults(DEFAULTS.ui, parsed.ui),
       terminal: mergeDefaults(DEFAULTS.terminal, parsed.terminal),
       ai: mergeDefaults(DEFAULTS.ai, parsed.ai),
+      brain: mergeDefaults(DEFAULTS.brain, parsed.brain),
     };
   } catch {
     return JSON.parse(JSON.stringify(DEFAULTS));
@@ -127,6 +139,9 @@ export function useSettings() {
     },
     updateAi(patch: Partial<AiSettings>) {
       setSettings("ai", patch);
+    },
+    updateBrain(patch: Partial<BrainSettings>) {
+      setSettings("brain", patch);
     },
     reset() {
       setSettings(JSON.parse(JSON.stringify(DEFAULTS)));

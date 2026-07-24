@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, TerminalSquare, FileCode, GitCompare, GitBranchPlus, Layers, Plus, FilePlus2, Pin, PinOff, ChevronsRight, GitMerge, Eye, GitCommitHorizontal } from "lucide-solid";
+import { X, TerminalSquare, FileCode, GitCompare, GitBranchPlus, Layers, Plus, FilePlus2, Pin, PinOff, ChevronsRight, GitMerge, Eye, GitCommitHorizontal, Brain } from "lucide-solid";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { GitDiffView } from "@/components/git/GitDiffView";
 import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTab";
@@ -8,11 +8,13 @@ import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { ConflictTab as ConflictTabView } from "@/components/git/conflict/ConflictTab";
 import { CommitGraph } from "@/components/git/history/CommitGraph";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
+import { BrainSurface } from "@/components/brain/BrainSurface";
 import { EditorHost } from "@/components/editor/EditorHost";
 import { editorController } from "@/components/editor/editorController";
 import { useOpenFiles } from "@/components/editor/useOpenFiles";
 import { blameEnabled, clearBlameFor, refreshBlameFor } from "@/components/editor/blameOverlay";
 import { useAppStore } from "@/store/LayoutContext";
+import { useSettings } from "@/store/settings";
 import { terminalApi } from "@/api/terminal";
 import { fsApi } from "@/api/fs";
 import { gitApi } from "@/api/git";
@@ -34,10 +36,12 @@ export function MainSurface() {
     activeConflictTabs,
     activeHistoryTabs,
     activePreviewTabs,
+    activeBrainTabs,
     activeItem,
     activePinnedTabs,
     actions,
   } = useAppStore();
+  const { settings } = useSettings();
 
   const isPinned = (id: string) => activePinnedTabs().includes(id);
 
@@ -214,6 +218,7 @@ export function MainSurface() {
   const activeConflictId = () => { const a = activeItem(); return a?.type === "conflict" ? a.id : null; };
   const activeHistoryId  = () => { const a = activeItem(); return a?.type === "history"  ? a.id : null; };
   const activePreviewId  = () => { const a = activeItem(); return a?.type === "preview"  ? a.id : null; };
+  const activeBrainId    = () => { const a = activeItem(); return a?.type === "brain"    ? a.id : null; };
 
   const showEditor = () => activeFileId() !== null;
 
@@ -240,7 +245,8 @@ export function MainSurface() {
     activeStackTabs().length === 0 &&
     activeConflictTabs().length === 0 &&
     activeHistoryTabs().length === 0 &&
-    activePreviewTabs().length === 0;
+    activePreviewTabs().length === 0 &&
+    activeBrainTabs().length === 0;
 
   const hasAnyTab = () =>
     activeOpenFiles().length > 0 ||
@@ -250,7 +256,8 @@ export function MainSurface() {
     activeStackTabs().length > 0 ||
     activeConflictTabs().length > 0 ||
     activeHistoryTabs().length > 0 ||
-    activePreviewTabs().length > 0;
+    activePreviewTabs().length > 0 ||
+    activeBrainTabs().length > 0;
 
   const repoRoot = () => activeWorkspace()?.repoRoot ?? null;
 
@@ -693,6 +700,42 @@ export function MainSurface() {
             }}
           </For>
 
+          {/* Brain (second-brain vault) tabs — single vault-wide view, non-draggable. */}
+          <For each={activeBrainTabs()}>
+            {(tab) => {
+              const isActive = () => tab.id === activeBrainId();
+              return (
+                <div
+                  class={`group flex items-center gap-1.5 px-3 h-full border-r border-border shrink-0 text-[13px] cursor-pointer select-none transition-colors ${
+                    isActive()
+                      ? "bg-background text-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
+                  }`}
+                  onClick={() => actions.selectBrainTab(state.activeWorkspaceId, tab.id)}
+                  onMouseDown={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      actions.closeBrainTab(state.activeWorkspaceId, tab.id);
+                    }
+                  }}
+                  title="Brain"
+                >
+                  <Brain class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />
+                  <span class="max-w-[160px] truncate">
+                    <span class="text-muted-foreground text-[11px]">brain</span>
+                  </span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); actions.closeBrainTab(state.activeWorkspaceId, tab.id); }}
+                    class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
+                    aria-label="Close brain"
+                  >
+                    <X class="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            }}
+          </For>
+
           {/* Markdown preview tabs */}
           <For each={visiblePreviews()}>
             {(tab) => {
@@ -865,6 +908,10 @@ export function MainSurface() {
             onCreateFile={() => void onCreateFile()}
             onNewTerminal={() => void onNewTerminal()}
             onNewCompare={onNewCompare}
+            onOpenBrain={() => {
+              actions.openBrainTab(state.activeWorkspaceId);
+              closeMenu();
+            }}
           />
         </div>
       </Show>
@@ -970,6 +1017,15 @@ export function MainSurface() {
           )}
         </For>
 
+        {/* Brain tabs */}
+        <For each={activeBrainTabs()}>
+          {(tab) => (
+            <div class="absolute inset-0" style={{ display: tab.id === activeBrainId() ? "block" : "none" }}>
+              <BrainSurface vaultPath={settings.brain.vaultPath} />
+            </div>
+          )}
+        </For>
+
         {/* Conflict tabs */}
         <For each={activeConflictTabs()}>
           {(tab) => (
@@ -1050,6 +1106,7 @@ function NewTabMenu(props: {
   onCreateFile: () => void;
   onNewTerminal: () => void;
   onNewCompare: () => void;
+  onOpenBrain: () => void;
 }) {
   // The parent tab bar uses `overflow-x-auto`, which clips any descendant
   // absolutely-positioned dropdown. Render the menu in a Portal and anchor
@@ -1184,6 +1241,9 @@ function NewTabMenu(props: {
               </MenuItem>
               <MenuItem onClick={props.onEnterFileMode} icon={<FilePlus2 class="w-3.5 h-3.5" />}>
                 New file at root…
+              </MenuItem>
+              <MenuItem onClick={props.onOpenBrain} icon={<Brain class="w-3.5 h-3.5" />}>
+                Brain
               </MenuItem>
             </Show>
           </div>
