@@ -6,6 +6,7 @@ import {
   type TerminalSession,
   type Workspace,
   makeWorkspace,
+  makeWorktree,
 } from "@/types/workspace";
 import {
   type WorkspaceSnapshot,
@@ -296,17 +297,48 @@ function loadCompareTabs(workspaceIds: string[]): Record<string, CompareTab[]> {
   }
 }
 
+/// Rebuild a runtime `Workspace` from its persisted form. Defensive about
+/// every field because this is user-editable JSON on disk: a workspace with no
+/// worktrees array (or an empty one) is repaired with a synthetic main worktree
+/// rather than crashing the app on boot.
+function reviveWorkspace(p: PersistedWorkspace): Workspace {
+  const repoRoot = p.repoRoot ?? null;
+  const worktrees = (Array.isArray(p.worktrees) ? p.worktrees : [])
+    .filter((w) => w && typeof w.id === "string" && typeof w.path === "string")
+    .map((w) =>
+      makeWorktree({
+        id: w.id,
+        path: w.path,
+        branch: typeof w.branch === "string" ? w.branch : null,
+        isMain: !!w.isMain,
+        isSynthetic: !!w.isSynthetic,
+      }),
+    );
+  if (worktrees.length === 0) {
+    worktrees.push(
+      makeWorktree({ id: p.id, path: repoRoot ?? "", isMain: true, isSynthetic: true }),
+    );
+  }
+  const activeWorktreeId = worktrees.some((w) => w.id === p.activeWorktreeId)
+    ? p.activeWorktreeId
+    : worktrees[0].id;
+  return {
+    id: p.id,
+    name: p.name,
+    repoRoot,
+    worktrees,
+    activeWorktreeId,
+    isRepo: !!p.isRepo,
+  };
+}
+
 function loadWorkspaces(): { workspaces: Workspace[]; activeId: string } {
   try {
     const raw = localStorage.getItem(WORKSPACES_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as PersistedWorkspace[];
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const workspaces = parsed.map((p) => ({
-          id: p.id,
-          name: p.name,
-          repoRoot: p.repoRoot ?? null,
-        }));
+        const workspaces = parsed.map(reviveWorkspace);
         const stored = localStorage.getItem(ACTIVE_WS_KEY);
         const activeId =
           stored && workspaces.some((w) => w.id === stored) ? stored : workspaces[0].id;
@@ -354,6 +386,15 @@ export function createAppStore() {
       id: w.id,
       name: w.name,
       repoRoot: w.repoRoot,
+      worktrees: w.worktrees.map((wt) => ({
+        id: wt.id,
+        path: wt.path,
+        branch: wt.branch,
+        isMain: wt.isMain,
+        isSynthetic: wt.isSynthetic,
+      })),
+      activeWorktreeId: w.activeWorktreeId,
+      isRepo: w.isRepo,
     }));
     localStorage.setItem(WORKSPACES_KEY, JSON.stringify(serialized));
     localStorage.setItem(ACTIVE_WS_KEY, state.activeWorkspaceId);
