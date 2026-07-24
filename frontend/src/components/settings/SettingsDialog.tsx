@@ -586,17 +586,29 @@ function AiPane() {
 /// can't show "saved" for something that isn't there.
 function ProviderKeysSection() {
   const { removeAiKey } = useSettings();
+  const [keychainError, setKeychainError] = createSignal<string | null>(null);
 
   const [statuses, { refetch }] = createResource(
     () => aiKeyBindings().map((b) => b.id),
-    (ids) => secretsApi.status(ids),
+    async (ids): Promise<SecretStatus[]> => {
+      // Caught here rather than left to reject: reading a resource accessor
+      // in a failed state rethrows into render, and there is no ErrorBoundary
+      // inside the dialog. A locked or denied keychain has to be *reported* —
+      // never flattened into an empty list that would read as "no keys set".
+      try {
+        const result = await secretsApi.status(ids);
+        setKeychainError(null);
+        return result;
+      } catch (e) {
+        setKeychainError(String(e));
+        return [];
+      }
+    },
   );
 
-  // A locked or denied keychain must be visible, not swallowed into an empty
-  // list that reads as "no keys set".
   createEffect(() => {
-    const err = statuses.error;
-    if (err) pushToast(`Couldn't read the OS keychain: ${String(err)}`, "error", 7000);
+    const err = keychainError();
+    if (err) pushToast(`Couldn't read the OS keychain: ${err}`, "error", 7000);
   });
 
   const statusFor = (id: string) => statuses()?.find((s) => s.id === id);
@@ -623,10 +635,13 @@ function ProviderKeysSection() {
         above. VoidLink itself never sends them anywhere. Injection is additive:
         if your shell already exports the same variable, yours wins.
       </p>
-      <Show when={statuses.error}>
-        <p class="text-[11px] text-destructive leading-relaxed">
-          Keychain unavailable — presence below may be incomplete.
-        </p>
+      <Show when={keychainError()}>
+        {(err) => (
+          <p class="text-[11px] text-destructive leading-relaxed" title={err()}>
+            Can't reach the OS credential store, so which keys are stored is
+            unknown. Saving will report the same error.
+          </p>
+        )}
       </Show>
       <For each={aiKeyBindings()}>
         {(binding) => (
@@ -634,6 +649,7 @@ function ProviderKeysSection() {
             binding={binding}
             status={statusFor(binding.id)}
             loading={statuses.loading}
+            unknown={keychainError() !== null}
             onChanged={() => void refetch()}
             removable={!AI_KEY_PRESETS.some((p) => p.id === binding.id)}
             onForget={() => void forget(binding)}
@@ -649,6 +665,9 @@ function KeyRow(props: {
   binding: AiKeyBinding;
   status: SecretStatus | undefined;
   loading: boolean;
+  /// The keychain couldn't be read at all — presence is genuinely unknown,
+  /// which is not the same thing as "not set".
+  unknown: boolean;
   onChanged: () => void;
   removable: boolean;
   onForget: () => void;
@@ -658,6 +677,7 @@ function KeyRow(props: {
   const present = () => props.status?.present ?? false;
 
   const statusText = () => {
+    if (props.unknown) return "Unknown";
     if (props.loading && !props.status) return "Checking…";
     if (!present()) return "Not set";
     const hint = props.status?.hint ?? "";
