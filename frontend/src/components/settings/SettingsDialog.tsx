@@ -618,8 +618,8 @@ function BrainPane() {
 const DEFAULT_TRUNK_HINT = "main, master, develop, trunk";
 
 function StackPane() {
-  const { activeWorkspace } = useAppStore();
-  const repoPath = () => activeWorkspace()?.repoRoot ?? null;
+  const { activeRepoPath } = useAppStore();
+  const repoPath = () => activeRepoPath() ?? null;
 
   // Load the per-repo trunk override list when a repo is active. The key
   // resets across workspace switches so the input always reflects the

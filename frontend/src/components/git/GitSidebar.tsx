@@ -72,7 +72,7 @@ function IconBtn(props: { label: string; onClick: () => void; children: JSX.Elem
 
 interface GitSidebarProps {
   repoPath: string;
-  workspaceId: string;
+  worktreeId: string;
 }
 
 function Section(props: {
@@ -208,7 +208,7 @@ export function GitSidebar(props: GitSidebarProps) {
     const info = repoInfo();
     if (!info?.currentBranch) return;
     const base = info.upstream ?? "main";
-    actions.openCompareTab(props.workspaceId, {
+    actions.openCompareTab(props.worktreeId, {
       baseRef: base,
       headRef: info.currentBranch,
       useMergeBase: false,
@@ -238,7 +238,7 @@ export function GitSidebar(props: GitSidebarProps) {
       if (res.conflicted) {
         const conflicts = await gitApi.listConflicts(props.repoPath);
         for (const c of conflicts) {
-          actions.openConflictTab(props.workspaceId, `${props.repoPath}/${c}`);
+          actions.openConflictTab(props.worktreeId, `${props.repoPath}/${c}`);
         }
         pushToast("Pull stopped on conflicts — resolve them, then continue.", "warning", 6000);
       } else if (res.ok) {
@@ -338,7 +338,7 @@ export function GitSidebar(props: GitSidebarProps) {
         {(op) => (
           <OperationBanner
             repoPath={props.repoPath}
-            workspaceId={props.workspaceId}
+            worktreeId={props.worktreeId}
             operation={op()}
             hasConflicts={repoInfo()?.hasConflicts ?? false}
           />
@@ -358,7 +358,7 @@ export function GitSidebar(props: GitSidebarProps) {
         >
           <ChangesPane
             repoPath={props.repoPath}
-            workspaceId={props.workspaceId}
+            worktreeId={props.worktreeId}
             status={status()}
             onRefresh={refreshAll}
             selectedFile={activeFilePath()}
@@ -374,7 +374,7 @@ export function GitSidebar(props: GitSidebarProps) {
           contentHeight={sectionHeights().branches}
           onResizeStart={startSectionResize("branches")}
         >
-          <BranchesPane repoPath={props.repoPath} workspaceId={props.workspaceId} onCheckout={refreshAll} />
+          <BranchesPane repoPath={props.repoPath} worktreeId={props.worktreeId} onCheckout={refreshAll} />
         </Section>
 
         <Section
@@ -398,7 +398,7 @@ export function GitSidebar(props: GitSidebarProps) {
           contentHeight={sectionHeights().stack}
           onResizeStart={startSectionResize("stack")}
         >
-          <StackSidebarSection repoPath={props.repoPath} workspaceId={props.workspaceId} />
+          <StackSidebarSection repoPath={props.repoPath} worktreeId={props.worktreeId} />
         </Section>
 
         <Section
@@ -410,7 +410,7 @@ export function GitSidebar(props: GitSidebarProps) {
           contentHeight={sectionHeights().stashes}
           onResizeStart={startSectionResize("stashes")}
         >
-          <StashesPane repoPath={props.repoPath} workspaceId={props.workspaceId} />
+          <StashesPane repoPath={props.repoPath} worktreeId={props.worktreeId} />
         </Section>
 
         <Section
@@ -422,7 +422,7 @@ export function GitSidebar(props: GitSidebarProps) {
           contentHeight={sectionHeights().history}
           onResizeStart={startSectionResize("history")}
         >
-          <HistoryPane repoPath={props.repoPath} workspaceId={props.workspaceId} />
+          <HistoryPane repoPath={props.repoPath} worktreeId={props.worktreeId} />
         </Section>
 
         <Section
@@ -435,11 +435,11 @@ export function GitSidebar(props: GitSidebarProps) {
           onResizeStart={startSectionResize("openedDiffs")}
         >
           <OpenedDiffsPane
-            workspaceId={props.workspaceId}
+            worktreeId={props.worktreeId}
             tabs={activeDiffTabs()}
             activeDiffId={activeDiffId()}
-            onSelect={(id) => actions.selectDiffTab(props.workspaceId, id)}
-            onClose={(id) => actions.closeDiffTab(props.workspaceId, id)}
+            onSelect={(id) => actions.selectDiffTab(props.worktreeId, id)}
+            onClose={(id) => actions.closeDiffTab(props.worktreeId, id)}
           />
         </Section>
       </div>
@@ -453,7 +453,7 @@ export function GitSidebar(props: GitSidebarProps) {
 
 function ChangesPane(props: {
   repoPath: string;
-  workspaceId: string;
+  worktreeId: string;
   status: { path: string; status: string; staged: boolean }[] | undefined;
   selectedFile: string | null;
   onRefresh: () => void;
@@ -489,7 +489,7 @@ function ChangesPane(props: {
   const conflicted = () => (props.status ?? []).filter((f) => f.status === "conflicted");
 
   function openConflict(path: string) {
-    actions.openConflictTab(props.workspaceId, path);
+    actions.openConflictTab(props.worktreeId, path);
   }
 
   async function stageFile(path: string) {
@@ -677,7 +677,7 @@ function ChangesPane(props: {
   }
 
   const selectFile = (path: string) => {
-    actions.openDiffTab(props.workspaceId, path);
+    actions.openDiffTab(props.worktreeId, path);
   };
 
   return (
@@ -887,7 +887,7 @@ function ChangesPane(props: {
 // Branches
 // ─────────────────────────────────────────────────────────────────────────────
 
-function BranchesPane(props: { repoPath: string; workspaceId: string; onCheckout: () => void }) {
+function BranchesPane(props: { repoPath: string; worktreeId: string; onCheckout: () => void }) {
   const { actions } = useAppStore();
   const [branches, { refetch }] = createResource(
     () => props.repoPath,
@@ -900,7 +900,7 @@ function BranchesPane(props: { repoPath: string; workspaceId: string; onCheckout
   async function routeOpResult(res: { ok: boolean; conflicted: boolean; message: string }, label: string) {
     if (res.conflicted) {
       const conflicts = await gitApi.listConflicts(props.repoPath);
-      for (const c of conflicts) actions.openConflictTab(props.workspaceId, `${props.repoPath}/${c}`);
+      for (const c of conflicts) actions.openConflictTab(props.worktreeId, `${props.repoPath}/${c}`);
       pushToast(`${label} stopped on conflicts — resolve them, then continue.`, "warning", 6000);
     } else if (res.ok) {
       pushToast(`${label} complete`, "success", 2500);
@@ -1429,7 +1429,7 @@ function TagsPane(props: { repoPath: string }) {
 // Stashes
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StashesPane(props: { repoPath: string; workspaceId: string }) {
+function StashesPane(props: { repoPath: string; worktreeId: string }) {
   const { actions } = useAppStore();
   const [stashes, { refetch }] = createResource(
     () => props.repoPath,
@@ -1464,7 +1464,7 @@ function StashesPane(props: { repoPath: string; workspaceId: string }) {
   }
 
   function showDiff(index: number) {
-    actions.openCompareTab(props.workspaceId, {
+    actions.openCompareTab(props.worktreeId, {
       baseRef: `stash@{${index}}^1`,
       headRef: `stash@{${index}}`,
       useMergeBase: false,
@@ -1766,7 +1766,7 @@ function laneColor(i: number): string {
   return LANE_COLORS[i % LANE_COLORS.length];
 }
 
-function HistoryPane(props: { repoPath: string; workspaceId: string }) {
+function HistoryPane(props: { repoPath: string; worktreeId: string }) {
   const { actions } = useAppStore();
   const [log, { refetch: refetchLog }] = createResource(
     () => props.repoPath,
@@ -1782,7 +1782,7 @@ function HistoryPane(props: { repoPath: string; workspaceId: string }) {
 
   function openCommitCompare(c: GitCommitInfo) {
     const base = c.parentOids[0] ?? c.oid;
-    actions.openCompareTab(props.workspaceId, {
+    actions.openCompareTab(props.worktreeId, {
       baseRef: base,
       headRef: c.oid,
       useMergeBase: false,
@@ -1792,7 +1792,7 @@ function HistoryPane(props: { repoPath: string; workspaceId: string }) {
   async function routeOpResult(res: { ok: boolean; conflicted: boolean; message: string }, label: string) {
     if (res.conflicted) {
       const conflicts = await gitApi.listConflicts(props.repoPath);
-      for (const c of conflicts) actions.openConflictTab(props.workspaceId, `${props.repoPath}/${c}`);
+      for (const c of conflicts) actions.openConflictTab(props.worktreeId, `${props.repoPath}/${c}`);
       pushToast(`${label} stopped on conflicts — resolve them, then continue.`, "warning", 6000);
     } else if (res.ok) {
       pushToast(`${label} complete`, "success", 2500);
@@ -2021,7 +2021,7 @@ function DagColumn(props: { row: PositionedCommit; maxLanes: number }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function OpenedDiffsPane(props: {
-  workspaceId: string;
+  worktreeId: string;
   tabs: { id: string; filePath: string }[];
   activeDiffId: string | null;
   onSelect: (id: string) => void;

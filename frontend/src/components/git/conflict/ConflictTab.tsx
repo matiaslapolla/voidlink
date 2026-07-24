@@ -101,7 +101,7 @@ function replaceBlock(
 interface Props {
   repoPath: string;
   filePath: string;
-  workspaceId: string;
+  worktreeId: string;
   onResolved: () => void;
 }
 

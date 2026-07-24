@@ -13,7 +13,7 @@ import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 const POLL_MS = 1500;
 
 export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) {
-  const { state, activeWorkspace, activeTerminals, activeItem, actions } = useAppStore();
+  const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
   const [sidebarWidth, setSidebarWidth] = createSignal(256);
 
   function startResize(e: MouseEvent) {
@@ -70,7 +70,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
       {/* Repo picker — h-9 to match center column tab bar */}
       <div class="h-9 px-3 border-b border-border flex items-center shrink-0">
         <Show
-          when={activeWorkspace()?.repoRoot}
+          when={activeRepoPath()}
           fallback={
             <button
               onClick={() => void chooseRepo()}
@@ -111,7 +111,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
         <Show when={filesOpen()}>
           <div class="flex-1 overflow-hidden min-h-0">
             <Show
-              when={activeWorkspace()?.repoRoot}
+              when={activeRepoPath()}
               fallback={
                 <div class="px-2 py-4 text-center text-[13px] text-muted-foreground">
                   <Files class="w-5 h-5 mx-auto mb-2 opacity-60" />
@@ -141,17 +141,17 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             tabIndex={0}
             onClick={(e) => {
               e.stopPropagation();
-              if (!activeWorkspace()?.repoRoot) return;
-              void actions.spawnTerminal(state.activeWorkspaceId);
+              if (!activeRepoPath()) return;
+              void actions.spawnTerminal(state.activeWorktreeId);
             }}
             onKeyDown={(e) => {
               if (e.key !== "Enter" && e.key !== " ") return;
               e.stopPropagation();
-              if (!activeWorkspace()?.repoRoot) return;
-              void actions.spawnTerminal(state.activeWorkspaceId);
+              if (!activeRepoPath()) return;
+              void actions.spawnTerminal(state.activeWorktreeId);
             }}
             aria-label="New terminal"
-            class={`p-0.5 mr-0.5 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors ${!activeWorkspace()?.repoRoot ? "opacity-40 pointer-events-none" : ""}`}
+            class={`p-0.5 mr-0.5 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors ${!activeRepoPath() ? "opacity-40 pointer-events-none" : ""}`}
             title="New terminal"
           >
             <Plus class="w-3.5 h-3.5" />
@@ -164,7 +164,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
               fallback={
                 <div class="px-2 py-3 text-center text-[13px] text-muted-foreground">
                   <TerminalSquare class="w-4 h-4 mx-auto mb-1.5 opacity-60" />
-                  {activeWorkspace()?.repoRoot
+                  {activeRepoPath()
                     ? "No terminals. Click + to start one."
                     : "Select a repository first."}
                 </div>
@@ -175,8 +175,8 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
                   <TerminalRow
                     term={term}
                     active={term.id === activeTerminalId()}
-                    onSelect={() => actions.selectTerminal(state.activeWorkspaceId, term.id)}
-                    onClose={() => actions.removeTerminal(state.activeWorkspaceId, term.id)}
+                    onSelect={() => actions.selectTerminal(state.activeWorktreeId, term.id)}
+                    onClose={() => actions.removeTerminal(state.activeWorktreeId, term.id)}
                   />
                 )}
               </For>
@@ -189,12 +189,12 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
       <div class="border-t border-border/50 px-2 py-1.5 shrink-0">
         <button
           onClick={() => {
-            if (!activeWorkspace()?.repoRoot) return;
-            actions.openCompareTab(state.activeWorkspaceId);
+            if (!activeRepoPath()) return;
+            actions.openCompareTab(state.activeWorktreeId);
           }}
-          disabled={!activeWorkspace()?.repoRoot}
+          disabled={!activeRepoPath()}
           class={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed transition-colors text-[12px] ${
-            activeWorkspace()?.repoRoot
+            activeRepoPath()
               ? "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 hover:border-border/80"
               : "border-border/40 text-muted-foreground/40 cursor-not-allowed"
           }`}

@@ -27,7 +27,7 @@ const POLL_MS = 1500;
 export function MainSurface() {
   const {
     state,
-    activeWorkspace,
+    activeRepoPath,
     activeTerminals,
     activeDiffTabs,
     activeOpenFiles,
@@ -89,7 +89,7 @@ export function MainSurface() {
   }
 
   function closeOtherTabs(kind: CtxKind, keepId: string) {
-    const wsId = state.activeWorkspaceId;
+    const wtId = state.activeWorktreeId;
     const lists: Record<CtxKind, { ids: string[]; close: (id: string) => void }> = {
       file: {
         ids: activeOpenFiles().map((t) => t.id),
@@ -97,25 +97,25 @@ export function MainSurface() {
           const tab = activeOpenFiles().find((t) => t.id === id);
           if (tab) {
             editorController.closeFile(tab.path);
-            actions.closeFileTab(wsId, id);
+            actions.closeFileTab(wtId, id);
           }
         },
       },
       terminal: {
         ids: activeTerminals().map((t) => t.id),
-        close: (id) => actions.removeTerminal(wsId, id),
+        close: (id) => actions.removeTerminal(wtId, id),
       },
       diff: {
         ids: activeDiffTabs().map((t) => t.id),
-        close: (id) => actions.closeDiffTab(wsId, id),
+        close: (id) => actions.closeDiffTab(wtId, id),
       },
       compare: {
         ids: activeCompareTabs().map((t) => t.id),
-        close: (id) => actions.closeCompareTab(wsId, id),
+        close: (id) => actions.closeCompareTab(wtId, id),
       },
       stack: {
         ids: activeStackTabs().map((t) => t.id),
-        close: (id) => actions.closeStackTab(wsId, id),
+        close: (id) => actions.closeStackTab(wtId, id),
       },
     };
     const { ids, close } = lists[kind];
@@ -177,35 +177,35 @@ export function MainSurface() {
     kind: "file" | "terminal" | "diff" | "compare" | "stack",
     id: string,
   ) {
-    const wsId = state.activeWorkspaceId;
+    const wtId = state.activeWorktreeId;
     switch (kind) {
       case "file": {
         const tab = activeOpenFiles().find((t) => t.id === id);
         if (tab) {
-          actions.selectFileTab(wsId, id, tab.path);
+          actions.selectFileTab(wtId, id, tab.path);
           void editorController.setActive(tab.path);
         }
         break;
       }
-      case "terminal": actions.selectTerminal(wsId, id); break;
-      case "diff": actions.selectDiffTab(wsId, id); break;
-      case "compare": actions.selectCompareTab(wsId, id); break;
-      case "stack": actions.selectStackTab(wsId, id); break;
+      case "terminal": actions.selectTerminal(wtId, id); break;
+      case "diff": actions.selectDiffTab(wtId, id); break;
+      case "compare": actions.selectCompareTab(wtId, id); break;
+      case "stack": actions.selectStackTab(wtId, id); break;
     }
   }
 
   function closeAllUnpinned() {
-    const wsId = state.activeWorkspaceId;
+    const wtId = state.activeWorktreeId;
     for (const t of [...activeOpenFiles()]) {
       if (!isPinned(t.id)) {
         editorController.closeFile(t.path);
-        actions.closeFileTab(wsId, t.id);
+        actions.closeFileTab(wtId, t.id);
       }
     }
-    for (const t of [...activeTerminals()]) if (!isPinned(t.id)) actions.removeTerminal(wsId, t.id);
-    for (const t of [...activeDiffTabs()]) if (!isPinned(t.id)) actions.closeDiffTab(wsId, t.id);
-    for (const t of [...activeCompareTabs()]) if (!isPinned(t.id)) actions.closeCompareTab(wsId, t.id);
-    for (const t of [...activeStackTabs()]) if (!isPinned(t.id)) actions.closeStackTab(wsId, t.id);
+    for (const t of [...activeTerminals()]) if (!isPinned(t.id)) actions.removeTerminal(wtId, t.id);
+    for (const t of [...activeDiffTabs()]) if (!isPinned(t.id)) actions.closeDiffTab(wtId, t.id);
+    for (const t of [...activeCompareTabs()]) if (!isPinned(t.id)) actions.closeCompareTab(wtId, t.id);
+    for (const t of [...activeStackTabs()]) if (!isPinned(t.id)) actions.closeStackTab(wtId, t.id);
   }
 
   const { openFiles } = useOpenFiles();
@@ -234,7 +234,7 @@ export function MainSurface() {
   function openPreviewForActive() {
     const path = activeMarkdownPath();
     if (!path) return;
-    actions.openPreviewTab(state.activeWorkspaceId, path);
+    actions.openPreviewTab(state.activeWorktreeId, path);
   }
 
   const nothingOpen = () =>
@@ -259,7 +259,7 @@ export function MainSurface() {
     activePreviewTabs().length > 0 ||
     activeBrainTabs().length > 0;
 
-  const repoRoot = () => activeWorkspace()?.repoRoot ?? null;
+  const repoRoot = () => activeRepoPath() ?? null;
 
   /// Local branch names for the active repo. Feeds the terminal's branch
   /// deep-link provider so only real branches get linkified. Refreshed on
@@ -299,7 +299,7 @@ export function MainSurface() {
         pushToast("Open a repository first", "warning");
         return;
       }
-      actions.openHistoryTab(state.activeWorkspaceId);
+      actions.openHistoryTab(state.activeWorktreeId);
     };
     window.addEventListener("voidlink:open-commit-graph", handler);
     onCleanup(() => window.removeEventListener("voidlink:open-commit-graph", handler));
@@ -365,7 +365,7 @@ export function MainSurface() {
       return;
     }
     e.preventDefault();
-    actions.reorderItemTab(state.activeWorkspaceId, kind, drag.id, id);
+    actions.reorderItemTab(state.activeWorktreeId, kind, drag.id, id);
     resetTabDrag();
   }
 
@@ -398,13 +398,13 @@ export function MainSurface() {
 
   async function onNewTerminal() {
     if (!repoRoot()) return;
-    await actions.spawnTerminal(state.activeWorkspaceId);
+    await actions.spawnTerminal(state.activeWorktreeId);
     closeMenu();
   }
 
   function onNewCompare() {
     if (!repoRoot()) return;
-    actions.openCompareTab(state.activeWorkspaceId);
+    actions.openCompareTab(state.activeWorktreeId);
     closeMenu();
   }
 
@@ -421,7 +421,7 @@ export function MainSurface() {
     const fullPath = `${root}/${name}`;
     try {
       await fsApi.createFile(fullPath);
-      actions.openFileTab(state.activeWorkspaceId, fullPath);
+      actions.openFileTab(state.activeWorktreeId, fullPath);
       await editorController.openFile(fullPath);
       // A new file is invisible to the sidebar until the file tree re-lists
       // its dir and the git status re-runs (the file is untracked).
@@ -461,7 +461,7 @@ export function MainSurface() {
                   onDragEnd={resetTabDrag}
                   class={tabClasses("file", tab.id, isActive())}
                   onClick={() => {
-                    actions.selectFileTab(state.activeWorkspaceId, tab.id, tab.path);
+                    actions.selectFileTab(state.activeWorktreeId, tab.id, tab.path);
                     editorController.setActive(tab.path);
                   }}
                   onContextMenu={(e) => openCtxMenu(e, "file", tab.id, fileName())}
@@ -469,7 +469,7 @@ export function MainSurface() {
                     if (e.button === 1 && !isPinned(tab.id)) {
                       e.preventDefault();
                       editorController.closeFile(tab.path);
-                      actions.closeFileTab(state.activeWorkspaceId, tab.id);
+                      actions.closeFileTab(state.activeWorktreeId, tab.id);
                     }
                   }}
                   title={tab.path}
@@ -486,7 +486,7 @@ export function MainSurface() {
                   </Show>
                   <Show when={!isPinned(tab.id)}>
                     <button
-                      onClick={e => { e.stopPropagation(); editorController.closeFile(tab.path); actions.closeFileTab(state.activeWorkspaceId, tab.id); }}
+                      onClick={e => { e.stopPropagation(); editorController.closeFile(tab.path); actions.closeFileTab(state.activeWorktreeId, tab.id); }}
                       class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
                       aria-label={`Close ${fileName()}`}
                     >
@@ -504,8 +504,8 @@ export function MainSurface() {
               <TerminalTabItem
                 term={term}
                 isActive={term.id === activeTerminalId()}
-                onSelect={() => actions.selectTerminal(state.activeWorkspaceId, term.id)}
-                onClose={() => actions.removeTerminal(state.activeWorkspaceId, term.id)}
+                onSelect={() => actions.selectTerminal(state.activeWorktreeId, term.id)}
+                onClose={() => actions.removeTerminal(state.activeWorktreeId, term.id)}
                 tabClass={tabClasses("terminal", term.id, term.id === activeTerminalId())}
                 onDragStart={(e) => onTabDragStart(e, "terminal", term.id)}
                 onDragOver={(e) => onTabDragOver(e, "terminal", term.id)}
@@ -529,12 +529,12 @@ export function MainSurface() {
                   onDrop={(e) => onTabDrop(e, "diff", tab.id)}
                   onDragEnd={resetTabDrag}
                   class={tabClasses("diff", tab.id, isActive())}
-                  onClick={() => actions.selectDiffTab(state.activeWorkspaceId, tab.id)}
+                  onClick={() => actions.selectDiffTab(state.activeWorktreeId, tab.id)}
                   onContextMenu={(e) => openCtxMenu(e, "diff", tab.id, `diff · ${fileName()}`)}
                   onMouseDown={(e) => {
                     if (e.button === 1 && !isPinned(tab.id)) {
                       e.preventDefault();
-                      actions.closeDiffTab(state.activeWorkspaceId, tab.id);
+                      actions.closeDiffTab(state.activeWorktreeId, tab.id);
                     }
                   }}
                   title={tab.filePath}
@@ -550,7 +550,7 @@ export function MainSurface() {
                   </span>
                   <Show when={!isPinned(tab.id)}>
                     <button
-                      onClick={e => { e.stopPropagation(); actions.closeDiffTab(state.activeWorkspaceId, tab.id); }}
+                      onClick={e => { e.stopPropagation(); actions.closeDiffTab(state.activeWorktreeId, tab.id); }}
                       class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
                       aria-label={`Close diff ${fileName()}`}
                     >
@@ -582,12 +582,12 @@ export function MainSurface() {
                   onDrop={(e) => onTabDrop(e, "compare", tab.id)}
                   onDragEnd={resetTabDrag}
                   class={tabClasses("compare", tab.id, isActive())}
-                  onClick={() => actions.selectCompareTab(state.activeWorkspaceId, tab.id)}
+                  onClick={() => actions.selectCompareTab(state.activeWorktreeId, tab.id)}
                   onContextMenu={(e) => openCtxMenu(e, "compare", tab.id, titleText())}
                   onMouseDown={(e) => {
                     if (e.button === 1 && !isPinned(tab.id)) {
                       e.preventDefault();
-                      actions.closeCompareTab(state.activeWorkspaceId, tab.id);
+                      actions.closeCompareTab(state.activeWorktreeId, tab.id);
                     }
                   }}
                   title={titleText()}
@@ -606,7 +606,7 @@ export function MainSurface() {
                   </span>
                   <Show when={!isPinned(tab.id)}>
                     <button
-                      onClick={e => { e.stopPropagation(); actions.closeCompareTab(state.activeWorkspaceId, tab.id); }}
+                      onClick={e => { e.stopPropagation(); actions.closeCompareTab(state.activeWorktreeId, tab.id); }}
                       class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
                       aria-label={`Close compare ${titleText()}`}
                     >
@@ -632,11 +632,11 @@ export function MainSurface() {
                   onDrop={(e) => onTabDrop(e, "diff", tab.id)}
                   onDragEnd={resetTabDrag}
                   class={tabClasses("diff", tab.id, isActive())}
-                  onClick={() => actions.selectConflictTab(state.activeWorkspaceId, tab.id)}
+                  onClick={() => actions.selectConflictTab(state.activeWorktreeId, tab.id)}
                   onMouseDown={(e) => {
                     if (e.button === 1 && !isPinned(tab.id)) {
                       e.preventDefault();
-                      actions.closeConflictTab(state.activeWorkspaceId, tab.id);
+                      actions.closeConflictTab(state.activeWorktreeId, tab.id);
                     }
                   }}
                   title={`Conflict · ${tab.filePath}`}
@@ -652,7 +652,7 @@ export function MainSurface() {
                   </span>
                   <Show when={!isPinned(tab.id)}>
                     <button
-                      onClick={e => { e.stopPropagation(); actions.closeConflictTab(state.activeWorkspaceId, tab.id); }}
+                      onClick={e => { e.stopPropagation(); actions.closeConflictTab(state.activeWorktreeId, tab.id); }}
                       class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
                       aria-label={`Close conflict ${fileName()}`}
                     >
@@ -675,11 +675,11 @@ export function MainSurface() {
                       ? "bg-background text-foreground"
                       : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
                   }`}
-                  onClick={() => actions.selectHistoryTab(state.activeWorkspaceId, tab.id)}
+                  onClick={() => actions.selectHistoryTab(state.activeWorktreeId, tab.id)}
                   onMouseDown={(e) => {
                     if (e.button === 1) {
                       e.preventDefault();
-                      actions.closeHistoryTab(state.activeWorkspaceId, tab.id);
+                      actions.closeHistoryTab(state.activeWorktreeId, tab.id);
                     }
                   }}
                   title="Commit graph"
@@ -689,7 +689,7 @@ export function MainSurface() {
                     <span class="text-muted-foreground text-[11px]">graph</span>
                   </span>
                   <button
-                    onClick={(e) => { e.stopPropagation(); actions.closeHistoryTab(state.activeWorkspaceId, tab.id); }}
+                    onClick={(e) => { e.stopPropagation(); actions.closeHistoryTab(state.activeWorktreeId, tab.id); }}
                     class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
                     aria-label="Close commit graph"
                   >
@@ -711,11 +711,11 @@ export function MainSurface() {
                       ? "bg-background text-foreground"
                       : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
                   }`}
-                  onClick={() => actions.selectBrainTab(state.activeWorkspaceId, tab.id)}
+                  onClick={() => actions.selectBrainTab(state.activeWorktreeId, tab.id)}
                   onMouseDown={(e) => {
                     if (e.button === 1) {
                       e.preventDefault();
-                      actions.closeBrainTab(state.activeWorkspaceId, tab.id);
+                      actions.closeBrainTab(state.activeWorktreeId, tab.id);
                     }
                   }}
                   title="Brain"
@@ -725,7 +725,7 @@ export function MainSurface() {
                     <span class="text-muted-foreground text-[11px]">brain</span>
                   </span>
                   <button
-                    onClick={(e) => { e.stopPropagation(); actions.closeBrainTab(state.activeWorkspaceId, tab.id); }}
+                    onClick={(e) => { e.stopPropagation(); actions.closeBrainTab(state.activeWorktreeId, tab.id); }}
                     class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
                     aria-label="Close brain"
                   >
@@ -749,11 +749,11 @@ export function MainSurface() {
                   onDrop={(e) => onTabDrop(e, "preview", tab.id)}
                   onDragEnd={resetTabDrag}
                   class={tabClasses("preview", tab.id, isActive())}
-                  onClick={() => actions.selectPreviewTab(state.activeWorkspaceId, tab.id)}
+                  onClick={() => actions.selectPreviewTab(state.activeWorktreeId, tab.id)}
                   onMouseDown={(e) => {
                     if (e.button === 1 && !isPinned(tab.id)) {
                       e.preventDefault();
-                      actions.closePreviewTab(state.activeWorkspaceId, tab.id);
+                      actions.closePreviewTab(state.activeWorktreeId, tab.id);
                     }
                   }}
                   title={`Previewing ${tab.filePath}`}
@@ -769,7 +769,7 @@ export function MainSurface() {
                   </span>
                   <Show when={!isPinned(tab.id)}>
                     <button
-                      onClick={e => { e.stopPropagation(); actions.closePreviewTab(state.activeWorkspaceId, tab.id); }}
+                      onClick={e => { e.stopPropagation(); actions.closePreviewTab(state.activeWorktreeId, tab.id); }}
                       class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
                       aria-label={`Close preview ${fileName()}`}
                     >
@@ -793,12 +793,12 @@ export function MainSurface() {
                   onDrop={(e) => onTabDrop(e, "stack", tab.id)}
                   onDragEnd={resetTabDrag}
                   class={tabClasses("stack", tab.id, isActive())}
-                  onClick={() => actions.selectStackTab(state.activeWorkspaceId, tab.id)}
+                  onClick={() => actions.selectStackTab(state.activeWorktreeId, tab.id)}
                   onContextMenu={(e) => openCtxMenu(e, "stack", tab.id, `stack · ${tab.topBranch}`)}
                   onMouseDown={(e) => {
                     if (e.button === 1 && !isPinned(tab.id)) {
                       e.preventDefault();
-                      actions.closeStackTab(state.activeWorkspaceId, tab.id);
+                      actions.closeStackTab(state.activeWorktreeId, tab.id);
                     }
                   }}
                   title={`Stack: ${tab.topBranch} → ${tab.trunk}`}
@@ -815,7 +815,7 @@ export function MainSurface() {
                   </span>
                   <Show when={!isPinned(tab.id)}>
                     <button
-                      onClick={e => { e.stopPropagation(); actions.closeStackTab(state.activeWorkspaceId, tab.id); }}
+                      onClick={e => { e.stopPropagation(); actions.closeStackTab(state.activeWorktreeId, tab.id); }}
                       class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
                       aria-label={`Close stack ${tab.topBranch}`}
                     >
@@ -863,24 +863,24 @@ export function MainSurface() {
             isPinned={(id) => isPinned(id)}
             onClose={closeCtxMenu}
             onTogglePin={(id) => {
-              actions.togglePinTab(state.activeWorkspaceId, id);
+              actions.togglePinTab(state.activeWorktreeId, id);
               closeCtxMenu();
             }}
             onCloseTab={(kind, id) => {
-              const wsId = state.activeWorkspaceId;
+              const wtId = state.activeWorktreeId;
               switch (kind) {
                 case "file": {
                   const tab = activeOpenFiles().find((t) => t.id === id);
                   if (tab) {
                     editorController.closeFile(tab.path);
-                    actions.closeFileTab(wsId, id);
+                    actions.closeFileTab(wtId, id);
                   }
                   break;
                 }
-                case "terminal": actions.removeTerminal(wsId, id); break;
-                case "diff": actions.closeDiffTab(wsId, id); break;
-                case "compare": actions.closeCompareTab(wsId, id); break;
-                case "stack": actions.closeStackTab(wsId, id); break;
+                case "terminal": actions.removeTerminal(wtId, id); break;
+                case "diff": actions.closeDiffTab(wtId, id); break;
+                case "compare": actions.closeCompareTab(wtId, id); break;
+                case "stack": actions.closeStackTab(wtId, id); break;
               }
               closeCtxMenu();
             }}
@@ -909,7 +909,7 @@ export function MainSurface() {
             onNewTerminal={() => void onNewTerminal()}
             onNewCompare={onNewCompare}
             onOpenBrain={() => {
-              actions.openBrainTab(state.activeWorkspaceId);
+              actions.openBrainTab(state.activeWorktreeId);
               closeMenu();
             }}
           />
@@ -931,20 +931,20 @@ export function MainSurface() {
                 ptyId={term.ptyId}
                 active={term.id === activeTerminalId()}
                 class="w-full h-full"
-                onExit={() => actions.removeTerminal(state.activeWorkspaceId, term.id)}
+                onExit={() => actions.removeTerminal(state.activeWorktreeId, term.id)}
                 onOpenPath={(path, line, column) => {
                   // Resolve relative paths against the workspace root; tools
                   // print both, so accept either.
                   const root = repoRoot();
                   const full = path.startsWith("/") ? path : root ? `${root}/${path}` : path;
-                  actions.openFileTab(state.activeWorkspaceId, full);
+                  actions.openFileTab(state.activeWorktreeId, full);
                   void editorController.openFile(full).then(() => {
                     if (line !== undefined) editorController.revealPosition(line, column);
                   });
                 }}
                 onOpenSha={(sha) => {
                   if (!repoRoot()) return;
-                  actions.openCompareTab(state.activeWorkspaceId, {
+                  actions.openCompareTab(state.activeWorktreeId, {
                     baseRef: `${sha}^`,
                     headRef: sha,
                     useMergeBase: false,
@@ -960,13 +960,13 @@ export function MainSurface() {
         {/* Diffs */}
         <For each={activeDiffTabs()}>
           {(tab) => (
-            <Show when={activeWorkspace()?.repoRoot}>
+            <Show when={activeRepoPath()}>
               {(repo) => (
                 <div class="absolute inset-0" style={{ display: tab.id === activeDiffId() ? "block" : "none" }}>
                   <GitDiffView
                     repoPath={repo()}
                     filePath={tab.filePath}
-                    onClose={() => actions.closeDiffTab(state.activeWorkspaceId, tab.id)}
+                    onClose={() => actions.closeDiffTab(state.activeWorktreeId, tab.id)}
                   />
                 </div>
               )}
@@ -977,13 +977,13 @@ export function MainSurface() {
         {/* Compare tabs */}
         <For each={activeCompareTabs()}>
           {(tab) => (
-            <Show when={activeWorkspace()?.repoRoot}>
+            <Show when={activeRepoPath()}>
               {(repo) => (
                 <div class="absolute inset-0" style={{ display: tab.id === activeCompareId() ? "block" : "none" }}>
                   <CompareTabView
                     repoPath={repo()}
                     tab={tab}
-                    workspaceId={state.activeWorkspaceId}
+                    worktreeId={state.activeWorktreeId}
                   />
                 </div>
               )}
@@ -994,13 +994,13 @@ export function MainSurface() {
         {/* Stack tabs */}
         <For each={activeStackTabs()}>
           {(tab) => (
-            <Show when={activeWorkspace()?.repoRoot}>
+            <Show when={activeRepoPath()}>
               {(repo) => (
                 <div class="absolute inset-0" style={{ display: tab.id === activeStackId() ? "block" : "none" }}>
                   <StackTabView
                     repoPath={repo()}
                     tab={tab}
-                    workspaceId={state.activeWorkspaceId}
+                    worktreeId={state.activeWorktreeId}
                   />
                 </div>
               )}
@@ -1029,14 +1029,14 @@ export function MainSurface() {
         {/* Conflict tabs */}
         <For each={activeConflictTabs()}>
           {(tab) => (
-            <Show when={activeWorkspace()?.repoRoot}>
+            <Show when={activeRepoPath()}>
               {(repo) => (
                 <div class="absolute inset-0" style={{ display: tab.id === activeConflictId() ? "block" : "none" }}>
                   <ConflictTabView
                     repoPath={repo()}
                     filePath={tab.filePath}
-                    workspaceId={state.activeWorkspaceId}
-                    onResolved={() => actions.closeConflictTab(state.activeWorkspaceId, tab.id)}
+                    worktreeId={state.activeWorktreeId}
+                    onResolved={() => actions.closeConflictTab(state.activeWorktreeId, tab.id)}
                   />
                 </div>
               )}
@@ -1047,7 +1047,7 @@ export function MainSurface() {
         {/* Commit graph tabs */}
         <For each={activeHistoryTabs()}>
           {(tab) => (
-            <Show when={activeWorkspace()?.repoRoot}>
+            <Show when={activeRepoPath()}>
               {(repo) => (
                 <div class="absolute inset-0" style={{ display: tab.id === activeHistoryId() ? "block" : "none" }}>
                   <CommitGraph
@@ -1055,7 +1055,7 @@ export function MainSurface() {
                     onOpenCommit={(oid) => {
                       // Reuse the existing commit-diff path: a compare tab of
                       // <oid>^..<oid> shows exactly what the commit changed.
-                      actions.openCompareTab(state.activeWorkspaceId, {
+                      actions.openCompareTab(state.activeWorktreeId, {
                         baseRef: `${oid}^`,
                         headRef: oid,
                         useMergeBase: false,
@@ -1069,18 +1069,18 @@ export function MainSurface() {
         </For>
 
         {/* Empty state overlays */}
-        <Show when={!activeWorkspace()?.repoRoot}>
+        <Show when={!activeRepoPath()}>
           <div class="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-3 bg-background z-10">
             <TerminalSquare class="w-7 h-7 opacity-60" />
             <p class="text-[13px]">Select a repository in the sidebar to start working.</p>
           </div>
         </Show>
-        <Show when={activeWorkspace()?.repoRoot && nothingOpen()}>
+        <Show when={activeRepoPath() && nothingOpen()}>
           <div class="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-3 bg-background z-10">
             <TerminalSquare class="w-7 h-7 opacity-60" />
             <p class="text-[13px]">Nothing open. Use the <span class="font-mono">+</span> in the tab bar or click a file to open it.</p>
             <button
-              onClick={() => actions.openCompareTab(state.activeWorkspaceId)}
+              onClick={() => actions.openCompareTab(state.activeWorktreeId)}
               class="mt-1 flex items-center gap-1.5 text-[12px] px-3 py-1 rounded-md border border-border hover:bg-accent/40 hover:text-foreground transition-colors"
             >
               <GitBranchPlus class="w-3.5 h-3.5" />

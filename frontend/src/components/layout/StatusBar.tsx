@@ -12,8 +12,8 @@ import { blameEnabled, toggleBlame } from "@/components/editor/blameOverlay";
 /// the sidebar and toasts; the bar surfaces them when the sidebar is
 /// collapsed and makes the AI-draft moment visible from any view.
 export function StatusBar() {
-  const { state, activeWorkspace } = useAppStore();
-  const repoPath = () => activeWorkspace()?.repoRoot ?? null;
+  const { state, activeRepoPath } = useAppStore();
+  const repoPath = () => activeRepoPath() ?? null;
 
   /// Tracks an external "refresh" event so the bar follows the same
   /// refetch cadence as the git sidebar.

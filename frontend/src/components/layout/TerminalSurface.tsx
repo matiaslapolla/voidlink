@@ -7,7 +7,7 @@ import { useAppStore } from "@/store/LayoutContext";
 export function TerminalSurface() {
   const {
     state,
-    activeWorkspace,
+    activeRepoPath,
     activeTerminals,
     activeDiffTabs,
     activeItem,
@@ -27,7 +27,7 @@ export function TerminalSurface() {
   return (
     <div class="flex-1 relative overflow-hidden bg-background">
       <Show
-        when={(activeWorkspace()?.repoRoot ?? null) !== null}
+        when={(activeRepoPath() ?? null) !== null}
         fallback={<EmptyState message="Select a repository in the sidebar to start working." />}
       >
         <Show when={hasAnything()} fallback={
@@ -44,7 +44,7 @@ export function TerminalSurface() {
                   ptyId={term.ptyId}
                   active={term.id === activeTerminalId()}
                   class="w-full h-full"
-                  onExit={() => actions.removeTerminal(state.activeWorkspaceId, term.id)}
+                  onExit={() => actions.removeTerminal(state.activeWorktreeId, term.id)}
                 />
               </div>
             )}
@@ -53,7 +53,7 @@ export function TerminalSurface() {
           {/* Diff tabs — also mounted; each shows for its own active id. */}
           <For each={activeDiffTabs()}>
             {(tab) => (
-              <Show when={activeWorkspace()?.repoRoot}>
+              <Show when={activeRepoPath()}>
                 {(repo) => (
                   <div
                     class="absolute inset-0"
@@ -62,7 +62,7 @@ export function TerminalSurface() {
                     <GitDiffView
                       repoPath={repo()}
                       filePath={tab.filePath}
-                      onClose={() => actions.closeDiffTab(state.activeWorkspaceId, tab.id)}
+                      onClose={() => actions.closeDiffTab(state.activeWorktreeId, tab.id)}
                     />
                   </div>
                 )}

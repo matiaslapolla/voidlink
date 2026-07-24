@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal } from "solid-js";
+import { Show, createEffect, createSignal, onMount } from "solid-js";
 import { AppShell } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
@@ -37,27 +37,42 @@ import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/b
 import type { ActiveItem } from "@/store/layout";
 
 function AppInner(props: { onOpenSettings: () => void }) {
-  const { state, activeWorkspace, actions } = useAppStore();
+  const { state, activeWorkspace, activeWorktree, activeRepoPath, actions } = useAppStore();
+
+  // Hydrate the real worktree list for every repo-backed workspace once, on
+  // boot. Persisted state only knows what we last saw; git is the truth, and
+  // worktrees can be added or removed while the app is closed.
+  onMount(() => void actions.hydrateAllWorktrees());
 
   // Tell the blame overlay how to find the repo for a given file path.
   // The overlay needs this any time the editor's active model changes
   // so it can refresh without going through MainSurface's effect.
+  //
+  // Resolution is per *worktree* now, and longest-prefix wins: a linked
+  // worktree at `/repo-feature` and its main repo at `/repo` are different
+  // checkouts of the same file, and blaming against the wrong one silently
+  // shows the wrong authors.
   configureBlame((filePath) => {
-    const ws = state.workspaces.find((w) => w.repoRoot && filePath.startsWith(w.repoRoot));
-    return ws?.repoRoot ?? activeWorkspace()?.repoRoot ?? null;
+    let best: string | null = null;
+    for (const ws of state.workspaces) {
+      for (const wt of ws.worktrees) {
+        if (!wt.path || !filePath.startsWith(wt.path)) continue;
+        if (!best || wt.path.length > best.length) best = wt.path;
+      }
+    }
+    return best ?? activeRepoPath();
   });
 
   async function handleOpenFile(path: string) {
-    const wsId = state.activeWorkspaceId;
-    actions.openFileTab(wsId, path);
+    actions.openFileTab(state.activeWorktreeId, path);
     await editorController.openFile(path);
   }
 
   // ── Register the global action catalog. Re-runs when relevant state shifts
   // so closures always reference the current active workspace.
   createEffect(() => {
-    const wsId = state.activeWorkspaceId;
-    const repo = activeWorkspace()?.repoRoot ?? null;
+    const wtId = state.activeWorktreeId;
+    const repo = activeRepoPath();
     const list: Action[] = [
       {
         id: "palette.open",
@@ -80,7 +95,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "New terminal",
         group: "Terminal",
         enabled: () => !!repo,
-        run: () => void actions.spawnTerminal(wsId),
+        run: () => void actions.spawnTerminal(wtId),
       },
       {
         id: "terminal.repeat-last",
@@ -142,7 +157,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "Compare branches…",
         group: "Git",
         enabled: () => !!repo,
-        run: () => actions.openCompareTab(wsId),
+        run: () => actions.openCompareTab(wtId),
       },
       {
         id: "stack.branch-on-top",
@@ -267,7 +282,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
             }
             const top = stack.branches.at(-1)?.name;
             if (!top) return;
-            actions.openStackTab(wsId, { trunk: stack.trunk, topBranch: top });
+            actions.openStackTab(wtId, { trunk: stack.trunk, topBranch: top });
           } catch (e) {
             pushToast(String(e), "error");
           }
@@ -380,7 +395,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         description: "File / diff / compare / stack — terminals can't be reopened",
         group: "View",
         shortcutLabel: "⌘⇧T",
-        enabled: () => (state.closedTabsByWorkspace[state.activeWorkspaceId] ?? []).length > 0,
+        enabled: () => (state.closedTabsByWorktree[state.activeWorktreeId] ?? []).length > 0,
         run: () => void reopenLastClosed(),
       },
       // ── Workspace snapshots ──────────────────────────────────────────
@@ -397,20 +412,20 @@ function AppInner(props: { onOpenSettings: () => void }) {
             confirmLabel: "Save",
           });
           if (!name) return;
-          actions.saveWorkspaceSnapshot(state.activeWorkspaceId, name);
+          actions.saveWorkspaceSnapshot(state.activeWorktreeId, name);
           pushToast(`Snapshot "${name}" saved`, "success");
         },
       },
       // Dynamic entries — one restore + one delete per saved snapshot for
       // the active workspace. Re-registers each effect run.
-      ...snapshotsFor(state.activeWorkspaceId).flatMap<Action>((snap) => [
+      ...snapshotsFor(state.activeWorktreeId).flatMap<Action>((snap) => [
         {
           id: `snapshot.restore.${snap.name}`,
           label: `Snapshot: restore "${snap.name}"`,
           description: `${snap.files.length} files · ${snap.terminals.length} terminals · ${snap.compares.length} compares`,
           group: "Workspace",
           run: async () => {
-            const ok = await actions.restoreWorkspaceSnapshot(state.activeWorkspaceId, snap.name);
+            const ok = await actions.restoreWorkspaceSnapshot(state.activeWorktreeId, snap.name);
             if (!ok) pushToast(`Snapshot "${snap.name}" not found`, "error");
             else pushToast(`Restored "${snap.name}"`, "success");
           },
@@ -420,7 +435,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
           label: `Snapshot: delete "${snap.name}"`,
           group: "Workspace",
           run: () => {
-            removeSnapshot(state.activeWorkspaceId, snap.name);
+            removeSnapshot(state.activeWorktreeId, snap.name);
             pushToast(`Deleted "${snap.name}"`, "info");
           },
         },
@@ -436,44 +451,44 @@ function AppInner(props: { onOpenSettings: () => void }) {
   /// Cmd+Alt+Arrow cycle shortcut so the wrap order matches what the user
   /// sees in the unified tab bar.
   function allItems(): ActiveItem[] {
-    const wsId = state.activeWorkspaceId;
+    const wtId = state.activeWorktreeId;
     const items: ActiveItem[] = [];
-    for (const f of state.openFilesByWorkspace[wsId] ?? [])
+    for (const f of state.openFilesByWorktree[wtId] ?? [])
       items.push({ type: "file", id: f.id, path: f.path });
-    for (const t of state.terminalsByWorkspace[wsId] ?? [])
+    for (const t of state.terminalsByWorktree[wtId] ?? [])
       items.push({ type: "terminal", id: t.id });
-    for (const d of state.diffTabsByWorkspace[wsId] ?? [])
+    for (const d of state.diffTabsByWorktree[wtId] ?? [])
       items.push({ type: "diff", id: d.id });
-    for (const c of state.compareTabsByWorkspace[wsId] ?? [])
+    for (const c of state.compareTabsByWorktree[wtId] ?? [])
       items.push({ type: "compare", id: c.id });
-    for (const s of state.stackTabsByWorkspace[wsId] ?? [])
+    for (const s of state.stackTabsByWorktree[wtId] ?? [])
       items.push({ type: "stack", id: s.id });
-    for (const c of state.conflictTabsByWorkspace[wsId] ?? [])
+    for (const c of state.conflictTabsByWorktree[wtId] ?? [])
       items.push({ type: "conflict", id: c.id });
     return items;
   }
 
   function activateItem(item: ActiveItem) {
-    const wsId = state.activeWorkspaceId;
+    const wtId = state.activeWorktreeId;
     switch (item.type) {
       case "file":
-        actions.selectFileTab(wsId, item.id, item.path);
+        actions.selectFileTab(wtId, item.id, item.path);
         void editorController.setActive(item.path);
         break;
       case "terminal":
-        actions.selectTerminal(wsId, item.id);
+        actions.selectTerminal(wtId, item.id);
         break;
       case "diff":
-        actions.selectDiffTab(wsId, item.id);
+        actions.selectDiffTab(wtId, item.id);
         break;
       case "compare":
-        actions.selectCompareTab(wsId, item.id);
+        actions.selectCompareTab(wtId, item.id);
         break;
       case "stack":
-        actions.selectStackTab(wsId, item.id);
+        actions.selectStackTab(wtId, item.id);
         break;
       case "conflict":
-        actions.selectConflictTab(wsId, item.id);
+        actions.selectConflictTab(wtId, item.id);
         break;
     }
   }
@@ -481,7 +496,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
   function cycleTab(direction: 1 | -1) {
     const items = allItems();
     if (items.length === 0) return;
-    const cur = state.activeItemByWorkspace[state.activeWorkspaceId];
+    const cur = state.activeItemByWorktree[state.activeWorktreeId];
     const idx = cur ? items.findIndex((i) => i.type === cur.type && i.id === cur.id) : -1;
     // -1 → first ArrowRight starts at the head, ArrowLeft jumps to tail.
     const next = idx === -1
@@ -496,7 +511,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
   /// reopened file tab appears but the editor stays parked on
   /// whatever model was active before.
   async function reopenLastClosed() {
-    const popped = actions.reopenLastClosedTab(state.activeWorkspaceId);
+    const popped = actions.reopenLastClosedTab(state.activeWorktreeId);
     if (!popped) {
       pushToast("No recently closed tab", "warning");
       return;
@@ -521,39 +536,44 @@ function AppInner(props: { onOpenSettings: () => void }) {
   }
 
   function closeActiveTab() {
-    const wsId = state.activeWorkspaceId;
-    const item = state.activeItemByWorkspace[wsId];
+    const wtId = state.activeWorktreeId;
+    const item = state.activeItemByWorktree[wtId];
     if (!item) {
-      // No tabs open in this workspace → Cmd+W collapses the workspace
-      // itself. removeWorkspace handles the "this is the last one"
-      // edge case (creates a fresh empty Main).
-      actions.removeWorkspace(wsId);
+      // Nothing open in this worktree → ⌘W closes the container. On a linked
+      // worktree that means detaching it from the rail (the directory on disk
+      // stays; removing it for real is the rail's explicit action). On the
+      // main worktree it means closing the whole workspace — removeWorkspace
+      // handles the "this was the last one" edge case by creating a fresh Main.
+      const ws = activeWorkspace();
+      const wt = activeWorktree();
+      if (ws && wt && !wt.isMain) actions.removeWorktree(ws.id, wt.id);
+      else actions.removeWorkspace(state.activeWorkspaceId);
       return;
     }
-    if (actions.isTabPinned(wsId, item.id)) {
+    if (actions.isTabPinned(wtId, item.id)) {
       pushToast("Tab is pinned — right-click to unpin", "warning");
       return;
     }
     switch (item.type) {
       case "file": {
         editorController.closeFile(item.path);
-        actions.closeFileTab(wsId, item.id);
+        actions.closeFileTab(wtId, item.id);
         break;
       }
       case "terminal":
-        actions.removeTerminal(wsId, item.id);
+        actions.removeTerminal(wtId, item.id);
         break;
       case "diff":
-        actions.closeDiffTab(wsId, item.id);
+        actions.closeDiffTab(wtId, item.id);
         break;
       case "compare":
-        actions.closeCompareTab(wsId, item.id);
+        actions.closeCompareTab(wtId, item.id);
         break;
       case "stack":
-        actions.closeStackTab(wsId, item.id);
+        actions.closeStackTab(wtId, item.id);
         break;
       case "conflict":
-        actions.closeConflictTab(wsId, item.id);
+        actions.closeConflictTab(wtId, item.id);
         break;
     }
   }
@@ -571,7 +591,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
       meta: true,
       key: "p",
       run: () => {
-        if (!activeWorkspace()?.repoRoot) {
+        if (!activeRepoPath()) {
           pushToast("Select a repository first", "warning");
           return;
         }
@@ -664,7 +684,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
       shift: true,
       key: "m",
       run: () => {
-        if (!activeWorkspace()?.repoRoot) {
+        if (!activeRepoPath()) {
           pushToast("Open a repository first", "warning");
           return;
         }
@@ -677,7 +697,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
       shift: true,
       key: "a",
       run: () => {
-        if (!activeWorkspace()?.repoRoot) {
+        if (!activeRepoPath()) {
           pushToast("Open a repository first", "warning");
           return;
         }
@@ -692,13 +712,13 @@ function AppInner(props: { onOpenSettings: () => void }) {
       : <TerminalSidebar onOpenFile={(path) => void handleOpenFile(path)} />;
 
   const rightPane = () => (
-    <Show when={activeWorkspace()?.repoRoot}>
+    <Show when={activeRepoPath()}>
       {(repo) => (
         <Show
           when={!state.gitSidebarCollapsed}
           fallback={<GitSidebarCollapsed onExpand={actions.toggleGitSidebar} />}
         >
-          <GitSidebar repoPath={repo()} workspaceId={state.activeWorkspaceId} />
+          <GitSidebar repoPath={repo()} worktreeId={state.activeWorktreeId} />
         </Show>
       )}
     </Show>
@@ -716,7 +736,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
       />
       <CommandPalette />
       <FileFinder
-        repoPath={activeWorkspace()?.repoRoot ?? null}
+        repoPath={activeRepoPath()}
         onOpenFile={(p) => void handleOpenFile(p)}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
