@@ -281,7 +281,7 @@ VoidLink no llama directamente a APIs de LLM. En su lugar invoca un **comando sh
 - **Ollama:** `ollama run llama3.2 "Conventional commit message:"`
 - **OpenAI Codex CLI:** `codex commit-message`
 
-Ventaja: no hay claves guardadas dentro de la app — la autenticación la maneja la CLI.
+Ventaja: VoidLink nunca llama a la API del proveedor — la autenticación la maneja tu CLI. Si esa CLI necesita una API key, podés guardarla en **Settings → AI → Provider keys**: se almacena en el llavero del sistema operativo (macOS Keychain, Windows Credential Manager, secret-service en Linux), nunca en `localStorage` ni en la config de la app, y se exporta como variable de entorno al comando. El valor nunca vuelve a la interfaz: la fila solo muestra si está guardada y sus últimos 4 caracteres. Si tu shell ya exporta esa variable, gana la tuya.
 
 **Ejemplo:**
 
