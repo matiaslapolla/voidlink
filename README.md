@@ -27,7 +27,7 @@ with optional AI that uses **your own CLI**. No cloud. No API keys. No telemetry
 │            │   4      t.signature_valid()              │ Restack ↻     │
 │            │   5  }                                    │ Submit ↑      │
 ├────────────┴─────────────────────────────────────────┴───────────────┤
-│  $ ▏                                                    bash · ⌃\ split │
+│  $ ▏                                                       bash · zsh -l │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,7 +65,8 @@ VoidLink takes the opposite stance:
 ### ▸ Terminal
 - Real PTY sessions via `portable-pty` + `xterm.js` (canvas-rendered, truecolor)
 - Multiple independent shells across tabs, each with your default shell
-- **Split view** — two terminals side by side (`⌃\`)
+- **Deep links in output** — click a `path:line`, a commit SHA, or a branch name
+  to open it in the editor, a diff, or a checkout
 - Nerd-font aware: Starship / powerline glyphs render out of the box
 - Repeat-last-command and per-session scrollback history
 
@@ -120,11 +121,24 @@ ollama run llama3.2
 
 ### ⌘ Command-driven workflow
 - **Command palette** (`⌘K`) for every action
-- **Fuzzy file finder** to jump to any file
+- **Fuzzy file finder** (`⌘P`) to jump to any tracked file
+- **Shortcut cheat sheet** (`⌘⇧/`) — every binding, grouped and filterable, read
+  from the same table that fires them, so it can't go stale
 - **Secret scanner** — flags likely credentials before you commit
 - **Snapshots** — lightweight local checkpoints of your work
 - Status bar, toast notifications, contextual menus, and an operation banner for
   long-running Git actions
+
+---
+
+## Documentation
+
+- **[Feature reference](./docs/features/README.md)** — one page per feature:
+  what it does, how to use it, its shortcuts, and its real limits. Start with
+  [keyboard shortcuts](./docs/features/keyboard-shortcuts.md).
+- **[Manual de uso](./docs/manual-de-uso.md)** — guided walkthrough (Spanish).
+- **[Design docs](./docs/specs)** — the thinking behind branch compare and
+  stacked PRs.
 
 ---
 
@@ -198,6 +212,7 @@ cargo tauri build          # native installer in src-tauri/target/release/bundle
 ```bash
 cd src-tauri && cargo test   # Rust unit tests (git engine, parsing, …)
 cd frontend  && npm run lint # TypeScript / ESLint
+cd frontend  && npm run test # Vitest — keymap matcher, formatter, integrity
 ```
 
 ---
