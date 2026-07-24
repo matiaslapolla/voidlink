@@ -34,17 +34,36 @@ import { toggleAgentPanel } from "@/commands/agent";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
 import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/blameOverlay";
-import { requestNewWorktree } from "@/commands/worktree";
+import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
+import { setOverlayOpen } from "@/commands/overlay";
+import { agentPanelOpen } from "@/commands/agent";
+import { webviewApi } from "@/api/webview";
+import { BROWSER_WEBVIEW_PREFIX, normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import type { ActiveItem } from "@/store/layout";
 
-function AppInner(props: { onOpenSettings: () => void }) {
+function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) {
   const { state, activeWorkspace, activeWorktree, activeRepoPath, actions } = useAppStore();
 
   // Hydrate the real worktree list for every repo-backed workspace once, on
   // boot. Persisted state only knows what we last saw; git is the truth, and
   // worktrees can be added or removed while the app is closed.
-  onMount(() => void actions.hydrateAllWorktrees());
+  onMount(() => {
+    void actions.hydrateAllWorktrees();
+    // A crash or hard reload can leave child webviews alive with no component
+    // owning them — and a child webview paints above everything. Sweep ours.
+    void webviewApi
+      .closeOrphans((label) => label.startsWith(BROWSER_WEBVIEW_PREFIX))
+      .catch(() => {});
+  });
+
+  // Embedded browser tabs are child webviews that composite above the DOM, so
+  // every modal surface has to actively push them out of the way while open.
+  createEffect(() => setOverlayOpen("palette", isPaletteOpen()));
+  createEffect(() => setOverlayOpen("file-finder", isFileFinderOpen()));
+  createEffect(() => setOverlayOpen("worktree-wizard", !!newWorktreeRequest()));
+  createEffect(() => setOverlayOpen("agent", agentPanelOpen()));
+  createEffect(() => setOverlayOpen("settings", props.settingsOpen));
 
   // Tell the blame overlay how to find the repo for a given file path.
   // The overlay needs this any time the editor's active model changes
@@ -126,21 +145,27 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "Fetch from origin",
         group: "Git",
         enabled: () => !!repo,
-        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-fetch")),
+        run: () => {
+          window.dispatchEvent(new CustomEvent("voidlink:git-fetch"));
+        },
       },
       {
         id: "git.pull",
         label: "Pull from origin",
         group: "Git",
         enabled: () => !!repo,
-        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-pull")),
+        run: () => {
+          window.dispatchEvent(new CustomEvent("voidlink:git-pull"));
+        },
       },
       {
         id: "git.remotes",
         label: "Manage remotes…",
         group: "Git",
         enabled: () => !!repo,
-        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-remotes")),
+        run: () => {
+          window.dispatchEvent(new CustomEvent("voidlink:git-remotes"));
+        },
       },
       {
         id: "git.undo-last-commit",
@@ -159,7 +184,9 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "Compare branches…",
         group: "Git",
         enabled: () => !!repo,
-        run: () => actions.openCompareTab(wtId),
+        run: () => {
+          actions.openCompareTab(wtId);
+        },
       },
       {
         id: "stack.branch-on-top",
@@ -357,7 +384,9 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "New workspace",
         group: "Workspace",
         shortcutLabel: "⌘T",
-        run: () => actions.addWorkspace(),
+        run: () => {
+          actions.addWorkspace();
+        },
       },
       {
         id: "workspace.next",
@@ -422,6 +451,15 @@ function AppInner(props: { onOpenSettings: () => void }) {
         group: "Workspace",
         enabled: () => activeWorktree()?.isMain === false,
         run: () => void removeActiveWorktree(),
+      },
+      {
+        id: "browser.new",
+        label: "New browser tab",
+        description: "Open a page in an embedded webview beside your code",
+        group: "View",
+        run: () => {
+          actions.openBrowserTab(wtId, normalizeUrl("example.com"));
+        },
       },
       {
         id: "tab.next",
@@ -515,6 +553,8 @@ function AppInner(props: { onOpenSettings: () => void }) {
       items.push({ type: "stack", id: s.id });
     for (const c of state.conflictTabsByWorktree[wtId] ?? [])
       items.push({ type: "conflict", id: c.id });
+    for (const b of state.browserTabsByWorktree[wtId] ?? [])
+      items.push({ type: "browser", id: b.id });
     return items;
   }
 
@@ -539,6 +579,9 @@ function AppInner(props: { onOpenSettings: () => void }) {
         break;
       case "conflict":
         actions.selectConflictTab(wtId, item.id);
+        break;
+      case "browser":
+        actions.selectBrowserTab(wtId, item.id);
         break;
     }
   }
@@ -655,6 +698,9 @@ function AppInner(props: { onOpenSettings: () => void }) {
         break;
       case "conflict":
         actions.closeConflictTab(wtId, item.id);
+        break;
+      case "browser":
+        actions.closeBrowserTab(wtId, item.id);
         break;
     }
   }
@@ -834,7 +880,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   return (
     <AppStoreContext.Provider value={store}>
-      <AppInner onOpenSettings={() => setSettingsOpen(true)} />
+      <AppInner onOpenSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen()} />
       <SettingsDialog open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
     </AppStoreContext.Provider>
   );

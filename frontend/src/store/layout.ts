@@ -36,7 +36,8 @@ export type ActiveItem =
   | { type: "conflict"; id: string }
   | { type: "history"; id: string }
   | { type: "preview"; id: string; path: string }
-  | { type: "brain"; id: string };
+  | { type: "brain"; id: string }
+  | { type: "browser"; id: string };
 
 export interface ConflictTab {
   id: string;
@@ -64,6 +65,14 @@ export interface BrainTab {
 export interface OpenFileTab {
   id: string;
   path: string;
+}
+
+/// An embedded browser tab. The page itself lives in a real Tauri child
+/// webview keyed by `id` — the store only owns the address, so a reload
+/// restores the tab pointing at the same URL.
+export interface BrowserTab {
+  id: string;
+  url: string;
 }
 
 export type CompareTreeMode = "tree" | "flat";
@@ -124,6 +133,7 @@ interface AppStoreState {
   historyTabsByWorktree: Record<string, HistoryTab[]>;
   previewTabsByWorktree: Record<string, PreviewTab[]>;
   brainTabsByWorktree: Record<string, BrainTab[]>;
+  browserTabsByWorktree: Record<string, BrowserTab[]>;
   /// LIFO stack of recently closed tabs, capped at CLOSED_TAB_HISTORY_LIMIT.
   /// Lives in memory only — closing the app drops the history (matches
   /// what most editors do with reopen-last-closed).
@@ -207,6 +217,7 @@ function loadGitPrefs(): GitPrefs {
 const COMPARE_TABS_KEY = "voidlink-compare-tabs";
 const STACK_TABS_KEY = "voidlink-stack-tabs";
 const PINNED_TABS_KEY = "voidlink-pinned-tabs";
+const BROWSER_TABS_KEY = "voidlink-browser-tabs";
 
 /// Compare two absolute paths for "same directory". We can't call
 /// `fs::canonicalize` from the frontend, so we normalise what we can see:
@@ -276,6 +287,26 @@ function loadStackTabs(worktreeIds: string[]): Record<string, StackTab[]> {
             typeof t.topBranch === "string",
         )
         .map<StackTab>((t) => ({ id: t.id, trunk: t.trunk, topBranch: t.topBranch }));
+    }
+    return out;
+  } catch {
+    return empty;
+  }
+}
+
+function loadBrowserTabs(worktreeIds: string[]): Record<string, BrowserTab[]> {
+  const empty = Object.fromEntries(worktreeIds.map((id) => [id, [] as BrowserTab[]]));
+  try {
+    const raw = localStorage.getItem(BROWSER_TABS_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as Record<string, BrowserTab[]>;
+    if (!parsed || typeof parsed !== "object") return empty;
+    const out: Record<string, BrowserTab[]> = { ...empty };
+    for (const wtId of worktreeIds) {
+      const list = Array.isArray(parsed[wtId]) ? parsed[wtId] : [];
+      out[wtId] = list
+        .filter((t) => t && typeof t.id === "string" && typeof t.url === "string")
+        .map<BrowserTab>((t) => ({ id: t.id, url: t.url }));
     }
     return out;
   } catch {
@@ -399,6 +430,7 @@ export function createAppStore() {
     historyTabsByWorktree: emptyPerWorktree<HistoryTab>(),
     previewTabsByWorktree: emptyPerWorktree<PreviewTab>(),
     brainTabsByWorktree: emptyPerWorktree<BrainTab>(),
+    browserTabsByWorktree: loadBrowserTabs(worktreeIds),
     closedTabsByWorktree: emptyPerWorktree<ClosedTab>(),
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
     activeItemByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
@@ -450,6 +482,13 @@ export function createAppStore() {
     localStorage.setItem(
       PINNED_TABS_KEY,
       JSON.stringify(state.pinnedTabsByWorktree),
+    );
+  });
+
+  createEffect(() => {
+    localStorage.setItem(
+      BROWSER_TABS_KEY,
+      JSON.stringify(state.browserTabsByWorktree),
     );
   });
 
@@ -513,6 +552,9 @@ export function createAppStore() {
   const activeBrainTabs = createMemo(
     () => state.brainTabsByWorktree[state.activeWorktreeId] ?? [],
   );
+  const activeBrowserTabs = createMemo(
+    () => state.browserTabsByWorktree[state.activeWorktreeId] ?? [],
+  );
   const activeItem = createMemo(
     () => state.activeItemByWorktree[state.activeWorktreeId] ?? null,
   );
@@ -536,6 +578,7 @@ export function createAppStore() {
     s.historyTabsByWorktree[wtId] ??= [];
     s.previewTabsByWorktree[wtId] ??= [];
     s.brainTabsByWorktree[wtId] ??= [];
+    s.browserTabsByWorktree[wtId] ??= [];
     s.closedTabsByWorktree[wtId] ??= [];
     s.pinnedTabsByWorktree[wtId] ??= [];
     if (!(wtId in s.activeItemByWorktree)) s.activeItemByWorktree[wtId] = null;
@@ -553,6 +596,7 @@ export function createAppStore() {
     delete s.historyTabsByWorktree[wtId];
     delete s.previewTabsByWorktree[wtId];
     delete s.brainTabsByWorktree[wtId];
+    delete s.browserTabsByWorktree[wtId];
     delete s.closedTabsByWorktree[wtId];
     delete s.pinnedTabsByWorktree[wtId];
     delete s.activeItemByWorktree[wtId];
@@ -1370,6 +1414,56 @@ export function createAppStore() {
       setState("activeItemByWorktree", wtId, { type: "brain", id: tabId });
     },
 
+    // ── Browser tabs (embedded child webview) ───────────────────────────
+    /// Open a browser tab pointed at `url`. Unlike the other tab kinds we
+    /// never dedupe by URL: two tabs on the same site is a normal thing to
+    /// want, and each one owns its own webview.
+    openBrowserTab(wtId: string, url: string) {
+      const tab: BrowserTab = { id: crypto.randomUUID(), url };
+      setState(produce((s) => {
+        s.browserTabsByWorktree[wtId] = [...(s.browserTabsByWorktree[wtId] ?? []), tab];
+        s.activeItemByWorktree[wtId] = { type: "browser", id: tab.id };
+      }));
+      return tab.id;
+    },
+
+    closeBrowserTab(wtId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.browserTabsByWorktree[wtId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        unpin(s, wtId, tabId);
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorktree[wtId];
+        if (active?.type === "browser" && active.id === tabId) {
+          const nextBrowser = arr[arr.length - 1];
+          const files = s.openFilesByWorktree[wtId] ?? [];
+          const terms = s.terminalsByWorktree[wtId] ?? [];
+          s.activeItemByWorktree[wtId] = nextBrowser
+            ? { type: "browser", id: nextBrowser.id }
+            : files[0]
+              ? { type: "file", id: files[0].id, path: files[0].path }
+              : terms[0]
+                ? { type: "terminal", id: terms[0].id }
+                : null;
+        }
+      }));
+    },
+
+    selectBrowserTab(wtId: string, tabId: string) {
+      setState("activeItemByWorktree", wtId, { type: "browser", id: tabId });
+    },
+
+    /// Record where a browser tab navigated to. The webview does the actual
+    /// navigating; this only keeps the persisted address in sync so a reload
+    /// comes back to the same page.
+    setBrowserUrl(wtId: string, tabId: string, url: string) {
+      setState(produce((s) => {
+        const tab = (s.browserTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+        if (tab) tab.url = url;
+      }));
+    },
+
     // ── Preview tabs (markdown preview) ─────────────────────────────────
     openPreviewTab(wtId: string, filePath: string) {
       const existing = (state.previewTabsByWorktree[wtId] ?? []).find(
@@ -1741,6 +1835,7 @@ export function createAppStore() {
     activeHistoryTabs,
     activePreviewTabs,
     activeBrainTabs,
+    activeBrowserTabs,
     activeItem,
     activeClosedTabs,
     activePinnedTabs,

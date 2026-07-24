@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import { X, TerminalSquare, FileCode, GitCompare, GitBranchPlus, Layers, Plus, FilePlus2, Pin, PinOff, ChevronsRight, GitMerge, Eye, GitCommitHorizontal, Brain } from "lucide-solid";
+import { X, TerminalSquare, FileCode, GitCompare, GitBranchPlus, Layers, Plus, FilePlus2, Pin, PinOff, ChevronsRight, GitMerge, Eye, GitCommitHorizontal, Brain, Globe } from "lucide-solid";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { GitDiffView } from "@/components/git/GitDiffView";
 import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTab";
@@ -9,6 +9,7 @@ import { ConflictTab as ConflictTabView } from "@/components/git/conflict/Confli
 import { CommitGraph } from "@/components/git/history/CommitGraph";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import { BrainSurface } from "@/components/brain/BrainSurface";
+import { BrowserPane, normalizeUrl } from "@/components/browser/BrowserPane";
 import { EditorHost } from "@/components/editor/EditorHost";
 import { editorController } from "@/components/editor/editorController";
 import { useOpenFiles } from "@/components/editor/useOpenFiles";
@@ -37,6 +38,7 @@ export function MainSurface() {
     activeHistoryTabs,
     activePreviewTabs,
     activeBrainTabs,
+    activeBrowserTabs,
     activeItem,
     activePinnedTabs,
     actions,
@@ -219,6 +221,7 @@ export function MainSurface() {
   const activeHistoryId  = () => { const a = activeItem(); return a?.type === "history"  ? a.id : null; };
   const activePreviewId  = () => { const a = activeItem(); return a?.type === "preview"  ? a.id : null; };
   const activeBrainId    = () => { const a = activeItem(); return a?.type === "brain"    ? a.id : null; };
+  const activeBrowserId  = () => { const a = activeItem(); return a?.type === "browser"  ? a.id : null; };
 
   const showEditor = () => activeFileId() !== null;
 
@@ -246,7 +249,8 @@ export function MainSurface() {
     activeConflictTabs().length === 0 &&
     activeHistoryTabs().length === 0 &&
     activePreviewTabs().length === 0 &&
-    activeBrainTabs().length === 0;
+    activeBrainTabs().length === 0 &&
+    activeBrowserTabs().length === 0;
 
   const hasAnyTab = () =>
     activeOpenFiles().length > 0 ||
@@ -257,7 +261,8 @@ export function MainSurface() {
     activeConflictTabs().length > 0 ||
     activeHistoryTabs().length > 0 ||
     activePreviewTabs().length > 0 ||
-    activeBrainTabs().length > 0;
+    activeBrainTabs().length > 0 ||
+    activeBrowserTabs().length > 0;
 
   const repoRoot = () => activeRepoPath() ?? null;
 
@@ -405,6 +410,14 @@ export function MainSurface() {
   function onNewCompare() {
     if (!repoRoot()) return;
     actions.openCompareTab(state.activeWorktreeId);
+    closeMenu();
+  }
+
+  /// Open an embedded browser tab. Starts blank-ish rather than prompting —
+  /// the pane has its own address bar, and one fewer modal is one fewer thing
+  /// that has to fight the child webview for the top of the stack.
+  function onNewBrowser() {
+    actions.openBrowserTab(state.activeWorktreeId, normalizeUrl("example.com"));
     closeMenu();
   }
 
@@ -781,6 +794,51 @@ export function MainSurface() {
             }}
           </For>
 
+          {/* Browser tabs — the page is a child webview, not an iframe, so the
+              tab itself is the only part of it that lives in the DOM. */}
+          <For each={activeBrowserTabs()}>
+            {(tab) => {
+              const isActive = () => tab.id === activeBrowserId();
+              const host = () => {
+                try {
+                  return new URL(tab.url).host || tab.url;
+                } catch {
+                  return tab.url || "new tab";
+                }
+              };
+              return (
+                <div
+                  class={`group flex items-center gap-1.5 px-3 h-full border-r border-border shrink-0 text-[13px] cursor-pointer select-none transition-colors ${
+                    isActive()
+                      ? "bg-background text-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
+                  }`}
+                  onClick={() => actions.selectBrowserTab(state.activeWorktreeId, tab.id)}
+                  onMouseDown={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      actions.closeBrowserTab(state.activeWorktreeId, tab.id);
+                    }
+                  }}
+                  title={tab.url}
+                >
+                  <Globe class="w-3.5 h-3.5 shrink-0 text-info opacity-80" />
+                  <span class="max-w-[160px] truncate">{host()}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      actions.closeBrowserTab(state.activeWorktreeId, tab.id);
+                    }}
+                    class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
+                    aria-label={`Close browser tab ${host()}`}
+                  >
+                    <X class="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            }}
+          </For>
+
           {/* Stack tabs */}
           <For each={visibleStacks()}>
             {(tab) => {
@@ -912,6 +970,7 @@ export function MainSurface() {
               actions.openBrainTab(state.activeWorktreeId);
               closeMenu();
             }}
+            onNewBrowser={onNewBrowser}
           />
         </div>
       </Show>
@@ -1026,6 +1085,20 @@ export function MainSurface() {
           )}
         </For>
 
+        {/* Browser tabs. Kept mounted so the webview isn't torn down on every
+            tab switch — BrowserPane hides it instead. */}
+        <For each={activeBrowserTabs()}>
+          {(tab) => (
+            <div class="absolute inset-0" style={{ display: tab.id === activeBrowserId() ? "block" : "none" }}>
+              <BrowserPane
+                tab={tab}
+                active={tab.id === activeBrowserId()}
+                onUrlChange={(url) => actions.setBrowserUrl(state.activeWorktreeId, tab.id, url)}
+              />
+            </div>
+          )}
+        </For>
+
         {/* Conflict tabs */}
         <For each={activeConflictTabs()}>
           {(tab) => (
@@ -1107,6 +1180,7 @@ function NewTabMenu(props: {
   onNewTerminal: () => void;
   onNewCompare: () => void;
   onOpenBrain: () => void;
+  onNewBrowser: () => void;
 }) {
   // The parent tab bar uses `overflow-x-auto`, which clips any descendant
   // absolutely-positioned dropdown. Render the menu in a Portal and anchor
@@ -1244,6 +1318,9 @@ function NewTabMenu(props: {
               </MenuItem>
               <MenuItem onClick={props.onOpenBrain} icon={<Brain class="w-3.5 h-3.5" />}>
                 Brain
+              </MenuItem>
+              <MenuItem onClick={props.onNewBrowser} icon={<Globe class="w-3.5 h-3.5" />}>
+                New browser tab
               </MenuItem>
             </Show>
           </div>
