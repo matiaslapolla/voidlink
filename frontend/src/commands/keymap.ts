@@ -1,0 +1,276 @@
+/// The keymap: one declarative table that is the single source of truth for
+/// every global shortcut in voidlink.
+///
+/// Three surfaces read this table and nothing else:
+///   - `keybindings.ts` turns it into the capture-phase keydown handler,
+///   - the command palette derives each action's accelerator label from it,
+///   - the shortcuts cheat sheet and the settings Keyboard pane render it.
+///
+/// Because the label is *derived*, an accelerator shown in the UI cannot drift
+/// from the chord that actually fires — the old hand-typed `shortcutLabel`
+/// strings could, and did.
+///
+/// The shape is intentionally serialisable (ids + plain chord objects, no
+/// closures) so a user-editable JSON keymap can be layered on later without
+/// restructuring anything. Building that editor is out of scope here.
+
+import type { Chord } from "@/commands/keys";
+import { chordId } from "@/commands/keys";
+import { ACTION_IDS, workspaceSelectId, type ActionId } from "@/commands/actionIds";
+
+/// Where a chord is live.
+///
+/// The keydown listener runs in the capture phase and swallows what it
+/// matches, so a global binding wins over Monaco *and* over the shell running
+/// in an xterm pane. Anything that would take a key those surfaces need gets
+/// scoped down instead of dropped.
+///   - `global`                — always fires (the default).
+///   - `outside-terminal`      — stands down while a terminal pane has focus.
+///   - `outside-text-surfaces` — stands down in a terminal *or* the editor.
+export type BindingScope = "global" | "outside-terminal" | "outside-text-surfaces";
+
+export interface Binding extends Chord {
+  scope?: BindingScope;
+}
+
+export type KeymapGroup =
+  | "App"
+  | "File"
+  | "View"
+  | "Tabs"
+  | "Workspace"
+  | "Terminal"
+  | "Git"
+  | "Stack"
+  | "AI";
+
+/// Display order for grouped surfaces (cheat sheet, settings).
+export const KEYMAP_GROUPS: readonly KeymapGroup[] = [
+  "App",
+  "File",
+  "View",
+  "Tabs",
+  "Workspace",
+  "Terminal",
+  "Git",
+  "Stack",
+  "AI",
+];
+
+export interface KeymapEntry {
+  /// Which registered action this fires. One entry per action — a second
+  /// chord for the same action goes in `alternates`, not in a second entry.
+  actionId: ActionId;
+  group: KeymapGroup;
+  /// The chord rendered as this action's accelerator everywhere in the UI.
+  binding: Binding;
+  /// Extra chords that run the same action. Never rendered as the primary
+  /// label; the cheat sheet lists them beside it when they read differently.
+  alternates?: Binding[];
+  /// Why this chord, when the answer isn't obvious. Surfaced nowhere — it's
+  /// for whoever next has to decide whether they're allowed to change it.
+  note?: string;
+}
+
+/// Chords whose `event.key` is the *shifted* character on a US layout are
+/// declared with that shifted value (`?` for Shift+/, `~` for Shift+backquote)
+/// because that is what the browser reports. `formatChord` maps them back to
+/// the physical key so the label reads `⌘⇧/`, not `⌘⇧?`. The unshifted spelling
+/// is kept as an alternate for layouts that report it the other way.
+export const KEYMAP: readonly KeymapEntry[] = [
+  // ── App ───────────────────────────────────────────────────────────────
+  { actionId: "palette.open", group: "App", binding: { meta: true, key: "k" } },
+  {
+    actionId: "help.shortcuts",
+    group: "App",
+    binding: { meta: true, shift: true, key: "?" },
+    alternates: [
+      { meta: true, shift: true, key: "/" },
+      { meta: true, key: "/", scope: "outside-text-surfaces" },
+    ],
+    note: "Bare ⌘/ is scoped away from the editor and terminal — it is Monaco's toggle-line-comment.",
+  },
+  {
+    actionId: "app.settings",
+    group: "App",
+    binding: { meta: true, key: "," },
+    note: "Universal settings convention; Ctrl+, is not a readline or Monaco binding.",
+  },
+
+  // ── File ──────────────────────────────────────────────────────────────
+  { actionId: "file.open", group: "File", binding: { meta: true, key: "p" } },
+  {
+    actionId: "file.save",
+    group: "File",
+    binding: { meta: true, key: "s", scope: "outside-terminal" },
+    note: "Ctrl+S is XOFF in a shell — scoped so the terminal keeps flow control.",
+  },
+
+  // ── View ──────────────────────────────────────────────────────────────
+  { actionId: "ui.toggle-left-sidebar", group: "View", binding: { meta: true, key: "b" } },
+  { actionId: "ui.toggle-git-sidebar", group: "View", binding: { meta: true, key: "j" } },
+  { actionId: "ui.swap-sidebars", group: "View", binding: { meta: true, key: "\\" } },
+  { actionId: "view.toggle-blame", group: "View", binding: { meta: true, alt: true, key: "b" } },
+  {
+    actionId: "ui.toggle-diff-mode",
+    group: "View",
+    binding: { meta: true, shift: true, key: "d" },
+    note: "D for diff layout. ⌘⌥D would be swallowed by macOS (Dock hiding).",
+  },
+
+  // ── Tabs ──────────────────────────────────────────────────────────────
+  { actionId: "tab.close", group: "Tabs", binding: { meta: true, key: "w" } },
+  { actionId: "tab.reopen-last", group: "Tabs", binding: { meta: true, shift: true, key: "t" } },
+  { actionId: "tab.next", group: "Tabs", binding: { meta: true, alt: true, key: "ArrowRight" } },
+  { actionId: "tab.prev", group: "Tabs", binding: { meta: true, alt: true, key: "ArrowLeft" } },
+
+  // ── Workspace ─────────────────────────────────────────────────────────
+  { actionId: "workspace.new", group: "Workspace", binding: { meta: true, key: "t" } },
+  {
+    actionId: "workspace.next",
+    group: "Workspace",
+    binding: { meta: true, shift: true, key: "ArrowRight" },
+  },
+  {
+    actionId: "workspace.prev",
+    group: "Workspace",
+    binding: { meta: true, shift: true, key: "ArrowLeft" },
+  },
+  ...Array.from({ length: 9 }, (_, i): KeymapEntry => ({
+    actionId: workspaceSelectId(i + 1) as ActionId,
+    group: "Workspace",
+    binding: { meta: true, key: String(i + 1) },
+  })),
+
+  // ── Terminal ──────────────────────────────────────────────────────────
+  {
+    actionId: "terminal.new",
+    group: "Terminal",
+    binding: { meta: true, shift: true, key: "~" },
+    alternates: [{ meta: true, shift: true, key: "`" }],
+    note: "Ctrl+Shift+` matches the VS Code new-terminal chord.",
+  },
+  { actionId: "terminal.repeat-last", group: "Terminal", binding: { meta: true, shift: true, key: "r" } },
+
+  // ── Git ───────────────────────────────────────────────────────────────
+  {
+    actionId: "git.refresh",
+    group: "Git",
+    binding: { meta: true, alt: true, key: "r" },
+    note: "⌘⇧R is already the terminal repeat, so refresh takes the ⌥ slot.",
+  },
+  { actionId: "git.fetch", group: "Git", binding: { meta: true, shift: true, key: "f" } },
+  {
+    actionId: "git.pull",
+    group: "Git",
+    binding: { meta: true, shift: true, key: "u" },
+    note: "U for 'update from upstream'; P belongs to the file finder family.",
+  },
+  {
+    actionId: "git.commit-graph",
+    group: "Git",
+    binding: { meta: true, shift: true, key: "h" },
+    note: "H for history.",
+  },
+  {
+    actionId: "git.compare",
+    group: "Git",
+    binding: { meta: true, shift: true, key: "c", scope: "outside-terminal" },
+    note: "Ctrl+Shift+C is copy in most Linux terminals — scoped so it still is.",
+  },
+  { actionId: "git.ai-draft-commit", group: "Git", binding: { meta: true, shift: true, key: "m" } },
+
+  // ── Stack ─────────────────────────────────────────────────────────────
+  {
+    actionId: "stack.branch-on-top",
+    group: "Stack",
+    binding: { meta: true, shift: true, key: "n" },
+    note: "N for new branch. Restack and submit stay palette-only — they rewrite history or hit the network.",
+  },
+
+  // ── AI ────────────────────────────────────────────────────────────────
+  { actionId: "agent.toggle", group: "AI", binding: { meta: true, shift: true, key: "a" } },
+];
+
+/// Every chord an entry claims, primary first.
+export function chordsOf(entry: KeymapEntry): Binding[] {
+  return [entry.binding, ...(entry.alternates ?? [])];
+}
+
+/// The entry that owns `actionId`, if any.
+export function entryFor(actionId: string): KeymapEntry | undefined {
+  return KEYMAP.find((e) => e.actionId === actionId);
+}
+
+/// The chord rendered as an action's accelerator. `undefined` when the action
+/// is palette-only — that is a normal state, not an error.
+export function primaryChordFor(actionId: string): Chord | undefined {
+  return entryFor(actionId)?.binding;
+}
+
+// ─── Validation ──────────────────────────────────────────────────────────
+
+export type KeymapProblemKind = "duplicate-chord" | "duplicate-action" | "unknown-action";
+
+export interface KeymapProblem {
+  kind: KeymapProblemKind;
+  detail: string;
+}
+
+/// Structural checks that need no runtime: no action bound twice, no chord
+/// claimed twice. Called by the unit test and by the dev-mode assertion.
+export function validateKeymapShape(): KeymapProblem[] {
+  const problems: KeymapProblem[] = [];
+  const seenActions = new Set<string>();
+  const chordOwner = new Map<string, string>();
+
+  for (const entry of KEYMAP) {
+    if (seenActions.has(entry.actionId)) {
+      problems.push({
+        kind: "duplicate-action",
+        detail: `action "${entry.actionId}" appears in more than one keymap entry — use \`alternates\` for a second chord`,
+      });
+    }
+    seenActions.add(entry.actionId);
+
+    for (const chord of chordsOf(entry)) {
+      const id = chordId(chord);
+      const owner = chordOwner.get(id);
+      if (owner) {
+        problems.push({
+          kind: "duplicate-chord",
+          detail: `chord "${id}" is claimed by both "${owner}" and "${entry.actionId}"`,
+        });
+      } else {
+        chordOwner.set(id, entry.actionId);
+      }
+    }
+  }
+
+  return problems;
+}
+
+/// Shape checks plus: does every bound action actually exist?
+///
+/// Pass the ids that are really registered (`getActions().map(a => a.id)`) for
+/// the runtime assertion, or `ACTION_IDS` for the static test.
+export function validateKeymap(knownActionIds: readonly string[]): KeymapProblem[] {
+  const known = new Set(knownActionIds);
+  const problems = validateKeymapShape();
+
+  for (const entry of KEYMAP) {
+    if (!known.has(entry.actionId)) {
+      problems.push({
+        kind: "unknown-action",
+        detail: `keymap binds "${entry.actionId}", which is not a registered action`,
+      });
+    }
+  }
+
+  return problems;
+}
+
+/// Convenience for the static test and the dev assertion's default case.
+export function validateKeymapAgainstCatalog(): KeymapProblem[] {
+  return validateKeymap(ACTION_IDS);
+}

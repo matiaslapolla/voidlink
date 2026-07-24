@@ -28,6 +28,7 @@ VoidLink es una aplicación de escritorio (Tauri + SolidJS) que combina:
 13. [Configuración (Settings)](#13-configuración-settings)
 14. [Persistencia del workspace](#14-persistencia-del-workspace)
 15. [Variables de entorno](#15-variables-de-entorno)
+16. [Referencia por feature (inglés)](#16-referencia-por-feature-inglés)
 
 ---
 
@@ -79,10 +80,23 @@ make bundle-macos-universal
 | Atajo | Acción |
 | --- | --- |
 | `Mod+K` | Abre la paleta de comandos. |
+| `Mod+Shift+/` | Abre la chuleta de atajos (lista completa, filtrable). |
+| `Mod+,` | Abre Settings. |
 | `Mod+P` | Abre el buscador de archivos. |
 | `Mod+W` | Cierra la pestaña activa. |
 | `Mod+S` | Guarda el archivo activo. |
 | `Mod+Shift+R` | Repite el último comando ejecutado en la terminal activa. |
+| `Mod+Shift+M` | Redacta el mensaje de commit con tu CLI de IA. |
+| `Mod+Shift+A` | Abre/cierra el agente del repo. |
+
+> La tabla de arriba es un resumen. **La lista completa y siempre actualizada
+> está en la app** (`Mod+Shift+/`, o Settings → Keyboard) y en
+> [`features/keyboard-shortcuts.md`](./features/keyboard-shortcuts.md) — ambas
+> se generan desde la misma tabla que dispara los atajos, así que no pueden
+> quedar desactualizadas.
+>
+> Ojo: `Mod+S` no se dispara mientras el foco está en una terminal, para que
+> `Ctrl+S` siga llegando al shell como XOFF.
 
 **Ejemplo — flujo rápido sin ratón:**
 
@@ -429,6 +443,30 @@ export ANTHROPIC_API_KEY="sk-ant-xxxx"
 ```
 
 Como VoidLink levanta cada PTY reconstruyendo el entorno desde `zprofile`/`bashrc`, basta con definirlas ahí.
+
+---
+
+## 16. Referencia por feature (inglés)
+
+Este manual es una guía de uso. Para la **referencia técnica por feature** —
+qué hace exactamente cada una, cómo se usa paso a paso, sus atajos, y sobre
+todo sus límites y gotchas reales verificados contra el código — está
+[`features/`](./features/README.md), en inglés.
+
+Índice completo en [`features/README.md`](./features/README.md). Los más
+consultados:
+
+| Página | Cubre |
+| --- | --- |
+| [keyboard-shortcuts](./features/keyboard-shortcuts.md) | El keymap completo, cómo funciona el matcher, scopes |
+| [git-staging](./features/git-staging.md) | Staging, commit, amend, hunks |
+| [branches-and-sync](./features/branches-and-sync.md) | Ramas, auto-stash al cambiar, fetch/pull/push, auth |
+| [conflicts](./features/conflicts.md) | Detección de operación en curso y resolución |
+| [stacked-prs](./features/stacked-prs.md) | Metadata del stack, restack, submit |
+| [ai-commit-and-agent](./features/ai-commit-and-agent.md) | El puente BYO-CLI y cómo se arma el prompt |
+
+Las secciones 1–15 de este manual siguen siendo la lectura recomendada para
+empezar; `features/` es para cuando algo no se comporta como esperás.
 
 ---
 

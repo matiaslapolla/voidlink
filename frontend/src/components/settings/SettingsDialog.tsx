@@ -15,13 +15,21 @@ import { useAppStore } from "@/store/LayoutContext";
 import { stackApi } from "@/api/stack";
 import { secretsApi, type SecretStatus } from "@/api/secrets";
 import { pushToast } from "@/commands/toast";
+import { getAction } from "@/commands/registry";
+import { shortcutLabel, shortcutLabels } from "@/commands/shortcuts";
+import {
+  KEYMAP,
+  KEYMAP_GROUPS,
+  type BindingScope,
+  type KeymapEntry,
+} from "@/commands/keymap";
 
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
 }
 
-type Tab = "ui" | "theme" | "terminal" | "ai" | "stack" | "brain";
+type Tab = "ui" | "theme" | "terminal" | "keyboard" | "ai" | "stack" | "brain";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -92,6 +100,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "ui"} onClick={() => setTab("ui")}>UI</TabButton>
             <TabButton active={tab() === "theme"} onClick={() => setTab("theme")}>Theme</TabButton>
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
+            <TabButton active={tab() === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</TabButton>
             <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
             <TabButton active={tab() === "brain"} onClick={() => setTab("brain")}>Brain</TabButton>
@@ -101,6 +110,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <Show when={tab() === "ui"}><UiPane /></Show>
             <Show when={tab() === "theme"}><ThemePane /></Show>
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
+            <Show when={tab() === "keyboard"}><KeyboardPane /></Show>
             <Show when={tab() === "ai"}><AiPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>
             <Show when={tab() === "brain"}><BrainPane /></Show>
@@ -389,6 +399,76 @@ function TerminalPane() {
   );
 }
 
+// ─── Keyboard Pane ───────────────────────────────────────────────────────────
+
+const SCOPE_HINTS: Record<BindingScope, string | null> = {
+  global: null,
+  "outside-terminal": "not while a terminal has focus",
+  "outside-text-surfaces": "not while the editor or a terminal has focus",
+};
+
+/// Read-only listing of every global shortcut, straight from `keymap.ts`.
+/// Rebinding is not offered yet — the keymap is structured to allow it, but
+/// the editor UI is a separate piece of work.
+function KeyboardPane() {
+  const groups = KEYMAP_GROUPS.map((group) => ({
+    group,
+    entries: KEYMAP.filter((e) => e.group === group),
+  })).filter((g) => g.entries.length > 0);
+
+  return (
+    <div class="space-y-6">
+      <p class="text-[11px] text-muted-foreground leading-relaxed">
+        Every global shortcut, derived from the same table that fires them —
+        this list cannot go out of date. On macOS the platform modifier is ⌘;
+        elsewhere it is Ctrl, and voidlink accepts either. Press{" "}
+        <span class="font-mono">{shortcutLabel("help.shortcuts")}</span> anywhere
+        for the same list as a filterable overlay.
+      </p>
+      <For each={groups}>
+        {(g) => (
+          <Section title={g.group}>
+            <For each={g.entries}>
+              {(entry) => <ShortcutRow entry={entry} />}
+            </For>
+          </Section>
+        )}
+      </For>
+    </div>
+  );
+}
+
+function ShortcutRow(props: { entry: KeymapEntry }) {
+  const action = () => getAction(props.entry.actionId);
+  const chords = () => shortcutLabels(props.entry.actionId);
+  const scopeHint = () => SCOPE_HINTS[props.entry.binding.scope ?? "global"];
+  return (
+    <div class="flex items-start gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="text-foreground/90 truncate">
+          {action()?.label ?? props.entry.actionId}
+        </div>
+        <Show when={scopeHint()}>
+          {(hint) => (
+            <div class="text-[10px] text-muted-foreground/70 leading-tight">
+              {hint()}
+            </div>
+          )}
+        </Show>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <For each={chords()}>
+          {(chord) => (
+            <kbd class="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-mono text-foreground/80">
+              {chord}
+            </kbd>
+          )}
+        </For>
+      </div>
+    </div>
+  );
+}
+
 // ─── Reusable rows ───────────────────────────────────────────────────────────
 
 function Section(props: { title: string; children: JSX.Element }) {
@@ -565,9 +645,10 @@ function AiPane() {
           onInput={(v) => updateAi({ agentCommand: v })}
         />
         <p class="text-[11px] text-muted-foreground leading-relaxed pl-28">
-          Used by the repo agent (⌘⇧A). A prompt grounded in your live workspace
-          state — branch, status, recent log, staged diff, open files — is piped
-          to stdin; stdout is the answer. Leave blank to reuse the commit command.
+          Used by the repo agent ({shortcutLabel("agent.toggle")}). A prompt
+          grounded in your live workspace state — branch, status, recent log,
+          staged diff, open files — is piped to stdin; stdout is the answer.
+          Leave blank to reuse the commit command.
         </p>
       </Section>
       <ProviderKeysSection />

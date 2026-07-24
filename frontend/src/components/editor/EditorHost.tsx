@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, onMount } from "solid-js";
+import { createEffect, onMount } from "solid-js";
 import { editorController } from "./editorController";
 import { useTheme } from "@/store/theme";
 
@@ -20,14 +20,10 @@ export function EditorHost(props: EditorHostProps) {
       editorController.setTheme(mode() === "light" ? "vs" : "vs-dark");
     });
 
-    const onSave = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        e.preventDefault();
-        void editorController.saveActive();
-      }
-    };
-    window.addEventListener("keydown", onSave);
-    onCleanup(() => window.removeEventListener("keydown", onSave));
+    // Save is not handled here. ⌘S / Ctrl+S is a `file.save` entry in
+    // `commands/keymap.ts` — feature components own no key handling, and
+    // routing it through the keymap is what lets the binding be scoped away
+    // from terminal panes, where Ctrl+S still has to mean XOFF.
   });
 
   return (
