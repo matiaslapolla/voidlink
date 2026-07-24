@@ -898,6 +898,13 @@ export function createAppStore() {
       }));
     },
 
+    /// Look up a spawned terminal session by id. Callers that need the raw
+    /// `ptyId` — e.g. to write a command into a terminal they just opened —
+    /// go through this rather than reaching into the state record.
+    findTerminal(wtId: string, termId: string): TerminalSession | null {
+      return (state.terminalsByWorktree[wtId] ?? []).find((t) => t.id === termId) ?? null;
+    },
+
     selectTerminal(wtId: string, termId: string) {
       setState("activeItemByWorktree", wtId, { type: "terminal", id: termId });
     },

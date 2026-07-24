@@ -19,4 +19,12 @@ export const terminalApi = {
   processInfo(sessionId: string): Promise<PtyProcessInfo> {
     return invoke<PtyProcessInfo>("pty_process_info", { sessionId });
   },
+
+  /// Write raw bytes to a PTY's stdin. Used to feed a command into a terminal
+  /// the app just opened — the post-create step of the new-worktree wizard
+  /// runs this way so its output streams in a real shell instead of a
+  /// bespoke channel.
+  writePty(sessionId: string, data: string): Promise<void> {
+    return invoke<void>("write_pty", { sessionId, data });
+  },
 };

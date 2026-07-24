@@ -40,6 +40,8 @@ import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu"
 import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
+import { samePath } from "@/store/layout";
+import { requestNewWorktree } from "@/commands/worktree";
 import { useSettings } from "@/store/settings";
 import { scanStagedDiff, type SecretFinding } from "@/commands/secretScan";
 import { SecretScanDialog } from "@/commands/SecretScanDialog";
@@ -1147,54 +1149,40 @@ function BranchesPane(props: { repoPath: string; worktreeId: string; onCheckout:
 // Worktrees
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Linked worktrees for the repo. Each is a separate working directory on its
-/// own branch — "open" loads it as a fresh workspace (its own files, terminal,
-/// git view) so you can run two branches side by side without stashing.
+/// Linked worktrees for the repo. This pane is now a *view* onto the same
+/// worktrees the workspace rail lists: "open" focuses one in the rail rather
+/// than spawning a parallel workspace, and "new" delegates to the wizard so
+/// there is exactly one place that knows how to set a worktree up.
 function WorktreesPane(props: { repoPath: string }) {
-  const { actions } = useAppStore();
+  const { activeWorkspace, actions } = useAppStore();
   const [worktrees, { refetch }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listWorktrees(p),
   );
   onMount(() => onCleanup(onGitRefsChanged(() => refetch())));
 
-  /// Sibling path for a new worktree: `<repoParent>/<repoName>-<branch>`,
-  /// with the branch slug sanitized to filesystem-safe chars.
-  function siblingPath(branch: string): string {
-    const root = props.repoPath.replace(/\/+$/, "");
-    const slug = branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-    return `${root}-${slug || "wt"}`;
-  }
-
-  async function addWorktree() {
-    const branch = await textPrompt({
-      title: "Add worktree",
-      label: "Branch for the worktree (existing or new)",
-      placeholder: "feature/my-branch",
-      confirmLabel: "Create",
-    });
-    if (!branch) return;
-    const path = siblingPath(branch);
-    try {
-      // Check if the branch already exists locally; if so, check it out into
-      // the worktree rather than failing on "already exists".
-      const existing = await gitApi.listBranches(props.repoPath, false);
-      const isNew = !existing.some((b) => b.name === branch);
-      const wt = await gitApi.addWorktree(props.repoPath, path, branch, isNew);
-      pushToast(`Created worktree on ${branch}`, "success", 2500);
-      emitGitRefsChanged();
-      const open = await dialogConfirm(`Open worktree "${branch}" as a new workspace?`, {
-        title: "Open worktree",
-      });
-      if (open) openAsWorkspace(wt.path, branch);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+  function addWorktree() {
+    const ws = activeWorkspace();
+    if (!ws?.repoRoot) {
+      pushToast("Select a repository for this workspace first", "warning");
+      return;
     }
+    requestNewWorktree({
+      workspaceId: ws.id,
+      repoRoot: ws.repoRoot,
+      sourcePath: props.repoPath,
+    });
   }
 
-  function openAsWorkspace(path: string, label: string) {
-    const id = actions.addWorkspace(label);
-    actions.setRepoRoot(id, path);
+  /// Focus a worktree in the rail. It is registered on demand so a worktree
+  /// created outside voidlink (plain `git worktree add`) still opens without
+  /// waiting for the next hydration pass.
+  function openWorktree(path: string, branch: string | null) {
+    const ws = activeWorkspace();
+    if (!ws) return;
+    const existing = ws.worktrees.find((wt) => samePath(wt.path, path));
+    const id = existing?.id ?? actions.addWorktree(ws.id, { path, branch });
+    if (id) actions.selectWorktree(id);
   }
 
   async function remove(path: string, label: string) {
@@ -1294,9 +1282,9 @@ function WorktreesPane(props: { repoPath: string }) {
               </Show>
               <Show when={!wt.isMain}>
                 <button
-                  onClick={() => openAsWorkspace(wt.path, label())}
-                  title="Open as workspace"
-                  aria-label={`Open worktree ${label()} as workspace`}
+                  onClick={() => openWorktree(wt.path, wt.branch)}
+                  title="Open this worktree"
+                  aria-label={`Open worktree ${label()}`}
                   class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
                 >
                   <FolderOpen class="w-3 h-3" />

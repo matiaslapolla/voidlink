@@ -14,7 +14,10 @@ import type {
   RemoteInfo,
   SafeCheckoutResult,
   StashEntry,
+  WorktreeDefaults,
   WorktreeInfo,
+  WorktreeSetupPlan,
+  WorktreeSetupReport,
 } from "@/types/git";
 import type { GraphCommit } from "@/types/history";
 
@@ -322,5 +325,35 @@ export const gitApi = {
 
   removeWorktree(repoPath: string, path: string, force?: boolean): Promise<void> {
     return invoke<void>("git_remove_worktree", { repoPath, path, force: force ?? false });
+  },
+
+  /// Read-only inspection of what a new worktree would need. `sourcePath`
+  /// defaults to the repo root; pass the worktree you're creating *from* when
+  /// it differs, so env files are copied from what the user can actually see.
+  worktreeSetupPlan(repoPath: string, sourcePath?: string): Promise<WorktreeSetupPlan> {
+    return invoke<WorktreeSetupPlan>("worktree_setup_plan", {
+      repoPath,
+      sourcePath: sourcePath ?? null,
+    });
+  },
+
+  /// Apply the wizard's answers to a worktree that already exists on disk.
+  /// Resolves even when individual steps failed — inspect `report.steps`.
+  worktreeApplySetup(opts: {
+    sourcePath: string;
+    destPath: string;
+    envFiles: string[];
+    depActions: Record<string, string>;
+  }): Promise<WorktreeSetupReport> {
+    return invoke<WorktreeSetupReport>("worktree_apply_setup", {
+      sourcePath: opts.sourcePath,
+      destPath: opts.destPath,
+      envFiles: opts.envFiles,
+      depActions: opts.depActions,
+    });
+  },
+
+  worktreeSaveDefaults(repoPath: string, defaults: WorktreeDefaults): Promise<void> {
+    return invoke<void>("worktree_save_defaults", { repoPath, defaults });
   },
 };

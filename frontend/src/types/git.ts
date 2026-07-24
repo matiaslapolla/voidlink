@@ -148,3 +148,54 @@ export interface RemoteInfo {
   url: string | null;
   pushUrl: string | null;
 }
+
+// ─── Worktree setup (new-worktree wizard) ───────────────────────────────────
+
+/// A `.env*`-shaped file found in the source worktree. `gitignored` decides
+/// whether it is checked by default: a committed `.env.example` is already
+/// in the new worktree, an ignored `.env.local` is not.
+export interface EnvFileCandidate {
+  relPath: string;
+  size: number;
+  gitignored: boolean;
+}
+
+export type DepAction = "symlink" | "copy" | "install" | "skip";
+
+/// A dependency directory we know how to populate, inferred from a lockfile
+/// or manifest at the worktree root.
+export interface DepDirCandidate {
+  dir: string;
+  manager: string;
+  detectedFrom: string;
+  installCommand: string;
+  defaultAction: DepAction;
+  existsInSource: boolean;
+}
+
+/// Per-repo answers saved at `<repoRoot>/.voidlink/worktree.json`.
+export interface WorktreeDefaults {
+  envFiles: string[];
+  depActions: Record<string, DepAction>;
+  postCreateCommand: string;
+  warnedNotGitignored: boolean;
+}
+
+export interface WorktreeSetupPlan {
+  envFiles: EnvFileCandidate[];
+  depDirs: DepDirCandidate[];
+  suggestedPostCreate: string;
+  defaults: WorktreeDefaults | null;
+  voidlinkGitignored: boolean;
+}
+
+export interface SetupStep {
+  label: string;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface WorktreeSetupReport {
+  steps: SetupStep[];
+  pendingCommands: string[];
+}

@@ -35,6 +35,7 @@ import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
 import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/blameOverlay";
 import { requestNewWorktree } from "@/commands/worktree";
+import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import type { ActiveItem } from "@/store/layout";
 
 function AppInner(props: { onOpenSettings: () => void }) {
@@ -820,6 +821,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         onOpenFile={(p) => void handleOpenFile(p)}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
+      <NewWorktreeWizard />
       <ToastViewport />
       <PromptHost />
       <WindowFrame />
