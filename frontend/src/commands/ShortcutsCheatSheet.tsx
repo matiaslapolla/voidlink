@@ -2,7 +2,13 @@ import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Keyboard } from "lucide-solid";
 import { closeCheatSheet, getAction, isCheatSheetOpen } from "@/commands/registry";
-import { KEYMAP, KEYMAP_GROUPS, type KeymapEntry, type KeymapGroup } from "@/commands/keymap";
+import {
+  KEYMAP,
+  KEYMAP_GROUPS,
+  type BindingScope,
+  type KeymapEntry,
+  type KeymapGroup,
+} from "@/commands/keymap";
 import { shortcutLabels } from "@/commands/shortcuts";
 
 /// The shortcuts cheat sheet.
@@ -23,9 +29,17 @@ interface Row {
   actionId: string;
   label: string;
   description?: string;
+  scopeHint?: string;
   chords: string[];
   group: KeymapGroup;
 }
+
+/// Why a scoped binding sometimes doesn't fire. Worth surfacing here — "⌘S
+/// didn't save while I was in the terminal" is otherwise a mystery.
+const SCOPE_HINTS: Partial<Record<BindingScope, string>> = {
+  "outside-terminal": "not while a terminal has focus",
+  "outside-text-surfaces": "not while the editor or a terminal has focus",
+};
 
 function rowFor(entry: KeymapEntry): Row {
   const action = getAction(entry.actionId);
@@ -36,6 +50,7 @@ function rowFor(entry: KeymapEntry): Row {
     // the problem is visible instead of invisible.
     label: action?.label ?? entry.actionId,
     description: action?.description,
+    scopeHint: SCOPE_HINTS[entry.binding.scope ?? "global"],
     chords: shortcutLabels(entry.actionId),
     group: entry.group,
   };
@@ -55,7 +70,7 @@ function CheatSheetContent() {
     const q = query().trim().toLowerCase();
     if (!q) return rows();
     return rows().filter((r) =>
-      [r.label, r.group, r.description ?? "", ...r.chords]
+      [r.label, r.group, r.description ?? "", r.scopeHint ?? "", ...r.chords]
         .join(" ")
         .toLowerCase()
         .includes(q),
@@ -134,8 +149,10 @@ function CheatSheetContent() {
           </div>
 
           <div class="px-3 py-2 border-t border-border text-[11px] text-muted-foreground leading-snug">
-            Shortcuts marked with a scope stand down while the editor or a
-            terminal has focus, so they never swallow a key those need.
+            The platform modifier is ⌘ on macOS and Ctrl elsewhere; voidlink
+            accepts either. A few bindings stand down while the editor or a
+            terminal has focus, so they never swallow a key those need — those
+            say so under the action name.
           </div>
         </div>
       </div>
@@ -146,11 +163,20 @@ function CheatSheetContent() {
 function CheatRow(props: { row: Row }) {
   return (
     <div class="flex items-center gap-3 px-2.5 py-1.5 text-[13px]">
-      <span class="flex-1 min-w-0 truncate text-foreground/90">
-        {props.row.label}
-        <Show when={props.row.description}>
-          {(d) => (
-            <span class="ml-2 text-[11px] text-muted-foreground/80">· {d()}</span>
+      <span class="flex-1 min-w-0 text-foreground/90">
+        <span class="block truncate">
+          {props.row.label}
+          <Show when={props.row.description}>
+            {(d) => (
+              <span class="ml-2 text-[11px] text-muted-foreground/80">· {d()}</span>
+            )}
+          </Show>
+        </span>
+        <Show when={props.row.scopeHint}>
+          {(hint) => (
+            <span class="block text-[10px] text-muted-foreground/70 leading-tight">
+              {hint()}
+            </span>
           )}
         </Show>
       </span>
