@@ -12,10 +12,10 @@ export interface Action {
   group?: string;
   /// Optional human-friendly description shown in the palette.
   description?: string;
-  /// Optional accelerator hint shown next to the label. Display only — actual
-  /// binding lives in `shortcut` so we can match key events without parsing
-  /// formatted strings.
-  shortcutLabel?: string;
+  /// Keep this action out of the palette list while still registering it, so
+  /// the keymap can bind it. Used for the nine "go to workspace N" actions,
+  /// which are useful as chords but pure noise as palette rows.
+  hidden?: boolean;
   /// Predicate that returns true when this action should be selectable in
   /// the current state. Disabled actions are still shown (greyed out).
   enabled?: () => boolean;
@@ -43,9 +43,16 @@ export function getAction(id: string): Action | undefined {
   return actions().find((a) => a.id === id);
 }
 
+/// Every action the palette should list. Hidden entries stay registered — the
+/// keymap still resolves them — they just don't earn a row.
+export function getVisibleActions(): Action[] {
+  return actions().filter((a) => !a.hidden);
+}
+
 /// Palette open state — shared so any caller (keybinding, button) can toggle it.
 const [paletteOpen, setPaletteOpen] = createSignal(false);
 const [fileFinderOpen, setFileFinderOpen] = createSignal(false);
+const [cheatSheetOpen, setCheatSheetOpen] = createSignal(false);
 
 export function isPaletteOpen() {
   return paletteOpen();
@@ -87,4 +94,16 @@ export function openFileFinder() {
 
 export function closeFileFinder() {
   setFileFinderOpen(false);
+}
+
+export function isCheatSheetOpen() {
+  return cheatSheetOpen();
+}
+
+export function openCheatSheet() {
+  setCheatSheetOpen(true);
+}
+
+export function closeCheatSheet() {
+  setCheatSheetOpen(false);
 }

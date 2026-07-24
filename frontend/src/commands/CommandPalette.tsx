@@ -4,9 +4,10 @@ import { Search } from "lucide-solid";
 import {
   type Action,
   closePalette,
-  getActions,
+  getVisibleActions,
   isPaletteOpen,
 } from "@/commands/registry";
+import { shortcutLabel } from "@/commands/shortcuts";
 
 function fuzzyScore(text: string, query: string): number {
   if (!query) return 0;
@@ -46,7 +47,7 @@ function PaletteContent() {
 
   const filtered = createMemo<Array<Action & { score: number }>>(() => {
     const q = query();
-    const list = getActions();
+    const list = getVisibleActions();
     if (!q.trim()) {
       return list.map((a) => ({ ...a, score: 0 }));
     }
@@ -146,6 +147,9 @@ function PaletteRow(props: {
   onMouseEnter: () => void;
 }) {
   const disabled = () => props.action.enabled && !props.action.enabled();
+  // Derived from the keymap, never stored on the action — the label and the
+  // chord that actually fires cannot disagree.
+  const accelerator = () => shortcutLabel(props.action.id);
   return (
     <button
       onClick={props.onClick}
@@ -170,7 +174,7 @@ function PaletteRow(props: {
           )}
         </Show>
       </span>
-      <Show when={props.action.shortcutLabel}>
+      <Show when={accelerator()}>
         {(s) => (
           <span class="text-[10px] text-muted-foreground/70 font-mono tracking-wide">
             {s()}

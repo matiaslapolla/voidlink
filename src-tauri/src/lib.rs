@@ -30,6 +30,17 @@ fn get_home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
 }
 
+/// The host OS as Rust names it: `"macos"`, `"linux"`, `"windows"`, …
+///
+/// Resolved from the compiled target rather than the webview's user agent so
+/// the frontend never has to sniff `navigator`. The frontend caches the answer
+/// once at startup (see `frontend/src/api/platform.ts`) — this is a constant
+/// for the life of the process, so there is nothing to invalidate.
+#[tauri::command]
+fn platform_os() -> String {
+    std::env::consts::OS.to_string()
+}
+
 #[tauri::command]
 async fn create_pty(
     cwd: String,
@@ -302,6 +313,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_home_dir,
+            platform_os,
             create_pty,
             write_pty,
             resize_pty,

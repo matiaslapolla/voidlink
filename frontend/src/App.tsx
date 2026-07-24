@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal } from "solid-js";
+import { Show, createEffect, createSignal, untrack } from "solid-js";
 import { AppShell } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
@@ -13,20 +13,27 @@ import { createAppStore } from "@/store/layout";
 import { editorController } from "@/components/editor/editorController";
 import { CommandPalette } from "@/commands/CommandPalette";
 import { FileFinder } from "@/commands/FileFinder";
+import { ShortcutsCheatSheet } from "@/commands/ShortcutsCheatSheet";
 import { ToastViewport } from "@/commands/ToastViewport";
 import { PromptHost } from "@/commands/PromptHost";
 import { textPrompt } from "@/commands/prompt";
 import {
+  closeCheatSheet,
   closeFileFinder,
   closePalette,
+  getActions,
+  isCheatSheetOpen,
   isFileFinderOpen,
   isPaletteOpen,
+  openCheatSheet,
   openFileFinder,
   openPalette,
   registerActions,
   type Action,
 } from "@/commands/registry";
-import { useKeybindings } from "@/commands/keybindings";
+import { keymapBindings, useKeybindings } from "@/commands/keybindings";
+import { validateKeymap } from "@/commands/keymap";
+import { WORKSPACE_SELECT_COUNT, workspaceSelectId } from "@/commands/actionIds";
 import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { requestAiCommitDraft } from "@/commands/aiCommit";
@@ -63,17 +70,42 @@ function AppInner(props: { onOpenSettings: () => void }) {
         id: "palette.open",
         label: "Show all commands",
         group: "App",
-        shortcutLabel: "⌘K",
-        run: () => openPalette(),
+        // Toggling lives in the action, not the binding, so ⌘K and the palette
+        // row are the same code path. Picking this row *from* the palette is a
+        // no-op by construction: the palette closes first, so `run` reopens it.
+        run: () => (isPaletteOpen() ? closePalette() : openPalette()),
+      },
+      {
+        id: "help.shortcuts",
+        label: "Keyboard shortcuts",
+        description: "Every binding, grouped and filterable",
+        group: "App",
+        run: () => (isCheatSheetOpen() ? closeCheatSheet() : openCheatSheet()),
       },
       {
         id: "file.open",
         label: "Open file…",
         description: "Fuzzy search tracked files in the active repo",
         group: "File",
-        shortcutLabel: "⌘P",
         enabled: () => !!repo,
-        run: () => openFileFinder(),
+        run: () => {
+          // The guard lives here rather than in the keybinding so pressing the
+          // chord and picking the palette row behave identically.
+          if (!repo) {
+            pushToast("Select a repository first", "warning");
+            return;
+          }
+          if (isFileFinderOpen()) closeFileFinder();
+          else openFileFinder();
+        },
+      },
+      {
+        id: "file.save",
+        label: "Save file",
+        description: "Write the active editor tab to disk",
+        group: "File",
+        enabled: () => !!editorController.getActivePath(),
+        run: () => void editorController.saveActive(),
       },
       {
         id: "terminal.new",
@@ -87,7 +119,6 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "Repeat last terminal command",
         description: "Re-run the most recent command in the last-used terminal",
         group: "Terminal",
-        shortcutLabel: "⌘⇧R",
         run: async () => {
           const result = await repeatLastCommand();
           if (!result.ok) pushToast(result.reason ?? "Nothing to repeat", "warning");
@@ -314,7 +345,6 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: blameEnabled() ? "Disable inline blame" : "Enable inline blame",
         description: "Show per-line author + commit summary in the editor",
         group: "View",
-        shortcutLabel: "⌘⌥B",
         run: () => toggleBlame(),
       },
       {
@@ -322,31 +352,39 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "Draft commit message with AI",
         description: "Pipe staged diff to your configured CLI",
         group: "Git",
-        shortcutLabel: "⌘⇧M",
         enabled: () => !!repo,
-        run: () => requestAiCommitDraft(),
+        run: () => {
+          if (!repo) {
+            pushToast("Open a repository first", "warning");
+            return;
+          }
+          requestAiCommitDraft();
+        },
       },
       {
         id: "agent.toggle",
         label: "Toggle repo agent",
         description: "Ask a CLI grounded in this workspace's git state",
         group: "AI",
-        shortcutLabel: "⌘⇧A",
         enabled: () => !!repo,
-        run: () => toggleAgentPanel(),
+        run: () => {
+          if (!repo) {
+            pushToast("Open a repository first", "warning");
+            return;
+          }
+          toggleAgentPanel();
+        },
       },
       {
         id: "workspace.new",
         label: "New workspace",
         group: "Workspace",
-        shortcutLabel: "⌘T",
         run: () => actions.addWorkspace(),
       },
       {
         id: "workspace.next",
         label: "Next workspace",
         group: "Workspace",
-        shortcutLabel: "⌘⇧→",
         enabled: () => state.workspaces.length > 1,
         run: () => cycleWorkspace(1),
       },
@@ -354,23 +392,37 @@ function AppInner(props: { onOpenSettings: () => void }) {
         id: "workspace.prev",
         label: "Previous workspace",
         group: "Workspace",
-        shortcutLabel: "⌘⇧←",
         enabled: () => state.workspaces.length > 1,
         run: () => cycleWorkspace(-1),
+      },
+      // ⌘1-⌘9 jump straight to a workspace. Registered so the keymap can bind
+      // them, hidden so nine near-identical rows don't drown the palette.
+      ...Array.from({ length: WORKSPACE_SELECT_COUNT }, (_, i): Action => ({
+        id: workspaceSelectId(i + 1),
+        label: `Go to workspace ${i + 1}`,
+        group: "Workspace",
+        hidden: true,
+        enabled: () => !!state.workspaces[i],
+        run: () => selectWorkspaceByIndex(i),
+      })),
+      {
+        id: "tab.close",
+        label: "Close tab",
+        description: "With no tabs open, closes the workspace itself",
+        group: "Tabs",
+        run: () => closeActiveTab(),
       },
       {
         id: "tab.next",
         label: "Next tab",
-        group: "View",
-        shortcutLabel: "⌘⌥→",
+        group: "Tabs",
         enabled: () => allItems().length > 1,
         run: () => cycleTab(1),
       },
       {
         id: "tab.prev",
         label: "Previous tab",
-        group: "View",
-        shortcutLabel: "⌘⌥←",
+        group: "Tabs",
         enabled: () => allItems().length > 1,
         run: () => cycleTab(-1),
       },
@@ -378,8 +430,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         id: "tab.reopen-last",
         label: "Reopen last closed tab",
         description: "File / diff / compare / stack — terminals can't be reopened",
-        group: "View",
-        shortcutLabel: "⌘⇧T",
+        group: "Tabs",
         enabled: () => (state.closedTabsByWorkspace[state.activeWorkspaceId] ?? []).length > 0,
         run: () => void reopenLastClosed(),
       },
@@ -427,6 +478,20 @@ function AppInner(props: { onOpenSettings: () => void }) {
       ]),
     ];
     const dispose = registerActions(list);
+
+    // Dev-time keymap audit. The unit test catches duplicate chords and ids
+    // that aren't in the declared catalog; this catches the remaining case —
+    // an id that is declared but never actually registered, which would show
+    // up at runtime as a shortcut that quietly does nothing. `untrack` because
+    // reading the registry inside the effect that writes it would loop.
+    if (import.meta.env.DEV) {
+      untrack(() => {
+        for (const problem of validateKeymap(getActions().map((a) => a.id))) {
+          console.error(`[keymap] ${problem.kind}: ${problem.detail}`);
+        }
+      });
+    }
+
     // Re-register on next change.
     return dispose;
   });
@@ -558,133 +623,11 @@ function AppInner(props: { onOpenSettings: () => void }) {
     }
   }
 
-  useKeybindings(() => [
-    {
-      meta: true,
-      key: "k",
-      run: () => {
-        if (isPaletteOpen()) closePalette();
-        else openPalette();
-      },
-    },
-    {
-      meta: true,
-      key: "p",
-      run: () => {
-        if (!activeWorkspace()?.repoRoot) {
-          pushToast("Select a repository first", "warning");
-          return;
-        }
-        if (isFileFinderOpen()) closeFileFinder();
-        else openFileFinder();
-      },
-    },
-    {
-      meta: true,
-      key: "w",
-      run: () => closeActiveTab(),
-    },
-    {
-      meta: true,
-      shift: true,
-      key: "t",
-      run: () => void reopenLastClosed(),
-    },
-    {
-      meta: true,
-      shift: true,
-      key: "r",
-      run: async () => {
-        const result = await repeatLastCommand();
-        if (!result.ok) pushToast(result.reason ?? "Nothing to repeat", "warning");
-      },
-    },
-    // ── Workspace navigation ────────────────────────────────────────────
-    ...Array.from({ length: 9 }, (_, i) => ({
-      meta: true,
-      key: String(i + 1),
-      run: () => selectWorkspaceByIndex(i),
-    })),
-    {
-      meta: true,
-      key: "t",
-      run: () => actions.addWorkspace(),
-    },
-    {
-      meta: true,
-      shift: true,
-      key: "ArrowRight",
-      run: () => cycleWorkspace(1),
-    },
-    {
-      meta: true,
-      shift: true,
-      key: "ArrowLeft",
-      run: () => cycleWorkspace(-1),
-    },
-    // ── Tab navigation within the active workspace ──────────────────────
-    {
-      meta: true,
-      alt: true,
-      key: "ArrowRight",
-      run: () => cycleTab(1),
-    },
-    {
-      meta: true,
-      alt: true,
-      key: "ArrowLeft",
-      run: () => cycleTab(-1),
-    },
-    // ── Sidebar toggles ─────────────────────────────────────────────────
-    {
-      meta: true,
-      key: "b",
-      run: () => actions.toggleLeftSidebar(),
-    },
-    {
-      meta: true,
-      key: "j",
-      run: () => actions.toggleGitSidebar(),
-    },
-    {
-      meta: true,
-      key: "\\",
-      run: () => actions.toggleSidebarsSwapped(),
-    },
-    // ── Editor overlays ─────────────────────────────────────────────────
-    {
-      meta: true,
-      alt: true,
-      key: "b",
-      run: () => toggleBlame(),
-    },
-    // ── AI commit draft ─────────────────────────────────────────────────
-    {
-      meta: true,
-      shift: true,
-      key: "m",
-      run: () => {
-        if (!activeWorkspace()?.repoRoot) {
-          pushToast("Open a repository first", "warning");
-          return;
-        }
-        requestAiCommitDraft();
-      },
-    },
-    // ── Repo agent ──────────────────────────────────────────────────────
-    {
-      meta: true,
-      shift: true,
-      key: "a",
-      run: () => {
-        if (!activeWorkspace()?.repoRoot) {
-          pushToast("Open a repository first", "warning");
-          return;
-        }
-        toggleAgentPanel();
-      },
-    },
-  ]);
+  // Every global chord comes from `keymap.ts`; each one resolves its action
+  // out of the registry at press time. Built once — the table is static, and
+  // the action lookup is what needs to stay late-bound.
+  const bindings = keymapBindings();
+  useKeybindings(() => bindings);
 
   const leftPane = () =>
     state.leftSidebarCollapsed
@@ -715,6 +658,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         statusBar={<StatusBar />}
       />
       <CommandPalette />
+      <ShortcutsCheatSheet />
       <FileFinder
         repoPath={activeWorkspace()?.repoRoot ?? null}
         onOpenFile={(p) => void handleOpenFile(p)}
