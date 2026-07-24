@@ -167,7 +167,7 @@ export function BrainSurface(props: BrainSurfaceProps) {
                               >
                                 <div class="flex items-center gap-1.5">
                                   <span
-                                    class={`text-[10px] uppercase tracking-wide shrink-0 ${TYPE_COLORS[e().entryType]}`}
+                                    class={`text-[10px] capitalize tracking-wide shrink-0 ${TYPE_COLORS[e().entryType]}`}
                                   >
                                     {e().entryType}
                                   </span>
@@ -215,7 +215,7 @@ export function BrainSurface(props: BrainSurfaceProps) {
               {(d) => (
                 <div class="mx-auto max-w-[860px] px-10 py-8">
                   <div class="flex items-center gap-2 mb-1">
-                    <span class={`text-[10px] uppercase tracking-wide ${TYPE_COLORS[d().entryType]}`}>
+                    <span class={`text-[10px] capitalize tracking-wide ${TYPE_COLORS[d().entryType]}`}>
                       {d().entryType}
                     </span>
                     <Show when={d().project}>

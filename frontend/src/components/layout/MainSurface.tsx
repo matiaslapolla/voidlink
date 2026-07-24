@@ -1388,7 +1388,7 @@ function OverflowGroup(props: {
 }) {
   return (
     <Show when={props.items.length > 0}>
-      <div class="px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+      <div class="px-3 pt-1 pb-0.5 text-[10px] tracking-wide text-muted-foreground/70">
         {props.label}
       </div>
       <For each={props.items}>

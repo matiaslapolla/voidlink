@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import { gitApi } from "@/api/git";
 import { pushToast } from "@/commands/toast";
+import { aiSecretBindings } from "@/store/settings";
 
 /// Lifecycle of a single AI commit-message draft. We expose this as a
 /// global signal so the palette, sidebar, and any future status-bar
@@ -49,7 +50,7 @@ export async function draftCommitMessage(
   const startedAt = performance.now();
   setDraftState({ kind: "drafting", startedAt, repoPath });
   try {
-    const message = await gitApi.aiGenerateCommit(repoPath, cmd);
+    const message = await gitApi.aiGenerateCommit(repoPath, cmd, aiSecretBindings());
     const ms = Math.round(performance.now() - startedAt);
     setDraftState({ kind: "success", ms, repoPath, message });
     if (!opts?.silent) {

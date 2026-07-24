@@ -1,8 +1,11 @@
 import { Show, For, createResource, createSignal, createEffect, type JSX } from "solid-js";
-import { Check, Layers, X } from "lucide-solid";
+import { Check, Layers, Trash2, X } from "lucide-solid";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  AI_KEY_PRESETS,
+  aiKeyBindings,
   useSettings,
+  type AiKeyBinding,
   type CursorStyle,
   type UiDensity,
   type UiTextSize,
@@ -10,6 +13,7 @@ import {
 import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
 import { stackApi } from "@/api/stack";
+import { secretsApi, type SecretStatus } from "@/api/secrets";
 import { pushToast } from "@/commands/toast";
 
 interface SettingsDialogProps {
@@ -528,7 +532,9 @@ function AiPane() {
       <p class="text-[11px] text-muted-foreground leading-relaxed">
         VoidLink doesn't ship an LLM. Configure any local CLI you already have
         installed; the staged diff is piped to its stdin and stdout becomes the
-        commit-message draft. No keys are stored here — your CLI handles auth.
+        commit-message draft. If that CLI needs an API key, store it under
+        Provider keys below — it goes to your OS keychain, never to voidlink's
+        settings.
       </p>
       <Section title="Commit messages">
         <TextRow
@@ -564,6 +570,291 @@ function AiPane() {
           to stdin; stdout is the answer. Leave blank to reuse the commit command.
         </p>
       </Section>
+      <ProviderKeysSection />
+    </div>
+  );
+}
+
+// ─── Provider keys ──────────────────────────────────────────────────────────
+
+/// Manage AI provider keys held in the OS credential store.
+///
+/// The value is write-only from here: it is sent to Rust once, stored in the
+/// keychain, and never comes back. All this pane can learn is presence plus a
+/// four-character tail, which is exactly what `secret_status` returns. Presence
+/// is always re-read from the keychain rather than tracked locally, so the UI
+/// can't show "saved" for something that isn't there.
+function ProviderKeysSection() {
+  const { removeAiKey } = useSettings();
+  const [keychainError, setKeychainError] = createSignal<string | null>(null);
+
+  const [statuses, { refetch }] = createResource(
+    () => aiKeyBindings().map((b) => b.id),
+    async (ids): Promise<SecretStatus[]> => {
+      // Caught here rather than left to reject: reading a resource accessor
+      // in a failed state rethrows into render, and there is no ErrorBoundary
+      // inside the dialog. A locked or denied keychain has to be *reported* —
+      // never flattened into an empty list that would read as "no keys set".
+      try {
+        const result = await secretsApi.status(ids);
+        setKeychainError(null);
+        return result;
+      } catch (e) {
+        setKeychainError(String(e));
+        return [];
+      }
+    },
+  );
+
+  createEffect(() => {
+    const err = keychainError();
+    if (err) pushToast(`Couldn't read the OS keychain: ${err}`, "error", 7000);
+  });
+
+  const statusFor = (id: string) => statuses()?.find((s) => s.id === id);
+
+  const forget = async (binding: AiKeyBinding) => {
+    try {
+      // Delete the stored value before dropping the mapping, otherwise the
+      // credential is orphaned in the keychain with nothing pointing at it.
+      await secretsApi.delete(binding.id);
+      removeAiKey(binding.id);
+      pushToast(`Removed ${binding.envVar}`, "success");
+      void refetch();
+    } catch (e) {
+      pushToast(`Couldn't remove ${binding.envVar}: ${String(e)}`, "error", 7000);
+    }
+  };
+
+  return (
+    <Section title="Provider keys">
+      <p class="text-[11px] text-muted-foreground leading-relaxed">
+        Optional. Keys go to your OS credential store (macOS Keychain, Windows
+        Credential Manager, Linux secret-service) — never to voidlink's settings
+        or localStorage — and are exported into the environment of the commands
+        above. VoidLink itself never sends them anywhere. Injection is additive:
+        if your shell already exports the same variable, yours wins.
+      </p>
+      <Show when={keychainError()}>
+        {(err) => (
+          <p class="text-[11px] text-destructive leading-relaxed" title={err()}>
+            Can't reach the OS credential store, so which keys are stored is
+            unknown. Saving will report the same error.
+          </p>
+        )}
+      </Show>
+      <For each={aiKeyBindings()}>
+        {(binding) => (
+          <KeyRow
+            binding={binding}
+            status={statusFor(binding.id)}
+            loading={statuses.loading}
+            unknown={keychainError() !== null}
+            onChanged={() => void refetch()}
+            removable={!AI_KEY_PRESETS.some((p) => p.id === binding.id)}
+            onForget={() => void forget(binding)}
+          />
+        )}
+      </For>
+      <AddCustomKey onAdded={() => void refetch()} />
+    </Section>
+  );
+}
+
+function KeyRow(props: {
+  binding: AiKeyBinding;
+  status: SecretStatus | undefined;
+  loading: boolean;
+  /// The keychain couldn't be read at all — presence is genuinely unknown,
+  /// which is not the same thing as "not set".
+  unknown: boolean;
+  onChanged: () => void;
+  removable: boolean;
+  onForget: () => void;
+}) {
+  const [value, setValue] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+  const present = () => props.status?.present ?? false;
+
+  const statusText = () => {
+    if (props.unknown) return "Unknown";
+    if (props.loading && !props.status) return "Checking…";
+    if (!present()) return "Not set";
+    const hint = props.status?.hint ?? "";
+    return hint ? `Set · ••••${hint}` : "Set";
+  };
+
+  const save = async () => {
+    const v = value().trim();
+    if (!v) {
+      pushToast("Paste a key value first.", "warning");
+      return;
+    }
+    setBusy(true);
+    try {
+      await secretsApi.set(props.binding.id, props.binding.envVar, v);
+      pushToast(`${props.binding.label} key saved to the OS keychain`, "success");
+      props.onChanged();
+    } catch (e) {
+      pushToast(`Couldn't save the ${props.binding.label} key: ${String(e)}`, "error", 7000);
+    } finally {
+      // Never leave a secret sitting in a DOM input, success or failure.
+      setValue("");
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await secretsApi.delete(props.binding.id);
+      pushToast(`${props.binding.label} key deleted from the OS keychain`, "success");
+      props.onChanged();
+    } catch (e) {
+      pushToast(`Couldn't delete the ${props.binding.label} key: ${String(e)}`, "error", 7000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div class="flex items-start gap-2">
+      <div class="w-28 shrink-0 pt-1">
+        <div class="truncate text-foreground/90" title={props.binding.label}>
+          {props.binding.label}
+        </div>
+        <div
+          class="truncate font-mono text-[10px] text-muted-foreground/70"
+          title={props.binding.envVar}
+        >
+          {props.binding.envVar}
+        </div>
+      </div>
+      <div class="flex-1 min-w-0 space-y-1">
+        <div class="flex items-center gap-1.5">
+          <input
+            type="password"
+            autocomplete="off"
+            spellcheck={false}
+            value={value()}
+            disabled={busy()}
+            placeholder={present() ? "Replace key…" : "Paste key…"}
+            onInput={(e) => setValue(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void save();
+            }}
+            class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+          />
+          <button
+            onClick={() => void save()}
+            disabled={busy()}
+            class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
+          >
+            Save
+          </button>
+          <Show when={present()}>
+            <button
+              onClick={() => void remove()}
+              disabled={busy()}
+              title={`Delete the stored ${props.binding.label} key`}
+              aria-label={`Delete the stored ${props.binding.label} key`}
+              class="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 disabled:opacity-50 transition-colors"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+            </button>
+          </Show>
+          <Show when={props.removable}>
+            <button
+              onClick={props.onForget}
+              disabled={busy()}
+              title={`Remove ${props.binding.envVar} from this list`}
+              aria-label={`Remove ${props.binding.envVar} from this list`}
+              class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
+            >
+              <X class="w-3.5 h-3.5" />
+            </button>
+          </Show>
+        </div>
+        <div
+          class={`text-[10px] ${present() ? "text-primary/80" : "text-muted-foreground/70"}`}
+        >
+          {statusText()}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddCustomKey(props: { onAdded: () => void }) {
+  const { addAiKey } = useSettings();
+  const [envVar, setEnvVar] = createSignal("");
+  const [value, setValue] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+
+  const add = async () => {
+    const name = envVar().trim();
+    const v = value().trim();
+    if (!name) {
+      pushToast("Enter the environment variable name your CLI expects.", "warning");
+      return;
+    }
+    if (!v) {
+      pushToast("Paste a key value first.", "warning");
+      return;
+    }
+    const id = `custom.${name}`;
+    setBusy(true);
+    try {
+      // Store first: Rust owns the one implementation of the env-var name
+      // rule, so a rejected name never leaves a dangling binding behind.
+      await secretsApi.set(id, name, v);
+      const added = addAiKey({ id, envVar: name, label: name });
+      pushToast(
+        added ? `${name} saved to the OS keychain` : `${name} was already listed — value updated`,
+        "success",
+      );
+      setEnvVar("");
+      props.onAdded();
+    } catch (e) {
+      pushToast(`Couldn't save ${name}: ${String(e)}`, "error", 7000);
+    } finally {
+      setValue("");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
+      <input
+        type="text"
+        value={envVar()}
+        disabled={busy()}
+        placeholder="MY_PROVIDER_API_KEY"
+        onInput={(e) => setEnvVar(e.currentTarget.value)}
+        aria-label="Custom environment variable name"
+        class="w-28 shrink-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+      />
+      <input
+        type="password"
+        autocomplete="off"
+        spellcheck={false}
+        value={value()}
+        disabled={busy()}
+        placeholder="Paste key…"
+        aria-label="Custom key value"
+        onInput={(e) => setValue(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void add();
+        }}
+        class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+      />
+      <button
+        onClick={() => void add()}
+        disabled={busy()}
+        class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
+      >
+        Add
+      </button>
     </div>
   );
 }

@@ -30,15 +30,41 @@ export interface UiSettings {
   density: UiDensity;
 }
 
+/// Non-secret identity of a provider key. `id` is the OS-keychain account the
+/// value is filed under; `envVar` is the environment variable it is exported
+/// as when voidlink spawns the user's AI CLI. **This object never carries the
+/// value** — secrets live in the keychain only, reachable from Rust and never
+/// returned to the frontend, so persisting bindings to localStorage is safe.
+export interface AiKeyBinding {
+  id: string;
+  envVar: string;
+  label: string;
+}
+
+/// Keys voidlink offers out of the box. These are always listed in Settings →
+/// AI (as "Not set" until you add one) so the common case needs no typing.
+/// Custom bindings live in `AiSettings.customKeys`.
+export const AI_KEY_PRESETS: readonly AiKeyBinding[] = [
+  { id: "anthropic", envVar: "ANTHROPIC_API_KEY", label: "Anthropic" },
+  { id: "openai", envVar: "OPENAI_API_KEY", label: "OpenAI" },
+  { id: "gemini", envVar: "GEMINI_API_KEY", label: "Google Gemini" },
+  { id: "openrouter", envVar: "OPENROUTER_API_KEY", label: "OpenRouter" },
+];
+
 /// AI is BYO-CLI: voidlink shells out to whatever generative-text command the
 /// user already has installed. `commitCommand` is the shell template; the
 /// staged diff is piped to stdin and stdout becomes the suggested message.
 /// `agentCommand` is the (optional) template for the repo agent — a grounded
 /// prompt is piped to stdin. When empty, the agent falls back to
 /// `commitCommand` so a single configured CLI powers both.
+///
+/// `customKeys` extends `AI_KEY_PRESETS` with user-defined provider keys. Like
+/// the presets it holds only the id → env-var mapping; values are in the OS
+/// keychain.
 export interface AiSettings {
   commitCommand: string;
   agentCommand: string;
+  customKeys: AiKeyBinding[];
 }
 
 /// The local path to the brain-kb vault (a git-cloned second-brain content
@@ -86,6 +112,7 @@ const DEFAULTS: AppSettings = {
   ai: {
     commitCommand: "",
     agentCommand: "",
+    customKeys: [],
   },
   brain: {
     vaultPath: "",
@@ -140,6 +167,18 @@ export function useSettings() {
     updateAi(patch: Partial<AiSettings>) {
       setSettings("ai", patch);
     },
+    /// Append a custom provider key binding. Rejects a duplicate id so a
+    /// binding can never shadow a preset or another custom row.
+    addAiKey(binding: AiKeyBinding) {
+      if (aiKeyBindings().some((b) => b.id === binding.id)) return false;
+      setSettings("ai", "customKeys", (keys) => [...keys, binding]);
+      return true;
+    },
+    /// Drop a custom binding. The keychain entry is deleted separately via
+    /// `secretsApi.delete` — this only forgets the mapping.
+    removeAiKey(id: string) {
+      setSettings("ai", "customKeys", (keys) => keys.filter((k) => k.id !== id));
+    },
     updateBrain(patch: Partial<BrainSettings>) {
       setSettings("brain", patch);
     },
@@ -147,6 +186,20 @@ export function useSettings() {
       setSettings(JSON.parse(JSON.stringify(DEFAULTS)));
     },
   };
+}
+
+/// Every provider-key binding voidlink knows about: bundled presets first,
+/// then the user's custom rows. Non-reactive snapshot — safe to call from the
+/// command layer outside a tracking scope.
+export function aiKeyBindings(): AiKeyBinding[] {
+  return [...AI_KEY_PRESETS, ...settings.ai.customKeys];
+}
+
+/// The shape `git_ai_generate_commit` / `git_agent_query` accept. Only the
+/// id → env-var mapping crosses to Rust; Rust resolves the values from the OS
+/// keychain at spawn time, so no secret ever passes through here.
+export function aiSecretBindings(): { id: string; envVar: string }[] {
+  return aiKeyBindings().map(({ id, envVar }) => ({ id, envVar }));
 }
 
 export const DEFAULT_SETTINGS = DEFAULTS;

@@ -106,7 +106,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             {filesOpen() ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
           </span>
           <Files class="w-3 h-3 text-muted-foreground" />
-          <span class="flex-1 uppercase tracking-wide text-xs text-muted-foreground font-semibold">Files</span>
+          <span class="flex-1 tracking-wide text-xs text-muted-foreground font-semibold">Files</span>
         </button>
         <Show when={filesOpen()}>
           <div class="flex-1 overflow-hidden min-h-0">
@@ -135,7 +135,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             {terminalsOpen() ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
           </span>
           <TerminalSquare class="w-3 h-3 text-muted-foreground" />
-          <span class="flex-1 uppercase tracking-wide text-xs text-muted-foreground font-semibold">Terminals</span>
+          <span class="flex-1 tracking-wide text-xs text-muted-foreground font-semibold">Terminals</span>
           <span
             role="button"
             tabIndex={0}

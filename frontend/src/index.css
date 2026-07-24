@@ -250,11 +250,13 @@ html:not([data-density]) {
   background: oklch(0.6 0 0 / 0.7);
 }
 
-/* ── Section label: uppercase tracking-wider font-semibold ──────────────────── */
+/* ── Section label: small, semibold, sentence case ──────────────────────────
+ * VoidLink never forces all-caps. Weight and color carry the hierarchy; the
+ * generous tracking that made caps legible is dialled back to near-neutral
+ * because sentence case doesn't need it. */
 .ui-section-label {
   font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.01em;
   font-weight: 600;
   color: var(--muted-foreground);
 }

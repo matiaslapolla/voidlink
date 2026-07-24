@@ -98,7 +98,7 @@ function Section(props: {
           {props.open ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
         </span>
         {props.icon}
-        <span class="flex-1 uppercase tracking-wide text-xs">{props.label}</span>
+        <span class="flex-1 tracking-wide text-xs">{props.label}</span>
         <span onClick={(e) => e.stopPropagation()}>{props.actions}</span>
       </button>
       <Show when={props.open}>
@@ -810,7 +810,7 @@ function ChangesPane(props: {
               >
                 <FileText class="w-3 h-3 shrink-0" />
                 <span class="flex-1 truncate font-mono">{f.path}</span>
-                <span class="text-[10px] uppercase tracking-wide opacity-70">resolve</span>
+                <span class="text-[10px] tracking-wide opacity-70">Resolve</span>
               </button>
             )}
           </For>
@@ -1098,7 +1098,7 @@ function BranchesPane(props: { repoPath: string; workspaceId: string; onCheckout
               <span class="text-destructive tabular-nums">↓{b.behind}</span>
             </Show>
             <Show when={b.isHead}>
-              <span class="text-xs uppercase tracking-wide text-primary/80">HEAD</span>
+              <span class="text-xs tracking-wide text-primary/80">HEAD</span>
             </Show>
             <Show when={!b.isRemote}>
               <button
@@ -1290,7 +1290,7 @@ function WorktreesPane(props: { repoPath: string }) {
                 <Lock class="w-3 h-3 text-muted-foreground/70" aria-label="locked" />
               </Show>
               <Show when={wt.isMain}>
-                <span class="text-[10px] uppercase tracking-wide text-primary/70">main</span>
+                <span class="text-[10px] tracking-wide text-primary/70">Main</span>
               </Show>
               <Show when={!wt.isMain}>
                 <button
@@ -1382,7 +1382,7 @@ function TagsPane(props: { repoPath: string }) {
     <div class="pt-2 mt-1 border-t border-border/50">
       <div class="flex items-center gap-1.5 px-1 pb-1">
         <Tag class="w-3 h-3 text-muted-foreground" />
-        <span class="flex-1 uppercase tracking-wide text-[10px] text-muted-foreground font-semibold">
+        <span class="flex-1 tracking-wide text-[10px] text-muted-foreground font-semibold">
           Tags
         </span>
         <button

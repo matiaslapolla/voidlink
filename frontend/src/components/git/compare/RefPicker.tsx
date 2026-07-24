@@ -204,7 +204,7 @@ export function RefPicker(props: Props) {
 
   return (
     <div ref={containerRef} class="relative flex-1 min-w-0">
-      <label class="block text-[10px] uppercase tracking-wide text-muted-foreground/70 mb-0.5">
+      <label class="block text-[10px] tracking-wide text-muted-foreground/70 mb-0.5">
         {props.label}
       </label>
       <button
@@ -308,7 +308,7 @@ function RefSection(props: {
   return (
     <Show when={props.items.length > 0}>
       <div class="py-1">
-        <div class="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+        <div class="px-3 py-0.5 text-[10px] tracking-wider text-muted-foreground/70">
           {props.title}
         </div>
         <For each={props.items}>

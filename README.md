@@ -5,7 +5,8 @@
 ### The keyboard-driven Git workbench that runs entirely on your machine.
 
 Editor, terminal, and a Graphite-grade Git suite in one native window —
-with optional AI that uses **your own CLI**. No cloud. No API keys. No telemetry.
+with optional AI that uses **your own CLI**. No cloud. No telemetry. API keys are
+optional, live in your OS keychain, and are never sent anywhere by VoidLink.
 
 </div>
 
@@ -35,16 +36,20 @@ with optional AI that uses **your own CLI**. No cloud. No API keys. No telemetry
 
 ## Why VoidLink
 
-Most "AI dev tools" ship a model client, ask for your API key, and phone home.
-VoidLink takes the opposite stance:
+Most "AI dev tools" ship a model client, route your code through their backend,
+and phone home. VoidLink takes the opposite stance:
 
 - **Local-first.** Everything — editor, terminal, Git engine — runs in a single
   native binary on your machine. There is no backend service and no database to
   sync.
-- **Bring your own CLI.** AI features don't embed a model or store keys. They
-  pipe context to whatever generative-text command you already have installed
-  (`claude`, `ollama`, `gh copilot`, …) and read back stdout. Same trust model
-  for commit drafting and the repo agent — one place, no secrets.
+- **Bring your own CLI.** AI features don't embed a model or call a provider
+  API. They pipe context to whatever generative-text command you already have
+  installed (`claude`, `ollama`, `gh copilot`, …) and read back stdout. If that
+  CLI needs an API key, VoidLink can hold it in your **OS keychain** (macOS
+  Keychain, Windows Credential Manager, Linux secret-service) and export it into
+  the command's environment — never to `localStorage`, never to a config file,
+  never off your machine. Storing a key is optional; if your shell already
+  exports it, VoidLink leaves it alone.
 - **Keyboard-first.** A command palette (`⌘K`), fuzzy file finder, and global
   keybindings drive the whole app. Your hands never leave the keyboard.
 - **A real Git engine.** Powered by vendored `libgit2`, so the full suite works
@@ -104,8 +109,8 @@ Graphite-style stacked branches, built in:
 - Per-file diff pane with the same split renderer used everywhere
 
 ### 🤖 AI — bring your own CLI
-No embedded model, no API key, no telemetry. Configure a shell command in
-**Settings → AI** and VoidLink pipes context to it:
+No embedded model, no provider API calls, no telemetry. Configure a shell
+command in **Settings → AI** and VoidLink pipes context to it:
 - **Commit drafting** — the staged diff is piped to stdin; the suggested message
   comes back on stdout
 - **Repo agent** — a prompt grounded in *live workspace state* (current branch,
@@ -117,6 +122,22 @@ No embedded model, no API key, no telemetry. Configure a shell command in
 claude --no-tools -p "Write a concise git commit message for this diff:"
 ollama run llama3.2
 ```
+
+**Provider keys (optional).** If your CLI authenticates with an API key,
+**Settings → AI → Provider keys** stores it in the OS credential store and
+exports it into the environment of the commands above. Presets ship for
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, and
+`OPENROUTER_API_KEY`; any other variable name can be added.
+
+- The value never returns to the UI. There is no read path to the frontend —
+  the settings row shows presence and at most the last four characters, and the
+  value is read only in Rust, at the moment the subprocess is spawned.
+- Nothing is written to `localStorage` or to VoidLink's settings JSON; only the
+  non-secret "which variable maps to which keychain entry" mapping is stored.
+- Injection is additive. A variable your shell already exports wins, so an
+  existing setup keeps working and VoidLink is only a fallback.
+- If the keychain is locked or you deny the OS prompt, the action fails with an
+  error rather than silently running unauthenticated.
 
 ### ⌘ Command-driven workflow
 - **Command palette** (`⌘K`) for every action
