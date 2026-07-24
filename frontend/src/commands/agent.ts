@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import { gitApi } from "@/api/git";
+import { aiSecretBindings } from "@/store/settings";
 import type { DiffResult } from "@/types/git";
 
 /// One source of repo state that was folded into the prompt. Surfaced under
@@ -197,7 +198,12 @@ export async function askAgent(opts: {
       opts.openFiles,
       opts.activePath,
     );
-    const answer = await gitApi.agentQuery(opts.repoPath, opts.commandTemplate, prompt);
+    const answer = await gitApi.agentQuery(
+      opts.repoPath,
+      opts.commandTemplate,
+      prompt,
+      aiSecretBindings(),
+    );
     pushMessage(opts.wsId, {
       role: "assistant",
       content: answer,

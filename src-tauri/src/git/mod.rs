@@ -31,6 +31,8 @@ pub(crate) mod worktree;
 
 use serde::{Deserialize, Serialize};
 
+use crate::secrets::SecretBinding;
+
 use agent::git_agent_query_impl;
 use ai_commit::git_ai_generate_commit_impl;
 use apply_hunk::{git_apply_hunk_impl, git_discard_hunk_impl};
@@ -426,9 +428,14 @@ pub async fn git_apply_hunk(
 pub async fn git_ai_generate_commit(
     repo_path: String,
     command_template: String,
+    secret_bindings: Vec<SecretBinding>,
     _state: tauri::State<'_, GitState>,
 ) -> Result<String, String> {
-    blocking_git!(git_ai_generate_commit_impl(repo_path, command_template))
+    blocking_git!(git_ai_generate_commit_impl(
+        repo_path,
+        command_template,
+        secret_bindings
+    ))
 }
 
 #[tauri::command]
@@ -472,9 +479,15 @@ pub async fn git_agent_query(
     repo_path: String,
     command_template: String,
     prompt: String,
+    secret_bindings: Vec<SecretBinding>,
     _state: tauri::State<'_, GitState>,
 ) -> Result<String, String> {
-    blocking_git!(git_agent_query_impl(repo_path, command_template, prompt))
+    blocking_git!(git_agent_query_impl(
+        repo_path,
+        command_template,
+        prompt,
+        secret_bindings
+    ))
 }
 
 // ─── Branch lifecycle ────────────────────────────────────────────────────────

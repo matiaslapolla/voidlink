@@ -7,6 +7,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 mod git;
 mod fs;
 mod brain;
+mod secrets;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
@@ -391,6 +392,9 @@ pub fn run() {
             brain::brain_list_entries,
             brain::brain_read_entry,
             brain::brain_save_entry,
+            secrets::secret_set,
+            secrets::secret_delete,
+            secrets::secret_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

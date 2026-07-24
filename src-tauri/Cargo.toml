@@ -6,7 +6,9 @@ authors = ["VoidLink Contributors"]
 license = "MIT"
 repository = ""
 edition = "2021"
-rust-version = "1.77.2"
+# Floor is set by `keyring` 4.x (MSRV 1.88.0), the OS credential store used for
+# AI provider keys. Everything else in the tree builds on 1.77.
+rust-version = "1.88"
 
 [lib]
 name = "voidlink_lib"
@@ -32,6 +34,11 @@ ignore = "0.4"
 # spawn_blocking wrapper in command handlers is sufficient — no Tokio runtime
 # tangled into GitHub HTTP calls. rustls keeps us off OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# OS credential store for AI provider keys. Default `v1` feature wires the
+# native backends: macOS Keychain, Windows Credential Manager, Linux
+# secret-service. Deliberately NOT a self-rolled vault or tauri-plugin-stronghold
+# — the point is that the key lives where the OS already guards credentials.
+keyring = "4.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

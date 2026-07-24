@@ -1,14 +1,17 @@
 use super::cli::run_cli;
 use super::diff::git_diff_working_impl;
 use super::{DiffLine, FileDiff};
+use crate::secrets::SecretBinding;
 
 /// Shell out to a user-configured CLI (claude, ollama, gh copilot, ...) and
 /// ask it to draft a commit message from the staged diff. The diff is written
 /// to the child process's stdin; stdout becomes the suggested message.
 ///
 /// This is the BYO-CLI design called for in session-1.md: voidlink has no
-/// embedded LLM client, no API keys, no telemetry. Users plug in whatever
-/// model they already have configured locally.
+/// embedded LLM client and no telemetry. Users plug in whatever model they
+/// already have configured locally. Provider keys are optional and, when the
+/// user stores one, come from the OS keychain via `secret_bindings` — they are
+/// exported into the child's environment and never seen by the frontend.
 ///
 /// `command_template` is the shell command to run, e.g.:
 ///   • `claude --no-tools -p "Write a concise git commit message for this diff:"`
@@ -20,6 +23,7 @@ use super::{DiffLine, FileDiff};
 pub(crate) fn git_ai_generate_commit_impl(
     repo_path: String,
     command_template: String,
+    secret_bindings: Vec<SecretBinding>,
 ) -> Result<String, String> {
     let template = command_template.trim();
     if template.is_empty() {
@@ -35,7 +39,7 @@ pub(crate) fn git_ai_generate_commit_impl(
     }
 
     let diff_text = render_diff_for_prompt(&diff.files);
-    run_cli(&repo_path, template, &diff_text)
+    run_cli(&repo_path, template, &diff_text, &secret_bindings)
 }
 
 fn render_diff_for_prompt(files: &[FileDiff]) -> String {

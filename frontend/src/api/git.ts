@@ -275,15 +275,34 @@ export const gitApi = {
     });
   },
 
-  aiGenerateCommit(repoPath: string, commandTemplate: string): Promise<string> {
+  /// `secretBindings` is the non-secret id → env-var mapping of the provider
+  /// keys the user configured. Rust resolves each id against the OS keychain
+  /// at spawn time and exports the value into the child's environment; no
+  /// value passes through JS in either direction.
+  aiGenerateCommit(
+    repoPath: string,
+    commandTemplate: string,
+    secretBindings: { id: string; envVar: string }[] = [],
+  ): Promise<string> {
     return invoke<string>("git_ai_generate_commit", {
       repoPath,
       commandTemplate,
+      secretBindings,
     });
   },
 
-  agentQuery(repoPath: string, commandTemplate: string, prompt: string): Promise<string> {
-    return invoke<string>("git_agent_query", { repoPath, commandTemplate, prompt });
+  agentQuery(
+    repoPath: string,
+    commandTemplate: string,
+    prompt: string,
+    secretBindings: { id: string; envVar: string }[] = [],
+  ): Promise<string> {
+    return invoke<string>("git_agent_query", {
+      repoPath,
+      commandTemplate,
+      prompt,
+      secretBindings,
+    });
   },
 
   blameFile(repoPath: string, filePath: string): Promise<BlameLine[]> {

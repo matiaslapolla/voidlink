@@ -1,20 +1,30 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// Shared BYO-CLI runner. VoidLink never embeds an LLM client or API key —
-/// it shells out to whatever generative-text command the user already has
-/// (`claude`, `ollama`, `gh copilot`, …), piping `stdin_text` to the child
-/// and returning its stdout. Both AI commit drafting and the repo agent ride
-/// on this so there's one place that handles spawning, the login-shell PATH
-/// fix, and error surfacing.
+use crate::secrets::SecretBinding;
+
+/// Shared BYO-CLI runner. VoidLink never embeds an LLM client — it shells out
+/// to whatever generative-text command the user already has (`claude`,
+/// `ollama`, `gh copilot`, …), piping `stdin_text` to the child and returning
+/// its stdout. Both AI commit drafting and the repo agent ride on this so
+/// there's one place that handles spawning, the login-shell PATH fix, secret
+/// injection, and error surfacing.
 ///
 /// `command_template` is a shell command string, e.g.
 ///   • `claude --no-tools -p "Answer the question about this repo:"`
 ///   • `ollama run llama3.2`
+///
+/// `secret_bindings` names keychain-stored provider keys and the environment
+/// variables to export them as. This is the *only* place a stored secret is
+/// read; the value goes straight into the child's environment and is never
+/// returned, logged, or sent to the frontend. Injection is additive — see
+/// [`crate::secrets::merge_env`] for the precedence rule.
 pub(crate) fn run_cli(
     repo_path: &str,
     command_template: &str,
     stdin_text: &str,
+    secret_bindings: &[SecretBinding],
 ) -> Result<String, String> {
     let template = command_template.trim();
     if template.is_empty() {
@@ -53,6 +63,20 @@ pub(crate) fn run_cli(
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+    }
+
+    // ── Secret injection ──────────────────────────────────────────────────
+    // Applied last so it lands on whichever `cmd` we ended up with (the direct
+    // spawn, or the login-shell wrapper above). Resolving can fail hard — a
+    // locked or denied keychain aborts the AI action rather than quietly
+    // running the CLI unauthenticated. Anything the parent process already
+    // exports wins, so a user's own shell config is never overridden.
+    let resolved = crate::secrets::resolve_bindings(secret_bindings)?;
+    if !resolved.is_empty() {
+        let inherited: HashMap<String, String> = std::env::vars().collect();
+        for (name, value) in crate::secrets::merge_env(&inherited, &resolved) {
+            cmd.env(name, value);
+        }
     }
 
     let mut child = cmd.spawn().map_err(|e| {
