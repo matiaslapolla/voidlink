@@ -157,7 +157,7 @@ function PaletteRow(props: {
     >
       <Show when={props.action.group}>
         {(g) => (
-          <span class="text-[10px] uppercase tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
+          <span class="text-[10px] tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
             {g()}
           </span>
         )}

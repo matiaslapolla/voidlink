@@ -331,7 +331,7 @@ export function StackTab(props: Props) {
                     >
                       <GitMerge class="w-3 h-3 shrink-0" />
                       <span class="font-mono flex-1 truncate">{p}</span>
-                      <span class="text-[10px] uppercase tracking-wide opacity-70">resolve</span>
+                      <span class="text-[10px] tracking-wide opacity-70">Resolve</span>
                     </button>
                   </li>
                 )}
@@ -687,7 +687,7 @@ function TrunkRow(props: { trunk: string }) {
     <div class="flex items-center gap-2 px-3 py-2 text-muted-foreground text-[12px]">
       <span class="w-3 text-center shrink-0 font-mono">└</span>
       <span class="font-mono">{props.trunk}</span>
-      <span class="text-[10px] uppercase tracking-wide opacity-70">trunk</span>
+      <span class="text-[10px] tracking-wide opacity-70">Trunk</span>
     </div>
   );
 }

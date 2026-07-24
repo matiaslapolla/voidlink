@@ -154,7 +154,7 @@ export function StatusBar() {
         <Show when={blameEnabled()} fallback={<EyeOff class="w-3 h-3" />}>
           <Eye class="w-3 h-3" />
         </Show>
-        <span class="text-[10px] uppercase tracking-wide">Blame</span>
+        <span class="text-[10px] tracking-wide">Blame</span>
       </button>
 
       <span class="opacity-60 font-mono">

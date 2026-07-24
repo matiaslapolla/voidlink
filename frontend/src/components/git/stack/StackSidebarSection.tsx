@@ -215,8 +215,8 @@ function TrunkRow(props: { trunk: string }) {
     <div class="flex items-center gap-1 px-1.5 py-1 text-[12px] text-muted-foreground">
       <span class="w-3 text-center shrink-0 font-mono">└</span>
       <span class="truncate">{props.trunk}</span>
-      <span class="text-[10px] text-muted-foreground/70 ml-1 uppercase tracking-wide">
-        trunk
+      <span class="text-[10px] text-muted-foreground/70 ml-1 tracking-wide">
+        Trunk
       </span>
     </div>
   );

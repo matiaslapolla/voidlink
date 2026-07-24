@@ -311,7 +311,7 @@ function CodeBlock(props: { label: string; tone: "info" | "warning" | "muted"; t
         : "text-muted-foreground";
   return (
     <div class="flex flex-col">
-      <div class={`px-3 py-1 text-[10px] uppercase tracking-wide ${toneClass()}`}>{props.label}</div>
+      <div class={`px-3 py-1 text-[10px] tracking-wide ${toneClass()}`}>{props.label}</div>
       <pre class="px-3 pb-2 text-[12px] font-mono whitespace-pre-wrap break-words overflow-x-auto">
         {props.text || "(empty)"}
       </pre>
