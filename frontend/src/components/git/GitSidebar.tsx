@@ -44,6 +44,7 @@ import { useSettings } from "@/store/settings";
 import { scanStagedDiff, type SecretFinding } from "@/commands/secretScan";
 import { SecretScanDialog } from "@/commands/SecretScanDialog";
 import { pushToast } from "@/commands/toast";
+import { shortcutLabel } from "@/commands/shortcuts";
 import { textPrompt } from "@/commands/prompt";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
@@ -730,7 +731,7 @@ function ChangesPane(props: {
                 ? "Configure AI command in Settings → AI"
                 : recentDraftMs() !== null
                   ? `Regenerate (last draft: ${recentDraftMs()}ms)`
-                  : "Draft commit message with AI (⌘⇧M)"
+                  : `Draft commit message with AI (${shortcutLabel("git.ai-draft-commit")})`
             }
             class={`px-2 py-1 rounded-md text-[13px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               recentDraftMs() !== null

@@ -639,9 +639,10 @@ function AiPane() {
           onInput={(v) => updateAi({ agentCommand: v })}
         />
         <p class="text-[11px] text-muted-foreground leading-relaxed pl-28">
-          Used by the repo agent (⌘⇧A). A prompt grounded in your live workspace
-          state — branch, status, recent log, staged diff, open files — is piped
-          to stdin; stdout is the answer. Leave blank to reuse the commit command.
+          Used by the repo agent ({shortcutLabel("agent.toggle")}). A prompt
+          grounded in your live workspace state — branch, status, recent log,
+          staged diff, open files — is piped to stdin; stdout is the answer.
+          Leave blank to reuse the commit command.
         </p>
       </Section>
     </div>
