@@ -2,7 +2,7 @@ import { Show, createEffect, createSignal, onMount } from "solid-js";
 import { AppShell } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
-import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
+import { WorkspaceRail } from "@/components/layout/WorkspaceRail";
 import { TerminalSidebar } from "@/components/layout/TerminalSidebar";
 import { MainSurface } from "@/components/layout/MainSurface";
 import { StatusBar } from "@/components/layout/StatusBar";
@@ -34,6 +34,7 @@ import { toggleAgentPanel } from "@/commands/agent";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
 import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/blameOverlay";
+import { requestNewWorktree } from "@/commands/worktree";
 import type { ActiveItem } from "@/store/layout";
 
 function AppInner(props: { onOpenSettings: () => void }) {
@@ -373,6 +374,54 @@ function AppInner(props: { onOpenSettings: () => void }) {
         enabled: () => state.workspaces.length > 1,
         run: () => cycleWorkspace(-1),
       },
+      // ── Worktrees ────────────────────────────────────────────────────
+      {
+        id: "worktree.new",
+        label: "New worktree…",
+        description: "Create a linked worktree with env files and dependencies set up",
+        group: "Workspace",
+        enabled: () => !!activeWorkspace()?.isRepo,
+        run: () => {
+          const ws = activeWorkspace();
+          if (!ws?.repoRoot) {
+            pushToast("Select a repository for this workspace first", "warning");
+            return;
+          }
+          if (!ws.isRepo) {
+            pushToast("This folder isn't a git repository — worktrees need one", "warning");
+            return;
+          }
+          requestNewWorktree({
+            workspaceId: ws.id,
+            repoRoot: ws.repoRoot,
+            sourcePath: activeWorktree()?.path || ws.repoRoot,
+          });
+        },
+      },
+      {
+        id: "worktree.next",
+        label: "Next worktree",
+        description: "Switch to the next worktree in this workspace",
+        group: "Workspace",
+        enabled: () => (activeWorkspace()?.worktrees.length ?? 0) > 1,
+        run: () => cycleWorktree(1),
+      },
+      {
+        id: "worktree.prev",
+        label: "Previous worktree",
+        description: "Switch to the previous worktree in this workspace",
+        group: "Workspace",
+        enabled: () => (activeWorkspace()?.worktrees.length ?? 0) > 1,
+        run: () => cycleWorktree(-1),
+      },
+      {
+        id: "worktree.remove",
+        label: "Remove current worktree…",
+        description: "Delete the active linked worktree's directory",
+        group: "Workspace",
+        enabled: () => activeWorktree()?.isMain === false,
+        run: () => void removeActiveWorktree(),
+      },
       {
         id: "tab.next",
         label: "Next tab",
@@ -533,6 +582,37 @@ function AppInner(props: { onOpenSettings: () => void }) {
   function selectWorkspaceByIndex(i: number) {
     const ws = state.workspaces[i];
     if (ws) actions.selectWorkspace(ws.id);
+  }
+
+  /// Cycle within the active workspace's worktrees. Wraps, like the tab and
+  /// workspace cycles, so repeated presses stay useful with two worktrees.
+  function cycleWorktree(direction: 1 | -1) {
+    const ws = activeWorkspace();
+    if (!ws || ws.worktrees.length < 2) return;
+    const idx = ws.worktrees.findIndex((wt) => wt.id === state.activeWorktreeId);
+    if (idx === -1) return;
+    const next = (idx + direction + ws.worktrees.length) % ws.worktrees.length;
+    actions.selectWorktree(ws.worktrees[next].id);
+  }
+
+  /// Remove the active worktree from git and from the rail. Main worktrees are
+  /// the workspace itself and are never removable this way.
+  async function removeActiveWorktree() {
+    const ws = activeWorkspace();
+    const wt = activeWorktree();
+    if (!ws?.repoRoot || !wt || wt.isMain) {
+      pushToast("The main worktree can't be removed — close the workspace instead", "warning");
+      return;
+    }
+    const { gitApi } = await import("@/api/git");
+    try {
+      await gitApi.removeWorktree(ws.repoRoot, wt.path, false);
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      return;
+    }
+    actions.removeWorktree(ws.id, wt.id);
+    pushToast(`Removed worktree ${wt.branch ?? wt.path}`, "info", 2500);
   }
 
   function closeActiveTab() {
@@ -728,7 +808,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
     <>
       <AppShell
         titleBar={<TitleBar onOpenSettings={props.onOpenSettings} />}
-        tabBar={<WorkspaceTabBar />}
+        rail={<WorkspaceRail />}
         sidebar={state.sidebarsSwapped ? rightPane() : leftPane()}
         main={<MainSurface />}
         rightSidebar={state.sidebarsSwapped ? leftPane() : rightPane()}
