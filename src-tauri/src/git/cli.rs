@@ -69,8 +69,13 @@ pub(crate) fn run_cli(
     // Applied last so it lands on whichever `cmd` we ended up with (the direct
     // spawn, or the login-shell wrapper above). Resolving can fail hard — a
     // locked or denied keychain aborts the AI action rather than quietly
-    // running the CLI unauthenticated. Anything the parent process already
-    // exports wins, so a user's own shell config is never overridden.
+    // running the CLI unauthenticated.
+    //
+    // Precedence: anything this process already exports wins here, and on unix
+    // the login shell sources the user's profile *after* inheriting what we
+    // set, so an `export ANTHROPIC_API_KEY=…` in ~/.zprofile wins too. Either
+    // way the user's own configuration is never overridden — voidlink's stored
+    // key is only ever the fallback.
     let resolved = crate::secrets::resolve_bindings(secret_bindings)?;
     if !resolved.is_empty() {
         let inherited: HashMap<String, String> = std::env::vars().collect();
