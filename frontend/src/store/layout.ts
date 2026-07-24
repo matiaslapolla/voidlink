@@ -797,6 +797,11 @@ export function createAppStore() {
         return;
       }
       if (listed.length === 0) return;
+      // PTYs belonging to worktrees git no longer reports have to be collected
+      // *before* the state update, because that update deletes the very
+      // collections we'd need to find them in — otherwise we leak a shell per
+      // removed worktree.
+      const orphanedPtys: string[] = [];
       setState(produce((s) => {
         const target = s.workspaces.find((w) => w.id === workspaceId);
         if (!target) return;
@@ -826,7 +831,9 @@ export function createAppStore() {
           seedWorktreeCollections(s, id);
         }
         for (const old of target.worktrees) {
-          if (!keptIds.has(old.id)) dropWorktreeCollections(s, old.id);
+          if (keptIds.has(old.id)) continue;
+          for (const t of s.terminalsByWorktree[old.id] ?? []) orphanedPtys.push(t.ptyId);
+          dropWorktreeCollections(s, old.id);
         }
         target.worktrees = next;
         target.isRepo = true;
@@ -837,14 +844,7 @@ export function createAppStore() {
           s.activeWorktreeId = target.activeWorktreeId;
         }
       }));
-      // PTYs belonging to worktrees git no longer knows about are already
-      // orphaned by the state drop above; close them so we don't leak shells.
-      for (const wtId of Object.keys(state.terminalsByWorktree)) {
-        if (locateWorktree(wtId)) continue;
-        for (const t of state.terminalsByWorktree[wtId] ?? []) {
-          void terminalApi.closePty(t.ptyId).catch(() => {});
-        }
-      }
+      for (const ptyId of orphanedPtys) void terminalApi.closePty(ptyId).catch(() => {});
     },
 
     /// Hydrate every workspace that has a repo root. Fire-and-forget on boot.
