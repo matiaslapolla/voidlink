@@ -3,8 +3,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 /**
  * Overlay of 8 thin invisible strips around the window frame that each show
  * the correct resize cursor and start a native resize drag on mousedown.
- * Needed because tauri.conf has `decorations: false` — the OS draws no frame,
- * so without this layer the user has no way to resize the window.
+ *
+ * Windows and Linux only: there `setup()` in src-tauri/src/lib.rs turns
+ * decorations off, so the OS draws no frame and without this layer the user
+ * has no way to resize the window. macOS keeps its native decorations and
+ * resizes through them, so App.tsx does not render this component there.
  */
 
 type Direction =

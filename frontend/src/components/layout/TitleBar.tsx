@@ -11,6 +11,7 @@ import {
   ArrowLeftRight,
 } from "lucide-solid";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isMac } from "@/api/platform";
 import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
 
@@ -37,10 +38,16 @@ export function TitleBar(props: TitleBarProps) {
 
   return (
     <div class="flex items-stretch h-8 shrink-0 select-none border-b border-border bg-background">
+      {/*
+        Tauri's injected drag-region script already starts a native drag on
+        mousedown and toggles maximise on double click, so no handlers here.
+        On macOS the left padding clears the traffic lights the OS draws over
+        this bar (they end at 66px; see trafficLightPosition in tauri.conf.json).
+      */}
       <div
         data-tauri-drag-region
-        class="flex-1 flex items-center px-3 text-xs text-muted-foreground"
-        onDblClick={() => void win.toggleMaximize()}
+        class="flex-1 flex items-center pr-3 text-xs text-muted-foreground"
+        classList={{ "pl-3": !isMac(), "pl-[78px]": isMac() }}
       >
         <span class="font-semibold tracking-wide text-foreground/80 pointer-events-none">
           Voidlink
@@ -93,30 +100,33 @@ export function TitleBar(props: TitleBarProps) {
         >
           <SettingsIcon class="w-3.5 h-3.5" />
         </button>
-        <button
-          onClick={() => void win.minimize()}
-          aria-label="Minimize"
-          class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
-          title="Minimize"
-        >
-          <Minus class="w-3.5 h-3.5" />
-        </button>
-        <button
-          onClick={() => void win.toggleMaximize()}
-          aria-label="Maximize"
-          class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
-          title="Maximize"
-        >
-          <Square class="w-3 h-3" />
-        </button>
-        <button
-          onClick={() => void win.close()}
-          aria-label="Close"
-          class="w-9 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground transition-colors"
-          title="Close"
-        >
-          <X class="w-3.5 h-3.5" />
-        </button>
+        {/* On macOS the OS draws the traffic lights, so we must not draw our own. */}
+        <Show when={!isMac()}>
+          <button
+            onClick={() => void win.minimize()}
+            aria-label="Minimize"
+            class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
+            title="Minimize"
+          >
+            <Minus class="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => void win.toggleMaximize()}
+            aria-label="Maximize"
+            class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
+            title="Maximize"
+          >
+            <Square class="w-3 h-3" />
+          </button>
+          <button
+            onClick={() => void win.close()}
+            aria-label="Close"
+            class="w-9 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground transition-colors"
+            title="Close"
+          >
+            <X class="w-3.5 h-3.5" />
+          </button>
+        </Show>
       </div>
     </div>
   );

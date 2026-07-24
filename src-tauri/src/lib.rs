@@ -30,6 +30,16 @@ fn get_home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
 }
 
+/// The OS the app is running on: `"macos"`, `"windows"`, `"linux"`, …
+///
+/// The frontend needs this to decide between the native macOS window chrome
+/// and the custom title bar we draw everywhere else. Resolved from the build
+/// target rather than the user agent, so it can never be spoofed or drift.
+#[tauri::command]
+fn get_platform_os() -> &'static str {
+    std::env::consts::OS
+}
+
 #[tauri::command]
 async fn create_pty(
     cwd: String,
@@ -292,6 +302,17 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // tauri.conf.json is static, so the platform split for window chrome
+            // lives here. macOS keeps the native decorations configured there —
+            // they are what give us rounded corners, the drop shadow and the
+            // traffic lights. Windows and Linux drop them again and keep the
+            // custom chrome (TitleBar buttons + WindowFrame resize strips).
+            #[cfg(not(target_os = "macos"))]
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_decorations(false)?;
+            }
+
             Ok(())
         })
         .on_window_event(move |window, event| {
@@ -302,6 +323,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_home_dir,
+            get_platform_os,
             create_pty,
             write_pty,
             resize_pty,

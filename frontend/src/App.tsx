@@ -11,6 +11,7 @@ import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
 import { createAppStore } from "@/store/layout";
 import { editorController } from "@/components/editor/editorController";
+import { isMac } from "@/api/platform";
 import { CommandPalette } from "@/commands/CommandPalette";
 import { FileFinder } from "@/commands/FileFinder";
 import { ToastViewport } from "@/commands/ToastViewport";
@@ -722,7 +723,10 @@ function AppInner(props: { onOpenSettings: () => void }) {
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <ToastViewport />
       <PromptHost />
-      <WindowFrame />
+      {/* macOS resizes through its own window frame; our strips would fight it. */}
+      <Show when={!isMac()}>
+        <WindowFrame />
+      </Show>
     </>
   );
 }
