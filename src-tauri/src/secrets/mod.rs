@@ -332,7 +332,7 @@ mod tests {
             "abc",
             "abcdefg",
             "abcdefgh",
-            "sk-ant-api03-0123456789abcdef",
+            "vl-test-fixture-0123456789abcdef",
             &"x".repeat(4096),
         ];
         for s in samples {
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn hint_is_the_trailing_four_characters_of_long_values() {
-        assert_eq!(mask_hint("sk-ant-api03-0123456789abcdef"), "cdef");
+        assert_eq!(mask_hint("vl-test-fixture-0123456789abcdef"), "cdef");
         assert_eq!(mask_hint("abcdefgh"), "efgh");
     }
 
@@ -480,7 +480,7 @@ mod tests {
         let json = serde_json::to_string(&SecretStatus {
             id: "anthropic".to_string(),
             present: true,
-            hint: mask_hint("sk-ant-api03-0123456789abcdef"),
+            hint: mask_hint("vl-test-fixture-0123456789abcdef"),
         })
         .expect("status serializes");
         assert_eq!(json, r#"{"id":"anthropic","present":true,"hint":"cdef"}"#);
