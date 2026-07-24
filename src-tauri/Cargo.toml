@@ -21,7 +21,10 @@ tauri-build = { version = "2", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11", features = [] }
+# Pinned to an exact version on purpose: `unstable` gates the multiwebview API
+# (browser tabs are child webviews), and unstable APIs are allowed to break
+# across patch/minor releases. A caret range would let that happen silently.
+tauri = { version = "=2.11.2", features = ["unstable"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2.7"
 tauri-plugin-fs = "2.5"

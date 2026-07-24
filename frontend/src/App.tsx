@@ -1,8 +1,8 @@
-import { Show, createEffect, createSignal } from "solid-js";
+import { Show, createEffect, createSignal, onMount } from "solid-js";
 import { AppShell } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
-import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
+import { WorkspaceRail } from "@/components/layout/WorkspaceRail";
 import { TerminalSidebar } from "@/components/layout/TerminalSidebar";
 import { MainSurface } from "@/components/layout/MainSurface";
 import { StatusBar } from "@/components/layout/StatusBar";
@@ -35,30 +35,66 @@ import { toggleAgentPanel } from "@/commands/agent";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
 import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/blameOverlay";
+import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
+import { setOverlayOpen } from "@/commands/overlay";
+import { agentPanelOpen } from "@/commands/agent";
+import { webviewApi } from "@/api/webview";
+import { BROWSER_WEBVIEW_PREFIX, normalizeUrl } from "@/components/browser/BrowserPane";
+import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import type { ActiveItem } from "@/store/layout";
 
-function AppInner(props: { onOpenSettings: () => void }) {
-  const { state, activeWorkspace, actions } = useAppStore();
+function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) {
+  const { state, activeWorkspace, activeWorktree, activeRepoPath, actions } = useAppStore();
+
+  // Hydrate the real worktree list for every repo-backed workspace once, on
+  // boot. Persisted state only knows what we last saw; git is the truth, and
+  // worktrees can be added or removed while the app is closed.
+  onMount(() => {
+    void actions.hydrateAllWorktrees();
+    // A crash or hard reload can leave child webviews alive with no component
+    // owning them — and a child webview paints above everything. Sweep ours.
+    void webviewApi
+      .closeOrphans((label) => label.startsWith(BROWSER_WEBVIEW_PREFIX))
+      .catch(() => {});
+  });
+
+  // Embedded browser tabs are child webviews that composite above the DOM, so
+  // every modal surface has to actively push them out of the way while open.
+  createEffect(() => setOverlayOpen("palette", isPaletteOpen()));
+  createEffect(() => setOverlayOpen("file-finder", isFileFinderOpen()));
+  createEffect(() => setOverlayOpen("worktree-wizard", !!newWorktreeRequest()));
+  createEffect(() => setOverlayOpen("agent", agentPanelOpen()));
+  createEffect(() => setOverlayOpen("settings", props.settingsOpen));
 
   // Tell the blame overlay how to find the repo for a given file path.
   // The overlay needs this any time the editor's active model changes
   // so it can refresh without going through MainSurface's effect.
+  //
+  // Resolution is per *worktree* now, and longest-prefix wins: a linked
+  // worktree at `/repo-feature` and its main repo at `/repo` are different
+  // checkouts of the same file, and blaming against the wrong one silently
+  // shows the wrong authors.
   configureBlame((filePath) => {
-    const ws = state.workspaces.find((w) => w.repoRoot && filePath.startsWith(w.repoRoot));
-    return ws?.repoRoot ?? activeWorkspace()?.repoRoot ?? null;
+    let best: string | null = null;
+    for (const ws of state.workspaces) {
+      for (const wt of ws.worktrees) {
+        if (!wt.path || !filePath.startsWith(wt.path)) continue;
+        if (!best || wt.path.length > best.length) best = wt.path;
+      }
+    }
+    return best ?? activeRepoPath();
   });
 
   async function handleOpenFile(path: string) {
-    const wsId = state.activeWorkspaceId;
-    actions.openFileTab(wsId, path);
+    actions.openFileTab(state.activeWorktreeId, path);
     await editorController.openFile(path);
   }
 
   // ── Register the global action catalog. Re-runs when relevant state shifts
   // so closures always reference the current active workspace.
   createEffect(() => {
-    const wsId = state.activeWorkspaceId;
-    const repo = activeWorkspace()?.repoRoot ?? null;
+    const wtId = state.activeWorktreeId;
+    const repo = activeRepoPath();
     const list: Action[] = [
       {
         id: "palette.open",
@@ -81,7 +117,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "New terminal",
         group: "Terminal",
         enabled: () => !!repo,
-        run: () => void actions.spawnTerminal(wsId),
+        run: () => void actions.spawnTerminal(wtId),
       },
       {
         id: "terminal.repeat-last",
@@ -110,21 +146,27 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "Fetch from origin",
         group: "Git",
         enabled: () => !!repo,
-        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-fetch")),
+        run: () => {
+          window.dispatchEvent(new CustomEvent("voidlink:git-fetch"));
+        },
       },
       {
         id: "git.pull",
         label: "Pull from origin",
         group: "Git",
         enabled: () => !!repo,
-        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-pull")),
+        run: () => {
+          window.dispatchEvent(new CustomEvent("voidlink:git-pull"));
+        },
       },
       {
         id: "git.remotes",
         label: "Manage remotes…",
         group: "Git",
         enabled: () => !!repo,
-        run: () => window.dispatchEvent(new CustomEvent("voidlink:git-remotes")),
+        run: () => {
+          window.dispatchEvent(new CustomEvent("voidlink:git-remotes"));
+        },
       },
       {
         id: "git.undo-last-commit",
@@ -143,7 +185,9 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "Compare branches…",
         group: "Git",
         enabled: () => !!repo,
-        run: () => actions.openCompareTab(wsId),
+        run: () => {
+          actions.openCompareTab(wtId);
+        },
       },
       {
         id: "stack.branch-on-top",
@@ -268,7 +312,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
             }
             const top = stack.branches.at(-1)?.name;
             if (!top) return;
-            actions.openStackTab(wsId, { trunk: stack.trunk, topBranch: top });
+            actions.openStackTab(wtId, { trunk: stack.trunk, topBranch: top });
           } catch (e) {
             pushToast(String(e), "error");
           }
@@ -341,7 +385,9 @@ function AppInner(props: { onOpenSettings: () => void }) {
         label: "New workspace",
         group: "Workspace",
         shortcutLabel: "⌘T",
-        run: () => actions.addWorkspace(),
+        run: () => {
+          actions.addWorkspace();
+        },
       },
       {
         id: "workspace.next",
@@ -358,6 +404,63 @@ function AppInner(props: { onOpenSettings: () => void }) {
         shortcutLabel: "⌘⇧←",
         enabled: () => state.workspaces.length > 1,
         run: () => cycleWorkspace(-1),
+      },
+      // ── Worktrees ────────────────────────────────────────────────────
+      {
+        id: "worktree.new",
+        label: "New worktree…",
+        description: "Create a linked worktree with env files and dependencies set up",
+        group: "Workspace",
+        enabled: () => !!activeWorkspace()?.isRepo,
+        run: () => {
+          const ws = activeWorkspace();
+          if (!ws?.repoRoot) {
+            pushToast("Select a repository for this workspace first", "warning");
+            return;
+          }
+          if (!ws.isRepo) {
+            pushToast("This folder isn't a git repository — worktrees need one", "warning");
+            return;
+          }
+          requestNewWorktree({
+            workspaceId: ws.id,
+            repoRoot: ws.repoRoot,
+            sourcePath: activeWorktree()?.path || ws.repoRoot,
+          });
+        },
+      },
+      {
+        id: "worktree.next",
+        label: "Next worktree",
+        description: "Switch to the next worktree in this workspace",
+        group: "Workspace",
+        enabled: () => (activeWorkspace()?.worktrees.length ?? 0) > 1,
+        run: () => cycleWorktree(1),
+      },
+      {
+        id: "worktree.prev",
+        label: "Previous worktree",
+        description: "Switch to the previous worktree in this workspace",
+        group: "Workspace",
+        enabled: () => (activeWorkspace()?.worktrees.length ?? 0) > 1,
+        run: () => cycleWorktree(-1),
+      },
+      {
+        id: "worktree.remove",
+        label: "Remove current worktree…",
+        description: "Delete the active linked worktree's directory",
+        group: "Workspace",
+        enabled: () => activeWorktree()?.isMain === false,
+        run: () => void removeActiveWorktree(),
+      },
+      {
+        id: "browser.new",
+        label: "New browser tab",
+        description: "Open a page in an embedded webview beside your code",
+        group: "View",
+        run: () => {
+          actions.openBrowserTab(wtId, normalizeUrl("example.com"));
+        },
       },
       {
         id: "tab.next",
@@ -381,7 +484,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
         description: "File / diff / compare / stack — terminals can't be reopened",
         group: "View",
         shortcutLabel: "⌘⇧T",
-        enabled: () => (state.closedTabsByWorkspace[state.activeWorkspaceId] ?? []).length > 0,
+        enabled: () => (state.closedTabsByWorktree[state.activeWorktreeId] ?? []).length > 0,
         run: () => void reopenLastClosed(),
       },
       // ── Workspace snapshots ──────────────────────────────────────────
@@ -398,20 +501,20 @@ function AppInner(props: { onOpenSettings: () => void }) {
             confirmLabel: "Save",
           });
           if (!name) return;
-          actions.saveWorkspaceSnapshot(state.activeWorkspaceId, name);
+          actions.saveWorkspaceSnapshot(state.activeWorktreeId, name);
           pushToast(`Snapshot "${name}" saved`, "success");
         },
       },
       // Dynamic entries — one restore + one delete per saved snapshot for
       // the active workspace. Re-registers each effect run.
-      ...snapshotsFor(state.activeWorkspaceId).flatMap<Action>((snap) => [
+      ...snapshotsFor(state.activeWorktreeId).flatMap<Action>((snap) => [
         {
           id: `snapshot.restore.${snap.name}`,
           label: `Snapshot: restore "${snap.name}"`,
           description: `${snap.files.length} files · ${snap.terminals.length} terminals · ${snap.compares.length} compares`,
           group: "Workspace",
           run: async () => {
-            const ok = await actions.restoreWorkspaceSnapshot(state.activeWorkspaceId, snap.name);
+            const ok = await actions.restoreWorkspaceSnapshot(state.activeWorktreeId, snap.name);
             if (!ok) pushToast(`Snapshot "${snap.name}" not found`, "error");
             else pushToast(`Restored "${snap.name}"`, "success");
           },
@@ -421,7 +524,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
           label: `Snapshot: delete "${snap.name}"`,
           group: "Workspace",
           run: () => {
-            removeSnapshot(state.activeWorkspaceId, snap.name);
+            removeSnapshot(state.activeWorktreeId, snap.name);
             pushToast(`Deleted "${snap.name}"`, "info");
           },
         },
@@ -437,44 +540,49 @@ function AppInner(props: { onOpenSettings: () => void }) {
   /// Cmd+Alt+Arrow cycle shortcut so the wrap order matches what the user
   /// sees in the unified tab bar.
   function allItems(): ActiveItem[] {
-    const wsId = state.activeWorkspaceId;
+    const wtId = state.activeWorktreeId;
     const items: ActiveItem[] = [];
-    for (const f of state.openFilesByWorkspace[wsId] ?? [])
+    for (const f of state.openFilesByWorktree[wtId] ?? [])
       items.push({ type: "file", id: f.id, path: f.path });
-    for (const t of state.terminalsByWorkspace[wsId] ?? [])
+    for (const t of state.terminalsByWorktree[wtId] ?? [])
       items.push({ type: "terminal", id: t.id });
-    for (const d of state.diffTabsByWorkspace[wsId] ?? [])
+    for (const d of state.diffTabsByWorktree[wtId] ?? [])
       items.push({ type: "diff", id: d.id });
-    for (const c of state.compareTabsByWorkspace[wsId] ?? [])
+    for (const c of state.compareTabsByWorktree[wtId] ?? [])
       items.push({ type: "compare", id: c.id });
-    for (const s of state.stackTabsByWorkspace[wsId] ?? [])
+    for (const s of state.stackTabsByWorktree[wtId] ?? [])
       items.push({ type: "stack", id: s.id });
-    for (const c of state.conflictTabsByWorkspace[wsId] ?? [])
+    for (const c of state.conflictTabsByWorktree[wtId] ?? [])
       items.push({ type: "conflict", id: c.id });
+    for (const b of state.browserTabsByWorktree[wtId] ?? [])
+      items.push({ type: "browser", id: b.id });
     return items;
   }
 
   function activateItem(item: ActiveItem) {
-    const wsId = state.activeWorkspaceId;
+    const wtId = state.activeWorktreeId;
     switch (item.type) {
       case "file":
-        actions.selectFileTab(wsId, item.id, item.path);
+        actions.selectFileTab(wtId, item.id, item.path);
         void editorController.setActive(item.path);
         break;
       case "terminal":
-        actions.selectTerminal(wsId, item.id);
+        actions.selectTerminal(wtId, item.id);
         break;
       case "diff":
-        actions.selectDiffTab(wsId, item.id);
+        actions.selectDiffTab(wtId, item.id);
         break;
       case "compare":
-        actions.selectCompareTab(wsId, item.id);
+        actions.selectCompareTab(wtId, item.id);
         break;
       case "stack":
-        actions.selectStackTab(wsId, item.id);
+        actions.selectStackTab(wtId, item.id);
         break;
       case "conflict":
-        actions.selectConflictTab(wsId, item.id);
+        actions.selectConflictTab(wtId, item.id);
+        break;
+      case "browser":
+        actions.selectBrowserTab(wtId, item.id);
         break;
     }
   }
@@ -482,7 +590,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
   function cycleTab(direction: 1 | -1) {
     const items = allItems();
     if (items.length === 0) return;
-    const cur = state.activeItemByWorkspace[state.activeWorkspaceId];
+    const cur = state.activeItemByWorktree[state.activeWorktreeId];
     const idx = cur ? items.findIndex((i) => i.type === cur.type && i.id === cur.id) : -1;
     // -1 → first ArrowRight starts at the head, ArrowLeft jumps to tail.
     const next = idx === -1
@@ -497,7 +605,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
   /// reopened file tab appears but the editor stays parked on
   /// whatever model was active before.
   async function reopenLastClosed() {
-    const popped = actions.reopenLastClosedTab(state.activeWorkspaceId);
+    const popped = actions.reopenLastClosedTab(state.activeWorktreeId);
     if (!popped) {
       pushToast("No recently closed tab", "warning");
       return;
@@ -521,40 +629,79 @@ function AppInner(props: { onOpenSettings: () => void }) {
     if (ws) actions.selectWorkspace(ws.id);
   }
 
-  function closeActiveTab() {
-    const wsId = state.activeWorkspaceId;
-    const item = state.activeItemByWorkspace[wsId];
-    if (!item) {
-      // No tabs open in this workspace → Cmd+W collapses the workspace
-      // itself. removeWorkspace handles the "this is the last one"
-      // edge case (creates a fresh empty Main).
-      actions.removeWorkspace(wsId);
+  /// Cycle within the active workspace's worktrees. Wraps, like the tab and
+  /// workspace cycles, so repeated presses stay useful with two worktrees.
+  function cycleWorktree(direction: 1 | -1) {
+    const ws = activeWorkspace();
+    if (!ws || ws.worktrees.length < 2) return;
+    const idx = ws.worktrees.findIndex((wt) => wt.id === state.activeWorktreeId);
+    if (idx === -1) return;
+    const next = (idx + direction + ws.worktrees.length) % ws.worktrees.length;
+    actions.selectWorktree(ws.worktrees[next].id);
+  }
+
+  /// Remove the active worktree from git and from the rail. Main worktrees are
+  /// the workspace itself and are never removable this way.
+  async function removeActiveWorktree() {
+    const ws = activeWorkspace();
+    const wt = activeWorktree();
+    if (!ws?.repoRoot || !wt || wt.isMain) {
+      pushToast("The main worktree can't be removed — close the workspace instead", "warning");
       return;
     }
-    if (actions.isTabPinned(wsId, item.id)) {
+    const { gitApi } = await import("@/api/git");
+    try {
+      await gitApi.removeWorktree(ws.repoRoot, wt.path, false);
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      return;
+    }
+    actions.removeWorktree(ws.id, wt.id);
+    pushToast(`Removed worktree ${wt.branch ?? wt.path}`, "info", 2500);
+  }
+
+  function closeActiveTab() {
+    const wtId = state.activeWorktreeId;
+    const item = state.activeItemByWorktree[wtId];
+    if (!item) {
+      // Nothing open in this worktree → ⌘W closes the container. On a linked
+      // worktree that means detaching it from the rail (the directory on disk
+      // stays; removing it for real is the rail's explicit action). On the
+      // main worktree it means closing the whole workspace — removeWorkspace
+      // handles the "this was the last one" edge case by creating a fresh Main.
+      const ws = activeWorkspace();
+      const wt = activeWorktree();
+      if (ws && wt && !wt.isMain) actions.removeWorktree(ws.id, wt.id);
+      else actions.removeWorkspace(state.activeWorkspaceId);
+      return;
+    }
+    if (actions.isTabPinned(wtId, item.id)) {
       pushToast("Tab is pinned — right-click to unpin", "warning");
       return;
     }
     switch (item.type) {
       case "file": {
         editorController.closeFile(item.path);
-        actions.closeFileTab(wsId, item.id);
+        actions.closeFileTab(wtId, item.id);
         break;
       }
       case "terminal":
-        actions.removeTerminal(wsId, item.id);
+        actions.removeTerminal(wtId, item.id);
         break;
       case "diff":
-        actions.closeDiffTab(wsId, item.id);
+        actions.closeDiffTab(wtId, item.id);
         break;
       case "compare":
-        actions.closeCompareTab(wsId, item.id);
+        actions.closeCompareTab(wtId, item.id);
         break;
       case "stack":
-        actions.closeStackTab(wsId, item.id);
+        actions.closeStackTab(wtId, item.id);
         break;
       case "conflict":
-        actions.closeConflictTab(wsId, item.id);
+        actions.closeConflictTab(wtId, item.id);
+        break;
+      case "browser":
+        actions.closeBrowserTab(wtId, item.id);
         break;
     }
   }
@@ -572,7 +719,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
       meta: true,
       key: "p",
       run: () => {
-        if (!activeWorkspace()?.repoRoot) {
+        if (!activeRepoPath()) {
           pushToast("Select a repository first", "warning");
           return;
         }
@@ -665,7 +812,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
       shift: true,
       key: "m",
       run: () => {
-        if (!activeWorkspace()?.repoRoot) {
+        if (!activeRepoPath()) {
           pushToast("Open a repository first", "warning");
           return;
         }
@@ -678,7 +825,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
       shift: true,
       key: "a",
       run: () => {
-        if (!activeWorkspace()?.repoRoot) {
+        if (!activeRepoPath()) {
           pushToast("Open a repository first", "warning");
           return;
         }
@@ -693,13 +840,13 @@ function AppInner(props: { onOpenSettings: () => void }) {
       : <TerminalSidebar onOpenFile={(path) => void handleOpenFile(path)} />;
 
   const rightPane = () => (
-    <Show when={activeWorkspace()?.repoRoot}>
+    <Show when={activeRepoPath()}>
       {(repo) => (
         <Show
           when={!state.gitSidebarCollapsed}
           fallback={<GitSidebarCollapsed onExpand={actions.toggleGitSidebar} />}
         >
-          <GitSidebar repoPath={repo()} workspaceId={state.activeWorkspaceId} />
+          <GitSidebar repoPath={repo()} worktreeId={state.activeWorktreeId} />
         </Show>
       )}
     </Show>
@@ -709,7 +856,7 @@ function AppInner(props: { onOpenSettings: () => void }) {
     <>
       <AppShell
         titleBar={<TitleBar onOpenSettings={props.onOpenSettings} />}
-        tabBar={<WorkspaceTabBar />}
+        rail={<WorkspaceRail />}
         sidebar={state.sidebarsSwapped ? rightPane() : leftPane()}
         main={<MainSurface />}
         rightSidebar={state.sidebarsSwapped ? leftPane() : rightPane()}
@@ -717,10 +864,11 @@ function AppInner(props: { onOpenSettings: () => void }) {
       />
       <CommandPalette />
       <FileFinder
-        repoPath={activeWorkspace()?.repoRoot ?? null}
+        repoPath={activeRepoPath()}
         onOpenFile={(p) => void handleOpenFile(p)}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
+      <NewWorktreeWizard />
       <ToastViewport />
       <PromptHost />
       {/* macOS resizes through its own window frame; our strips would fight it. */}
@@ -736,7 +884,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   return (
     <AppStoreContext.Provider value={store}>
-      <AppInner onOpenSettings={() => setSettingsOpen(true)} />
+      <AppInner onOpenSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen()} />
       <SettingsDialog open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
     </AppStoreContext.Provider>
   );

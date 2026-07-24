@@ -28,6 +28,7 @@ pub(crate) mod stash;
 pub(crate) mod status;
 pub(crate) mod tag;
 pub(crate) mod worktree;
+pub(crate) mod worktree_setup;
 
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +77,10 @@ use tag::{git_create_tag_impl, git_delete_tag_impl, git_push_tag_impl};
 use push::git_push_impl;
 use worktree::{
     git_add_worktree_impl, git_list_worktrees_impl, git_remove_worktree_impl, WorktreeInfo,
+};
+use worktree_setup::{
+    apply_setup, build_plan, write_defaults, DepAction, WorktreeDefaults, WorktreeSetupPlan,
+    WorktreeSetupReport,
 };
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -819,4 +824,52 @@ pub async fn git_remove_worktree(
 ) -> Result<(), String> {
     let f = force.unwrap_or(false);
     blocking_git!(git_remove_worktree_impl(repo_path, path, f))
+}
+
+// ─── Worktree setup (env files, dependency dirs, per-repo defaults) ──────────
+
+/// Inspect `source_path` and report what a new worktree would need: which
+/// `.env*` files exist and whether git ignores them, which dependency
+/// directories we can populate, and any answers this repo has saved before.
+/// Read-only — nothing on disk changes until `worktree_apply_setup`.
+#[tauri::command]
+pub async fn worktree_setup_plan(
+    repo_path: String,
+    source_path: Option<String>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<WorktreeSetupPlan, String> {
+    let source = source_path.unwrap_or_else(|| repo_path.clone());
+    blocking_git!(build_plan(
+        std::path::Path::new(&repo_path),
+        std::path::Path::new(&source)
+    ))
+}
+
+/// Apply the wizard's answers to a worktree that already exists on disk.
+/// Never aborts halfway: every step reports its own success or failure so the
+/// caller can say exactly what worked and what didn't.
+#[tauri::command]
+pub async fn worktree_apply_setup(
+    source_path: String,
+    dest_path: String,
+    env_files: Vec<String>,
+    dep_actions: std::collections::BTreeMap<String, DepAction>,
+    _state: tauri::State<'_, GitState>,
+) -> Result<WorktreeSetupReport, String> {
+    blocking_git!(apply_setup(
+        std::path::Path::new(&source_path),
+        std::path::Path::new(&dest_path),
+        &env_files,
+        &dep_actions
+    ))
+}
+
+/// Persist the wizard's answers to `<repoRoot>/.voidlink/worktree.json`.
+#[tauri::command]
+pub async fn worktree_save_defaults(
+    repo_path: String,
+    defaults: WorktreeDefaults,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(write_defaults(std::path::Path::new(&repo_path), &defaults))
 }

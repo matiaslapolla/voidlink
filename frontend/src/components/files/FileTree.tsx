@@ -66,16 +66,16 @@ export function FileTree(props: { root: string; onOpenFile?: (path: string) => v
   /// The compare model is repo-wide; we just focus the clicked path.
   function compareWithDefault(absPath: string) {
     closeMenu();
-    const wsId = state.activeWorkspaceId;
+    const wtId = state.activeWorktreeId;
     const rel = absPath.startsWith(props.root + "/")
       ? absPath.slice(props.root.length + 1)
       : absPath;
-    const id = actions.openCompareTab(wsId, {
+    const id = actions.openCompareTab(wtId, {
       baseRef: defaultBranch(),
       headRef: "HEAD",
       useMergeBase: true,
     });
-    actions.setCompareSelectedFile(wsId, id, rel);
+    actions.setCompareSelectedFile(wtId, id, rel);
   }
 
   // External writers (the New Tab menu, future flows) dispatch this to ask

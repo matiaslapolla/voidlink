@@ -38,7 +38,7 @@ import type { RestackResult, StackBranch, SubmitResult } from "@/types/stack";
 type Props = {
   repoPath: string;
   tab: StackTabState;
-  workspaceId: string;
+  worktreeId: string;
 };
 
 interface ConflictBanner {
@@ -126,7 +126,7 @@ export function StackTab(props: Props) {
   }
 
   function onOpenCompare(branch: StackBranch) {
-    actions.openCompareTab(props.workspaceId, {
+    actions.openCompareTab(props.worktreeId, {
       baseRef: branch.parent,
       headRef: branch.name,
       useMergeBase: true,
@@ -325,7 +325,7 @@ export function StackTab(props: Props) {
                   <li>
                     <button
                       onClick={() =>
-                        actions.openConflictTab(props.workspaceId, `${props.repoPath}/${p}`)
+                        actions.openConflictTab(props.worktreeId, `${props.repoPath}/${p}`)
                       }
                       class="w-full flex items-center gap-2 px-2 py-1 rounded border border-warning/40 bg-warning/5 hover:bg-warning/10 text-warning text-[11px] text-left"
                     >

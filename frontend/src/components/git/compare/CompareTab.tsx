@@ -29,7 +29,7 @@ import { branchMruFor } from "@/commands/branchMru";
 type Props = {
   repoPath: string;
   tab: CompareTabState;
-  workspaceId: string;
+  worktreeId: string;
 };
 
 const TREE_WIDTH_KEY = "voidlink-compare-tree-width";
@@ -103,7 +103,7 @@ export function CompareTab(props: Props) {
     if (props.tab.selectedFilePath || list.length === 0) return;
     const path = list[0].newPath ?? list[0].oldPath;
     if (path) {
-      actions.setCompareSelectedFile(props.workspaceId, props.tab.id, path);
+      actions.setCompareSelectedFile(props.worktreeId, props.tab.id, path);
     }
   });
 
@@ -141,22 +141,22 @@ export function CompareTab(props: Props) {
   });
 
   function swapRefs() {
-    actions.setCompareRefs(props.workspaceId, props.tab.id, {
+    actions.setCompareRefs(props.worktreeId, props.tab.id, {
       baseRef: props.tab.headRef,
       headRef: props.tab.baseRef,
     });
   }
 
   function setBase(value: string) {
-    actions.setCompareRefs(props.workspaceId, props.tab.id, { baseRef: value });
+    actions.setCompareRefs(props.worktreeId, props.tab.id, { baseRef: value });
   }
 
   function setHead(value: string) {
-    actions.setCompareRefs(props.workspaceId, props.tab.id, { headRef: value });
+    actions.setCompareRefs(props.worktreeId, props.tab.id, { headRef: value });
   }
 
   function toggleMergeBase() {
-    actions.setCompareRefs(props.workspaceId, props.tab.id, {
+    actions.setCompareRefs(props.worktreeId, props.tab.id, {
       useMergeBase: !props.tab.useMergeBase,
     });
   }
@@ -295,15 +295,15 @@ export function CompareTab(props: Props) {
                   files={files()}
                   selectedPath={props.tab.selectedFilePath}
                   onSelect={(p) =>
-                    actions.setCompareSelectedFile(props.workspaceId, props.tab.id, p)
+                    actions.setCompareSelectedFile(props.worktreeId, props.tab.id, p)
                   }
                   mode={props.tab.treeMode}
                   filter={props.tab.treeFilter}
                   onModeChange={(m) =>
-                    actions.setCompareTreeMode(props.workspaceId, props.tab.id, m)
+                    actions.setCompareTreeMode(props.worktreeId, props.tab.id, m)
                   }
                   onFilterChange={(f) =>
-                    actions.setCompareTreeFilter(props.workspaceId, props.tab.id, f)
+                    actions.setCompareTreeFilter(props.worktreeId, props.tab.id, f)
                   }
                 />
               </Show>

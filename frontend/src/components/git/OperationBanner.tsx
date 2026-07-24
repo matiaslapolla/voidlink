@@ -21,7 +21,7 @@ const LABELS: Record<Operation, string> = {
 /// corrupts state. Continue is gated on conflicts being fully resolved.
 export function OperationBanner(props: {
   repoPath: string;
-  workspaceId: string;
+  worktreeId: string;
   operation: Operation;
   hasConflicts: boolean;
 }) {
@@ -30,7 +30,7 @@ export function OperationBanner(props: {
   async function openRemainingConflicts() {
     const conflicts = await gitApi.listConflicts(props.repoPath);
     for (const c of conflicts) {
-      actions.openConflictTab(props.workspaceId, `${props.repoPath}/${c}`);
+      actions.openConflictTab(props.worktreeId, `${props.repoPath}/${c}`);
     }
   }
 

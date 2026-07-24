@@ -26,8 +26,8 @@ const [threads, setThreads] = createSignal<Record<string, AgentMessage[]>>({});
 const [busy, setBusy] = createSignal(false);
 const [panelOpen, setPanelOpen] = createSignal(false);
 
-export function agentThread(wsId: string): AgentMessage[] {
-  return threads()[wsId] ?? [];
+export function agentThread(wtId: string): AgentMessage[] {
+  return threads()[wtId] ?? [];
 }
 export function agentBusy() {
   return busy();
@@ -38,12 +38,12 @@ export function agentPanelOpen() {
 export function toggleAgentPanel(open?: boolean) {
   setPanelOpen((v) => (open === undefined ? !v : open));
 }
-export function clearAgentThread(wsId: string) {
-  setThreads((t) => ({ ...t, [wsId]: [] }));
+export function clearAgentThread(wtId: string) {
+  setThreads((t) => ({ ...t, [wtId]: [] }));
 }
 
-function pushMessage(wsId: string, msg: AgentMessage) {
-  setThreads((t) => ({ ...t, [wsId]: [...(t[wsId] ?? []), msg] }));
+function pushMessage(wtId: string, msg: AgentMessage) {
+  setThreads((t) => ({ ...t, [wtId]: [...(t[wtId] ?? []), msg] }));
 }
 
 /// Compact, capped unified-ish rendering of a diff for the prompt. We summarize
@@ -173,10 +173,10 @@ async function assembleContext(
   return { prompt: sections.join("\n\n"), audit };
 }
 
-/// Run one agent turn for `wsId`. Returns nothing — results land in the
+/// Run one agent turn for the worktree `wtId`. Returns nothing — results land in the
 /// thread via `pushMessage` so the panel re-renders reactively.
 export async function askAgent(opts: {
-  wsId: string;
+  wtId: string;
   repoPath: string;
   commandTemplate: string;
   question: string;
@@ -186,8 +186,8 @@ export async function askAgent(opts: {
   const q = opts.question.trim();
   if (!q || busy()) return;
 
-  const history = agentThread(opts.wsId);
-  pushMessage(opts.wsId, { role: "user", content: q });
+  const history = agentThread(opts.wtId);
+  pushMessage(opts.wtId, { role: "user", content: q });
   setBusy(true);
   const startedAt = performance.now();
   try {
@@ -204,14 +204,14 @@ export async function askAgent(opts: {
       prompt,
       aiSecretBindings(),
     );
-    pushMessage(opts.wsId, {
+    pushMessage(opts.wtId, {
       role: "assistant",
       content: answer,
       audit,
       ms: Math.round(performance.now() - startedAt),
     });
   } catch (e) {
-    pushMessage(opts.wsId, {
+    pushMessage(opts.wtId, {
       role: "error",
       content: e instanceof Error ? e.message : String(e),
       ms: Math.round(performance.now() - startedAt),

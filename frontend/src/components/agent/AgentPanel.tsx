@@ -22,16 +22,16 @@ import {
 /// through the same commands the UI renders from, with an auditable trail of
 /// which sources fed each answer.
 export function AgentPanel(props: { onOpenSettings: () => void }) {
-  const { state, activeWorkspace, activeOpenFiles, activeItem } = useAppStore();
+  const { state, activeRepoPath, activeOpenFiles, activeItem } = useAppStore();
   const { settings } = useSettings();
   const [input, setInput] = createSignal("");
   let scroller: HTMLDivElement | undefined;
 
-  const repoPath = () => activeWorkspace()?.repoRoot ?? null;
-  const wsId = () => state.activeWorkspaceId;
+  const repoPath = () => activeRepoPath() ?? null;
+  const wtId = () => state.activeWorktreeId;
   const command = () =>
     (settings.ai.agentCommand?.trim() || settings.ai.commitCommand?.trim()) ?? "";
-  const messages = createMemo(() => agentThread(wsId()));
+  const messages = createMemo(() => agentThread(wtId()));
   const activePath = () => {
     const a = activeItem();
     return a && (a.type === "file" || a.type === "preview") ? a.path : null;
@@ -53,7 +53,7 @@ export function AgentPanel(props: { onOpenSettings: () => void }) {
     if (!command()) return;
     setInput("");
     await askAgent({
-      wsId: wsId(),
+      wtId: wtId(),
       repoPath: repo,
       commandTemplate: command(),
       question: q,
@@ -71,7 +71,7 @@ export function AgentPanel(props: { onOpenSettings: () => void }) {
             <Bot class="w-4 h-4 text-primary" />
             <span class="text-[13px] font-semibold flex-1">Repo agent</span>
             <button
-              onClick={() => clearAgentThread(wsId())}
+              onClick={() => clearAgentThread(wtId())}
               title="Clear conversation"
               aria-label="Clear conversation"
               class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"

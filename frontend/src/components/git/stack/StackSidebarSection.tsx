@@ -9,7 +9,7 @@ import type { Stack, StackBranch } from "@/types/stack";
 
 interface StackSidebarSectionProps {
   repoPath: string;
-  workspaceId: string;
+  worktreeId: string;
 }
 
 /// Read-only Wave-A view. Wave B adds the [+ Branch on top] / [Open tab]
@@ -55,7 +55,7 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
   function openStackTab(s: Stack) {
     const top = s.branches.at(-1)?.name;
     if (!top) return;
-    actions.openStackTab(props.workspaceId, { trunk: s.trunk, topBranch: top });
+    actions.openStackTab(props.worktreeId, { trunk: s.trunk, topBranch: top });
   }
 
   async function startStackFromHead() {
