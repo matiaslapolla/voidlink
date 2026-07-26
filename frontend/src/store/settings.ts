@@ -1,5 +1,6 @@
 import { createStore } from "solid-js/store";
 import { createEffect } from "solid-js";
+import type { CommitIdentity } from "@/types/git";
 
 export type CursorStyle = "block" | "underline" | "bar";
 export type UiTextSize = "sm" | "base" | "xl";
@@ -74,11 +75,26 @@ export interface BrainSettings {
   vaultPath: string;
 }
 
+/// Commit identity overrides, keyed by repository root.
+///
+/// Per-repo rather than global because the whole point is having a different
+/// identity in a work repo than a personal one. An absent entry means "use
+/// whatever git config says", which is the default for every repository —
+/// voidlink only stores the exceptions.
+///
+/// This never writes to the repository's git config. It is a voidlink-side
+/// override applied at commit time, so it cannot surprise you the next time
+/// you commit from the command line.
+export interface GitSettings {
+  identityByRepo: Record<string, CommitIdentity>;
+}
+
 export interface AppSettings {
   ui: UiSettings;
   terminal: TerminalSettings;
   ai: AiSettings;
   brain: BrainSettings;
+  git: GitSettings;
 }
 
 const STORAGE_KEY = "voidlink-settings";
@@ -117,6 +133,9 @@ const DEFAULTS: AppSettings = {
   brain: {
     vaultPath: "",
   },
+  git: {
+    identityByRepo: {},
+  },
 };
 
 function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | undefined): T {
@@ -134,6 +153,7 @@ function load(): AppSettings {
       terminal: mergeDefaults(DEFAULTS.terminal, parsed.terminal),
       ai: mergeDefaults(DEFAULTS.ai, parsed.ai),
       brain: mergeDefaults(DEFAULTS.brain, parsed.brain),
+      git: mergeDefaults(DEFAULTS.git, parsed.git),
     };
   } catch {
     return JSON.parse(JSON.stringify(DEFAULTS));
@@ -166,6 +186,24 @@ export function useSettings() {
     },
     updateAi(patch: Partial<AiSettings>) {
       setSettings("ai", patch);
+    },
+    /// Save a per-repo identity override. Trims both fields; passing a blank
+    /// name or email clears the override instead of storing an unusable one.
+    setRepoIdentity(repoRoot: string, identity: CommitIdentity | null) {
+      const name = identity?.name.trim() ?? "";
+      const email = identity?.email.trim() ?? "";
+      if (!name || !email) {
+        setSettings("git", "identityByRepo", (byRepo) => {
+          const next = { ...byRepo };
+          delete next[repoRoot];
+          return next;
+        });
+        return;
+      }
+      setSettings("git", "identityByRepo", (byRepo) => ({
+        ...byRepo,
+        [repoRoot]: { name, email },
+      }));
     },
     /// Append a custom provider key binding. Rejects a duplicate id so a
     /// binding can never shadow a preset or another custom row.
@@ -200,6 +238,12 @@ export function aiKeyBindings(): AiKeyBinding[] {
 /// keychain at spawn time, so no secret ever passes through here.
 export function aiSecretBindings(): { id: string; envVar: string }[] {
   return aiKeyBindings().map(({ id, envVar }) => ({ id, envVar }));
+}
+
+/// The saved identity override for `repoRoot`, or `null` when that repo has
+/// none and git config should win. Non-reactive snapshot.
+export function repoIdentity(repoRoot: string): CommitIdentity | null {
+  return settings.git.identityByRepo[repoRoot] ?? null;
 }
 
 export const DEFAULT_SETTINGS = DEFAULTS;

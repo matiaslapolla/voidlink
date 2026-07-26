@@ -56,15 +56,28 @@ the shell as XOFF.
 | Shortcut | Action |
 |---|---|
 | `Mod+W` | Close tab |
+| `Mod+Shift+W` | Close window |
 | `Mod+Shift+T` | Reopen last closed tab |
 | `Mod+Alt+→` | Next tab |
 | `Mod+Alt+←` | Previous tab |
+| `Mod+Shift+]` | Next tab (alternate) |
+| `Mod+Shift+[` | Previous tab (alternate) |
+
+Tab navigation answers to both conventions: `Mod+Alt+Arrow` is what Safari and
+Chrome use, `Mod+Shift+[`/`]` is what VS Code uses. Both fire.
+
+`Mod+W` closes the **tab**, not the window. That takes a custom application
+menu to achieve: Tauri's default menu binds `Cmd+W` to Close Window, and on
+macOS a menu accelerator is resolved by AppKit before the key ever reaches the
+page — so the window closed and the keymap never saw it. voidlink rebuilds the
+menu without that accelerator and gives closing the window `Mod+Shift+W`
+instead. See `src-tauri/src/menu.rs`.
 
 ### Workspace
 
 | Shortcut | Action |
 |---|---|
-| `Mod+T` | New workspace |
+| `Mod+N` | New workspace |
 | `Mod+Shift+→` | Next workspace |
 | `Mod+Shift+←` | Previous workspace |
 | `Mod+1` … `Mod+9` | Go to workspace 1–9 |
@@ -73,8 +86,12 @@ the shell as XOFF.
 
 | Shortcut | Action |
 |---|---|
-| `Mod+Shift+\`` | New terminal |
+| `Mod+T` | New terminal |
+| `Mod+Shift+\`` | New terminal (alternate) |
 | `Mod+Shift+R` | Repeat last terminal command |
+
+`Mod+T` opens a terminal and `Mod+N` opens a workspace, matching cmux. The
+older `Mod+Shift+\`` chord still works.
 
 ### Git
 
@@ -85,6 +102,7 @@ the shell as XOFF.
 | `Mod+Shift+U` | Pull from origin |
 | `Mod+Shift+H` | Open commit graph |
 | `Mod+Shift+C` | Compare branches… |
+| `Mod+Shift+G` | Open git window |
 | `Mod+Shift+M` | Draft commit message with AI |
 
 `Mod+Shift+C` stands down while a terminal has focus, because `Ctrl+Shift+C` is

@@ -7,11 +7,13 @@ import { useAppStore } from "@/store/LayoutContext";
 import { pushToast } from "@/commands/toast";
 import { emitGitRefsChanged } from "@/commands/gitEvents";
 import {
+  WORKTREE_DIR,
   clearNewWorktreeRequest,
+  defaultWorktreePath,
   newWorktreeRequest,
-  siblingWorktreePath,
   type NewWorktreeRequest,
 } from "@/commands/worktree";
+import { fsApi } from "@/api/fs";
 import type { DepAction, SetupStep, WorktreeSetupPlan } from "@/types/git";
 
 const DEP_ACTIONS: { value: DepAction; label: string; hint: string }[] = [
@@ -83,8 +85,48 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
   const effectivePath = () => {
     if (pathTouched()) return path();
     const b = branch().trim();
-    return b ? siblingWorktreePath(props.request.repoRoot, b) : "";
+    return b ? defaultWorktreePath(props.request.repoRoot, b) : "";
   };
+
+  // Tracks the ignore fix locally so the banner can disappear without
+  // refetching the whole plan (which would re-seed every answer).
+  const [ignoreFixed, setIgnoreFixed] = createSignal(false);
+
+  /// Append `.worktrees/` to the repository's `.gitignore`.
+  ///
+  /// Only offered when the default in-repo path is actually in use — if the
+  /// user pointed the worktree somewhere else, the ignore rule is irrelevant.
+  async function addWorktreesToGitignore() {
+    const file = `${props.request.repoRoot.replace(/\/+$/, "")}/.gitignore`;
+    try {
+      let body = "";
+      try {
+        body = await fsApi.readFile(file);
+      } catch {
+        // No .gitignore yet — creating one with just this rule is correct.
+      }
+      const needsNewline = body.length > 0 && !body.endsWith("\n");
+      await fsApi.writeFile(
+        file,
+        `${body}${needsNewline ? "\n" : ""}\n# Worktrees created by voidlink\n${WORKTREE_DIR}/\n`,
+      );
+      setIgnoreFixed(true);
+      pushToast(`Added ${WORKTREE_DIR}/ to .gitignore`, "success");
+    } catch (e) {
+      pushToast(
+        `Could not update .gitignore: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    }
+  }
+
+  /// The banner shows only when all three are true: the repo does not ignore
+  /// `.worktrees/`, we have not just fixed it, and the path in the box is
+  /// still inside `.worktrees/`.
+  const needsIgnoreWarning = (p: WorktreeSetupPlan) =>
+    !p.worktreesGitignored &&
+    !ignoreFixed() &&
+    effectivePath().includes(`/${WORKTREE_DIR}/`);
 
   function cancel() {
     if (busy()) return;
@@ -315,8 +357,25 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                       class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                     <p class="text-[11px] text-muted-foreground mt-1">
-                      Defaults to a sibling of the repository.
+                      Defaults to {WORKTREE_DIR}/ inside the repository.
                     </p>
+                    <Show when={needsIgnoreWarning(p())}>
+                      <div class="mt-2 flex items-start gap-2 rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
+                        <AlertTriangle class="w-3.5 h-3.5 shrink-0 mt-px" />
+                        <div class="flex-1">
+                          <p>
+                            {WORKTREE_DIR}/ isn't in this repository's ignore rules, so
+                            the new worktree would show up as untracked files.
+                          </p>
+                          <button
+                            onClick={() => void addWorktreesToGitignore()}
+                            class="mt-1 underline underline-offset-2 hover:text-foreground transition-colors"
+                          >
+                            Add {WORKTREE_DIR}/ to .gitignore
+                          </button>
+                        </div>
+                      </div>
+                    </Show>
                     <Show when={p().defaults}>
                       <p class="text-[11px] text-muted-foreground mt-3">
                         Using this repository's saved answers — review them on the next

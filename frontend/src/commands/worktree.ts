@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { isGitWindow, requestWorktreeWizardOnMain } from "@/api/gitWindow";
 
 /// Cross-component request channel for the new-worktree flow, mirroring the
 /// toast / prompt pattern: a module-level signal drives a single host mounted
@@ -23,11 +24,24 @@ let nextId = 1;
 /// Ask the app to open the new-worktree wizard for `workspaceId`. No-op if a
 /// request is already in flight — two overlapping wizards would race on the
 /// same repo.
+///
+/// In the standalone git window this forwards to the workbench instead of
+/// opening locally, and focuses it. The wizard registers the new worktree in
+/// the layout store and spawns a terminal for the post-create command, and
+/// neither of those exists here — see `requestWorktreeWizardOnMain`. Callers
+/// do not need to know which window they are in.
 export function requestNewWorktree(opts: {
   workspaceId: string;
   repoRoot: string;
   sourcePath?: string;
 }): void {
+  if (isGitWindow()) {
+    void requestWorktreeWizardOnMain({
+      repoRoot: opts.repoRoot,
+      sourcePath: opts.sourcePath ?? opts.repoRoot,
+    });
+    return;
+  }
   if (request()) return;
   setRequest({
     id: nextId++,
@@ -45,11 +59,27 @@ export function clearNewWorktreeRequest(): void {
   setRequest(null);
 }
 
-/// Sibling path convention for a new worktree: `<repoParent>/<repoName>-<slug>`.
-/// Lifted out of the git sidebar's worktrees pane so the rail, the wizard and
-/// that pane all agree on where a worktree lands.
-export function siblingWorktreePath(repoRoot: string, branch: string): string {
+/// The directory new worktrees land in, relative to the repository root.
+/// Also the string the wizard offers to append to `.gitignore`.
+export const WORKTREE_DIR = ".worktrees";
+
+/// Turn a branch name into a single path segment. Slashes in a branch name
+/// (`feat/foo`) would otherwise nest directories, so they collapse like every
+/// other unsafe character.
+export function worktreeSlug(branch: string): string {
+  return branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "wt";
+}
+
+/// Default path for a new worktree: `<repoRoot>/.worktrees/<slug>`.
+///
+/// Keeping worktrees inside the repository means one directory to find them
+/// in and one to delete, and it survives moving the repo. It does rely on
+/// `.worktrees/` being gitignored — the wizard checks that and offers to add
+/// it, because an unignored directory here would flood `git status`.
+///
+/// Shared by the rail, the wizard and the git sidebar's worktrees pane so all
+/// three agree on where a worktree lands.
+export function defaultWorktreePath(repoRoot: string, branch: string): string {
   const root = repoRoot.replace(/\/+$/, "");
-  const slug = branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return `${root}-${slug || "wt"}`;
+  return `${root}/${WORKTREE_DIR}/${worktreeSlug(branch)}`;
 }

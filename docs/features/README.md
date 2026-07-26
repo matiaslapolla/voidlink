@@ -21,7 +21,8 @@ individual features, see [`../specs/`](../specs).
 
 | Page | Covers |
 |---|---|
-| [Staging and hunk-level apply](./git-staging.md) | Status, stage/unstage, commit, amend, hunk staging and discard, stash creation |
+| [Git window](./git-window.md) | The standalone git client window and how it stays in sync |
+| [Staging and hunk-level apply](./git-staging.md) | Status, stage/unstage, commit, amend, commit identity, hunk staging and discard, stash creation |
 | [Branches, safe checkout, and sync](./branches-and-sync.md) | Branch CRUD, auto-stash on switch, fetch/pull/push, remotes, auth |
 | [Branch compare](./branch-compare.md) | Two-ref diffing, merge-base mode, the changed-file tree |
 | [Commit graph](./commit-graph.md) | The DAG view and the lane-assignment algorithm |

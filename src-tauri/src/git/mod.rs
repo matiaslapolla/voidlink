@@ -67,7 +67,10 @@ use remote::{
 };
 use repo::git_repo_info_impl;
 use safe_checkout::{git_safe_checkout_impl, SafeCheckoutResult};
-use staging::{git_commit_impl, git_stage_all_impl, git_stage_files_impl, git_unstage_files_impl};
+use staging::{
+    git_commit_impl, git_config_identity_impl, git_stage_all_impl, git_stage_files_impl,
+    git_unstage_files_impl, CommitIdentity,
+};
 use stash::{
     git_stash_apply_impl, git_stash_drop_impl, git_stash_list_impl, git_stash_pop_impl,
     git_stash_save_impl, git_stash_show_impl, StashEntry,
@@ -301,13 +304,28 @@ pub async fn git_stage_all(
     blocking_git!(git_stage_all_impl(repo_path))
 }
 
+/// Commit the index.
+///
+/// `identity` overrides both author and committer; `None` uses the
+/// repository's configured identity, exactly like plain `git commit`.
 #[tauri::command]
 pub async fn git_commit(
     repo_path: String,
     message: String,
+    identity: Option<CommitIdentity>,
     _state: tauri::State<'_, GitState>,
 ) -> Result<String, String> {
-    blocking_git!(git_commit_impl(repo_path, message))
+    blocking_git!(git_commit_impl(repo_path, message, identity))
+}
+
+/// The identity git would use for a commit here, or `None` when the repo has
+/// no `user.name` / `user.email` configured anywhere in the cascade.
+#[tauri::command]
+pub async fn git_config_identity(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Option<CommitIdentity>, String> {
+    blocking_git!(git_config_identity_impl(repo_path))
 }
 
 #[tauri::command]
@@ -768,13 +786,18 @@ pub async fn git_revert_abort(
 
 // ─── Amend / undo / reset ────────────────────────────────────────────────────
 
+/// Amend HEAD with the current index.
+///
+/// `identity` overrides author and committer; `None` keeps the amended
+/// commit's originals, which is the right default for fixing your own commit.
 #[tauri::command]
 pub async fn git_amend(
     repo_path: String,
     message: Option<String>,
+    identity: Option<CommitIdentity>,
     _state: tauri::State<'_, GitState>,
 ) -> Result<String, String> {
-    blocking_git!(git_amend_impl(repo_path, message))
+    blocking_git!(git_amend_impl(repo_path, message, identity))
 }
 
 #[tauri::command]

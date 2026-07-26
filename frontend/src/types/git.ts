@@ -181,12 +181,20 @@ export interface WorktreeDefaults {
   warnedNotGitignored: boolean;
 }
 
+/// Who a commit is attributed to. Mirrors `CommitIdentity` in
+/// `src-tauri/src/git/staging.rs`.
+export interface CommitIdentity {
+  name: string;
+  email: string;
+}
+
 export interface WorktreeSetupPlan {
   envFiles: EnvFileCandidate[];
   depDirs: DepDirCandidate[];
   suggestedPostCreate: string;
   defaults: WorktreeDefaults | null;
   voidlinkGitignored: boolean;
+  worktreesGitignored: boolean;
 }
 
 export interface SetupStep {

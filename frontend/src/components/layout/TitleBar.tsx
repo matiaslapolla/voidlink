@@ -9,9 +9,13 @@ import {
   PanelLeft,
   PanelRight,
   ArrowLeftRight,
+  ArrowUpRight,
+  GitBranch,
 } from "lucide-solid";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isMac } from "@/api/platform";
+import { openGitWindow } from "@/api/gitWindow";
+import { pushToast } from "@/commands/toast";
 import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
 
@@ -22,7 +26,18 @@ interface TitleBarProps {
 export function TitleBar(props: TitleBarProps) {
   const { mode, toggleTheme } = useTheme();
   const { state, actions } = useAppStore();
-  const win = getCurrentWindow();
+
+  // Resolved per click, not once at construction. `getCurrentWindow()` reads
+  // Tauri's injected metadata and throws where that is absent — which used to
+  // take the whole render down in a plain browser, breaking `make frontend`.
+  // The buttons that need it are macOS-hidden anyway, so nothing is lost.
+  const withWindow = (fn: (w: ReturnType<typeof getCurrentWindow>) => void) => () => {
+    try {
+      fn(getCurrentWindow());
+    } catch {
+      /* not running under Tauri */
+    }
+  };
 
   // Visual semantics follow what the user sees, not where state lives:
   // when sidebars are swapped, the git panel becomes the "left" toggle and
@@ -72,6 +87,29 @@ export function TitleBar(props: TitleBarProps) {
         >
           <PanelRight class="w-3.5 h-3.5" />
         </button>
+        {/*
+          Wider than its neighbours on purpose. The others toggle panels inside
+          this window; this one leaves it, and the dashed border plus the
+          up-right arrow are the two conventions that say "opens elsewhere"
+          before the click rather than after.
+        */}
+        <button
+          onClick={() => {
+            void openGitWindow().catch((e) =>
+              pushToast(
+                `Could not open the git window: ${e instanceof Error ? e.message : String(e)}`,
+                "error",
+              ),
+            );
+          }}
+          aria-label="Open git window"
+          title="Open the git client in its own window"
+          class="self-center mx-1 flex items-center gap-1 h-[22px] px-1.5 rounded border border-dashed border-border text-[11px] hover:bg-accent/60 hover:text-foreground hover:border-border/80 transition-colors"
+        >
+          <GitBranch class="w-3 h-3 shrink-0" />
+          Git
+          <ArrowUpRight class="w-3 h-3 shrink-0 opacity-70" />
+        </button>
         <button
           onClick={() => actions.toggleSidebarsSwapped()}
           aria-label="Swap left and right sidebars"
@@ -103,7 +141,7 @@ export function TitleBar(props: TitleBarProps) {
         {/* On macOS the OS draws the traffic lights, so we must not draw our own. */}
         <Show when={!isMac()}>
           <button
-            onClick={() => void win.minimize()}
+            onClick={withWindow((w) => void w.minimize())}
             aria-label="Minimize"
             class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
             title="Minimize"
@@ -111,7 +149,7 @@ export function TitleBar(props: TitleBarProps) {
             <Minus class="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={() => void win.toggleMaximize()}
+            onClick={withWindow((w) => void w.toggleMaximize())}
             aria-label="Maximize"
             class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
             title="Maximize"
@@ -119,7 +157,7 @@ export function TitleBar(props: TitleBarProps) {
             <Square class="w-3 h-3" />
           </button>
           <button
-            onClick={() => void win.close()}
+            onClick={withWindow((w) => void w.close())}
             aria-label="Close"
             class="w-9 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground transition-colors"
             title="Close"

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   BlameLine,
+  CommitIdentity,
   ConflictVersions,
   DiffResult,
   FileDiff,
@@ -171,8 +172,10 @@ export const gitApi = {
     return invoke<void>("git_revert_abort", { repoPath });
   },
 
-  amend(repoPath: string, message?: string): Promise<string> {
-    return invoke<string>("git_amend", { repoPath, message });
+  /// Amend HEAD. `identity` overrides author and committer; omit it to keep
+  /// the amended commit's originals.
+  amend(repoPath: string, message?: string, identity?: CommitIdentity | null): Promise<string> {
+    return invoke<string>("git_amend", { repoPath, message, identity: identity ?? null });
   },
 
   undoLastCommit(repoPath: string): Promise<void> {
@@ -195,8 +198,16 @@ export const gitApi = {
     return invoke<void>("git_stage_all", { repoPath });
   },
 
-  commit(repoPath: string, message: string): Promise<string> {
-    return invoke<string>("git_commit", { repoPath, message });
+  /// Commit the index. `identity` overrides both author and committer; omit
+  /// it to use the repository's configured identity.
+  commit(repoPath: string, message: string, identity?: CommitIdentity | null): Promise<string> {
+    return invoke<string>("git_commit", { repoPath, message, identity: identity ?? null });
+  },
+
+  /// The identity git would use here, from the repo → global → system config
+  /// cascade. `null` when nothing is configured anywhere.
+  configIdentity(repoPath: string): Promise<CommitIdentity | null> {
+    return invoke<CommitIdentity | null>("git_config_identity", { repoPath });
   },
 
   push(repoPath: string, remote?: string, branch?: string): Promise<void> {

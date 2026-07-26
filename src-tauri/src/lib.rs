@@ -7,7 +7,9 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 mod git;
 mod fs;
 mod brain;
+mod menu;
 mod secrets;
+mod window;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
 
@@ -290,6 +292,10 @@ pub fn run() {
     let git_state = git::GitState::new();
 
     tauri::Builder::default()
+        // Replaces Tauri's default menu, whose Close Window item owned Cmd+W
+        // natively and closed the window before the webview saw the key.
+        .menu(menu::build)
+        .on_menu_event(menu::handle_event)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(pty_store.clone())
@@ -314,17 +320,30 @@ pub fn run() {
                 window.set_decorations(false)?;
             }
 
+            // The git window is created on demand by `open_git_window`, not
+            // here — opening it at startup would put a second window in front
+            // of the workbench on every launch.
+
             Ok(())
         })
         .on_window_event(move |window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
-                let store = window.state::<PtyStore>().inner().clone();
-                kill_all_ptys(&store);
+                // Only the main window owns the terminals. Without this label
+                // check, closing the git window would kill every PTY in the
+                // workbench that is still open behind it.
+                if window.label() == "main" {
+                    let store = window.state::<PtyStore>().inner().clone();
+                    kill_all_ptys(&store);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
             get_home_dir,
             get_platform_os,
+            window::open_git_window,
+            window::close_git_window,
+            window::is_git_window_open,
+            window::focus_main_window,
             create_pty,
             write_pty,
             resize_pty,
@@ -341,6 +360,7 @@ pub fn run() {
             git::git_unstage_files,
             git::git_stage_all,
             git::git_commit,
+            git::git_config_identity,
             git::git_push,
             git::git_diff_working,
             git::git_diff_refs,

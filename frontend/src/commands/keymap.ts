@@ -119,13 +119,40 @@ export const KEYMAP: readonly KeymapEntry[] = [
   },
 
   // ── Tabs ──────────────────────────────────────────────────────────────
-  { actionId: "tab.close", group: "Tabs", binding: { meta: true, key: "w" } },
+  {
+    actionId: "tab.close",
+    group: "Tabs",
+    binding: { meta: true, key: "w" },
+    note: "Only reaches us because the native menu's Close Window item was rebuilt without an accelerator — see `macos_menu` in src-tauri/src/menu.rs.",
+  },
   { actionId: "tab.reopen-last", group: "Tabs", binding: { meta: true, shift: true, key: "t" } },
-  { actionId: "tab.next", group: "Tabs", binding: { meta: true, alt: true, key: "ArrowRight" } },
-  { actionId: "tab.prev", group: "Tabs", binding: { meta: true, alt: true, key: "ArrowLeft" } },
+  {
+    actionId: "tab.next",
+    group: "Tabs",
+    binding: { meta: true, alt: true, key: "ArrowRight" },
+    alternates: [
+      { meta: true, shift: true, key: "}" },
+      { meta: true, shift: true, key: "]" },
+    ],
+    note: "⌘⌥→ is the Safari/Chrome tab chord; ⌘⇧] is the VS Code one. Both are muscle memory for somebody, so both fire.",
+  },
+  {
+    actionId: "tab.prev",
+    group: "Tabs",
+    binding: { meta: true, alt: true, key: "ArrowLeft" },
+    alternates: [
+      { meta: true, shift: true, key: "{" },
+      { meta: true, shift: true, key: "[" },
+    ],
+  },
 
   // ── Workspace ─────────────────────────────────────────────────────────
-  { actionId: "workspace.new", group: "Workspace", binding: { meta: true, key: "t" } },
+  {
+    actionId: "workspace.new",
+    group: "Workspace",
+    binding: { meta: true, key: "n" },
+    note: "cmux parity: ⌘N makes a workspace, ⌘T makes a terminal. ⌘⇧N stays the stack's new branch.",
+  },
   {
     actionId: "workspace.next",
     group: "Workspace",
@@ -146,9 +173,12 @@ export const KEYMAP: readonly KeymapEntry[] = [
   {
     actionId: "terminal.new",
     group: "Terminal",
-    binding: { meta: true, shift: true, key: "~" },
-    alternates: [{ meta: true, shift: true, key: "`" }],
-    note: "Ctrl+Shift+` matches the VS Code new-terminal chord.",
+    binding: { meta: true, key: "t" },
+    alternates: [
+      { meta: true, shift: true, key: "~" },
+      { meta: true, shift: true, key: "`" },
+    ],
+    note: "cmux parity: ⌘T is the terminal. ⌘⇧` stays as the VS Code chord for anyone who came from there.",
   },
   { actionId: "terminal.repeat-last", group: "Terminal", binding: { meta: true, shift: true, key: "r" } },
 
@@ -179,6 +209,12 @@ export const KEYMAP: readonly KeymapEntry[] = [
     note: "Ctrl+Shift+C is copy in most Linux terminals — scoped so it still is.",
   },
   { actionId: "git.ai-draft-commit", group: "Git", binding: { meta: true, shift: true, key: "m" } },
+  {
+    actionId: "git.open-window",
+    group: "Git",
+    binding: { meta: true, shift: true, key: "g" },
+    note: "Opens the standalone git window, or focuses it when it is already open.",
+  },
 
   // ── Stack ─────────────────────────────────────────────────────────────
   {

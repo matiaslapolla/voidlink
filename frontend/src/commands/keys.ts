@@ -63,6 +63,8 @@ const KEY_LABELS: Record<string, string> = {
   "~": "`",
   _: "-",
   "+": "=",
+  "{": "[",
+  "}": "]",
 };
 
 const MAC_ENTER = "↩";

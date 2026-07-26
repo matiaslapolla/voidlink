@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "git-window",
+  "description": "Permissions for the standalone git window's webview. Deliberately narrower than the main window's: this surface runs git operations and dialogs, but it never spawns child webviews (no browser tabs) and never writes app data, so the `core:webview:*` and `fs:*` grants are omitted.",
+  "webviews": [
+    "git"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "dialog:allow-confirm",
+    "dialog:allow-message",
+    "dialog:allow-open"
+  ]
+}

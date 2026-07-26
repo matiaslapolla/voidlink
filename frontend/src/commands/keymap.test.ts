@@ -138,13 +138,19 @@ describe("KEYMAP integrity", () => {
 
   it("keeps the shortcuts the app shipped with", () => {
     // Regression guard: widening coverage must not silently remap anything.
+    //
+    // Two entries here were remapped on purpose, for cmux parity: ⌘T moved
+    // from `workspace.new` to `terminal.new`, and `workspace.new` took ⌘N.
+    // Both keep their old chord as an alternate. If you are here because this
+    // test failed, the remap you just made was *not* one of those two.
     const expected: Record<string, Chord> = {
       "palette.open": { meta: true, key: "k" },
       "file.open": { meta: true, key: "p" },
       "tab.close": { meta: true, key: "w" },
       "tab.reopen-last": { meta: true, shift: true, key: "t" },
       "terminal.repeat-last": { meta: true, shift: true, key: "r" },
-      "workspace.new": { meta: true, key: "t" },
+      "terminal.new": { meta: true, key: "t" },
+      "workspace.new": { meta: true, key: "n" },
       "workspace.next": { meta: true, shift: true, key: "ArrowRight" },
       "workspace.prev": { meta: true, shift: true, key: "ArrowLeft" },
       "tab.next": { meta: true, alt: true, key: "ArrowRight" },
@@ -181,6 +187,7 @@ describe("KEYMAP integrity", () => {
       "meta+p",
       "meta+w",
       "meta+t",
+      "meta+n",
       "meta+b",
       "meta+j",
       "meta+\\",

@@ -29,7 +29,7 @@ interface SettingsDialogProps {
   onClose: () => void;
 }
 
-type Tab = "ui" | "theme" | "terminal" | "keyboard" | "ai" | "stack" | "brain";
+type Tab = "ui" | "theme" | "terminal" | "keyboard" | "ai" | "git" | "stack" | "brain";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -102,6 +102,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</TabButton>
             <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
+            <TabButton active={tab() === "git"} onClick={() => setTab("git")}>Git</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
             <TabButton active={tab() === "brain"} onClick={() => setTab("brain")}>Brain</TabButton>
           </div>
@@ -112,6 +113,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
             <Show when={tab() === "keyboard"}><KeyboardPane /></Show>
             <Show when={tab() === "ai"}><AiPane /></Show>
+            <Show when={tab() === "git"}><GitPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>
             <Show when={tab() === "brain"}><BrainPane /></Show>
           </div>
@@ -941,6 +943,79 @@ function AddCustomKey(props: { onAdded: () => void }) {
 }
 
 // ─── Brain Pane ─────────────────────────────────────────────────────────────
+
+/// Git identity overrides, one row per repository that has one.
+///
+/// Rows are only created from the commit box ("Save for this repo") — there is
+/// no "add" here on purpose, because an identity for a repository you have not
+/// opened is not something you can meaningfully type a path for. This pane is
+/// where you review and remove them.
+function GitPane() {
+  const { settings, setRepoIdentity } = useSettings();
+  const { activeRepoPath } = useAppStore();
+
+  const entries = () =>
+    Object.entries(settings.git.identityByRepo).sort(([a], [b]) => a.localeCompare(b));
+
+  const repoName = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
+
+  return (
+    <div class="space-y-4">
+      <Section title="Commit identity">
+        <p class="text-[11px] text-muted-foreground leading-relaxed">
+          Repositories where voidlink commits under a different name than your
+          git config. Set one from the commit box in the git panel — everything
+          else uses <code>user.name</code> and <code>user.email</code> as
+          normal. Your git config is never modified.
+        </p>
+        <Show
+          when={entries().length > 0}
+          fallback={
+            <p class="text-[11px] text-muted-foreground/70 italic">
+              No overrides. Every repository commits with its git config identity.
+            </p>
+          }
+        >
+          <div class="space-y-1">
+            <For each={entries()}>
+              {([repoPath, identity]) => (
+                <div class="flex items-center gap-2 rounded border border-border bg-muted/20 px-2 py-1.5">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-[12px] font-medium truncate">
+                        {repoName(repoPath)}
+                      </span>
+                      <Show when={activeRepoPath() === repoPath}>
+                        <span class="text-[10px] text-primary/80">active</span>
+                      </Show>
+                    </div>
+                    <p class="text-[10px] text-muted-foreground font-mono truncate" title={repoPath}>
+                      {repoPath}
+                    </p>
+                    <p class="text-[11px] text-muted-foreground truncate">
+                      {identity.name} &lt;{identity.email}&gt;
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setRepoIdentity(repoPath, null);
+                      pushToast(`${repoName(repoPath)} reverted to git config`, "info", 2500);
+                    }}
+                    aria-label={`Remove the identity override for ${repoName(repoPath)}`}
+                    title="Remove — this repository goes back to git config"
+                    class="shrink-0 p-1 rounded text-muted-foreground hover:text-destructive hover:bg-accent/40 transition-colors"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+      </Section>
+    </div>
+  );
+}
 
 function BrainPane() {
   const { settings, updateBrain } = useSettings();

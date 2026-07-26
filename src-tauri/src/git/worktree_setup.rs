@@ -116,6 +116,10 @@ pub struct WorktreeSetupPlan {
     /// Whether `.voidlink/` is covered by the repo's ignore rules. False means
     /// we should warn once before writing defaults into it.
     pub voidlink_gitignored: bool,
+    /// Whether `.worktrees/` is covered by the repo's ignore rules. False
+    /// means a worktree created at the default in-repo path would show up as
+    /// untracked, so the wizard offers to fix the ignore file first.
+    pub worktrees_gitignored: bool,
 }
 
 /// The outcome of one setup step. We report every step individually — a
@@ -439,12 +443,26 @@ pub(crate) fn write_defaults(
     fs::write(&path, body).map_err(|e| e.to_string())
 }
 
+/// Whether the repo's ignore rules cover the directory `rel`, which is
+/// interpreted relative to `repo_root`.
+pub(crate) fn is_dir_gitignored(repo_root: &Path, rel: &str) -> bool {
+    let matcher = build_ignore(repo_root);
+    matcher.matched_path_or_any_parents(Path::new(rel), true).is_ignore()
+}
+
 /// Whether the repo's ignore rules already cover `.voidlink/`. Used to warn
 /// once before we start writing per-repo state the user might commit by
 /// accident.
 pub(crate) fn is_voidlink_gitignored(repo_root: &Path) -> bool {
-    let matcher = build_ignore(repo_root);
-    matcher.matched_path_or_any_parents(Path::new(".voidlink"), true).is_ignore()
+    is_dir_gitignored(repo_root, ".voidlink")
+}
+
+/// Whether `.worktrees/` is ignored. New worktrees default to living *inside*
+/// the repo at `<repoRoot>/.worktrees/<slug>`, which keeps them discoverable
+/// and easy to clean up — but an unignored `.worktrees/` turns every linked
+/// worktree into untracked noise in `git status`, so the wizard warns.
+pub(crate) fn is_worktrees_gitignored(repo_root: &Path) -> bool {
+    is_dir_gitignored(repo_root, ".worktrees")
 }
 
 // ─── Orchestration (still pure w.r.t. Tauri) ─────────────────────────────────
@@ -459,6 +477,7 @@ pub(crate) fn build_plan(repo_root: &Path, source_root: &Path) -> Result<Worktre
         suggested_post_create: suggested,
         defaults: read_defaults(repo_root),
         voidlink_gitignored: is_voidlink_gitignored(repo_root),
+        worktrees_gitignored: is_worktrees_gitignored(repo_root),
     })
 }
 

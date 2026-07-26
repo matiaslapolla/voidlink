@@ -37,6 +37,7 @@ export const ACTION_IDS = [
   "git.remotes",
   "git.undo-last-commit",
   "git.compare",
+  "git.open-window",
   "git.commit-graph",
   "git.ai-draft-commit",
   // Stack

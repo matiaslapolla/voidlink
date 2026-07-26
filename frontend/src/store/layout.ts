@@ -408,7 +408,20 @@ function loadWorkspaces(): { workspaces: Workspace[]; activeId: string } {
   return { workspaces: [first], activeId: first.id };
 }
 
-export function createAppStore() {
+export interface CreateAppStoreOptions {
+  /// Whether this store writes its state back to localStorage.
+  ///
+  /// Exactly one window may persist. The workbench (`main`) does; the git
+  /// window creates a store only because the panes it reuses call
+  /// `useAppStore()`, and if it also persisted, the two windows would race on
+  /// the same keys and the last writer would silently clobber the other's
+  /// tabs. A non-persisting store still *hydrates* from localStorage, so the
+  /// git window opens on the right workspace.
+  persist?: boolean;
+}
+
+export function createAppStore(options: CreateAppStoreOptions = {}) {
+  const persist = options.persist ?? true;
   const { workspaces, activeId } = loadWorkspaces();
   const gitPrefs = loadGitPrefs();
   // Every tab collection is keyed by worktree id, so the seed set is the union
@@ -446,6 +459,7 @@ export function createAppStore() {
   });
 
   createEffect(() => {
+    if (!persist) return;
     const serialized: PersistedWorkspace[] = state.workspaces.map((w) => ({
       id: w.id,
       name: w.name,
@@ -465,6 +479,7 @@ export function createAppStore() {
   });
 
   createEffect(() => {
+    if (!persist) return;
     localStorage.setItem(
       COMPARE_TABS_KEY,
       JSON.stringify(state.compareTabsByWorktree),
@@ -472,6 +487,7 @@ export function createAppStore() {
   });
 
   createEffect(() => {
+    if (!persist) return;
     localStorage.setItem(
       STACK_TABS_KEY,
       JSON.stringify(state.stackTabsByWorktree),
@@ -479,6 +495,7 @@ export function createAppStore() {
   });
 
   createEffect(() => {
+    if (!persist) return;
     localStorage.setItem(
       PINNED_TABS_KEY,
       JSON.stringify(state.pinnedTabsByWorktree),
@@ -486,6 +503,7 @@ export function createAppStore() {
   });
 
   createEffect(() => {
+    if (!persist) return;
     localStorage.setItem(
       BROWSER_TABS_KEY,
       JSON.stringify(state.browserTabsByWorktree),
@@ -493,6 +511,7 @@ export function createAppStore() {
   });
 
   createEffect(() => {
+    if (!persist) return;
     localStorage.setItem(
       GIT_PREFS_KEY,
       JSON.stringify({

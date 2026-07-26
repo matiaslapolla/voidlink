@@ -56,6 +56,36 @@ previous commit's **summary line**.
 confirms first:
 `Undo the last commit? Its changes are kept and re-staged (soft reset to HEAD~1).`
 
+### Commit author
+
+Below the amend row is a collapsed line reading `Commit as <name>`. Expanding
+it shows where that name comes from and lets you change it. There are three
+layers, narrowest first:
+
+| Layer | Set from | Applies to |
+|---|---|---|
+| One-off override | `Change author…` in the commit box | The next commit only |
+| Repository default | `Save for this repo` | Every commit in that repository |
+| Git config | `git config user.name` / `user.email` | Everything else |
+
+An override replaces **both** the author and the committer, which is what
+`git -c user.name=… -c user.email=…` does — the useful behaviour when you are
+switching between a work and a personal identity rather than committing
+someone else's patch.
+
+voidlink **never writes to your git config.** A repository default is stored
+in voidlink's own settings and applied at commit time, so committing from the
+command line in the same repository is unaffected. Review and remove saved
+defaults under **Settings → Git**.
+
+With no override and no `user.name` / `user.email` anywhere in the git config
+cascade, the commit fails with a message that says so rather than libgit2's
+raw `config value 'user.name' was not found`.
+
+Amend follows the same rules with one difference: with no override it keeps
+the amended commit's original author and committer, because fixing your own
+commit should not reattribute it.
+
 ### Discarding everything
 
 The trash icon on the **Changes** header confirms with

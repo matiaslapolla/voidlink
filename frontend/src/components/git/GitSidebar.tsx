@@ -32,13 +32,15 @@ import {
   Tag,
   Pencil,
   GitBranchPlus,
+  PanelRightOpen,
 } from "lucide-solid";
 import { promptWithToggles } from "@/commands/prompt";
-import type { StashEntry, RemoteInfo } from "@/types/git";
+import type { CommitIdentity, StashEntry, RemoteInfo } from "@/types/git";
 import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
+import { openGitWindow } from "@/api/gitWindow";
 import { useAppStore } from "@/store/LayoutContext";
 import { samePath } from "@/store/layout";
 import { requestNewWorktree } from "@/commands/worktree";
@@ -326,6 +328,19 @@ export function GitSidebar(props: GitSidebarProps) {
           <IconBtn label="Manage remotes" onClick={() => setRemotesOpen(true)}>
             <Cloud class="w-3 h-3" />
           </IconBtn>
+          <IconBtn
+            label="Open git window"
+            onClick={() => {
+              void openGitWindow().catch((e) =>
+                pushToast(
+                  `Could not open the git window: ${e instanceof Error ? e.message : String(e)}`,
+                  "error",
+                ),
+              );
+            }}
+          >
+            <PanelRightOpen class="w-3 h-3" />
+          </IconBtn>
           <IconBtn label="Refresh" onClick={refreshAll}>
             <RefreshCw class={`w-3 h-3 ${isRefreshing() ? "animate-spin" : ""}`} />
           </IconBtn>
@@ -446,6 +461,20 @@ export function GitSidebar(props: GitSidebarProps) {
           />
         </Section>
       </div>
+
+      {/* Pinned footer. Compare is a destination rather than a view of repo
+          state, so it sits below the collapsible sections instead of
+          competing with them for vertical space. */}
+      <div class="shrink-0 border-t border-border p-2">
+        <button
+          onClick={() => actions.openCompareTab(props.worktreeId)}
+          class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed border-border text-[12px] text-muted-foreground hover:text-foreground hover:bg-accent/40 hover:border-border/80 transition-colors"
+          title="Compare two branches, tags, or commits"
+        >
+          <GitCompare class="w-3.5 h-3.5 shrink-0" />
+          Compare branches
+        </button>
+      </div>
     </aside>
   );
 }
@@ -454,7 +483,7 @@ export function GitSidebar(props: GitSidebarProps) {
 // Changes
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ChangesPane(props: {
+export function ChangesPane(props: {
   repoPath: string;
   worktreeId: string;
   status: { path: string; status: string; staged: boolean }[] | undefined;
@@ -462,12 +491,54 @@ function ChangesPane(props: {
   onRefresh: () => void;
 }) {
   const { actions } = useAppStore();
-  const { settings } = useSettings();
+  const { settings, setRepoIdentity } = useSettings();
   const [commitMsg, setCommitMsg] = createSignal("");
   const [committing, setCommitting] = createSignal(false);
   const [commitError, setCommitError] = createSignal("");
   const [commitOk, setCommitOk] = createSignal(false);
   const [pushing, setPushing] = createSignal(false);
+
+  // ── Commit identity ──────────────────────────────────────────────────────
+  // Three layers, narrowest first: a one-off override typed into the box, the
+  // repo's saved default, and finally git config (represented by `null`, which
+  // tells Rust to call `repo.signature()` itself). We only ever *send* the
+  // first two — git config stays git's business.
+  const [authorOpen, setAuthorOpen] = createSignal(false);
+  const [overrideOnce, setOverrideOnce] = createSignal(false);
+  const [draftName, setDraftName] = createSignal("");
+  const [draftEmail, setDraftEmail] = createSignal("");
+
+  const savedIdentity = () => settings.git.identityByRepo[props.repoPath] ?? null;
+
+  /// What git config would use, fetched lazily so the fields can show the real
+  /// default instead of an empty form. Refetches when the repo changes.
+  const [configIdentity] = createResource(
+    () => props.repoPath,
+    (path) => gitApi.configIdentity(path).catch(() => null),
+  );
+
+  /// The identity the next commit will carry, as displayed.
+  const shownIdentity = () =>
+    savedIdentity() ?? configIdentity() ?? null;
+
+  /// The identity actually sent to Rust. `null` means "let git config decide".
+  const effectiveIdentity = (): CommitIdentity | null => {
+    if (overrideOnce()) {
+      const name = draftName().trim();
+      const email = draftEmail().trim();
+      if (name && email) return { name, email };
+    }
+    return savedIdentity();
+  };
+
+  /// Seed the draft fields from whatever is currently in effect, so opening
+  /// the override starts from the right values rather than blank.
+  function beginOverride() {
+    const base = shownIdentity();
+    setDraftName(base?.name ?? "");
+    setDraftEmail(base?.email ?? "");
+    setOverrideOnce(true);
+  }
   const [pushOk, setPushOk] = createSignal(false);
   const [pendingFindings, setPendingFindings] = createSignal<SecretFinding[]>([]);
   const [amendMode, setAmendMode] = createSignal(false);
@@ -570,11 +641,15 @@ function ChangesPane(props: {
     setCommitError("");
     setCommitOk(false);
     try {
+      // Precedence: this commit's override → the repo's saved identity →
+      // `null`, which lets Rust fall back to git config. Only an explicitly
+      // chosen identity is ever sent.
+      const identity = effectiveIdentity();
       if (amendMode()) {
-        await gitApi.amend(props.repoPath, msg || undefined);
+        await gitApi.amend(props.repoPath, msg || undefined, identity);
         setAmendMode(false);
       } else {
-        await gitApi.commit(props.repoPath, msg);
+        await gitApi.commit(props.repoPath, msg, identity);
       }
       setCommitMsg("");
       setCommitOk(true);
@@ -796,6 +871,113 @@ function ChangesPane(props: {
             <Undo2 class="w-3 h-3" /> Undo commit
           </button>
         </div>
+
+        {/* Commit identity. Collapsed to one line until you need it — the
+            common case is that git config is already right. */}
+        <div class="mt-1.5 text-[11px]">
+          <button
+            onClick={() => setAuthorOpen((v) => !v)}
+            class="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+            aria-expanded={authorOpen()}
+          >
+            <ChevronRight
+              class="w-3 h-3 transition-transform"
+              classList={{ "rotate-90": authorOpen() }}
+            />
+            <span class="truncate">
+              {shownIdentity()
+                ? `Commit as ${overrideOnce() && draftName().trim() ? draftName().trim() : shownIdentity()!.name}`
+                : "Commit author not configured"}
+            </span>
+            <Show when={savedIdentity() && !overrideOnce()}>
+              <span class="text-primary/80">· repo default</span>
+            </Show>
+            <Show when={overrideOnce()}>
+              <span class="text-warning">· this commit only</span>
+            </Show>
+          </button>
+
+          <Show when={authorOpen()}>
+            <div class="mt-1.5 pl-4 flex flex-col gap-1.5">
+              <Show
+                when={overrideOnce()}
+                fallback={
+                  <>
+                    <p class="text-muted-foreground">
+                      {savedIdentity()
+                        ? "Saved for this repository."
+                        : configIdentity()
+                          ? "From this repository's git config."
+                          : "No user.name / user.email is set. Commits will fail until you set one here or with git config."}
+                    </p>
+                    <Show when={shownIdentity()}>
+                      <p class="font-mono text-muted-foreground truncate">
+                        {shownIdentity()!.email}
+                      </p>
+                    </Show>
+                    <button
+                      onClick={beginOverride}
+                      class="self-start underline underline-offset-2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Change author…
+                    </button>
+                  </>
+                }
+              >
+                <label class="text-muted-foreground">Name</label>
+                <input
+                  value={draftName()}
+                  onInput={(e) => setDraftName(e.currentTarget.value)}
+                  placeholder="Ada Lovelace"
+                  class="rounded border border-border bg-muted/40 px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <label class="text-muted-foreground">Email</label>
+                <input
+                  value={draftEmail()}
+                  onInput={(e) => setDraftEmail(e.currentTarget.value)}
+                  placeholder="ada@example.com"
+                  class="rounded border border-border bg-muted/40 px-1.5 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <div class="flex items-center gap-2 pt-0.5">
+                  <button
+                    onClick={() => {
+                      setRepoIdentity(props.repoPath, {
+                        name: draftName(),
+                        email: draftEmail(),
+                      });
+                      setOverrideOnce(false);
+                      pushToast("Saved as this repository's commit author", "success", 2500);
+                    }}
+                    disabled={!draftName().trim() || !draftEmail().trim()}
+                    class="px-1.5 py-0.5 rounded border border-border hover:bg-accent/40 hover:text-foreground transition-colors disabled:opacity-40"
+                    title="Use this author for every commit in this repository"
+                  >
+                    Save for this repo
+                  </button>
+                  <button
+                    onClick={() => setOverrideOnce(false)}
+                    class="text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <Show when={savedIdentity()}>
+                    <button
+                      onClick={() => {
+                        setRepoIdentity(props.repoPath, null);
+                        setOverrideOnce(false);
+                        pushToast("Reverted to git config", "info", 2500);
+                      }}
+                      class="ml-auto text-muted-foreground hover:text-destructive transition-colors"
+                      title="Delete the saved override and use git config again"
+                    >
+                      Clear
+                    </button>
+                  </Show>
+                </div>
+              </Show>
+            </div>
+          </Show>
+        </div>
       </div>
 
       <Show when={conflicted().length > 0}>
@@ -890,7 +1072,7 @@ function ChangesPane(props: {
 // Branches
 // ─────────────────────────────────────────────────────────────────────────────
 
-function BranchesPane(props: { repoPath: string; worktreeId: string; onCheckout: () => void }) {
+export function BranchesPane(props: { repoPath: string; worktreeId: string; onCheckout: () => void }) {
   const { actions } = useAppStore();
   const [branches, { refetch }] = createResource(
     () => props.repoPath,
@@ -1154,7 +1336,7 @@ function BranchesPane(props: { repoPath: string; worktreeId: string; onCheckout:
 /// worktrees the workspace rail lists: "open" focuses one in the rail rather
 /// than spawning a parallel workspace, and "new" delegates to the wizard so
 /// there is exactly one place that knows how to set a worktree up.
-function WorktreesPane(props: { repoPath: string }) {
+export function WorktreesPane(props: { repoPath: string }) {
   const { activeWorkspace, actions } = useAppStore();
   const [worktrees, { refetch }] = createResource(
     () => props.repoPath,
@@ -1313,7 +1495,7 @@ function WorktreesPane(props: { repoPath: string }) {
 
 /// Tags sub-section, rendered under the branch list. Create (lightweight or
 /// annotated), delete, and push individual tags. Listing reuses git_list_refs.
-function TagsPane(props: { repoPath: string }) {
+export function TagsPane(props: { repoPath: string }) {
   const [refs, { refetch }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listRefs(p),
@@ -1418,7 +1600,7 @@ function TagsPane(props: { repoPath: string }) {
 // Stashes
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StashesPane(props: { repoPath: string; worktreeId: string }) {
+export function StashesPane(props: { repoPath: string; worktreeId: string }) {
   const { actions } = useAppStore();
   const [stashes, { refetch }] = createResource(
     () => props.repoPath,
@@ -1755,7 +1937,7 @@ function laneColor(i: number): string {
   return LANE_COLORS[i % LANE_COLORS.length];
 }
 
-function HistoryPane(props: { repoPath: string; worktreeId: string }) {
+export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
   const { actions } = useAppStore();
   const [log, { refetch: refetchLog }] = createResource(
     () => props.repoPath,

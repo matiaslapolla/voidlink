@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, onMount, untrack } from "solid-js";
+import { Show, createEffect, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import { AppShell } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
@@ -46,6 +46,13 @@ import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
 import { setOverlayOpen } from "@/commands/overlay";
 import { agentPanelOpen } from "@/commands/agent";
 import { webviewApi } from "@/api/webview";
+import {
+  bridgeGitRefsAcrossWindows,
+  onGitContextRequest,
+  onWorktreeWizardRequest,
+  openGitWindow,
+  publishGitContext,
+} from "@/api/gitWindow";
 import { BROWSER_WEBVIEW_PREFIX, normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import type { ActiveItem } from "@/store/layout";
@@ -63,6 +70,60 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
     void webviewApi
       .closeOrphans((label) => label.startsWith(BROWSER_WEBVIEW_PREFIX))
       .catch(() => {});
+  });
+
+  // ── Standalone git window ────────────────────────────────────────────────
+  // The workbench owns the "which repository" decision, so it publishes that
+  // context and the git window consumes it. Publishing is unconditional: the
+  // event is simply unheard when the window is closed, which is cheaper than
+  // tracking whether it is open.
+  const gitWindowContext = () => ({
+    repoPath: activeRepoPath(),
+    worktreeId: state.activeWorktreeId,
+    branch: activeWorktree()?.branch ?? null,
+    workspaceName: activeWorkspace()?.name ?? "",
+    worktreeLabel: activeWorktree()?.branch ?? activeWorktree()?.path ?? "",
+  });
+  createEffect(() => void publishGitContext(gitWindowContext()));
+
+  onMount(() => {
+    // A git window that opened after our last broadcast has no context yet
+    // and asks for one.
+    const unlisteners: (() => void)[] = [];
+    let disposed = false;
+    const track = (p: Promise<() => void>) => {
+      void p.then((fn) => {
+        if (disposed) fn();
+        else unlisteners.push(fn);
+      });
+    };
+
+    track(
+      onGitContextRequest(() => {
+        void publishGitContext(untrack(gitWindowContext));
+      }),
+    );
+
+    // Worktree creation is forwarded here from the git window, which has no
+    // layout store to register it in and no terminal to run post-create in.
+    track(
+      onWorktreeWizardRequest((req) => {
+        const ws = untrack(activeWorkspace);
+        if (!ws) return;
+        requestNewWorktree({
+          workspaceId: ws.id,
+          repoRoot: req.repoRoot,
+          sourcePath: req.sourcePath,
+        });
+      }),
+    );
+
+    const disposeBridge = bridgeGitRefsAcrossWindows();
+    onCleanup(() => {
+      disposed = true;
+      for (const fn of unlisteners) fn();
+      disposeBridge();
+    });
   });
 
   // Embedded browser tabs are child webviews that composite above the DOM, so
@@ -218,6 +279,23 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
         enabled: () => !!repo,
         run: () => {
           actions.openCompareTab(wtId);
+        },
+      },
+      {
+        id: "git.open-window",
+        label: "Open git window",
+        description: "The full git client in its own window",
+        group: "Git",
+        run: async () => {
+          try {
+            const created = await openGitWindow();
+            if (!created) pushToast("Git window brought to front", "info", 2000);
+          } catch (e) {
+            pushToast(
+              `Could not open the git window: ${e instanceof Error ? e.message : String(e)}`,
+              "error",
+            );
+          }
         },
       },
       {

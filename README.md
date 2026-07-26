@@ -81,6 +81,7 @@ A near-complete Git client built directly on `libgit2`:
 | Area | What you get |
 |---|---|
 | **Working tree** | Status, stage / unstage / stage-all, commit, amend, undo last commit |
+| **Commit identity** | Per-commit or per-repo author override, prefilled from git config — your git config is never modified |
 | **Hunk-level** | Stage, discard, and apply individual hunks from the diff view |
 | **Branches** | List, create, switch, rename, delete · MRU branch switcher |
 | **History** | Commit log, working-tree diff, ref-to-ref diff, split diff renderer |
@@ -91,6 +92,10 @@ A near-complete Git client built directly on `libgit2`:
 | **Tags** | Create, delete, push |
 | **Worktrees** | Create / list / remove isolated worktrees, open a terminal in any |
 | **Remotes** | Add, remove, rename, set URL |
+
+The whole suite also opens as a **separate window** (`⌘⇧G`) — its own OS window
+for git, the way Cursor splits its agent surface from its editor. Both windows
+stay in sync and work at once. See [docs/features/git-window.md](docs/features/git-window.md).
 
 ### ⫶ Stacked PRs
 Graphite-style stacked branches, built in:
