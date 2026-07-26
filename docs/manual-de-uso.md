@@ -38,17 +38,29 @@ Todos los comandos viven en el `Makefile` de la raíz.
 
 | Comando | Qué hace |
 | --- | --- |
+| `make` / `make help` | Lista los comandos disponibles. |
 | `make dev` | Levanta la app en modo desarrollo (Tauri + Vite). |
 | `make frontend` | Levanta solo el dev server de Vite (sin shell nativo). |
 | `make lint` | ESLint sobre el frontend. |
 | `make build` | `tsc -b && vite build`. |
-| `make check` | `lint` + `build` + `cargo check` + `cargo test`. |
-| `make bundle` | Empaqueta release Linux (AppImage, deb, rpm). |
-| `make bundle-deb` | Solo `.deb`. |
-| `make bundle-macos` | `.app` + `.dmg` para la arquitectura actual (solo en macOS). |
-| `make bundle-macos-dmg` | Solo `.dmg`. |
-| `make bundle-macos-universal` | `.app` + `.dmg` universal (arm64 + x86_64). |
-| `make version V=x.y.z` | Sincroniza la versión en `frontend/package.json` y `src-tauri/tauri.conf.json`. |
+| `make test` | Vitest (frontend) + `cargo test`. |
+| `make check` | `lint` + `build` + `test` + `cargo check`. Lo mismo que corre CI. |
+| `make bundle` | Empaqueta un release. Acepta `B=` y `TARGET=` (ver abajo). |
+| `make version V=x.y.z` | Sincroniza la versión en `frontend/package.json`, `src-tauri/tauri.conf.json` y `src-tauri/Cargo.toml`. |
+
+`make bundle` sin argumentos usa los targets de `tauri.conf.json` (`"targets": "all"`). Para acotarlo:
+
+| Invocación | Resultado |
+| --- | --- |
+| `make bundle B=deb` | Solo `.deb`. |
+| `make bundle B=dmg` | Solo `.dmg` (requiere macOS). |
+| `make bundle B=app,dmg` | `.app` + `.dmg` para la arquitectura actual. |
+| `make bundle B=app,dmg TARGET=universal-apple-darwin` | Universal (arm64 + x86_64). |
+
+Para el build universal necesitás los targets instalados una sola vez:
+`rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
+
+Los releases publicados no se generan a mano: `.github/workflows/release.yml` compila y sube los artefactos al pushear un tag `v*`. `make bundle` es para probar un build de release localmente.
 
 **Ejemplo — primer arranque local:**
 
@@ -59,7 +71,7 @@ make dev
 **Ejemplo — generar un DMG firmable para distribución en Mac:**
 
 ```bash
-make bundle-macos-dmg
+make bundle B=dmg
 # Resultado: src-tauri/target/release/bundle/dmg/voidlink_<version>_<arch>.dmg
 ```
 
@@ -68,7 +80,7 @@ make bundle-macos-dmg
 ```bash
 make version V=0.2.0
 make check
-make bundle-macos-universal
+make bundle B=app,dmg TARGET=universal-apple-darwin
 ```
 
 ---
