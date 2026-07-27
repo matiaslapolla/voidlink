@@ -6,6 +6,11 @@ export type CursorStyle = "block" | "underline" | "bar";
 export type UiTextSize = "sm" | "base" | "xl";
 export type UiDensity = "compact" | "normal" | "comfortable";
 
+/// Whether the git client and the code editor get their own OS windows
+/// ("detached", the default) or live inside the main window as switchable views
+/// ("stacked"). See `commands/environment.ts` for how the choice is routed.
+export type EnvironmentMode = "stacked" | "detached";
+
 export interface TerminalSettings {
   fontFamily: string;
   fontSize: number;
@@ -29,6 +34,7 @@ export interface TerminalSettings {
 export interface UiSettings {
   textSize: UiTextSize;
   density: UiDensity;
+  environmentMode: EnvironmentMode;
 }
 
 /// Non-secret identity of a provider key. `id` is the OS-keychain account the
@@ -103,6 +109,10 @@ const DEFAULTS: AppSettings = {
   ui: {
     textSize: "base",
     density: "normal",
+    // Detached is what shipped, so an existing install sees no change until it
+    // opts in. `mergeDefaults` fills the key in for settings saved before it
+    // existed.
+    environmentMode: "detached",
   },
   terminal: {
     // Prefer a nerd-font stack so Starship/powerline glyphs render, with plain

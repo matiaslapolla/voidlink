@@ -1,4 +1,14 @@
-import { Show, createEffect, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import {
+  Show,
+  Suspense,
+  createEffect,
+  createSignal,
+  lazy,
+  onCleanup,
+  onMount,
+  untrack,
+  type JSX,
+} from "solid-js";
 import { AppShell } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
@@ -10,7 +20,6 @@ import { GitSidebar, GitSidebarCollapsed } from "@/components/git/GitSidebar";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
 import { createAppStore } from "@/store/layout";
-import { editorController } from "@/components/editor/editorController";
 import { isMac } from "@/api/platform";
 import { CommandPalette } from "@/commands/CommandPalette";
 import { FileFinder } from "@/commands/FileFinder";
@@ -41,21 +50,45 @@ import { requestAiCommitDraft } from "@/commands/aiCommit";
 import { toggleAgentPanel } from "@/commands/agent";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
-import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/blameOverlay";
 import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
 import { setOverlayOpen } from "@/commands/overlay";
 import { agentPanelOpen } from "@/commands/agent";
 import { browserApi } from "@/api/webview";
+import { applyEditorRequest } from "@/store/editorRequests";
+import {
+  isStackedMode,
+  setStackedView,
+  stackedView,
+  type StackedView,
+} from "@/commands/environment";
 import {
   bridgeGitRefsAcrossWindows,
-  onGitContextRequest,
+  onEditorRequest,
+  onEditorTabsRequest,
+  onWindowContextRequest,
   onWorktreeWizardRequest,
+  closeEditorWindow,
+  closeGitWindow,
+  openEditorWindow,
   openGitWindow,
-  publishGitContext,
-} from "@/api/gitWindow";
+  publishEditorTabs,
+  publishWindowContext,
+  setStackedViewRouter,
+  showEditorWindow,
+  type EditorReveal,
+  type EditorTabsSnapshot,
+} from "@/api/windows";
 import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import type { ActiveItem } from "@/store/layout";
+
+/// The other two surfaces, loaded only if stacked mode actually renders them.
+/// Static imports would put the editor and git shells in the workbench's entry
+/// chunk even for the detached user who will never see them here.
+const EditorView = lazy(() =>
+  import("@/EditorApp").then((m) => ({ default: m.EditorSurface })),
+);
+const GitView = lazy(() => import("@/GitApp").then((m) => ({ default: m.GitSurface })));
 
 function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) {
   const { state, activeWorkspace, activeWorktree, activeRepoPath, actions } = useAppStore();
@@ -75,14 +108,59 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   // context and the git window consumes it. Publishing is unconditional: the
   // event is simply unheard when the window is closed, which is cheaper than
   // tracking whether it is open.
-  const gitWindowContext = () => ({
+  const satelliteContext = () => ({
     repoPath: activeRepoPath(),
     worktreeId: state.activeWorktreeId,
     branch: activeWorktree()?.branch ?? null,
     workspaceName: activeWorkspace()?.name ?? "",
     worktreeLabel: activeWorktree()?.branch ?? activeWorktree()?.path ?? "",
   });
-  createEffect(() => void publishGitContext(gitWindowContext()));
+  createEffect(() => void publishWindowContext(satelliteContext()));
+
+  // ── Standalone editor window ─────────────────────────────────────────────
+  // The workbench owns the editor's four tab collections — it is the only
+  // window that persists state — so it broadcasts them and applies the
+  // mutations the editor window asks for. See `api/windows.ts` for the shape.
+
+  /// A pending "jump to this line", carried in the next snapshot. Held as
+  /// signal rather than emitted on its own channel so that a freshly-opened
+  /// editor window, which re-requests the snapshot on mount, still gets it.
+  const [reveal, setReveal] = createSignal<EditorReveal | null>(null);
+  let revealSeq = 0;
+
+  const editorTabs = (): EditorTabsSnapshot => {
+    const wtId = state.activeWorktreeId;
+    return {
+      worktreeId: wtId,
+      repoPath: activeRepoPath(),
+      files: [...(state.openFilesByWorktree[wtId] ?? [])],
+      diffs: [...(state.diffTabsByWorktree[wtId] ?? [])],
+      conflicts: [...(state.conflictTabsByWorktree[wtId] ?? [])],
+      previews: [...(state.previewTabsByWorktree[wtId] ?? [])],
+      pinned: [...(state.pinnedTabsByWorktree[wtId] ?? [])],
+      active: state.editorActiveItemByWorktree[wtId] ?? null,
+      reveal: reveal(),
+    };
+  };
+  createEffect(() => void publishEditorTabs(editorTabs()));
+
+  /// Open `path` in the editor window: register the tab here (we own the tab
+  /// list), attach an optional line to jump to, then make sure the window
+  /// exists and is in front. Every "open a file" path in the workbench — the
+  /// file finder, the tree, a terminal deep-link — funnels through this.
+  async function openInEditorWindow(path: string, line?: number, column?: number) {
+    actions.openFileTab(state.activeWorktreeId, path);
+    revealSeq += 1;
+    setReveal({ path, line, column, seq: revealSeq });
+    try {
+      await showEditorWindow();
+    } catch (e) {
+      pushToast(
+        `Could not open the editor window: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    }
+  }
 
   onMount(() => {
     // A git window that opened after our last broadcast has no context yet
@@ -97,8 +175,24 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
     };
 
     track(
-      onGitContextRequest(() => {
-        void publishGitContext(untrack(gitWindowContext));
+      onWindowContextRequest(() => {
+        void publishWindowContext(untrack(satelliteContext));
+      }),
+    );
+
+    // An editor window that opened after our last broadcast has no tabs yet.
+    track(
+      onEditorTabsRequest(() => {
+        void publishEditorTabs(untrack(editorTabs));
+      }),
+    );
+
+    // Tab mutations from the editor window. Applying them here — rather than
+    // letting that window write its own store — is what keeps one copy of the
+    // truth; the resulting state change re-broadcasts through the effect above.
+    track(
+      onEditorRequest((req) => {
+        applyEditorRequest(state, actions, untrack(() => state.activeWorktreeId), req);
       }),
     );
 
@@ -124,6 +218,41 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
     });
   });
 
+  // ── Environment mode ─────────────────────────────────────────────────────
+  // Stacked mode hosts the git client and the editor here as views instead of
+  // as windows. Everything that wants to "show the editor" goes through
+  // `api/windows.ts`, so installing a router there is all it takes to redirect
+  // the whole app — the title bar, the git sidebar's file rows, the file tree,
+  // the palette and the terminal deep-links included.
+  const store = useAppStore();
+  createEffect(() => {
+    if (!isStackedMode()) {
+      setStackedViewRouter(null);
+      // Back to windows: leave the workbench showing, and open nothing. The
+      // satellites reappear when the user next asks for one.
+      setStackedView("workbench");
+      return;
+    }
+    setStackedViewRouter({
+      showWorkbench: () => setStackedView("workbench"),
+      showEditor: () => setStackedView("editor"),
+      showGit: () => setStackedView("git"),
+    });
+    // Any satellite still open would now be a second copy of a view we host —
+    // two editors over one tab list, with only one of them in front of the user.
+    void closeEditorWindow().catch(() => {});
+    void closeGitWindow().catch(() => {});
+  });
+  onCleanup(() => setStackedViewRouter(null));
+
+  /// Which view is on screen. Always "workbench" in detached mode, so the
+  /// surfaces below can read this without checking the mode themselves.
+  const currentView = (): StackedView => (isStackedMode() ? stackedView() : "workbench");
+
+  // A view that isn't the workbench covers it with plain DOM — which a child
+  // webview would paint straight through. Same mechanism the modals use.
+  createEffect(() => setOverlayOpen("stacked-view", currentView() !== "workbench"));
+
   // Embedded browser tabs are child webviews that composite above the DOM, so
   // every modal surface has to actively push them out of the way while open.
   createEffect(() => setOverlayOpen("palette", isPaletteOpen()));
@@ -132,29 +261,6 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   createEffect(() => setOverlayOpen("agent", agentPanelOpen()));
   createEffect(() => setOverlayOpen("settings", props.settingsOpen));
 
-  // Tell the blame overlay how to find the repo for a given file path.
-  // The overlay needs this any time the editor's active model changes
-  // so it can refresh without going through MainSurface's effect.
-  //
-  // Resolution is per *worktree* now, and longest-prefix wins: a linked
-  // worktree at `/repo-feature` and its main repo at `/repo` are different
-  // checkouts of the same file, and blaming against the wrong one silently
-  // shows the wrong authors.
-  configureBlame((filePath) => {
-    let best: string | null = null;
-    for (const ws of state.workspaces) {
-      for (const wt of ws.worktrees) {
-        if (!wt.path || !filePath.startsWith(wt.path)) continue;
-        if (!best || wt.path.length > best.length) best = wt.path;
-      }
-    }
-    return best ?? activeRepoPath();
-  });
-
-  async function handleOpenFile(path: string) {
-    actions.openFileTab(state.activeWorktreeId, path);
-    await editorController.openFile(path);
-  }
 
   // ── Register the global action catalog. Re-runs when relevant state shifts
   // so closures always reference the current active workspace.
@@ -194,14 +300,6 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
           if (isFileFinderOpen()) closeFileFinder();
           else openFileFinder();
         },
-      },
-      {
-        id: "file.save",
-        label: "Save file",
-        description: "Write the active editor tab to disk",
-        group: "File",
-        enabled: () => !!editorController.getActivePath(),
-        run: () => void editorController.saveActive(),
       },
       {
         id: "terminal.new",
@@ -277,6 +375,23 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
         enabled: () => !!repo,
         run: () => {
           actions.openCompareTab(wtId);
+        },
+      },
+      {
+        id: "editor.open-window",
+        label: "Open editor window",
+        description: "The code editor in its own window",
+        group: "App",
+        run: async () => {
+          try {
+            const created = await openEditorWindow();
+            if (!created) pushToast("Editor window brought to front", "info", 2000);
+          } catch (e) {
+            pushToast(
+              `Could not open the editor window: ${e instanceof Error ? e.message : String(e)}`,
+              "error",
+            );
+          }
         },
       },
       {
@@ -460,13 +575,6 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
         label: "Open settings…",
         group: "App",
         run: () => props.onOpenSettings(),
-      },
-      {
-        id: "view.toggle-blame",
-        label: blameEnabled() ? "Disable inline blame" : "Enable inline blame",
-        description: "Show per-line author + commit summary in the editor",
-        group: "View",
-        run: () => toggleBlame(),
       },
       {
         id: "git.ai-draft-commit",
@@ -666,7 +774,11 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
     // reading the registry inside the effect that writes it would loop.
     if (import.meta.env.DEV) {
       untrack(() => {
-        for (const problem of validateKeymap(getActions().map((a) => a.id))) {
+        // Stacked mode registers the editor's actions in this window too, so
+        // the audit must not skip the entries the editor owns — they are ours.
+        for (const problem of validateKeymap(getActions().map((a) => a.id),
+          isStackedMode() ? {} : { window: "main" },
+        )) {
           console.error(`[keymap] ${problem.kind}: ${problem.detail}`);
         }
       });
@@ -677,24 +789,23 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   });
 
   /// Build the ordered list of tabs in the same order MainSurface renders
-  /// them (files → terminals → diffs → compares → stacks). Used by the
-  /// Cmd+Alt+Arrow cycle shortcut so the wrap order matches what the user
-  /// sees in the unified tab bar.
+  /// them (terminals → compares → stacks → graph → brain → browser). Used by
+  /// the Cmd+Alt+Arrow cycle shortcut so the wrap order matches what the user
+  /// sees in the tab bar. Files, diffs, conflicts and previews are not here:
+  /// they live in the editor window, which cycles its own.
   function allItems(): ActiveItem[] {
     const wtId = state.activeWorktreeId;
     const items: ActiveItem[] = [];
-    for (const f of state.openFilesByWorktree[wtId] ?? [])
-      items.push({ type: "file", id: f.id, path: f.path });
     for (const t of state.terminalsByWorktree[wtId] ?? [])
       items.push({ type: "terminal", id: t.id });
-    for (const d of state.diffTabsByWorktree[wtId] ?? [])
-      items.push({ type: "diff", id: d.id });
     for (const c of state.compareTabsByWorktree[wtId] ?? [])
       items.push({ type: "compare", id: c.id });
     for (const s of state.stackTabsByWorktree[wtId] ?? [])
       items.push({ type: "stack", id: s.id });
-    for (const c of state.conflictTabsByWorktree[wtId] ?? [])
-      items.push({ type: "conflict", id: c.id });
+    for (const h of state.historyTabsByWorktree[wtId] ?? [])
+      items.push({ type: "history", id: h.id });
+    for (const b of state.brainTabsByWorktree[wtId] ?? [])
+      items.push({ type: "brain", id: b.id });
     for (const b of state.browserTabsByWorktree[wtId] ?? [])
       items.push({ type: "browser", id: b.id });
     return items;
@@ -703,15 +814,8 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   function activateItem(item: ActiveItem) {
     const wtId = state.activeWorktreeId;
     switch (item.type) {
-      case "file":
-        actions.selectFileTab(wtId, item.id, item.path);
-        void editorController.setActive(item.path);
-        break;
       case "terminal":
         actions.selectTerminal(wtId, item.id);
-        break;
-      case "diff":
-        actions.selectDiffTab(wtId, item.id);
         break;
       case "compare":
         actions.selectCompareTab(wtId, item.id);
@@ -719,8 +823,11 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
       case "stack":
         actions.selectStackTab(wtId, item.id);
         break;
-      case "conflict":
-        actions.selectConflictTab(wtId, item.id);
+      case "history":
+        actions.selectHistoryTab(wtId, item.id);
+        break;
+      case "brain":
+        actions.selectBrainTab(wtId, item.id);
         break;
       case "browser":
         actions.selectBrowserTab(wtId, item.id);
@@ -740,19 +847,17 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
     activateItem(items[next]);
   }
 
-  /// Reopen the most-recently closed tab AND, when it's a file, kick
-  /// the Monaco controller to load+activate the model. The store
-  /// action alone only restores the tab record — without this, the
-  /// reopened file tab appears but the editor stays parked on
-  /// whatever model was active before.
+  /// Reopen the most-recently closed tab. Files and diffs land in the editor
+  /// window, so we follow them there — reopening a tab into a window the user
+  /// can't see would look like the command did nothing.
   async function reopenLastClosed() {
     const popped = actions.reopenLastClosedTab(state.activeWorktreeId);
     if (!popped) {
       pushToast("No recently closed tab", "warning");
       return;
     }
-    if (popped.type === "file") {
-      await editorController.openFile(popped.path);
+    if (popped.type === "file" || popped.type === "diff") {
+      await showEditorWindow();
     }
   }
 
@@ -803,6 +908,31 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
 
   function closeActiveTab() {
     const wtId = state.activeWorktreeId;
+    // Stacked mode: ⌘W has to close what the user is actually looking at, and
+    // the editor view's tabs hang off the other pointer. The git view has no
+    // tabs of its own, so it falls through to the workbench's behaviour.
+    if (currentView() === "editor") {
+      const editorItem = state.editorActiveItemByWorktree[wtId];
+      if (
+        !editorItem ||
+        (editorItem.type !== "file" &&
+          editorItem.type !== "diff" &&
+          editorItem.type !== "conflict" &&
+          editorItem.type !== "preview")
+      ) {
+        return;
+      }
+      if (actions.isTabPinned(wtId, editorItem.id)) {
+        pushToast("Tab is pinned — right-click to unpin", "warning");
+        return;
+      }
+      applyEditorRequest(state, actions, wtId, {
+        kind: "close",
+        tab: editorItem.type,
+        id: editorItem.id,
+      });
+      return;
+    }
     const item = state.activeItemByWorktree[wtId];
     if (!item) {
       // Nothing open in this worktree → ⌘W closes the container. On a linked
@@ -821,16 +951,8 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
       return;
     }
     switch (item.type) {
-      case "file": {
-        editorController.closeFile(item.path);
-        actions.closeFileTab(wtId, item.id);
-        break;
-      }
       case "terminal":
         actions.removeTerminal(wtId, item.id);
-        break;
-      case "diff":
-        actions.closeDiffTab(wtId, item.id);
         break;
       case "compare":
         actions.closeCompareTab(wtId, item.id);
@@ -838,8 +960,11 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
       case "stack":
         actions.closeStackTab(wtId, item.id);
         break;
-      case "conflict":
-        actions.closeConflictTab(wtId, item.id);
+      case "history":
+        actions.closeHistoryTab(wtId, item.id);
+        break;
+      case "brain":
+        actions.closeBrainTab(wtId, item.id);
         break;
       case "browser":
         actions.closeBrowserTab(wtId, item.id);
@@ -856,7 +981,7 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   const leftPane = () =>
     state.leftSidebarCollapsed
       ? null
-      : <TerminalSidebar onOpenFile={(path) => void handleOpenFile(path)} />;
+      : <TerminalSidebar onOpenFile={(path) => void openInEditorWindow(path)} />;
 
   const rightPane = () => (
     <Show when={activeRepoPath()}>
@@ -871,21 +996,82 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
     </Show>
   );
 
+  /// The workbench body. Note what is *not* conditional here: this tree is
+  /// rendered exactly once, in both modes, because flipping the environment mode
+  /// must not remount it — the terminals hanging off it own live PTYs that do
+  /// not come back.
+  const workbench = (
+    <AppShell
+      fill
+      // The window's title bar is drawn above the view container in both modes,
+      // so the shell itself never draws one.
+      titleBar={null}
+      rail={<WorkspaceRail />}
+      sidebar={state.sidebarsSwapped ? rightPane() : leftPane()}
+      main={
+        <MainSurface
+          onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
+        />
+      }
+      rightSidebar={state.sidebarsSwapped ? leftPane() : rightPane()}
+      statusBar={<StatusBar />}
+    />
+  );
+
+  /// One stacked view. Hidden with `visibility`, not `display`, and never
+  /// unmounted: `display: none` collapses xterm's measured size and would leave
+  /// a terminal mis-fitted on the way back, quite apart from what unmounting
+  /// would do to its PTY.
+  const view = (id: StackedView, children: JSX.Element) => (
+    <div
+      class="absolute inset-0"
+      style={{
+        visibility: currentView() === id ? "visible" : "hidden",
+        "pointer-events": currentView() === id ? "auto" : "none",
+        "z-index": currentView() === id ? 1 : 0,
+      }}
+      aria-hidden={currentView() !== id}
+    >
+      {children}
+    </div>
+  );
+
   return (
     <>
-      <AppShell
-        titleBar={<TitleBar onOpenSettings={props.onOpenSettings} />}
-        rail={<WorkspaceRail />}
-        sidebar={state.sidebarsSwapped ? rightPane() : leftPane()}
-        main={<MainSurface />}
-        rightSidebar={state.sidebarsSwapped ? leftPane() : rightPane()}
-        statusBar={<StatusBar />}
-      />
+      <div class="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+        <TitleBar onOpenSettings={props.onOpenSettings} />
+        <div class="relative flex-1 min-h-0">
+          {view("workbench", workbench)}
+          {/* Detached mode has these as separate windows, so nothing is
+              rendered — and the lazy chunks above are never even fetched. */}
+          <Show when={isStackedMode()}>
+            {view(
+              "editor",
+              <Suspense>
+                <EditorView
+                  embedded
+                  context={satelliteContext}
+                  tabs={editorTabs}
+                  send={(req) =>
+                    applyEditorRequest(state, actions, state.activeWorktreeId, req)
+                  }
+                />
+              </Suspense>,
+            )}
+            {view(
+              "git",
+              <Suspense>
+                <GitView embedded store={store} context={satelliteContext} />
+              </Suspense>,
+            )}
+          </Show>
+        </div>
+      </div>
       <CommandPalette />
       <ShortcutsCheatSheet />
       <FileFinder
         repoPath={activeRepoPath()}
-        onOpenFile={(p) => void handleOpenFile(p)}
+        onOpenFile={(p) => void openInEditorWindow(p)}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />

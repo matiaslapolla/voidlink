@@ -1,13 +1,47 @@
-import { For, Show, createSignal, createMemo, createEffect, on, onCleanup, onMount } from "solid-js";
+import {
+  For,
+  Show,
+  createSignal,
+  createMemo,
+  createEffect,
+  on,
+  onCleanup,
+  onMount,
+  type Component,
+  type JSX,
+} from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Portal } from "solid-js/web";
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare } from "lucide-solid";
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare, ClipboardCopy, FileCode, Plus, Undo2, UserRound } from "lucide-solid";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { fsApi, type FsEntry } from "@/api/fs";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
 import { pushToast } from "@/commands/toast";
+import { emitGitRefsChanged } from "@/commands/gitEvents";
+
+/// Optional per-window overrides for the tree's right-click actions.
+///
+/// The tree renders in two windows that reach different surfaces: in the
+/// workbench a compare opens a tab right there, while in the editor window the
+/// compare surface lives in another process entirely and the request has to be
+/// forwarded. Anything absent here is simply not offered, which is how the
+/// editor-only entries (diff, blame) stay out of the workbench's menu.
+export interface FileTreeActions {
+  /// Open the file's working-tree diff. Editor window only.
+  openDiff?: (path: string) => void;
+  /// Show inline blame for the file. Editor window only — blame decorates a
+  /// Monaco model, and the workbench no longer has one.
+  blame?: (path: string) => void;
+  /// Start a compare. Overrides the default "open a tab in this window".
+  compare?: (req: {
+    baseRef: string;
+    headRef: string;
+    useMergeBase: boolean;
+    selectedFilePath: string;
+  }) => void;
+}
 
 interface ContextMenuState {
   x: number;
@@ -35,7 +69,11 @@ type Row =
   | { kind: "loading"; depth: number }
   | { kind: "empty"; depth: number };
 
-export function FileTree(props: { root: string; onOpenFile?: (path: string) => void }) {
+export function FileTree(props: {
+  root: string;
+  onOpenFile?: (path: string) => void;
+  actions?: FileTreeActions;
+}) {
   const { state, actions } = useAppStore();
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
   const [refreshKey, setRefreshKey] = createSignal(0);
@@ -71,16 +109,67 @@ export function FileTree(props: { root: string; onOpenFile?: (path: string) => v
   /// The compare model is repo-wide; we just focus the clicked path.
   function compareWithDefault(absPath: string) {
     closeMenu();
+    const rel = relativeTo(props.root, absPath);
+    // In the editor window there is no compare surface to open a tab on, so the
+    // host hands us a forwarder instead. See `FileTreeActions.compare`.
+    if (props.actions?.compare) {
+      props.actions.compare({
+        baseRef: defaultBranch(),
+        headRef: "HEAD",
+        useMergeBase: true,
+        selectedFilePath: rel,
+      });
+      return;
+    }
     const wtId = state.activeWorktreeId;
-    const rel = absPath.startsWith(props.root + "/")
-      ? absPath.slice(props.root.length + 1)
-      : absPath;
     const id = actions.openCompareTab(wtId, {
       baseRef: defaultBranch(),
       headRef: "HEAD",
       useMergeBase: true,
     });
     actions.setCompareSelectedFile(wtId, id, rel);
+  }
+
+  /// Copy a path to the clipboard. `navigator.clipboard` needs a user gesture,
+  /// which a menu click is — but it still rejects when the webview has lost
+  /// focus, so the failure gets a toast rather than a silent no-op.
+  async function copyToClipboard(text: string, label: string) {
+    closeMenu();
+    try {
+      await navigator.clipboard.writeText(text);
+      pushToast(`Copied ${label}`, "info", 1500);
+    } catch (e) {
+      pushToast(`Could not copy: ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  }
+
+  async function stageFile(absPath: string) {
+    closeMenu();
+    try {
+      await gitApi.stageFiles(props.root, [relativeTo(props.root, absPath)]);
+      pushToast(`Staged ${relativeTo(props.root, absPath)}`, "success", 1800);
+      emitGitRefsChanged();
+    } catch (e) {
+      pushToast(`Could not stage: ${e instanceof Error ? e.message : String(e)}`, "error", 6000);
+    }
+  }
+
+  async function discardFile(absPath: string) {
+    closeMenu();
+    const rel = relativeTo(props.root, absPath);
+    const ok = await dialogConfirm(
+      `Discard changes to "${rel}"? The file is reverted in the working tree and this cannot be undone.`,
+      { title: "Discard changes", kind: "warning" },
+    );
+    if (!ok) return;
+    try {
+      await gitApi.discardFile(props.root, rel);
+      pushToast(`Discarded changes to ${rel}`, "info", 2500);
+      refresh();
+      emitGitRefsChanged();
+    } catch (e) {
+      pushToast(`Could not discard: ${e instanceof Error ? e.message : String(e)}`, "error", 6000);
+    }
   }
 
   // External writers (the New Tab menu, future flows) dispatch this to ask
@@ -372,6 +461,36 @@ export function FileTree(props: { root: string; onOpenFile?: (path: string) => v
             state={m()}
             defaultBranch={defaultBranch()}
             onClose={closeMenu}
+            onOpen={
+              props.onOpenFile
+                ? () => {
+                    closeMenu();
+                    props.onOpenFile?.(m().path);
+                  }
+                : undefined
+            }
+            onOpenDiff={
+              props.actions?.openDiff
+                ? () => {
+                    closeMenu();
+                    props.actions?.openDiff?.(m().path);
+                  }
+                : undefined
+            }
+            onBlame={
+              props.actions?.blame
+                ? () => {
+                    closeMenu();
+                    props.actions?.blame?.(m().path);
+                  }
+                : undefined
+            }
+            onCopyPath={() => void copyToClipboard(m().path, "absolute path")}
+            onCopyRelativePath={() =>
+              void copyToClipboard(relativeTo(props.root, m().path), "relative path")
+            }
+            onStage={() => void stageFile(m().path)}
+            onDiscard={() => void discardFile(m().path)}
             onCompareWithDefault={() => compareWithDefault(m().path)}
             onNewFile={() => startNewFile(m().isDir ? m().path : m().path.split("/").slice(0, -1).join("/"))}
             onNewFolder={() => startNewFolder(m().isDir ? m().path : m().path.split("/").slice(0, -1).join("/"))}
@@ -384,12 +503,27 @@ export function FileTree(props: { root: string; onOpenFile?: (path: string) => v
   );
 }
 
+/// Path as git names it: relative to the worktree root. Falls back to the
+/// absolute path when it isn't under `root` at all, which is what git would
+/// complain about anyway — better a legible error than a silently mangled path.
+function relativeTo(root: string, absPath: string): string {
+  return absPath.startsWith(`${root}/`) ? absPath.slice(root.length + 1) : absPath;
+}
+
 // ── Context menu — own component so onMount/onCleanup work correctly ──────────
 
 function ContextMenuPopup(props: {
   state: ContextMenuState;
   defaultBranch: string;
   onClose: () => void;
+  /// File-only entries. Absent handlers are not rendered — see `FileTreeActions`.
+  onOpen?: () => void;
+  onOpenDiff?: () => void;
+  onBlame?: () => void;
+  onCopyPath: () => void;
+  onCopyRelativePath: () => void;
+  onStage: () => void;
+  onDiscard: () => void;
   onCompareWithDefault: () => void;
   onNewFile: () => void;
   onNewFolder: () => void;
@@ -420,11 +554,46 @@ function ContextMenuPopup(props: {
         onContextMenu={e => e.stopPropagation()}
       >
         <Show when={!props.state.isDir}>
+          <Show when={props.onOpen}>
+            {(open) => (
+              <MenuBtn icon={FileCode} onClick={open()}>
+                Open
+              </MenuBtn>
+            )}
+          </Show>
+          <Show when={props.onOpenDiff}>
+            {(openDiff) => (
+              <MenuBtn icon={GitCompare} onClick={openDiff()}>
+                Diff against HEAD
+              </MenuBtn>
+            )}
+          </Show>
           <MenuBtn icon={GitCompare} onClick={props.onCompareWithDefault}>
             Compare with {props.defaultBranch}
           </MenuBtn>
+          <Show when={props.onBlame}>
+            {(blame) => (
+              <MenuBtn icon={UserRound} onClick={blame()}>
+                Blame
+              </MenuBtn>
+            )}
+          </Show>
+          <div class="my-1 h-px bg-border mx-2" />
+          <MenuBtn icon={Plus} onClick={props.onStage}>
+            Stage file
+          </MenuBtn>
+          <MenuBtn icon={Undo2} onClick={props.onDiscard} danger>
+            Discard changes
+          </MenuBtn>
           <div class="my-1 h-px bg-border mx-2" />
         </Show>
+        <MenuBtn icon={ClipboardCopy} onClick={props.onCopyPath}>
+          Copy path
+        </MenuBtn>
+        <MenuBtn icon={ClipboardCopy} onClick={props.onCopyRelativePath}>
+          Copy relative path
+        </MenuBtn>
+        <div class="my-1 h-px bg-border mx-2" />
         <MenuBtn icon={FilePlus} onClick={props.onNewFile}>New File</MenuBtn>
         <MenuBtn icon={FolderPlus} onClick={props.onNewFolder}>New Folder</MenuBtn>
         <div class="my-1 h-px bg-border mx-2" />
@@ -435,7 +604,13 @@ function ContextMenuPopup(props: {
   );
 }
 
-function MenuBtn(props: { icon: any; onClick: () => void; danger?: boolean; children: any }) {
+function MenuBtn(props: {
+  /// A lucide-solid icon component, passed uninstantiated so this can size it.
+  icon: Component<{ class?: string }>;
+  onClick: () => void;
+  danger?: boolean;
+  children: JSX.Element;
+}) {
   const Icon = props.icon;
   return (
     <button

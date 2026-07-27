@@ -22,7 +22,7 @@ import {
 /// through the same commands the UI renders from, with an auditable trail of
 /// which sources fed each answer.
 export function AgentPanel(props: { onOpenSettings: () => void }) {
-  const { state, activeRepoPath, activeOpenFiles, activeItem } = useAppStore();
+  const { state, activeRepoPath, activeOpenFiles, editorActiveItem } = useAppStore();
   const { settings } = useSettings();
   const [input, setInput] = createSignal("");
   let scroller: HTMLDivElement | undefined;
@@ -32,8 +32,11 @@ export function AgentPanel(props: { onOpenSettings: () => void }) {
   const command = () =>
     (settings.ai.agentCommand?.trim() || settings.ai.commitCommand?.trim()) ?? "";
   const messages = createMemo(() => agentThread(wtId()));
+  /// The file the user is looking at, for grounding. Read from the *editor*
+  /// window's pointer: files moved to that window, so the workbench's own
+  /// pointer never names one and this would otherwise always be null.
   const activePath = () => {
-    const a = activeItem();
+    const a = editorActiveItem();
     return a && (a.type === "file" || a.type === "preview") ? a.path : null;
   };
 

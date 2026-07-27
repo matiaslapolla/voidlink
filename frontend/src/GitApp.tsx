@@ -33,10 +33,10 @@ import { gitApi } from "@/api/git";
 import { isMac } from "@/api/platform";
 import {
   bridgeGitRefsAcrossWindows,
-  onGitContext,
-  requestGitContext,
-  type GitWindowContext,
-} from "@/api/gitWindow";
+  onWindowContext,
+  requestWindowContext,
+  type WindowContext,
+} from "@/api/windows";
 import {
   BranchesPane,
   ChangesPane,
@@ -47,6 +47,7 @@ import {
 } from "@/components/git/GitSidebar";
 import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { CompareTab } from "@/components/git/compare/CompareTab";
+import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { PromptHost } from "@/commands/PromptHost";
 import { ToastViewport } from "@/commands/ToastViewport";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
@@ -79,9 +80,39 @@ export default function GitApp() {
   // The panes below need `useAppStore()`, which is the only reason a store
   // exists in this window at all.
   const store = createAppStore({ persist: false });
+  const [context, setContext] = createSignal<WindowContext | null>(null);
+
+  onMount(() => {
+    // Mirror refs pulses in both directions, so a commit here refreshes the
+    // workbench and a rebase there refreshes us.
+    const disposeBridge = bridgeGitRefsAcrossWindows();
+
+    let unlistenContext: (() => void) | null = null;
+    let disposed = false;
+    void onWindowContext((ctx) => {
+      setContext(ctx);
+    }).then((fn) => {
+      if (disposed) {
+        void fn();
+        return;
+      }
+      unlistenContext = fn;
+      // We may have opened after the last broadcast, so ask for a fresh one
+      // rather than waiting for the user to switch worktrees. Asked only once
+      // the subscription is live, or the workbench's reply could beat it.
+      void requestWindowContext();
+    });
+
+    onCleanup(() => {
+      disposed = true;
+      disposeBridge();
+      if (unlistenContext) unlistenContext();
+    });
+  });
+
   return (
     <AppStoreContext.Provider value={store}>
-      <GitAppInner store={store} />
+      <GitSurface store={store} context={context} />
       {/* The panes ask for input through these two module-level hosts —
           stash messages, branch renames, tag names, remote URLs. Without
           them mounted here, every one of those prompts would hang forever
@@ -92,38 +123,27 @@ export default function GitApp() {
   );
 }
 
-function GitAppInner(props: { store: AppStore }) {
-  const [context, setContext] = createSignal<GitWindowContext | null>(null);
+/// The git client, minus any assumption about which window it is in.
+///
+/// `GitApp` above wires it to the cross-window context broadcast; in stacked
+/// mode the workbench renders the same component with `embedded` and feeds it
+/// its own store and active repository directly. Everything below is therefore
+/// written against `props.context` rather than a subscription of its own — that
+/// is the whole reason the two modes share this code instead of forking it.
+export function GitSurface(props: {
+  store: AppStore;
+  context: () => WindowContext | null;
+  /// True when this is a view inside the workbench window: drop the drag region
+  /// and the macOS traffic-light inset, since the window's own title bar is
+  /// already above us.
+  embedded?: boolean;
+}) {
+  const context = () => props.context();
   const [section, setSection] = createSignal<SectionId>("changes");
   const [comparing, setComparing] = createSignal(false);
 
   const repoPath = createMemo(() => context()?.repoPath ?? null);
   const worktreeId = createMemo(() => context()?.worktreeId ?? "");
-
-  onMount(() => {
-    // Mirror refs pulses in both directions, so a commit here refreshes the
-    // workbench and a rebase there refreshes us.
-    const disposeBridge = bridgeGitRefsAcrossWindows();
-
-    let unlistenContext: (() => void) | null = null;
-    let disposed = false;
-    void onGitContext((ctx) => {
-      setContext(ctx);
-    }).then((fn) => {
-      if (disposed) void fn();
-      else unlistenContext = fn;
-    });
-
-    // We may have opened after the last broadcast, so ask for a fresh one
-    // rather than waiting for the user to switch worktrees.
-    void requestGitContext();
-
-    onCleanup(() => {
-      disposed = true;
-      disposeBridge();
-      if (unlistenContext) unlistenContext();
-    });
-  });
 
   // A repo change invalidates everything on screen.
   createEffect((prev: string | null | undefined) => {
@@ -190,16 +210,23 @@ function GitAppInner(props: { store: AppStore }) {
   });
 
   return (
-    <div class="h-screen w-screen flex flex-col bg-background text-foreground overflow-hidden">
+    <div
+      class="flex flex-col bg-background text-foreground overflow-hidden"
+      classList={{ "h-screen w-screen": !props.embedded, "h-full w-full": props.embedded }}
+    >
       {/* Title bar. macOS draws its own traffic lights over the left edge, so
           the drag region is inset to clear them — same geometry as the
-          workbench's TitleBar. */}
+          workbench's TitleBar. Embedded, the workbench's own title bar is above
+          this one, so neither the inset nor the drag region applies. */}
       <div
-        data-tauri-drag-region
-        class="h-9 shrink-0 flex items-center gap-2 border-b border-border px-3 text-xs select-none"
-        classList={{ "pl-[78px]": isMac() }}
+        data-tauri-drag-region={props.embedded ? undefined : true}
+        class={`h-9 shrink-0 flex items-center gap-2 border-b border-border px-3 text-xs select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
+        classList={{ "pl-[78px]": isMac() && !props.embedded }}
       >
         <GitBranch class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        <Show when={!props.embedded}>
+          <DevBadge />
+        </Show>
         <span class="font-medium truncate">
           {repoInfo()?.currentBranch ?? context()?.branch ?? "—"}
         </span>
@@ -209,7 +236,9 @@ function GitAppInner(props: { store: AppStore }) {
         <span class="ml-auto text-muted-foreground truncate max-w-[50%]">
           {context()
             ? `${context()!.workspaceName} · ${context()!.worktreeLabel}`
-            : "Waiting for the workbench…"}
+            : props.embedded
+              ? ""
+              : "Waiting for the workbench…"}
         </span>
       </div>
 
@@ -219,11 +248,15 @@ function GitAppInner(props: { store: AppStore }) {
           <div class="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground">
             <GitBranch class="w-7 h-7 opacity-60" />
             <p class="text-[13px]">
-              Open a repository in the main voidlink window.
+              {props.embedded
+                ? "Open a repository to see its git state."
+                : "Open a repository in the main voidlink window."}
             </p>
-            <p class="text-[11px] opacity-70">
-              This window follows whichever worktree is active there.
-            </p>
+            <Show when={!props.embedded}>
+              <p class="text-[11px] opacity-70">
+                This window follows whichever worktree is active there.
+              </p>
+            </Show>
           </div>
         }
       >

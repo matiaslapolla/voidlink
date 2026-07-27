@@ -11,12 +11,16 @@ import {
   ArrowLeftRight,
   ArrowUpRight,
   GitBranch,
+  FileCode,
 } from "lucide-solid";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isMac } from "@/api/platform";
-import { openGitWindow } from "@/api/gitWindow";
+import { openEditorWindow, openGitWindow } from "@/api/windows";
 import { pushToast } from "@/commands/toast";
 import { useTheme } from "@/store/theme";
+import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
+import { ViewSwitcher } from "@/components/layout/ViewSwitcher";
+import { isStackedMode } from "@/commands/environment";
 import { useAppStore } from "@/store/LayoutContext";
 
 interface TitleBarProps {
@@ -52,7 +56,9 @@ export function TitleBar(props: TitleBarProps) {
     state.sidebarsSwapped ? actions.toggleLeftSidebar() : actions.toggleGitSidebar();
 
   return (
-    <div class="flex items-stretch h-8 shrink-0 select-none border-b border-border bg-background">
+    <div
+      class={`flex items-stretch h-8 shrink-0 select-none border-b border-border bg-background ${DEV_CHROME_CLASS}`}
+    >
       {/*
         Tauri's injected drag-region script already starts a native drag on
         mousedown and toggles maximise on double click, so no handlers here.
@@ -67,6 +73,7 @@ export function TitleBar(props: TitleBarProps) {
         <span class="font-semibold tracking-wide text-foreground/80 pointer-events-none">
           Voidlink
         </span>
+        <DevBadge class="ml-2 pointer-events-none" />
       </div>
       <div class="flex items-stretch text-muted-foreground">
         <button
@@ -88,11 +95,30 @@ export function TitleBar(props: TitleBarProps) {
           <PanelRight class="w-3.5 h-3.5" />
         </button>
         {/*
-          Wider than its neighbours on purpose. The others toggle panels inside
-          this window; this one leaves it, and the dashed border plus the
+          Wider than their neighbours on purpose. The others toggle panels
+          inside this window; these two leave it, and the dashed border plus the
           up-right arrow are the two conventions that say "opens elsewhere"
-          before the click rather than after.
+          before the click rather than after — which is exactly why stacked mode
+          shows a segmented switcher instead: there, nothing leaves the window.
         */}
+        <Show when={isStackedMode()} fallback={<>
+        <button
+          onClick={() => {
+            void openEditorWindow().catch((e) =>
+              pushToast(
+                `Could not open the editor window: ${e instanceof Error ? e.message : String(e)}`,
+                "error",
+              ),
+            );
+          }}
+          aria-label="Open editor window"
+          title="Open the code editor in its own window"
+          class="self-center ml-1 flex items-center gap-1 h-[22px] px-1.5 rounded border border-dashed border-border text-[11px] hover:bg-accent/60 hover:text-foreground hover:border-border/80 transition-colors"
+        >
+          <FileCode class="w-3 h-3 shrink-0" />
+          Editor
+          <ArrowUpRight class="w-3 h-3 shrink-0 opacity-70" />
+        </button>
         <button
           onClick={() => {
             void openGitWindow().catch((e) =>
@@ -110,6 +136,9 @@ export function TitleBar(props: TitleBarProps) {
           Git
           <ArrowUpRight class="w-3 h-3 shrink-0 opacity-70" />
         </button>
+        </>}>
+          <ViewSwitcher />
+        </Show>
         <button
           onClick={() => actions.toggleSidebarsSwapped()}
           aria-label="Swap left and right sidebars"

@@ -3,100 +3,11 @@ import { For } from "solid-js";
 import { Check, GitMerge, RotateCw, Save } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { pushToast } from "@/commands/toast";
-
-/// A single parsed conflict block from a working-tree file. `ours` and
-/// `theirs` always exist; `base` is only present for diff3-style markers
-/// (`|||||||` between the `<<<` and `===`). `startLine` / `endLine` are
-/// 0-indexed positions in the raw file so we can splice back accurately.
-interface ConflictBlock {
-  startLine: number;
-  endLine: number;
-  ours: string;
-  base: string | null;
-  theirs: string;
-  oursLabel: string;
-  theirsLabel: string;
-}
-
-/// Parse `<<<<<<< / ||||||| / ======= / >>>>>>>` markers out of `content`
-/// and return both the block metadata and the segmented text so we can
-/// render conflict regions distinctly from plain prose.
-function parseConflicts(content: string): {
-  blocks: ConflictBlock[];
-  lines: string[];
-} {
-  const lines = content.split("\n");
-  const blocks: ConflictBlock[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    if (!lines[i].startsWith("<<<<<<<")) {
-      i++;
-      continue;
-    }
-    const startLine = i;
-    const oursLabel = lines[i].slice(8).trim();
-    const oursStart = i + 1;
-    let baseStart: number | null = null;
-    let theirsStart: number | null = null;
-    let endLine: number | null = null;
-    let theirsLabel = "";
-    for (let j = oursStart; j < lines.length; j++) {
-      if (lines[j].startsWith("|||||||")) baseStart = j + 1;
-      else if (lines[j].startsWith("=======")) theirsStart = j + 1;
-      else if (lines[j].startsWith(">>>>>>>")) {
-        endLine = j;
-        theirsLabel = lines[j].slice(8).trim();
-        break;
-      }
-    }
-    if (theirsStart === null || endLine === null) {
-      // Malformed — give up on this block but skip past `<<<` to avoid
-      // an infinite loop.
-      i++;
-      continue;
-    }
-    const oursEnd = baseStart !== null ? baseStart - 1 : theirsStart - 1;
-    const baseEnd = baseStart !== null ? theirsStart - 1 : null;
-    const ours = lines.slice(oursStart, oursEnd).join("\n");
-    const base =
-      baseStart !== null && baseEnd !== null
-        ? lines.slice(baseStart, baseEnd).join("\n")
-        : null;
-    const theirs = lines.slice(theirsStart, endLine).join("\n");
-    blocks.push({
-      startLine,
-      endLine,
-      ours,
-      base,
-      theirs,
-      oursLabel: oursLabel || "ours",
-      theirsLabel: theirsLabel || "theirs",
-    });
-    i = endLine + 1;
-  }
-  return { blocks, lines };
-}
-
-/// Splice `replacement` into `content` from `block.startLine` through
-/// `block.endLine` (inclusive). Returns the updated full-file string.
-function replaceBlock(
-  content: string,
-  block: ConflictBlock,
-  replacement: string,
-): string {
-  const lines = content.split("\n");
-  const replacementLines = replacement.split("\n");
-  // Edge case: if the replacement is the empty string we still want to
-  // splice in one empty line so subsequent block offsets stay sane
-  // until the next parse. Skipping the splice would be wrong because
-  // `endLine - startLine + 1` lines need to go away.
-  lines.splice(
-    block.startLine,
-    block.endLine - block.startLine + 1,
-    ...(replacement === "" ? [] : replacementLines),
-  );
-  return lines.join("\n");
-}
+import {
+  applyResolution,
+  parseConflicts,
+  type ConflictBlock,
+} from "@/components/editor/conflictMarkers";
 
 interface Props {
   repoPath: string;
@@ -131,15 +42,7 @@ export function ConflictTab(props: Props) {
   function applyChoice(block: ConflictBlock, choice: "ours" | "theirs" | "both") {
     const cur = buffer();
     if (cur === null) return;
-    const replacement =
-      choice === "ours"
-        ? block.ours
-        : choice === "theirs"
-          ? block.theirs
-          : // "Both" keeps ours first, then theirs — the convention git itself
-            // suggests with diff3 markers.
-            block.ours + (block.ours.endsWith("\n") || block.ours === "" ? "" : "\n") + block.theirs;
-    setBuffer(replaceBlock(cur, block, replacement));
+    setBuffer(applyResolution(cur, block, choice));
   }
 
   async function save() {

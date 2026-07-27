@@ -261,6 +261,36 @@ html:not([data-density]) {
   color: var(--muted-foreground);
 }
 
+/* ── Dev-build title bar ────────────────────────────────────────────────────── */
+/* Applied to the title bar of every window when the frontend was served by Vite
+ * (`import.meta.env.DEV`) — see `components/layout/devChrome.tsx`. Its whole job
+ * is to make a `make dev` window impossible to mistake for the installed
+ * bundle, so every value here is a literal: no `var(--…)`, nothing that a theme
+ * switch can reach. Switching light/dark leaves this bar exactly as it is, which
+ * is the point.
+ *
+ * The descendant `color` rule is `!important` because the buttons inside carry
+ * Tailwind `text-muted-foreground` / `text-foreground` classes; inheriting from
+ * the bar would lose to them and leave dark theme text on a dark purple bar. */
+.dev-chrome {
+  background-color: #4c1d95 !important;
+  border-color: #7c3aed !important;
+  color: #f5f3ff;
+}
+.dev-chrome * {
+  color: #f5f3ff !important;
+}
+.dev-chrome .dev-chrome-badge {
+  background-color: #a78bfa;
+  color: #2e1065 !important;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 14px;
+}
+
 /* ── Inline blame annotation (Monaco decoration) ────────────────────────────── */
 /* Applied to the `after` content of per-line decorations. We dim the chrome
  * to muted-foreground tone so the annotation reads as metadata, not code. */

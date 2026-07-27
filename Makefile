@@ -11,8 +11,13 @@ help: ## Show available commands
 	@awk 'BEGIN{FS=":.*## "} /^[a-z][a-z-]*:.*## /{printf "  make %-9s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
 
-dev: ## Run the Tauri desktop app
-	$(LINUX_ENV) cargo tauri dev
+# `--config` is a JSON merge patch over tauri.conf.json, and its path resolves
+# from this directory rather than from src-tauri. It repoints bundle.icon
+# at the purple dev icon set so a dev window is never mistaken for the installed
+# bundle; the window titles gain a "(dev)" suffix and the title bars turn purple
+# on the same condition, in src-tauri/src/window.rs and frontend devChrome.tsx.
+dev: ## Run the Tauri desktop app (purple dev chrome)
+	$(LINUX_ENV) cargo tauri dev --config src-tauri/tauri.dev.conf.json
 
 frontend: ## Run the Vite dev server only (browser, no native shell)
 	cd frontend && npm run dev

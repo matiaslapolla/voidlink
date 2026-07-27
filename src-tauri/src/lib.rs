@@ -686,17 +686,36 @@ pub fn run() {
                 window.set_decorations(false)?;
             }
 
-            // The git window is created on demand by `open_git_window`, not
-            // here — opening it at startup would put a second window in front
-            // of the workbench on every launch.
+            // Mark a `cargo tauri dev` run everywhere the OS shows this app,
+            // not just inside our own chrome: window list, Cmd-Tab, Mission
+            // Control. The satellites get the same treatment when they are
+            // built (see `window::dev_title`), and the frontend tints its title
+            // bars to match. The dock icon comes from `bundle.icon`, which
+            // `tauri.dev.conf.json` repoints at `icons/dev/`.
+            if tauri::is_dev() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title(&window::dev_title("Voidlink"));
+                    // No-op on macOS, where the dock owns the app icon; this is
+                    // what actually recolours the window icon on Windows and
+                    // Linux, since those draw it in the taskbar per window.
+                    if let Some(icon) = app.default_window_icon().cloned() {
+                        let _ = window.set_icon(icon);
+                    }
+                }
+            }
+
+            // The git and editor windows are created on demand by
+            // `open_git_window` / `open_editor_window`, not here — opening
+            // either at startup would put a second window in front of the
+            // workbench on every launch.
 
             Ok(())
         })
         .on_window_event(move |window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
                 // Only the main window owns the terminals. Without this label
-                // check, closing the git window would kill every PTY in the
-                // workbench that is still open behind it.
+                // check, closing a satellite window (git, editor) would kill
+                // every PTY in the workbench that is still open behind it.
                 if window.label() == "main" {
                     let store = window.state::<PtyStore>().inner().clone();
                     kill_all_ptys(&store);
@@ -709,6 +728,10 @@ pub fn run() {
             window::open_git_window,
             window::close_git_window,
             window::is_git_window_open,
+            window::open_editor_window,
+            window::close_editor_window,
+            window::is_editor_window_open,
+            window::focus_editor_window,
             window::focus_main_window,
             create_pty,
             write_pty,

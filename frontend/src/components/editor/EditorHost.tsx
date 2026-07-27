@@ -1,4 +1,4 @@
-import { createEffect, onMount } from "solid-js";
+import { createEffect, onCleanup, onMount } from "solid-js";
 import { editorController } from "./editorController";
 import { useTheme } from "@/store/theme";
 
@@ -9,6 +9,14 @@ interface EditorHostProps {
 export function EditorHost(props: EditorHostProps) {
   const { mode } = useTheme();
   let containerRef!: HTMLDivElement;
+
+  // Registered here, not inside `onMount`: that callback is async, and after the
+  // first await Solid's owner is gone, so an `onCleanup` in there would never
+  // run. Unmounting really happens — in stacked mode the editor is a view, and
+  // turning the mode off removes it — and `init` early-returns while an editor
+  // exists, so without handing the controller back its uninitialised state the
+  // next mount would attach to a detached container and render blank forever.
+  onCleanup(() => editorController.dispose());
 
   onMount(async () => {
     const theme = mode() === "light" ? "vs" : "vs-dark";

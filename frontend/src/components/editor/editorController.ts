@@ -1,10 +1,19 @@
 import type * as Monaco from "monaco-editor";
 import { fsApi } from "@/api/fs";
+import { inferLanguage, loadMonaco, SHARED_EDITOR_OPTIONS } from "./monaco";
 
 type EditorModel = { path: string; model: Monaco.editor.ITextModel; dirty: boolean };
 type OpenFilesMeta = { path: string; dirty: boolean };
 type ChangeListener = (files: OpenFilesMeta[], activePath: string | null) => void;
 
+/// Monaco's side of the editor window: the model cache, the dirty bookkeeping,
+/// and the single `IStandaloneCodeEditor` every file tab shares.
+///
+/// None of this state crosses windows. The *list* of open files is owned by the
+/// workbench and arrives as a broadcast snapshot (see `api/windows.ts`), which
+/// `reconcile` folds into the model cache; everything else here — which model is
+/// attached, what is unsaved, where the cursor sits — is local by design,
+/// because it is meaningless in a window where Monaco isn't running.
 class EditorController {
   private monaco: typeof Monaco | null = null;
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
@@ -21,73 +30,119 @@ class EditorController {
   async init(container: HTMLElement, theme: "vs-dark" | "vs" = "vs-dark") {
     if (this.editor) return; // already initialised
 
-    // MonacoEnvironment must be configured before Monaco touches workers.
-    (window as any).MonacoEnvironment = {
-      getWorker(_: unknown, label: string) {
-        if (label === "json")
-          return new Worker(new URL("monaco-editor/esm/vs/language/json/json.worker.js", import.meta.url), { type: "module" });
-        if (label === "css" || label === "scss" || label === "less")
-          return new Worker(new URL("monaco-editor/esm/vs/language/css/css.worker.js", import.meta.url), { type: "module" });
-        if (label === "html" || label === "handlebars" || label === "razor")
-          return new Worker(new URL("monaco-editor/esm/vs/language/html/html.worker.js", import.meta.url), { type: "module" });
-        if (label === "typescript" || label === "javascript")
-          return new Worker(new URL("monaco-editor/esm/vs/language/typescript/ts.worker.js", import.meta.url), { type: "module" });
-        return new Worker(new URL("monaco-editor/esm/vs/editor/editor.worker.js", import.meta.url), { type: "module" });
-      },
-    };
-
-    const monaco = await import("monaco-editor");
+    // MonacoEnvironment is configured inside loadMonaco(), before Monaco can
+    // touch a worker — see `monaco.ts` for why that lives in exactly one place.
+    const monaco = await loadMonaco();
     this.monaco = monaco;
 
     this.editor = monaco.editor.create(container, {
+      ...SHARED_EDITOR_OPTIONS,
       model: null,
       theme,
-      fontSize: 13,
-      fontFamily: "'Geist Mono Variable', 'Geist Mono', monospace",
-      minimap: { enabled: false },
-      scrollBeyondLastLine: false,
-      renderLineHighlight: "line",
-      overviewRulerBorder: false,
-      hideCursorInOverviewRuler: true,
-      padding: { top: 8, bottom: 8 },
-      automaticLayout: true,
     });
 
     this._initResolve();
   }
 
+  /// Tear the editor down and forget every model, leaving the controller ready
+  /// to `init` again into a new container.
+  ///
+  /// Needed because the host can genuinely unmount: in stacked mode the editor
+  /// is a view, and turning the mode off removes it from the tree. `init`
+  /// early-returns when an editor already exists, so without this the next mount
+  /// would attach nothing and show a permanently blank editor. Unsaved buffers
+  /// are dropped along with the models — the same as closing the editor window,
+  /// which is the operation this mirrors.
+  dispose() {
+    for (const path of [...this.models.keys()]) this.disposeModel(path);
+    this.editor?.dispose();
+    this.editor = null;
+    this.activePath = null;
+    this.openOrder = [];
+    // A fresh gate, so anything awaiting readiness waits for the *next* init
+    // rather than sailing through against a disposed editor.
+    this._initPromise = new Promise((r) => {
+      this._initResolve = r;
+    });
+    this.notify();
+  }
+
+  /// Load `path` into a model (reusing the cached one) without touching which
+  /// model is attached to the editor. A read failure falls back to an empty
+  /// buffer on purpose: a file that vanished between the click and the read
+  /// should leave an editable empty tab, not a dead one.
+  private async ensureModel(path: string): Promise<EditorModel | null> {
+    const cached = this.models.get(path);
+    if (cached) return cached;
+    if (!this.monaco) return null;
+
+    let content = "";
+    try { content = await fsApi.readFile(path); }
+    catch (e) { console.warn("EditorController: failed to read", path, e); }
+
+    // Another caller may have created the model while we were awaiting the read.
+    const raced = this.models.get(path);
+    if (raced) return raced;
+
+    const uri = this.monaco.Uri.file(path);
+    const model = this.monaco.editor.createModel(content, inferLanguage(path), uri);
+    const meta: EditorModel = { path, model, dirty: false };
+    this.models.set(path, meta);
+
+    let dirtyTimer: ReturnType<typeof setTimeout> | null = null;
+    const disposable = model.onDidChangeContent(() => {
+      if (dirtyTimer) clearTimeout(dirtyTimer);
+      dirtyTimer = setTimeout(() => {
+        const m = this.models.get(path);
+        if (m && !m.dirty) { m.dirty = true; this.notify(); }
+        dirtyTimer = null;
+      }, 100);
+    });
+    this.disposeMap.set(path, disposable);
+    return meta;
+  }
+
   async openFile(path: string) {
     await this._initPromise;
     if (!this.monaco || !this.editor) return;
-
-    if (!this.models.has(path)) {
-      let content = "";
-      try { content = await fsApi.readFile(path); }
-      catch (e) { console.warn("EditorController: failed to read", path, e); }
-
-      const uri = this.monaco.Uri.file(path);
-      const lang = inferLanguage(path);
-      const model = this.monaco.editor.createModel(content, lang, uri);
-      const meta: EditorModel = { path, model, dirty: false };
-      this.models.set(path, meta);
-
-      let dirtyTimer: ReturnType<typeof setTimeout> | null = null;
-      const disposable = model.onDidChangeContent(() => {
-        if (dirtyTimer) clearTimeout(dirtyTimer);
-        dirtyTimer = setTimeout(() => {
-          const m = this.models.get(path);
-          if (m && !m.dirty) { m.dirty = true; this.notify(); }
-          dirtyTimer = null;
-        }, 100);
-      });
-      this.disposeMap.set(path, disposable);
-    }
+    const meta = await this.ensureModel(path);
+    if (!meta) return;
 
     if (!this.openOrder.includes(path)) this.openOrder.push(path);
     this.activePath = path;
-    this.editor.setModel(this.models.get(path)!.model);
+    this.editor.setModel(meta.model);
     requestAnimationFrame(() => this.editor?.layout());
     this.editor.focus();
+    this.notify();
+  }
+
+  /// Fold a broadcast tab list into the model cache: open what is new, dispose
+  /// what is gone, attach whatever the workbench says is in front.
+  ///
+  /// This is the editor window's only entry point for *which* files are open.
+  /// Dropping a model here also drops its unsaved edits, which is correct: the
+  /// tab is already gone from the window that owns the tab list, and a detached
+  /// model would leak one buffer per closed tab with no surface to show it.
+  async reconcile(paths: string[], activePath: string | null) {
+    await this._initPromise;
+    if (!this.editor) return;
+
+    const wanted = new Set(paths);
+    for (const path of [...this.models.keys()]) {
+      if (!wanted.has(path)) this.disposeModel(path);
+    }
+    // Mirror the incoming order so tab order and `getOpenFiles()` agree.
+    this.openOrder = [...wanted];
+    await Promise.all(paths.map((p) => this.ensureModel(p)));
+
+    const next = activePath && wanted.has(activePath) ? activePath : null;
+    // `getModel() === null` catches the first reconcile after init, where the
+    // active path already matches but nothing is attached yet.
+    if (next !== this.activePath || this.editor.getModel() === null) {
+      this.activePath = next;
+      this.editor.setModel(next ? (this.models.get(next)?.model ?? null) : null);
+      requestAnimationFrame(() => this.editor?.layout());
+    }
     this.notify();
   }
 
@@ -101,13 +156,20 @@ class EditorController {
     this.notify();
   }
 
-  closeFile(path: string) {
+  /// Drop a model and its change listener. Leaves `openOrder` and the active
+  /// pointer alone — the callers own those.
+  private disposeModel(path: string) {
     const meta = this.models.get(path);
     if (!meta) return;
     this.disposeMap.get(path)?.dispose();
     this.disposeMap.delete(path);
     meta.model.dispose();
     this.models.delete(path);
+  }
+
+  closeFile(path: string) {
+    if (!this.models.has(path)) return;
+    this.disposeModel(path);
     this.openOrder = this.openOrder.filter(p => p !== path);
     if (this.activePath === path) {
       this.activePath = this.openOrder[this.openOrder.length - 1] ?? null;
@@ -171,38 +233,3 @@ class EditorController {
 }
 
 export const editorController = new EditorController();
-
-function inferLanguage(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  // Only Monaco built-in language IDs — unknown extensions fall back to plaintext.
-  const map: Record<string, string> = {
-    ts: "typescript", tsx: "typescript",
-    js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-    json: "json", jsonc: "json",
-    css: "css", scss: "scss", less: "less",
-    html: "html", htm: "html",
-    xml: "xml", svg: "xml",
-    rs: "rust",
-    toml: "ini",       // Monaco has no TOML; INI tokenizer is the closest match
-    yaml: "yaml", yml: "yaml",
-    md: "markdown",
-    py: "python",
-    sh: "shell", bash: "shell",
-    go: "go",
-    java: "java",
-    c: "c", cpp: "cpp", cc: "cpp", h: "cpp", hpp: "cpp",
-    cs: "csharp",
-    sql: "sql",
-    graphql: "graphql", gql: "graphql",
-    dockerfile: "dockerfile",
-    rb: "ruby",
-    php: "php",
-    swift: "swift",
-    kt: "kotlin",
-    scala: "scala",
-    r: "r",
-    lua: "lua",
-    powershell: "powershell", ps1: "powershell",
-  };
-  return map[ext] ?? "plaintext";
-}

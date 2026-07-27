@@ -148,7 +148,14 @@ interface AppStoreState {
   /// Pinned tab IDs per worktree; pins survive close-all-others actions
   /// and render leftmost in the tab strip.
   pinnedTabsByWorktree: Record<string, string[]>;
+  /// Which tab is in front *in the workbench* — terminals, compares, stacks,
+  /// the commit graph, brain and browser tabs.
   activeItemByWorktree: Record<string, ActiveItem | null>;
+  /// Which tab is in front *in the editor window* — files, diffs, conflicts and
+  /// previews. Two pointers rather than one because the windows focus
+  /// independently: clicking a file in the editor must not blank out the
+  /// terminal the user is watching in the workbench, and vice versa.
+  editorActiveItemByWorktree: Record<string, ActiveItem | null>;
   gitSidebarCollapsed: boolean;
   leftSidebarCollapsed: boolean;
   sidebarsSwapped: boolean;
@@ -225,6 +232,11 @@ const COMPARE_TABS_KEY = "voidlink-compare-tabs";
 const STACK_TABS_KEY = "voidlink-stack-tabs";
 const PINNED_TABS_KEY = "voidlink-pinned-tabs";
 const BROWSER_TABS_KEY = "voidlink-browser-tabs";
+/// The editor window's four tab collections, in one blob. These used to be
+/// memory-only — the workbench reseeded them empty on every boot — but now that
+/// they are the entire contents of another window, losing them on a workbench
+/// reload would close somebody's editor out from under them.
+const EDITOR_TABS_KEY = "voidlink-editor-tabs";
 
 /// Compare two absolute paths for "same directory". We can't call
 /// `fs::canonicalize` from the frontend, so we normalise what we can see:
@@ -324,6 +336,101 @@ function loadBrowserTabs(worktreeIds: string[]): Record<string, BrowserTab[]> {
     return out;
   } catch {
     return empty;
+  }
+}
+
+/// Shape persisted under `EDITOR_TABS_KEY`. Every collection is validated
+/// field by field on the way in: this is user-editable JSON on disk, and a
+/// malformed entry should cost one tab, not the boot.
+export interface PersistedEditorTabs {
+  files: Record<string, OpenFileTab[]>;
+  diffs: Record<string, DiffTab[]>;
+  conflicts: Record<string, ConflictTab[]>;
+  previews: Record<string, PreviewTab[]>;
+  active: Record<string, ActiveItem | null>;
+}
+
+/// Project the live store down to what `EDITOR_TABS_KEY` holds.
+///
+/// Pulled out of the persist effect so the write side is a pure function the
+/// tests can exercise: `loadEditorTabs(serializeEditorTabs(state))` is the
+/// round-trip a workbench reload performs, and it is worth knowing that it
+/// holds without standing up a reactive root.
+export function serializeEditorTabs(source: {
+  openFilesByWorktree: Record<string, OpenFileTab[]>;
+  diffTabsByWorktree: Record<string, DiffTab[]>;
+  conflictTabsByWorktree: Record<string, ConflictTab[]>;
+  previewTabsByWorktree: Record<string, PreviewTab[]>;
+  editorActiveItemByWorktree: Record<string, ActiveItem | null>;
+}): PersistedEditorTabs {
+  return {
+    files: source.openFilesByWorktree,
+    diffs: source.diffTabsByWorktree,
+    conflicts: source.conflictTabsByWorktree,
+    previews: source.previewTabsByWorktree,
+    active: source.editorActiveItemByWorktree,
+  };
+}
+
+/// Read back what `serializeEditorTabs` wrote, defensively. Anything that fails
+/// validation costs one tab, never the boot.
+export function parseEditorTabs(
+  raw: string | null,
+  worktreeIds: string[],
+): PersistedEditorTabs {
+  const empty = (): PersistedEditorTabs => ({
+    files: Object.fromEntries(worktreeIds.map((id) => [id, [] as OpenFileTab[]])),
+    diffs: Object.fromEntries(worktreeIds.map((id) => [id, [] as DiffTab[]])),
+    conflicts: Object.fromEntries(worktreeIds.map((id) => [id, [] as ConflictTab[]])),
+    previews: Object.fromEntries(worktreeIds.map((id) => [id, [] as PreviewTab[]])),
+    active: Object.fromEntries(worktreeIds.map((id) => [id, null])),
+  });
+  try {
+    if (!raw) return empty();
+    const parsed = JSON.parse(raw) as Partial<PersistedEditorTabs>;
+    if (!parsed || typeof parsed !== "object") return empty();
+    const out = empty();
+    const withPath = <T extends { id: string; path: string }>(list: unknown): T[] =>
+      (Array.isArray(list) ? list : []).filter(
+        (t): t is T =>
+          !!t && typeof t.id === "string" && typeof t.path === "string",
+      );
+    const withFilePath = <T extends { id: string; filePath: string }>(list: unknown): T[] =>
+      (Array.isArray(list) ? list : []).filter(
+        (t): t is T =>
+          !!t && typeof t.id === "string" && typeof t.filePath === "string",
+      );
+    for (const wtId of worktreeIds) {
+      out.files[wtId] = withPath<OpenFileTab>(parsed.files?.[wtId]);
+      out.diffs[wtId] = withFilePath<DiffTab>(parsed.diffs?.[wtId]);
+      out.conflicts[wtId] = withFilePath<ConflictTab>(parsed.conflicts?.[wtId]);
+      out.previews[wtId] = withFilePath<PreviewTab>(parsed.previews?.[wtId]);
+      const active = parsed.active?.[wtId];
+      // Only the four editor kinds may sit in this pointer; anything else is
+      // stale state from an older build and is safer dropped than honoured.
+      out.active[wtId] =
+        active &&
+        typeof active.id === "string" &&
+        (active.type === "file" ||
+          active.type === "diff" ||
+          active.type === "conflict" ||
+          active.type === "preview")
+          ? active
+          : null;
+    }
+    return out;
+  } catch {
+    return empty();
+  }
+}
+
+/// `parseEditorTabs` against real storage. Separate so the parser stays pure.
+function loadEditorTabs(worktreeIds: string[]): PersistedEditorTabs {
+  try {
+    return parseEditorTabs(localStorage.getItem(EDITOR_TABS_KEY), worktreeIds);
+  } catch {
+    // `localStorage` itself is absent (a non-browser host); no tabs to restore.
+    return parseEditorTabs(null, worktreeIds);
   }
 }
 
@@ -443,23 +550,25 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const emptyPerWorktree = <T,>() =>
     Object.fromEntries(worktreeIds.map((id) => [id, [] as T[]]));
   const activeWorkspaceOnLoad = workspaces.find((w) => w.id === activeId) ?? workspaces[0];
+  const editorTabs = loadEditorTabs(worktreeIds);
   const [state, setState] = createStore<AppStoreState>({
     workspaces,
     activeWorkspaceId: activeId,
     activeWorktreeId: activeWorkspaceOnLoad.activeWorktreeId,
     terminalsByWorktree: emptyPerWorktree<TerminalSession>(),
-    diffTabsByWorktree: emptyPerWorktree<DiffTab>(),
-    openFilesByWorktree: emptyPerWorktree<OpenFileTab>(),
+    diffTabsByWorktree: editorTabs.diffs,
+    openFilesByWorktree: editorTabs.files,
     compareTabsByWorktree: loadCompareTabs(worktreeIds),
     stackTabsByWorktree: loadStackTabs(worktreeIds),
-    conflictTabsByWorktree: emptyPerWorktree<ConflictTab>(),
+    conflictTabsByWorktree: editorTabs.conflicts,
     historyTabsByWorktree: emptyPerWorktree<HistoryTab>(),
-    previewTabsByWorktree: emptyPerWorktree<PreviewTab>(),
+    previewTabsByWorktree: editorTabs.previews,
     brainTabsByWorktree: emptyPerWorktree<BrainTab>(),
     browserTabsByWorktree: loadBrowserTabs(worktreeIds),
     closedTabsByWorktree: emptyPerWorktree<ClosedTab>(),
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
     activeItemByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
+    editorActiveItemByWorktree: editorTabs.active,
     gitSidebarCollapsed: gitPrefs.gitSidebarCollapsed,
     leftSidebarCollapsed: gitPrefs.leftSidebarCollapsed,
     sidebarsSwapped: gitPrefs.sidebarsSwapped,
@@ -520,6 +629,14 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     localStorage.setItem(
       BROWSER_TABS_KEY,
       JSON.stringify(state.browserTabsByWorktree),
+    );
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    localStorage.setItem(
+      EDITOR_TABS_KEY,
+      JSON.stringify(serializeEditorTabs(state)),
     );
   });
 
@@ -590,6 +707,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activeItem = createMemo(
     () => state.activeItemByWorktree[state.activeWorktreeId] ?? null,
   );
+  /// The editor window's front tab for the active worktree. Broadcast to that
+  /// window rather than read by any pane here.
+  const editorActiveItem = createMemo(
+    () => state.editorActiveItemByWorktree[state.activeWorktreeId] ?? null,
+  );
   const activeClosedTabs = createMemo(
     () => state.closedTabsByWorktree[state.activeWorktreeId] ?? [],
   );
@@ -614,6 +736,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     s.closedTabsByWorktree[wtId] ??= [];
     s.pinnedTabsByWorktree[wtId] ??= [];
     if (!(wtId in s.activeItemByWorktree)) s.activeItemByWorktree[wtId] = null;
+    if (!(wtId in s.editorActiveItemByWorktree)) s.editorActiveItemByWorktree[wtId] = null;
   }
 
   /// Drop everything keyed by a worktree id. The caller is responsible for
@@ -632,6 +755,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     delete s.closedTabsByWorktree[wtId];
     delete s.pinnedTabsByWorktree[wtId];
     delete s.activeItemByWorktree[wtId];
+    delete s.editorActiveItemByWorktree[wtId];
   }
 
   /// Find a worktree anywhere in the store by id, with its owning workspace.
@@ -1015,13 +1139,13 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     openDiffTab(wtId: string, filePath: string) {
       const existing = (state.diffTabsByWorktree[wtId] ?? []).find((d) => d.filePath === filePath);
       if (existing) {
-        setState("activeItemByWorktree", wtId, { type: "diff", id: existing.id });
+        setState("editorActiveItemByWorktree", wtId, { type: "diff", id: existing.id });
         return existing.id;
       }
       const tab: DiffTab = { id: crypto.randomUUID(), filePath };
       setState(produce((s) => {
         s.diffTabsByWorktree[wtId] = [...(s.diffTabsByWorktree[wtId] ?? []), tab];
-        s.activeItemByWorktree[wtId] = { type: "diff", id: tab.id };
+        s.editorActiveItemByWorktree[wtId] = { type: "diff", id: tab.id };
       }));
       return tab.id;
     },
@@ -1035,21 +1159,23 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         pushClosed(s, wtId, { type: "diff", filePath: closed.filePath });
         unpin(s, wtId, tabId);
         arr.splice(idx, 1);
-        const active = s.activeItemByWorktree[wtId];
+        const active = s.editorActiveItemByWorktree[wtId];
         if (active?.type === "diff" && active.id === tabId) {
+          // Fall back within the editor window's own kinds — a terminal is not
+          // something this window can show.
           const nextDiff = arr[arr.length - 1];
-          const terms = s.terminalsByWorktree[wtId] ?? [];
-          s.activeItemByWorktree[wtId] = nextDiff
+          const files = s.openFilesByWorktree[wtId] ?? [];
+          s.editorActiveItemByWorktree[wtId] = nextDiff
             ? { type: "diff", id: nextDiff.id }
-            : terms[0]
-              ? { type: "terminal", id: terms[0].id }
+            : files[0]
+              ? { type: "file", id: files[0].id, path: files[0].path }
               : null;
         }
       }));
     },
 
     selectDiffTab(wtId: string, tabId: string) {
-      setState("activeItemByWorktree", wtId, { type: "diff", id: tabId });
+      setState("editorActiveItemByWorktree", wtId, { type: "diff", id: tabId });
     },
 
     // ── Compare tabs ────────────────────────────────────────────────────
@@ -1099,15 +1225,12 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           const active = s.activeItemByWorktree[wtId];
           if (active?.type === "compare" && active.id === tabId) {
             const nextCompare = arr[arr.length - 1];
-            const diffs = s.diffTabsByWorktree[wtId] ?? [];
             const terms = s.terminalsByWorktree[wtId] ?? [];
             s.activeItemByWorktree[wtId] = nextCompare
               ? { type: "compare", id: nextCompare.id }
-              : diffs[0]
-                ? { type: "diff", id: diffs[0].id }
-                : terms[0]
-                  ? { type: "terminal", id: terms[0].id }
-                  : null;
+              : terms[0]
+                ? { type: "terminal", id: terms[0].id }
+                : null;
           }
         }),
       );
@@ -1163,17 +1286,14 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           if (active?.type === "stack" && active.id === tabId) {
             const nextStack = arr[arr.length - 1];
             const compares = s.compareTabsByWorktree[wtId] ?? [];
-            const diffs = s.diffTabsByWorktree[wtId] ?? [];
             const terms = s.terminalsByWorktree[wtId] ?? [];
             s.activeItemByWorktree[wtId] = nextStack
               ? { type: "stack", id: nextStack.id }
               : compares[0]
                 ? { type: "compare", id: compares[0].id }
-                : diffs[0]
-                  ? { type: "diff", id: diffs[0].id }
-                  : terms[0]
-                    ? { type: "terminal", id: terms[0].id }
-                    : null;
+                : terms[0]
+                  ? { type: "terminal", id: terms[0].id }
+                  : null;
           }
         }),
       );
@@ -1254,13 +1374,13 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     openFileTab(wtId: string, path: string) {
       const existing = (state.openFilesByWorktree[wtId] ?? []).find((f) => f.path === path);
       if (existing) {
-        setState("activeItemByWorktree", wtId, { type: "file", id: existing.id, path });
+        setState("editorActiveItemByWorktree", wtId, { type: "file", id: existing.id, path });
         return existing.id;
       }
       const tab: OpenFileTab = { id: crypto.randomUUID(), path };
       setState(produce((s) => {
         s.openFilesByWorktree[wtId] = [...(s.openFilesByWorktree[wtId] ?? []), tab];
-        s.activeItemByWorktree[wtId] = { type: "file", id: tab.id, path };
+        s.editorActiveItemByWorktree[wtId] = { type: "file", id: tab.id, path };
       }));
       return tab.id;
     },
@@ -1274,24 +1394,21 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         pushClosed(s, wtId, { type: "file", path: closed.path });
         unpin(s, wtId, tabId);
         arr.splice(idx, 1);
-        const active = s.activeItemByWorktree[wtId];
+        const active = s.editorActiveItemByWorktree[wtId];
         if (active?.type === "file" && active.id === tabId) {
           const nextFile = arr[arr.length - 1];
           const diffs = s.diffTabsByWorktree[wtId] ?? [];
-          const terms = s.terminalsByWorktree[wtId] ?? [];
-          s.activeItemByWorktree[wtId] = nextFile
+          s.editorActiveItemByWorktree[wtId] = nextFile
             ? { type: "file", id: nextFile.id, path: nextFile.path }
             : diffs[0]
               ? { type: "diff", id: diffs[0].id }
-              : terms[0]
-                ? { type: "terminal", id: terms[0].id }
-                : null;
+              : null;
         }
       }));
     },
 
     selectFileTab(wtId: string, tabId: string, path: string) {
-      setState("activeItemByWorktree", wtId, { type: "file", id: tabId, path });
+      setState("editorActiveItemByWorktree", wtId, { type: "file", id: tabId, path });
     },
 
     // ── Sidebar tab ──────────────────────────────────────────────────────
@@ -1359,13 +1476,13 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         (t) => t.filePath === filePath,
       );
       if (existing) {
-        setState("activeItemByWorktree", wtId, { type: "conflict", id: existing.id });
+        setState("editorActiveItemByWorktree", wtId, { type: "conflict", id: existing.id });
         return existing.id;
       }
       const tab: ConflictTab = { id: crypto.randomUUID(), filePath };
       setState(produce((s) => {
         s.conflictTabsByWorktree[wtId] = [...(s.conflictTabsByWorktree[wtId] ?? []), tab];
-        s.activeItemByWorktree[wtId] = { type: "conflict", id: tab.id };
+        s.editorActiveItemByWorktree[wtId] = { type: "conflict", id: tab.id };
       }));
       return tab.id;
     },
@@ -1376,18 +1493,21 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const idx = arr.findIndex((t) => t.id === tabId);
         if (idx === -1) return;
         arr.splice(idx, 1);
-        const active = s.activeItemByWorktree[wtId];
+        const active = s.editorActiveItemByWorktree[wtId];
         if (active?.type === "conflict" && active.id === tabId) {
           const nextConflict = arr[arr.length - 1];
-          s.activeItemByWorktree[wtId] = nextConflict
+          const files = s.openFilesByWorktree[wtId] ?? [];
+          s.editorActiveItemByWorktree[wtId] = nextConflict
             ? { type: "conflict", id: nextConflict.id }
-            : null;
+            : files[0]
+              ? { type: "file", id: files[0].id, path: files[0].path }
+              : null;
         }
       }));
     },
 
     selectConflictTab(wtId: string, tabId: string) {
-      setState("activeItemByWorktree", wtId, { type: "conflict", id: tabId });
+      setState("editorActiveItemByWorktree", wtId, { type: "conflict", id: tabId });
     },
 
     // ── History (commit graph) tab ───────────────────────────────────────
@@ -1417,12 +1537,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const active = s.activeItemByWorktree[wtId];
         if (active?.type === "history" && active.id === tabId) {
           const terms = s.terminalsByWorktree[wtId] ?? [];
-          const files = s.openFilesByWorktree[wtId] ?? [];
-          s.activeItemByWorktree[wtId] = files[0]
-            ? { type: "file", id: files[0].id, path: files[0].path }
-            : terms[0]
-              ? { type: "terminal", id: terms[0].id }
-              : null;
+          s.activeItemByWorktree[wtId] = terms[0]
+            ? { type: "terminal", id: terms[0].id }
+            : null;
         }
       }));
     },
@@ -1458,12 +1575,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const active = s.activeItemByWorktree[wtId];
         if (active?.type === "brain" && active.id === tabId) {
           const terms = s.terminalsByWorktree[wtId] ?? [];
-          const files = s.openFilesByWorktree[wtId] ?? [];
-          s.activeItemByWorktree[wtId] = files[0]
-            ? { type: "file", id: files[0].id, path: files[0].path }
-            : terms[0]
-              ? { type: "terminal", id: terms[0].id }
-              : null;
+          s.activeItemByWorktree[wtId] = terms[0]
+            ? { type: "terminal", id: terms[0].id }
+            : null;
         }
       }));
     },
@@ -1495,15 +1609,12 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const active = s.activeItemByWorktree[wtId];
         if (active?.type === "browser" && active.id === tabId) {
           const nextBrowser = arr[arr.length - 1];
-          const files = s.openFilesByWorktree[wtId] ?? [];
           const terms = s.terminalsByWorktree[wtId] ?? [];
           s.activeItemByWorktree[wtId] = nextBrowser
             ? { type: "browser", id: nextBrowser.id }
-            : files[0]
-              ? { type: "file", id: files[0].id, path: files[0].path }
-              : terms[0]
-                ? { type: "terminal", id: terms[0].id }
-                : null;
+            : terms[0]
+              ? { type: "terminal", id: terms[0].id }
+              : null;
         }
       }));
     },
@@ -1536,7 +1647,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         (t) => t.filePath === filePath,
       );
       if (existing) {
-        setState("activeItemByWorktree", wtId, {
+        setState("editorActiveItemByWorktree", wtId, {
           type: "preview",
           id: existing.id,
           path: filePath,
@@ -1549,7 +1660,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           ...(s.previewTabsByWorktree[wtId] ?? []),
           tab,
         ];
-        s.activeItemByWorktree[wtId] = { type: "preview", id: tab.id, path: filePath };
+        s.editorActiveItemByWorktree[wtId] = { type: "preview", id: tab.id, path: filePath };
       }));
       return tab.id;
     },
@@ -1561,18 +1672,15 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         if (idx === -1) return;
         unpin(s, wtId, tabId);
         arr.splice(idx, 1);
-        const active = s.activeItemByWorktree[wtId];
+        const active = s.editorActiveItemByWorktree[wtId];
         if (active?.type === "preview" && active.id === tabId) {
           const nextPreview = arr[arr.length - 1];
           const files = s.openFilesByWorktree[wtId] ?? [];
-          const terms = s.terminalsByWorktree[wtId] ?? [];
-          s.activeItemByWorktree[wtId] = nextPreview
+          s.editorActiveItemByWorktree[wtId] = nextPreview
             ? { type: "preview", id: nextPreview.id, path: nextPreview.filePath }
             : files[0]
               ? { type: "file", id: files[0].id, path: files[0].path }
-              : terms[0]
-                ? { type: "terminal", id: terms[0].id }
-                : null;
+              : null;
         }
       }));
     },
@@ -1580,7 +1688,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     selectPreviewTab(wtId: string, tabId: string) {
       const tab = (state.previewTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
       if (!tab) return;
-      setState("activeItemByWorktree", wtId, {
+      setState("editorActiveItemByWorktree", wtId, {
         type: "preview",
         id: tabId,
         path: tab.filePath,
@@ -1596,7 +1704,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const trimmed = name.trim();
       if (!trimmed) return;
       const pinnedIds = new Set(state.pinnedTabsByWorktree[wtId] ?? []);
-      const active = state.activeItemByWorktree[wtId];
+      // A snapshot spans both windows, so it records whichever pointer is set.
+      // The workbench's wins when both are: it is the window you were looking
+      // at when you typed the snapshot's name.
+      const active =
+        state.activeItemByWorktree[wtId] ?? state.editorActiveItemByWorktree[wtId];
       const files = state.openFilesByWorktree[wtId] ?? [];
       const terminals = state.terminalsByWorktree[wtId] ?? [];
       const diffs = state.diffTabsByWorktree[wtId] ?? [];
@@ -1689,8 +1801,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         s.diffTabsByWorktree[wtId] = [];
         s.compareTabsByWorktree[wtId] = [];
         s.stackTabsByWorktree[wtId] = [];
+        s.conflictTabsByWorktree[wtId] = [];
+        s.previewTabsByWorktree[wtId] = [];
         s.pinnedTabsByWorktree[wtId] = [];
         s.activeItemByWorktree[wtId] = null;
+        s.editorActiveItemByWorktree[wtId] = null;
       }));
 
       // Restore UI prefs (these are app-global today but snapshot was
@@ -1797,34 +1912,54 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       // round-trip (deleted file / removed branch), default to the
       // first restored tab in render order.
       const activeId = snap.active ? idByKey.get(snap.active) : null;
-      if (activeId) {
-        // Determine kind from the key prefix.
-        const kind = snap.active!.split(":")[0];
-        setState(
-          "activeItemByWorktree",
-          wtId,
-          buildActiveItem(kind, activeId, state.openFilesByWorktree[wtId] ?? []),
-        );
-      } else {
-        // Fall back to the first available tab.
-        const firstFile = state.openFilesByWorktree[wtId]?.[0];
-        const firstTerm = state.terminalsByWorktree[wtId]?.[0];
-        const firstDiff = state.diffTabsByWorktree[wtId]?.[0];
-        const firstCompare = state.compareTabsByWorktree[wtId]?.[0];
-        const firstStack = state.stackTabsByWorktree[wtId]?.[0];
-        const fallback: ActiveItem | null = firstFile
-          ? { type: "file", id: firstFile.id, path: firstFile.path }
-          : firstTerm
-            ? { type: "terminal", id: firstTerm.id }
-            : firstDiff
-              ? { type: "diff", id: firstDiff.id }
-              : firstCompare
-                ? { type: "compare", id: firstCompare.id }
-                : firstStack
-                  ? { type: "stack", id: firstStack.id }
-                  : null;
-        setState("activeItemByWorktree", wtId, fallback);
-      }
+      const restored: ActiveItem | null = activeId
+        ? buildActiveItem(
+            // Determine kind from the key prefix.
+            snap.active!.split(":")[0],
+            activeId,
+            state.openFilesByWorktree[wtId] ?? [],
+          )
+        : null;
+
+      // Each window gets the first tab it can actually show, and the restored
+      // item overrides whichever of the two owns its kind. Setting both is what
+      // stops a snapshot whose active tab was a file from leaving the workbench
+      // pointing at nothing.
+      const firstTerm = state.terminalsByWorktree[wtId]?.[0];
+      const firstCompare = state.compareTabsByWorktree[wtId]?.[0];
+      const firstStack = state.stackTabsByWorktree[wtId]?.[0];
+      const mainFallback: ActiveItem | null = firstTerm
+        ? { type: "terminal", id: firstTerm.id }
+        : firstCompare
+          ? { type: "compare", id: firstCompare.id }
+          : firstStack
+            ? { type: "stack", id: firstStack.id }
+            : null;
+
+      const firstFile = state.openFilesByWorktree[wtId]?.[0];
+      const firstDiff = state.diffTabsByWorktree[wtId]?.[0];
+      const editorFallback: ActiveItem | null = firstFile
+        ? { type: "file", id: firstFile.id, path: firstFile.path }
+        : firstDiff
+          ? { type: "diff", id: firstDiff.id }
+          : null;
+
+      const restoredIsEditorKind =
+        restored?.type === "file" ||
+        restored?.type === "diff" ||
+        restored?.type === "conflict" ||
+        restored?.type === "preview";
+
+      setState(
+        "activeItemByWorktree",
+        wtId,
+        restored && !restoredIsEditorKind ? restored : mainFallback,
+      );
+      setState(
+        "editorActiveItemByWorktree",
+        wtId,
+        restored && restoredIsEditorKind ? restored : editorFallback,
+      );
 
       return true;
     },
@@ -1903,6 +2038,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     activeBrainTabs,
     activeBrowserTabs,
     activeItem,
+    editorActiveItem,
     activeClosedTabs,
     activePinnedTabs,
     actions,

@@ -10,10 +10,6 @@ import {
   ChevronRight,
   ChevronLeft,
   ChevronDown,
-  FilePlus,
-  FileMinus,
-  FileText,
-  FileQuestion,
   Upload,
   RefreshCw,
   GitCompare,
@@ -38,11 +34,24 @@ import { promptWithToggles } from "@/commands/prompt";
 import type { CommitIdentity, StashEntry, RemoteInfo } from "@/types/git";
 import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
+import { StatusBadge } from "@/components/git/shared/StatusBadge";
 import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
-import { openGitWindow } from "@/api/gitWindow";
+import { openEditorTab, openGitWindow } from "@/api/windows";
 import { useAppStore } from "@/store/LayoutContext";
-import { samePath } from "@/store/layout";
+import { samePath, type AppStore } from "@/store/layout";
+
+/// Open a conflicted file in the editor window's merge editor.
+///
+/// Free function rather than a per-component closure because three separate
+/// panes here route a conflicted operation the same way, and the workbench /
+/// satellite split (see `openEditorTab`) is exactly the kind of detail that
+/// rots when it is written out three times.
+function openMerge(actions: AppStore["actions"], worktreeId: string, filePath: string) {
+  void openEditorTab({ kind: "open-conflict", filePath }, () =>
+    actions.openConflictTab(worktreeId, filePath),
+  );
+}
 import { requestNewWorktree } from "@/commands/worktree";
 import { useSettings } from "@/store/settings";
 import { scanStagedDiff, type SecretFinding } from "@/commands/secretScan";
@@ -125,7 +134,7 @@ function Section(props: {
 }
 
 export function GitSidebar(props: GitSidebarProps) {
-  const { state, activeDiffTabs, activeItem, actions } = useAppStore();
+  const { state, activeDiffTabs, editorActiveItem, actions } = useAppStore();
 
   const [sidebarWidth, setSidebarWidth] = createSignal(320);
   const [sectionHeights, setSectionHeights] = createSignal({ changes: 200, branches: 140, worktrees: 120, stack: 160, stashes: 120, history: 200, openedDiffs: 140 });
@@ -171,14 +180,17 @@ export function GitSidebar(props: GitSidebarProps) {
     (p) => gitApi.fileStatus(p),
   );
 
+  /// Which changed file's diff is currently open, so the list can highlight it.
+  /// Diffs render in the editor window now, so this reads that window's pointer
+  /// rather than the workbench's.
   const activeFilePath = createMemo(() => {
-    const item = activeItem();
+    const item = editorActiveItem();
     if (item?.type !== "diff") return null;
     return activeDiffTabs().find((t) => t.id === item.id)?.filePath ?? null;
   });
 
   const activeDiffId = () => {
-    const a = activeItem();
+    const a = editorActiveItem();
     return a?.type === "diff" ? a.id : null;
   };
 
@@ -242,9 +254,7 @@ export function GitSidebar(props: GitSidebarProps) {
       const res = await gitApi.pull(props.repoPath, mode);
       if (res.conflicted) {
         const conflicts = await gitApi.listConflicts(props.repoPath);
-        for (const c of conflicts) {
-          actions.openConflictTab(props.worktreeId, `${props.repoPath}/${c}`);
-        }
+        for (const c of conflicts) openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`);
         pushToast("Pull stopped on conflicts — resolve them, then continue.", "warning", 6000);
       } else if (res.ok) {
         pushToast("Pulled from origin", "success", 2000);
@@ -563,7 +573,7 @@ export function ChangesPane(props: {
   const conflicted = () => (props.status ?? []).filter((f) => f.status === "conflicted");
 
   function openConflict(path: string) {
-    actions.openConflictTab(props.worktreeId, path);
+    openMerge(actions, props.worktreeId, path);
   }
 
   async function stageFile(path: string) {
@@ -754,8 +764,13 @@ export function ChangesPane(props: {
     }
   }
 
+  /// Diffs render in the editor window now, so clicking a changed file hands
+  /// it over there rather than opening a tab in whichever window this sidebar
+  /// happens to be mounted in.
   const selectFile = (path: string) => {
-    actions.openDiffTab(props.worktreeId, path);
+    void openEditorTab({ kind: "open-diff", filePath: path }, () =>
+      actions.openDiffTab(props.worktreeId, path),
+    );
   };
 
   return (
@@ -993,7 +1008,7 @@ export function ChangesPane(props: {
                 title={`Resolve conflict in ${f.path}`}
                 class="w-full flex items-center gap-2 px-2.5 density-row text-[13px] text-left text-warning hover:bg-warning/10 transition-colors"
               >
-                <FileText class="w-3 h-3 shrink-0" />
+                <StatusBadge status={f.status} />
                 <span class="flex-1 truncate font-mono">{f.path}</span>
                 <span class="text-[10px] tracking-wide opacity-70">Resolve</span>
               </button>
@@ -1085,7 +1100,7 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
   async function routeOpResult(res: { ok: boolean; conflicted: boolean; message: string }, label: string) {
     if (res.conflicted) {
       const conflicts = await gitApi.listConflicts(props.repoPath);
-      for (const c of conflicts) actions.openConflictTab(props.worktreeId, `${props.repoPath}/${c}`);
+      for (const c of conflicts) openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`);
       pushToast(`${label} stopped on conflicts — resolve them, then continue.`, "warning", 6000);
     } else if (res.ok) {
       pushToast(`${label} complete`, "success", 2500);
@@ -1967,7 +1982,7 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
   async function routeOpResult(res: { ok: boolean; conflicted: boolean; message: string }, label: string) {
     if (res.conflicted) {
       const conflicts = await gitApi.listConflicts(props.repoPath);
-      for (const c of conflicts) actions.openConflictTab(props.worktreeId, `${props.repoPath}/${c}`);
+      for (const c of conflicts) openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`);
       pushToast(`${label} stopped on conflicts — resolve them, then continue.`, "warning", 6000);
     } else if (res.ok) {
       pushToast(`${label} complete`, "success", 2500);
@@ -2284,7 +2299,7 @@ function FileRow(props: {
         aria-pressed={props.selected}
         class="flex-1 flex items-center gap-1.5 pl-2.5 density-row min-w-0 text-left cursor-pointer focus-visible:outline-none"
       >
-        <StatusIcon status={props.status} />
+        <StatusBadge status={props.status} />
         <span class="flex-1 truncate">{props.file}</span>
       </button>
       <Show when={props.secondaryIcon}>
@@ -2318,22 +2333,6 @@ function FileRow(props: {
       </button>
     </div>
   );
-}
-
-function StatusIcon(props: { status: string }) {
-  switch (props.status) {
-    case "added":
-    case "untracked":
-      return <FilePlus class="w-3 h-3 text-success flex-shrink-0" />;
-    case "deleted":
-      return <FileMinus class="w-3 h-3 text-destructive flex-shrink-0" />;
-    case "modified":
-      return <FileText class="w-3 h-3 text-info flex-shrink-0" />;
-    case "renamed":
-      return <FileText class="w-3 h-3 text-warning flex-shrink-0" />;
-    default:
-      return <FileQuestion class="w-3 h-3 text-muted-foreground flex-shrink-0" />;
-  }
 }
 
 /** Collapsed rail */

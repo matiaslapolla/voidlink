@@ -1,30 +1,81 @@
 //! Secondary application windows.
 //!
-//! voidlink is two apps sharing one binary, in the same way Cursor splits its
-//! agent surface from its editor: the `main` window is the code workbench, and
-//! the `git` window is a standalone git client. They are separate OS windows
-//! so you can put them on separate displays or spaces and Cmd-Tab between
-//! them, rather than one hiding the other behind a toggle.
+//! voidlink is three apps sharing one binary, in the same way Cursor splits its
+//! agent surface from its editor: the `main` window is the terminal + workspace
+//! + agents workbench, the `git` window is a standalone git client, and the
+//! `editor` window is the code editor. They are separate OS windows so you can
+//! put them on separate displays or spaces and Cmd-Tab between them, rather
+//! than one hiding the other behind a toggle.
 //!
-//! The two webviews are separate JS contexts and cannot share a Solid store.
-//! `main` stays the sole writer of persisted layout state; the git window
-//! hydrates read-only and takes its active repository from an event the main
-//! window broadcasts. See `frontend/src/api/gitWindow.ts` for that protocol.
+//! The webviews are separate JS contexts and cannot share a Solid store.
+//! `main` stays the sole writer of persisted layout state; the satellites
+//! hydrate read-only and take their active repository — and, for the editor,
+//! their tab list — from events the main window broadcasts. See
+//! `frontend/src/api/windows.ts` for that protocol.
 
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 /// Window label for the git client. The frontend switches on this at render
 /// time (`getCurrentWindow().label`), which is why there is no separate HTML
-/// entry point or query string — one bundle, two roots.
+/// entry point or query string — one bundle, three roots.
 pub(crate) const GIT_WINDOW_LABEL: &str = "git";
 
-/// Open the git window, or focus it if it is already open.
+/// Window label for the code editor. Same one-bundle-many-roots arrangement as
+/// the git window above.
+pub(crate) const EDITOR_WINDOW_LABEL: &str = "editor";
+
+/// Geometry + title for a satellite window. Grouped in one struct so the
+/// per-window `open_*` commands below stay a single line of intent each.
+struct SatelliteSpec {
+    label: &'static str,
+    title: &'static str,
+    width: f64,
+    height: f64,
+    min_width: f64,
+    min_height: f64,
+}
+
+const GIT_SPEC: SatelliteSpec = SatelliteSpec {
+    label: GIT_WINDOW_LABEL,
+    title: "Voidlink Git",
+    width: 1100.0,
+    height: 760.0,
+    min_width: 880.0,
+    min_height: 600.0,
+};
+
+/// Wider and taller than the git window: this one carries a file tree, a tab
+/// strip, a side-by-side diff, and a git panel across a single row.
+const EDITOR_SPEC: SatelliteSpec = SatelliteSpec {
+    label: EDITOR_WINDOW_LABEL,
+    title: "Voidlink Editor",
+    width: 1300.0,
+    height: 860.0,
+    min_width: 900.0,
+    min_height: 600.0,
+};
+
+/// Window title, with a dev marker appended when this is a `cargo tauri dev`
+/// run.
+///
+/// `#[cfg(dev)]` — not `debug_assertions`, which is also set for
+/// `tauri build --debug` and would mark a real bundle. The frontend paints its
+/// title bars purple on the same condition (`import.meta.env.DEV`); this covers
+/// the places only the OS draws: the window list, Mission Control, Cmd-Tab.
+pub(crate) fn dev_title(title: &str) -> String {
+    if tauri::is_dev() {
+        format!("{title} (dev)")
+    } else {
+        title.to_string()
+    }
+}
+
+/// Open a satellite window, or focus it if it is already open.
 ///
 /// Returns `true` when a new window was created, so the caller can tell
 /// "opened" from "brought to front" without querying window state.
-#[tauri::command]
-pub async fn open_git_window<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
-    if let Some(existing) = app.get_webview_window(GIT_WINDOW_LABEL) {
+fn open_satellite<R: Runtime>(app: &AppHandle<R>, spec: &SatelliteSpec) -> Result<bool, String> {
+    if let Some(existing) = app.get_webview_window(spec.label) {
         // Unminimise first — `set_focus` on a minimised window is a no-op on
         // macOS and the user would see nothing happen.
         let _ = existing.unminimize();
@@ -32,20 +83,16 @@ pub async fn open_git_window<R: Runtime>(app: AppHandle<R>) -> Result<bool, Stri
         return Ok(false);
     }
 
-    let builder = WebviewWindowBuilder::new(
-        &app,
-        GIT_WINDOW_LABEL,
-        WebviewUrl::App("index.html".into()),
-    )
-    .title("Voidlink Git")
-    .inner_size(1100.0, 760.0)
-    .min_inner_size(880.0, 600.0)
-    .resizable(true)
-    .center();
+    let builder = WebviewWindowBuilder::new(app, spec.label, WebviewUrl::App("index.html".into()))
+        .title(dev_title(spec.title))
+        .inner_size(spec.width, spec.height)
+        .min_inner_size(spec.min_width, spec.min_height)
+        .resizable(true)
+        .center();
 
-    // Match the main window's chrome so the two read as one app. Kept in sync
-    // with the `main` entry in tauri.conf.json by hand — the config is static
-    // and this window is built at runtime.
+    // Match the main window's chrome so every window reads as one app. Kept in
+    // sync with the `main` entry in tauri.conf.json by hand — the config is
+    // static and these windows are built at runtime.
     #[cfg(target_os = "macos")]
     let builder = builder
         .decorations(true)
@@ -60,13 +107,35 @@ pub async fn open_git_window<R: Runtime>(app: AppHandle<R>) -> Result<bool, Stri
     Ok(true)
 }
 
-/// Close the git window if it is open. Idempotent.
-#[tauri::command]
-pub async fn close_git_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(existing) = app.get_webview_window(GIT_WINDOW_LABEL) {
+/// Close a satellite window if it is open. Idempotent.
+fn close_satellite<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(label) {
         existing.close().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Bring an existing window to the front. Silent no-op when it isn't open —
+/// callers use this to follow up an action they forwarded, and a window that
+/// closed in between is not an error worth surfacing.
+fn focus_window<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(label) {
+        let _ = win.unminimize();
+        win.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ─── Git window ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn open_git_window<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    open_satellite(&app, &GIT_SPEC)
+}
+
+#[tauri::command]
+pub async fn close_git_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    close_satellite(&app, GIT_WINDOW_LABEL)
 }
 
 /// Whether the git window is currently open. Lets the main window render an
@@ -76,17 +145,42 @@ pub async fn is_git_window_open<R: Runtime>(app: AppHandle<R>) -> Result<bool, S
     Ok(app.get_webview_window(GIT_WINDOW_LABEL).is_some())
 }
 
+// ─── Editor window ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn open_editor_window<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    open_satellite(&app, &EDITOR_SPEC)
+}
+
+#[tauri::command]
+pub async fn close_editor_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    close_satellite(&app, EDITOR_WINDOW_LABEL)
+}
+
+#[tauri::command]
+pub async fn is_editor_window_open<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    Ok(app.get_webview_window(EDITOR_WINDOW_LABEL).is_some())
+}
+
+/// Bring the editor window to the front.
+///
+/// Used when the workbench hands a file to the editor — a terminal deep-link,
+/// the file finder, a click in the git sidebar. Without this the file would
+/// open in a window the user cannot see.
+#[tauri::command]
+pub async fn focus_editor_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    focus_window(&app, EDITOR_WINDOW_LABEL)
+}
+
+// ─── Workbench ───────────────────────────────────────────────────────────────
+
 /// Bring the workbench window to the front.
 ///
-/// Used when the git window hands an action back to `main` — creating a
-/// worktree, for instance, opens a wizard that spawns a terminal, and those
-/// belong to the workbench. Without this the wizard would open behind the
-/// window the user is looking at.
+/// Used when a satellite hands an action back to `main` — creating a worktree,
+/// for instance, opens a wizard that spawns a terminal, and those belong to the
+/// workbench. Without this the wizard would open behind the window the user is
+/// looking at.
 #[tauri::command]
 pub async fn focus_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.unminimize();
-        main.set_focus().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    focus_window(&app, "main")
 }

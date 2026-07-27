@@ -1,0 +1,496 @@
+/// The bridge between the workbench window and its satellites.
+///
+/// voidlink runs three roots out of one bundle — `main` (terminals, workspaces,
+/// agents), `git` (the standalone git client) and `editor` (the code editor).
+/// Each is a separate webview, so each is a separate JS context: separate Solid
+/// stores, separate module state, no shared reactivity. Rather than try to
+/// mirror the whole layout store across the gap, only a few things cross it:
+///
+///   1. **Which repository is active.** `main` owns that decision (it has the
+///      rail and the worktree switcher) and broadcasts it. The satellites are
+///      pure consumers — they never pick a repo, so they can never disagree.
+///   2. **"Refs changed."** Any window can commit, fetch, or rebase, and the
+///      others have to refetch. This re-broadcasts the in-process
+///      `voidlink:refresh-git` pulse across windows.
+///   3. **The editor window's tab list.** `main` is the only window that writes
+///      (and persists) tab state, so the editor window renders from a snapshot
+///      `main` broadcasts and asks for mutations by sending requests back. See
+///      `EditorTabsSnapshot` / `EditorRequest` below for why it is shaped that
+///      way rather than as a second writer.
+///
+/// Everything else the satellites show they read straight from the Rust git and
+/// fs commands, which are stateless and window-agnostic — so there is nothing
+/// else to synchronise.
+///
+/// **Stacked mode** (`settings.ui.environmentMode`) collapses all three into one
+/// window as switchable views. Nothing above changes shape: the workbench
+/// installs a `StackedViewRouter` here and the open/focus functions redirect to
+/// a view switch, while the surfaces get their context and tab snapshot from the
+/// store directly instead of off the wire. That is why none of the call sites
+/// scattered through the app know which mode they are in.
+
+import { invoke } from "@tauri-apps/api/core";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emitGitRefsChanged } from "@/commands/gitEvents";
+import type {
+  ActiveItem,
+  ConflictTab,
+  DiffTab,
+  OpenFileTab,
+  PreviewTab,
+} from "@/store/layout";
+
+/// Window label used by the git client. Must match `GIT_WINDOW_LABEL` in
+/// `src-tauri/src/window.rs`.
+export const GIT_WINDOW_LABEL = "git";
+
+/// Window label used by the code editor. Must match `EDITOR_WINDOW_LABEL` in
+/// `src-tauri/src/window.rs`.
+export const EDITOR_WINDOW_LABEL = "editor";
+
+/// The workbench's own label. Not a satellite — the sole writer of state.
+export const MAIN_WINDOW_LABEL = "main";
+
+const CONTEXT_EVENT = "voidlink://window-context";
+const CONTEXT_REQUEST_EVENT = "voidlink://window-context-request";
+const REFS_EVENT = "voidlink://git-refs-changed";
+
+/// The slice of workbench state a satellite window needs to do its job.
+export interface WindowContext {
+  /// Working directory of the active worktree — what every git command is run
+  /// against. `null` when no repository is open in the workbench.
+  repoPath: string | null;
+  /// Layout-store id of the active worktree. Echoed back on refresh pings so
+  /// the workbench knows which panes to invalidate.
+  worktreeId: string;
+  branch: string | null;
+  /// Human labels for the satellite's header, so it can say *which* repo it is
+  /// showing without duplicating the rail.
+  workspaceName: string;
+  worktreeLabel: string;
+}
+
+/// The label of the window this code is running in. Cheap and synchronous —
+/// it reads Tauri's injected metadata rather than doing IPC.
+export function currentWindowLabel(): string {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    // Running outside Tauri (vitest, a plain browser): treat as the workbench.
+    return MAIN_WINDOW_LABEL;
+  }
+}
+
+export function isGitWindow(): boolean {
+  return currentWindowLabel() === GIT_WINDOW_LABEL;
+}
+
+export function isEditorWindow(): boolean {
+  return currentWindowLabel() === EDITOR_WINDOW_LABEL;
+}
+
+/// True in the workbench — including outside Tauri, where there is no window
+/// label to read and the workbench is the only sensible default.
+export function isMainWindow(): boolean {
+  return currentWindowLabel() === MAIN_WINDOW_LABEL;
+}
+
+// ─── Stacked mode ───────────────────────────────────────────────────────────
+//
+// In stacked mode there are no satellite windows: the workbench hosts the git
+// client and the editor as switchable views. Every "show me the editor" call
+// site — the title bar, the git sidebar's file rows, the file tree, the command
+// palette, a terminal deep-link — would otherwise need its own mode check. So
+// the workbench registers a router here instead and the functions below route
+// to it, which keeps every one of those call sites written once.
+
+export interface StackedViewRouter {
+  showWorkbench(): void;
+  showEditor(): void;
+  showGit(): void;
+}
+
+let stackedRouter: StackedViewRouter | null = null;
+
+/// Install (or clear, with `null`) the stacked-mode router. Only the workbench
+/// calls this, from an effect on the environment-mode setting.
+export function setStackedViewRouter(router: StackedViewRouter | null): void {
+  stackedRouter = router;
+}
+
+/// True when this window is hosting the other two as views. Reads the installed
+/// router rather than the settings store so `api/` keeps no dependency on it.
+export function isStackedRouting(): boolean {
+  return stackedRouter !== null;
+}
+
+// ─── Opening and closing ────────────────────────────────────────────────────
+
+/// Open the git window, or focus it if it is already open. Resolves to `true`
+/// when a window was actually created.
+///
+/// In stacked mode there is nothing to create — this switches the workbench to
+/// its git view and reports `true`, which callers read as "you are looking at it
+/// now" rather than "it was already open behind something".
+export async function openGitWindow(): Promise<boolean> {
+  if (stackedRouter) {
+    stackedRouter.showGit();
+    return true;
+  }
+  return invoke<boolean>("open_git_window");
+}
+
+export async function closeGitWindow(): Promise<void> {
+  await invoke("close_git_window");
+}
+
+export async function isGitWindowOpen(): Promise<boolean> {
+  // A view is not a window: stacked mode has nothing open to report, and
+  // answering `true` here would make the workbench try to close itself.
+  if (stackedRouter) return false;
+  return invoke<boolean>("is_git_window_open");
+}
+
+/// Open the editor window, or focus it if it is already open. Resolves to
+/// `true` when a window was actually created.
+export async function openEditorWindow(): Promise<boolean> {
+  if (stackedRouter) {
+    stackedRouter.showEditor();
+    return true;
+  }
+  return invoke<boolean>("open_editor_window");
+}
+
+export async function closeEditorWindow(): Promise<void> {
+  await invoke("close_editor_window");
+}
+
+export async function isEditorWindowOpen(): Promise<boolean> {
+  if (stackedRouter) return false;
+  return invoke<boolean>("is_editor_window_open");
+}
+
+/// Bring the workbench window to the front.
+export async function focusMainWindow(): Promise<void> {
+  // Stacked mode: "go back to the workbench" is a view switch, and the window
+  // is already in front by definition.
+  if (stackedRouter) {
+    stackedRouter.showWorkbench();
+    return;
+  }
+  await invoke("focus_main_window");
+}
+
+/// Bring the editor window to the front. No-op when it isn't open.
+export async function focusEditorWindow(): Promise<void> {
+  if (stackedRouter) {
+    stackedRouter.showEditor();
+    return;
+  }
+  await invoke("focus_editor_window");
+}
+
+/// Make sure the editor window exists and is in front.
+///
+/// The workbench calls this after every action that puts a file into the
+/// editor's tab list — a terminal deep-link, the file finder, a click in the
+/// git sidebar. Opening already focuses a freshly-created window, so the extra
+/// `focusEditorWindow` only matters for the "already open, behind us" case.
+export async function showEditorWindow(): Promise<void> {
+  const created = await openEditorWindow();
+  if (!created) await focusEditorWindow();
+}
+
+// ─── Actions the git window hands back to the workbench ─────────────────────
+
+const WORKTREE_WIZARD_EVENT = "voidlink://open-worktree-wizard";
+
+/// Payload for a forwarded new-worktree request. Mirrors the fields
+/// `requestNewWorktree` needs, minus the workspace id — the workbench resolves
+/// that itself, since it is the one that owns the workspace list.
+export interface WorktreeWizardRequest {
+  repoRoot: string;
+  sourcePath: string;
+}
+
+/// Ask the workbench to open the new-worktree wizard, and focus it.
+///
+/// Creating a worktree registers it in the layout store and spawns a terminal
+/// for the post-create command. Both of those belong to `main`: the git
+/// window's store is not persisted, and it has no terminal surface to attach a
+/// PTY to, so running the wizard there would leak a shell nobody can see.
+export async function requestWorktreeWizardOnMain(
+  req: WorktreeWizardRequest,
+): Promise<void> {
+  await emit(WORKTREE_WIZARD_EVENT, req);
+  await focusMainWindow();
+}
+
+/// Subscribe to forwarded wizard requests. Workbench side.
+export function onWorktreeWizardRequest(
+  handler: (req: WorktreeWizardRequest) => void,
+): Promise<UnlistenFn> {
+  return listenLoudly<WorktreeWizardRequest>(WORKTREE_WIZARD_EVENT, handler);
+}
+
+// ─── Context: main broadcasts, satellites consume ───────────────────────────
+
+/// Fire-and-forget emit.
+///
+/// These are all broadcasts to a window that may not exist, sent from effects
+/// that run during boot. A rejection here means the other window did not hear
+/// something optional — never a reason to fail the caller, and never something
+/// the user can act on, so it does not propagate.
+///
+/// It *is* logged, though. An empty catch here once hid a real bug for a whole
+/// release: the editor window had no entry in `src-tauri/capabilities/`, so
+/// `core:event` was denied, every emit and listen rejected, and the window sat
+/// on "Waiting for the workbench…" with a silent console. The next missing
+/// capability should be one glance away.
+async function emitQuietly(event: string, payload?: unknown): Promise<void> {
+  try {
+    await emit(event, payload);
+  } catch (e) {
+    console.error(`[windows] emit ${event} failed in "${currentWindowLabel()}":`, e);
+  }
+}
+
+/// Register a cross-window listener, logging a rejected subscription instead of
+/// leaving it as an unhandled rejection. Same reasoning as `emitQuietly`: a
+/// permission problem must not look like "nothing happened".
+async function listenLoudly<T>(
+  event: string,
+  handler: (payload: T) => void,
+): Promise<UnlistenFn> {
+  try {
+    return await listen<T>(event, (e) => handler(e.payload));
+  } catch (e) {
+    console.error(`[windows] listen ${event} failed in "${currentWindowLabel()}":`, e);
+    // A no-op disposer keeps every caller's cleanup path uniform.
+    return () => {};
+  }
+}
+
+/// Broadcast the active repository. Called by the workbench whenever the
+/// active worktree changes, and again whenever a satellite asks.
+///
+/// Safe to call when no satellite is open — the event simply has no listener.
+export async function publishWindowContext(ctx: WindowContext): Promise<void> {
+  await emitQuietly(CONTEXT_EVENT, ctx);
+}
+
+/// Subscribe to context broadcasts. Satellite side.
+export function onWindowContext(
+  handler: (ctx: WindowContext) => void,
+): Promise<UnlistenFn> {
+  return listenLoudly<WindowContext>(CONTEXT_EVENT, handler);
+}
+
+/// Ask the workbench to re-broadcast the current context.
+///
+/// A satellite emits this on mount because it may have opened *after* the last
+/// context change, in which case it missed the broadcast and would otherwise
+/// sit empty until the user switched worktrees.
+export async function requestWindowContext(): Promise<void> {
+  await emitQuietly(CONTEXT_REQUEST_EVENT);
+}
+
+/// Subscribe to context requests. Workbench side.
+export function onWindowContextRequest(handler: () => void): Promise<UnlistenFn> {
+  return listenLoudly(CONTEXT_REQUEST_EVENT, () => handler());
+}
+
+// ─── Refs changed: either direction ─────────────────────────────────────────
+
+interface RefsPayload {
+  /// Window label that produced the change. Used to drop our own echo —
+  /// Tauri delivers an emitted event to every window including the sender,
+  /// and re-handling it here would loop straight back out through
+  /// `bridgeLocalRefsChanges`.
+  source: string;
+}
+
+/// Tell the other window that refs moved.
+export async function publishGitRefsChanged(): Promise<void> {
+  await emitQuietly(REFS_EVENT, { source: currentWindowLabel() } satisfies RefsPayload);
+}
+
+/// Turn cross-window ref pings into the in-process pulse every pane already
+/// listens to, and vice versa. Returns a disposer.
+///
+/// Call once per window, at the root. The `source` guard is what stops the
+/// windows from ping-ponging a single commit forever.
+export function bridgeGitRefsAcrossWindows(): () => void {
+  const self = currentWindowLabel();
+  let disposed = false;
+  let unlisten: UnlistenFn | null = null;
+
+  // Remote → local. `emitGitRefsChanged` dispatches a DOM event, which our own
+  // `bridgeLocalRefsChanges` listener below would re-publish; the `echoing`
+  // latch suppresses exactly that one hop.
+  let echoing = false;
+  void listenLoudly<RefsPayload>(REFS_EVENT, (payload) => {
+    if (payload?.source === self) return;
+    echoing = true;
+    try {
+      emitGitRefsChanged();
+    } finally {
+      echoing = false;
+    }
+  }).then((fn) => {
+    if (disposed) void fn();
+    else unlisten = fn;
+  });
+
+  // Local → remote.
+  const onLocal = () => {
+    if (echoing) return;
+    void publishGitRefsChanged();
+  };
+  window.addEventListener("voidlink:refresh-git", onLocal);
+
+  return () => {
+    disposed = true;
+    window.removeEventListener("voidlink:refresh-git", onLocal);
+    if (unlisten) void unlisten();
+  };
+}
+
+// ─── Editor tabs: main owns them, the editor window renders them ─────────────
+//
+// The editor window is the *view* over four tab collections that live in the
+// workbench's store (`openFilesByWorktree`, `diffTabsByWorktree`,
+// `conflictTabsByWorktree`, `previewTabsByWorktree`). It is deliberately not a
+// second writer: two windows persisting the same localStorage keys would race,
+// and the last writer would silently clobber the other's tabs. So the flow is
+// one-directional in each direction —
+//
+//   main   → editor:  the whole tab slice, as a snapshot, on every change
+//   editor → main:    "please open / close / activate / reorder / pin this"
+//
+// which means there is exactly one copy of the truth and no merge to get wrong.
+// Everything Monaco owns (models, dirty flags, cursor, scroll, folding) stays
+// local to the editor window and never crosses.
+
+/// The tab kinds the editor window renders. `main` keeps terminals, compares,
+/// stacks, the commit graph, brain and browser tabs.
+export type EditorTabKind = "file" | "diff" | "conflict" | "preview";
+
+/// Only three of the four collections are reorderable — conflict tabs have no
+/// list in `reorderItemTab`, and a merge in progress is not something you sort.
+export type EditorReorderableKind = Exclude<EditorTabKind, "conflict">;
+
+/// A "jump to this line" ping riding along with the snapshot.
+export interface EditorReveal {
+  path: string;
+  line?: number;
+  column?: number;
+  /// Monotonic counter, assigned by the workbench. The editor window applies a
+  /// reveal only when the seq is new: the same snapshot gets re-sent whenever a
+  /// freshly-opened window asks for one, and without this the cursor would be
+  /// yanked back to the last deep-link on every rebroadcast.
+  seq: number;
+}
+
+/// Everything the editor window needs to render its tab strip.
+export interface EditorTabsSnapshot {
+  worktreeId: string;
+  repoPath: string | null;
+  files: OpenFileTab[];
+  diffs: DiffTab[];
+  conflicts: ConflictTab[];
+  previews: PreviewTab[];
+  /// Pinned tab ids for this worktree — the same flat list the workbench keeps,
+  /// filtered to nothing in particular because ids are unique across kinds.
+  pinned: string[];
+  /// Which editor tab is in front. Tracked separately from the workbench's own
+  /// `activeItem` so the two windows can focus independently: clicking a file
+  /// here must not blank out the terminal the user is watching there.
+  active: ActiveItem | null;
+  reveal: EditorReveal | null;
+}
+
+/// A mutation the editor window asks the workbench to perform. Fire-and-forget:
+/// the workbench applies it, persists, and rebroadcasts the snapshot, which is
+/// what actually updates the editor window's UI.
+export type EditorRequest =
+  | { kind: "open-file"; path: string }
+  | { kind: "open-diff"; filePath: string }
+  | { kind: "open-conflict"; filePath: string }
+  | { kind: "open-preview"; filePath: string }
+  | { kind: "close"; tab: EditorTabKind; id: string }
+  | { kind: "activate"; tab: EditorTabKind; id: string }
+  | { kind: "reorder"; tab: EditorReorderableKind; fromId: string; toId: string | null }
+  | { kind: "toggle-pin"; id: string }
+  /// Compare is a workbench surface; the editor's file tree can still start one
+  /// (its right-click menu offers "Compare with <trunk>"), it just lands over
+  /// there. The sender focuses `main` itself so the tab isn't opened offscreen.
+  | {
+      kind: "open-compare";
+      baseRef: string;
+      headRef: string;
+      useMergeBase: boolean;
+      selectedFilePath: string | null;
+    };
+
+const EDITOR_TABS_EVENT = "voidlink://editor-tabs";
+const EDITOR_TABS_REQUEST_EVENT = "voidlink://editor-tabs-request";
+const EDITOR_REQUEST_EVENT = "voidlink://editor-request";
+
+/// Broadcast the editor tab slice. Workbench side; safe when the editor window
+/// is closed.
+export async function publishEditorTabs(snapshot: EditorTabsSnapshot): Promise<void> {
+  await emitQuietly(EDITOR_TABS_EVENT, snapshot);
+}
+
+/// Subscribe to tab-slice broadcasts. Editor-window side.
+export function onEditorTabs(
+  handler: (snapshot: EditorTabsSnapshot) => void,
+): Promise<UnlistenFn> {
+  return listenLoudly<EditorTabsSnapshot>(EDITOR_TABS_EVENT, handler);
+}
+
+/// Ask the workbench to re-broadcast the tab slice. Same late-join problem the
+/// context request solves: an editor window that opened after the last change
+/// would otherwise render an empty strip until the next one.
+export async function requestEditorTabs(): Promise<void> {
+  await emitQuietly(EDITOR_TABS_REQUEST_EVENT);
+}
+
+/// Subscribe to tab-slice requests. Workbench side.
+export function onEditorTabsRequest(handler: () => void): Promise<UnlistenFn> {
+  return listenLoudly(EDITOR_TABS_REQUEST_EVENT, () => handler());
+}
+
+/// Send a tab mutation to the workbench. Editor-window side.
+///
+/// Deliberately does not focus `main`: these fire on every tab click, and
+/// stealing the front window out from under someone editing code would make the
+/// editor unusable. The one request that needs focus (`open-compare`) is
+/// followed by an explicit `focusMainWindow()` at its call site.
+export async function sendEditorRequest(req: EditorRequest): Promise<void> {
+  await emitQuietly(EDITOR_REQUEST_EVENT, req);
+}
+
+/// Subscribe to tab mutations from the editor window. Workbench side.
+export function onEditorRequest(
+  handler: (req: EditorRequest) => void,
+): Promise<UnlistenFn> {
+  return listenLoudly<EditorRequest>(EDITOR_REQUEST_EVENT, handler);
+}
+
+/// Put a tab in the editor window and bring it forward, from any window.
+///
+/// The workbench owns the tab list, so there it applies the change directly;
+/// anywhere else the same intent has to travel as a request, because that
+/// window's store is a read-only mirror and writing to it would produce a tab
+/// nobody ever renders. Callers pass both halves and this picks the right one.
+export async function openEditorTab(
+  req: EditorRequest,
+  applyInWorkbench: () => void,
+): Promise<void> {
+  if (isMainWindow()) applyInWorkbench();
+  else await sendEditorRequest(req);
+  await showEditorWindow();
+}

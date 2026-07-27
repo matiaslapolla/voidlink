@@ -7,6 +7,7 @@ import {
   useSettings,
   type AiKeyBinding,
   type CursorStyle,
+  type EnvironmentMode,
   type UiDensity,
   type UiTextSize,
 } from "@/store/settings";
@@ -158,6 +159,10 @@ const TEXT_SIZES: { id: UiTextSize; label: string }[] = [
   { id: "base", label: "Base" },
   { id: "xl", label: "XL" },
 ];
+const ENVIRONMENT_MODES: { id: EnvironmentMode; label: string }[] = [
+  { id: "detached", label: "Detached" },
+  { id: "stacked", label: "Stacked" },
+];
 const DENSITIES: { id: UiDensity; label: string }[] = [
   { id: "compact", label: "Compact" },
   { id: "normal", label: "Normal" },
@@ -180,6 +185,19 @@ function UiPane() {
         options={DENSITIES}
         onChange={(v) => updateUi({ density: v })}
       />
+      <div>
+        <SegmentedRow
+          label="Environment mode"
+          value={settings.ui.environmentMode}
+          options={ENVIRONMENT_MODES}
+          onChange={(v) => updateUi({ environmentMode: v })}
+        />
+        <p class="mt-1 ml-[7.75rem] text-[11px] text-muted-foreground/80">
+          Detached gives the git client and the editor their own windows.
+          Stacked keeps all three in this window, switched from the title bar —
+          switching to it closes any satellite window already open.
+        </p>
+      </div>
     </div>
   );
 }

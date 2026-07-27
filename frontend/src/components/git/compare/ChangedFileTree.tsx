@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { ChevronRight, FolderTree, List, Search } from "lucide-solid";
 import type { FileDiff } from "@/types/git";
 import type { CompareTreeMode } from "@/store/layout";
+import { StatusBadge } from "@/components/git/shared/StatusBadge";
 
 // Tree panel for the Compare tab. Mirrors the VSCode "git-tree-compare"
 // experience: hierarchical view of changed files with status icons,
@@ -126,21 +127,6 @@ function buildTree(files: FileDiff[]): TreeNode {
     return { ...node, children: collapsed };
   }
   return compact(root);
-}
-
-function statusIcon(status: FileDiff["status"]) {
-  switch (status) {
-    case "added":
-      return { ch: "A", color: "text-success" };
-    case "deleted":
-      return { ch: "D", color: "text-destructive" };
-    case "renamed":
-      return { ch: "R", color: "text-info" };
-    case "copied":
-      return { ch: "C", color: "text-info" };
-    default:
-      return { ch: "M", color: "text-warning" };
-  }
 }
 
 function fuzzyMatches(filter: string, path: string): boolean {
@@ -410,8 +396,6 @@ function FileRow(props: {
 }) {
   const file = props.node.file!;
   const sel = () => props.selectedPath === props.node.path;
-  const ic = () => statusIcon(file.status);
-
   return (
     <button
       type="button"
@@ -422,7 +406,7 @@ function FileRow(props: {
       style={{ "padding-left": `${props.depth * 12 + 18}px` }}
       title={props.node.path}
     >
-      <span class={`w-3 text-[10px] font-bold shrink-0 ${ic().color}`}>{ic().ch}</span>
+      <StatusBadge status={file.status} />
       <span class="flex-1 truncate">{props.node.label}</span>
       <span class="text-[10px] tabular-nums text-muted-foreground/70 shrink-0">
         <span class="text-success">+{file.additions}</span>{" "}
@@ -454,7 +438,6 @@ function FlatList(props: {
         {(file) => {
           const path = pathOf(file);
           const sel = () => props.selectedPath === path;
-          const ic = () => statusIcon(file.status);
           return (
             <button
               type="button"
@@ -464,7 +447,7 @@ function FlatList(props: {
               }`}
               title={path}
             >
-              <span class={`w-3 text-[10px] font-bold shrink-0 ${ic().color}`}>{ic().ch}</span>
+              <StatusBadge status={file.status} />
               <span class="flex-1 truncate">{path}</span>
               <span class="text-[10px] tabular-nums text-muted-foreground/70 shrink-0">
                 <span class="text-success">+{file.additions}</span>{" "}

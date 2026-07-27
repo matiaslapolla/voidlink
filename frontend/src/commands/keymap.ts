@@ -70,7 +70,17 @@ export interface KeymapEntry {
   /// Why this chord, when the answer isn't obvious. Surfaced nowhere — it's
   /// for whoever next has to decide whether they're allowed to change it.
   note?: string;
+  /// Which window registers the action this chord fires. Omitted means the
+  /// workbench. The chord is still installed everywhere — every window builds
+  /// its bindings from the same table — but the dev-time "is this action really
+  /// registered?" audit only holds a window responsible for its own entries.
+  window?: KeymapWindow;
 }
+
+/// The window roles a keymap entry can belong to. Mirrors the Tauri window
+/// labels in `src-tauri/src/window.rs`; the git window registers no actions of
+/// its own, so it does not appear here.
+export type KeymapWindow = "main" | "editor";
 
 /// Chords whose `event.key` is the *shifted* character on a US layout are
 /// declared with that shifted value (`?` for Shift+/, `~` for Shift+backquote)
@@ -102,6 +112,7 @@ export const KEYMAP: readonly KeymapEntry[] = [
   {
     actionId: "file.save",
     group: "File",
+    window: "editor",
     binding: { meta: true, key: "s", scope: "outside-terminal" },
     note: "Ctrl+S is XOFF in a shell — scoped so the terminal keeps flow control.",
   },
@@ -110,7 +121,12 @@ export const KEYMAP: readonly KeymapEntry[] = [
   { actionId: "ui.toggle-left-sidebar", group: "View", binding: { meta: true, key: "b" } },
   { actionId: "ui.toggle-git-sidebar", group: "View", binding: { meta: true, key: "j" } },
   { actionId: "ui.swap-sidebars", group: "View", binding: { meta: true, key: "\\" } },
-  { actionId: "view.toggle-blame", group: "View", binding: { meta: true, alt: true, key: "b" } },
+  {
+    actionId: "view.toggle-blame",
+    group: "View",
+    window: "editor",
+    binding: { meta: true, alt: true, key: "b" },
+  },
   {
     actionId: "ui.toggle-diff-mode",
     group: "View",
@@ -290,11 +306,17 @@ export function validateKeymapShape(): KeymapProblem[] {
 ///
 /// Pass the ids that are really registered (`getActions().map(a => a.id)`) for
 /// the runtime assertion, or `ACTION_IDS` for the static test.
-export function validateKeymap(knownActionIds: readonly string[]): KeymapProblem[] {
+export function validateKeymap(
+  knownActionIds: readonly string[],
+  opts: { window?: KeymapWindow } = {},
+): KeymapProblem[] {
   const known = new Set(knownActionIds);
   const problems = validateKeymapShape();
 
   for (const entry of KEYMAP) {
+    // When auditing one window, entries owned by another are somebody else's
+    // to register — flagging them here would just be noise in the console.
+    if (opts.window && (entry.window ?? "main") !== opts.window) continue;
     if (!known.has(entry.actionId)) {
       problems.push({
         kind: "unknown-action",

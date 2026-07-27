@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { isGitWindow, requestWorktreeWizardOnMain } from "@/api/gitWindow";
+import { isGitWindow, requestWorktreeWizardOnMain } from "@/api/windows";
 
 /// Cross-component request channel for the new-worktree flow, mirroring the
 /// toast / prompt pattern: a module-level signal drives a single host mounted
