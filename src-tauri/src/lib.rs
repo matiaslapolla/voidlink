@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
+mod browser;
 mod git;
 mod fs;
 mod brain;
@@ -591,6 +592,7 @@ pub fn run() {
         .manage(pty_store.clone())
         .manage(pty_channels)
         .manage(git_state)
+        .manage(browser::new_store())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -730,6 +732,17 @@ pub fn run() {
             secrets::secret_set,
             secrets::secret_delete,
             secrets::secret_status,
+            browser::browser_open,
+            browser::browser_navigate,
+            browser::browser_reload,
+            browser::browser_back,
+            browser::browser_forward,
+            browser::browser_set_rect,
+            browser::browser_show,
+            browser::browser_hide,
+            browser::browser_close,
+            browser::browser_open_devtools,
+            browser::browser_close_orphans,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

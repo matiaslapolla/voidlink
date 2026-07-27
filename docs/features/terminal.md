@@ -115,6 +115,29 @@ between displays of different pixel density. The WebGL glyph atlas is built for
 one DPR, so without this the grid stays blurry after the move; on change we
 call `clearTextureAtlas()`, refresh, and re-arm the query for the new DPR.
 
+## Why the pane doesn't go black
+
+A WebGL drawing buffer's contents are undefined after the compositor presents a
+frame, and xterm only redraws rows it considers damaged. An idle terminal that
+gets composited again — window blurred, app occluded, tab switched back — can
+therefore come back as an empty buffer: the grid reads as completely black until
+the shell happens to write something.
+
+Two defences, because on some GPU/driver pairs the first one alone isn't enough:
+
+- The WebGL addon is constructed with `preserveDrawingBuffer: true`, so the
+  buffer survives compositing. It costs a little fill bandwidth per frame and
+  touches nothing in the data pipeline.
+- Regaining focus repaints. `focusin` on the pane (it bubbles, so it catches
+  focus landing on xterm's hidden textarea), window `focus`, and
+  `visibilitychange` each schedule a `clearTextureAtlas()` + full `refresh()` on
+  the next animation frame — deferred, so the repaint lands after the window is
+  actually on screen rather than on the frame about to be discarded.
+
+Context loss is the third case: the addon is disposed, xterm falls back to the
+DOM renderer, and the same repaint runs so the grid comes back immediately
+instead of waiting for the next byte of output.
+
 ## Scrolling
 
 Three different things happen depending on what is on screen:

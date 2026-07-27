@@ -24,7 +24,14 @@ log = "0.4"
 # Pinned to an exact version on purpose: `unstable` gates the multiwebview API
 # (browser tabs are child webviews), and unstable APIs are allowed to break
 # across patch/minor releases. A caret range would let that happen silently.
-tauri = { version = "=2.11.2", features = ["unstable"] }
+# `devtools` is what makes `open_devtools` compile in release too — the
+# embedded browser exposes an inspector button in every build, and gating it on
+# `debug_assertions` would make that button a no-op in the shipped app.
+tauri = { version = "=2.11.2", features = ["unstable", "devtools"] }
+# Re-exported by tauri, but depended on directly: `Webview::navigate` takes a
+# `Url`, and parsing at the command boundary is what rejects a malformed
+# address before a webview is built around it.
+url = "2"
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2.7"
 tauri-plugin-fs = "2.5"

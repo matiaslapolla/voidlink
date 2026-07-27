@@ -45,7 +45,7 @@ import { blameEnabled, configureBlame, toggleBlame } from "@/components/editor/b
 import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
 import { setOverlayOpen } from "@/commands/overlay";
 import { agentPanelOpen } from "@/commands/agent";
-import { webviewApi } from "@/api/webview";
+import { browserApi } from "@/api/webview";
 import {
   bridgeGitRefsAcrossWindows,
   onGitContextRequest,
@@ -53,7 +53,7 @@ import {
   openGitWindow,
   publishGitContext,
 } from "@/api/gitWindow";
-import { BROWSER_WEBVIEW_PREFIX, normalizeUrl } from "@/components/browser/BrowserPane";
+import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import type { ActiveItem } from "@/store/layout";
 
@@ -67,9 +67,7 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
     void actions.hydrateAllWorktrees();
     // A crash or hard reload can leave child webviews alive with no component
     // owning them — and a child webview paints above everything. Sweep ours.
-    void webviewApi
-      .closeOrphans((label) => label.startsWith(BROWSER_WEBVIEW_PREFIX))
-      .catch(() => {});
+    void browserApi.closeOrphans().catch(() => {});
   });
 
   // ── Standalone git window ────────────────────────────────────────────────

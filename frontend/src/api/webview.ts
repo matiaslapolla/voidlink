@@ -1,19 +1,26 @@
-import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
-import { Webview } from "@tauri-apps/api/webview";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-/// Thin wrapper over Tauri's multiwebview API so components never touch
-/// `@tauri-apps/api/webview` (or `invoke`) directly.
+/// The frontend half of the embedded browser. Components never touch
+/// `@tauri-apps/api/webview` or `invoke` directly — this is the only module
+/// that knows a browser tab is a webview at all.
 ///
-/// This is the **unstable** part of Tauri v2: `create_webview` is gated behind
-/// the `unstable` Cargo feature on the `tauri` crate, which is why
-/// `src-tauri/Cargo.toml` pins an exact version rather than a caret range.
-/// Every call here can therefore fail at runtime on a mismatched build; the
-/// caller is expected to surface that rather than swallow it.
+/// The webview itself is owned by `src-tauri/src/browser/mod.rs`, not by
+/// JavaScript. That split exists because the JS `Webview` handle can position,
+/// show, hide and close a webview and nothing else: no navigation, no history,
+/// no page-load or title callbacks. A tab driven from here could only
+/// "navigate" by closing the webview and building a new one, which discards
+/// the page's session every time, and it could never learn where the page went
+/// when the user clicked a link. Rust has all of it, so Rust owns the webview
+/// and this module sends it commands keyed by the tab id.
 ///
-/// A child webview always composites *above* the DOM — there is no z-index
-/// that puts a dialog over it. Anything not currently visible must be moved
-/// off-screen or hidden, never merely covered.
+/// Two properties of a child webview shape every caller:
+///
+///   1. It composites *above* the DOM. No z-index puts a dialog over it, so
+///      anything that should hide it must call `hide` — covering it does
+///      nothing.
+///   2. It is positioned in window coordinates, not laid out. Its rectangle
+///      has to be pushed on every reflow, which is what `setRect` is for.
 
 export interface WebviewRect {
   x: number;
@@ -22,72 +29,94 @@ export interface WebviewRect {
   height: number;
 }
 
-/// Where we park a webview that shouldn't be visible. `hide()` is the primary
-/// mechanism; this is the fallback for platforms where hide is a no-op.
-const OFFSCREEN: WebviewRect = { x: -20000, y: -20000, width: 1, height: 1 };
+/// A tab settled on a page — the user navigated, clicked a link, or a redirect
+/// resolved. The traversal flags ride along because history lives in Rust;
+/// re-deriving them here would mean keeping a second copy of the stack.
+export interface BrowserNavigated {
+  tabId: string;
+  url: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
 
-export const webviewApi = {
-  /// Create a child webview of the main window at `rect`, loading `url`.
-  /// Resolves once Tauri reports the webview created, rejects with the
-  /// backend's error otherwise.
-  async createChild(label: string, url: string, rect: WebviewRect): Promise<Webview> {
-    const parent = getCurrentWindow();
-    const webview = new Webview(parent, label, {
-      url,
-      x: rect.x,
-      y: rect.y,
-      width: Math.max(1, rect.width),
-      height: Math.max(1, rect.height),
-      // The child renders untrusted remote pages: no Tauri IPC surface, and no
-      // drag-drop hijacking of the host window.
-      dragDropEnabled: false,
-    });
-    await new Promise<void>((resolve, reject) => {
-      void webview.once("tauri://created", () => resolve());
-      void webview.once<{ message?: string }>("tauri://error", (e) =>
-        reject(new Error(e.payload?.message ?? "failed to create webview")),
-      );
-    });
-    return webview;
+export interface BrowserTitleChanged {
+  tabId: string;
+  title: string;
+}
+
+const NAVIGATED_EVENT = "voidlink://browser-navigated";
+const TITLE_EVENT = "voidlink://browser-title";
+
+/// Floor every dimension at one logical pixel — a zero-sized webview is a
+/// platform error on some backends.
+function sane(rect: WebviewRect): WebviewRect {
+  return {
+    x: rect.x,
+    y: rect.y,
+    width: Math.max(1, rect.width),
+    height: Math.max(1, rect.height),
+  };
+}
+
+export const browserApi = {
+  /// Create the tab's webview at `rect`, loading `url`.
+  open(tabId: string, url: string, rect: WebviewRect): Promise<void> {
+    return invoke<void>("browser_open", { tabId, url, rect: sane(rect) });
   },
 
-  async setRect(webview: Webview, rect: WebviewRect): Promise<void> {
-    await webview.setPosition(new LogicalPosition(rect.x, rect.y));
-    await webview.setSize(
-      new LogicalSize(Math.max(1, rect.width), Math.max(1, rect.height)),
-    );
+  /// Navigate in place. Unlike the close-and-recreate this replaced, the page
+  /// keeps its process — and with it any session it had established.
+  navigate(tabId: string, url: string): Promise<void> {
+    return invoke<void>("browser_navigate", { tabId, url });
   },
 
-  /// Hide a child webview. Falls back to parking it off-screen when the
-  /// platform's `hide` doesn't take, because a stale child webview paints over
-  /// every dialog and menu in the app.
-  async hide(webview: Webview): Promise<void> {
-    try {
-      await webview.hide();
-    } catch {
-      await webviewApi.setRect(webview, OFFSCREEN);
-    }
+  reload(tabId: string): Promise<void> {
+    return invoke<void>("browser_reload", { tabId });
   },
 
-  async show(webview: Webview, rect: WebviewRect): Promise<void> {
-    await webviewApi.setRect(webview, rect);
-    await webview.show();
+  /// Step through the tab's visited-URL stack. No-ops at either end rather
+  /// than rejecting, so a keybinding firing on a disabled button is harmless.
+  back(tabId: string): Promise<void> {
+    return invoke<void>("browser_back", { tabId });
   },
 
-  async close(webview: Webview): Promise<void> {
-    await webview.close();
+  forward(tabId: string): Promise<void> {
+    return invoke<void>("browser_forward", { tabId });
   },
 
-  /// Close any child webview matching `predicate`. Used on boot to sweep up
-  /// webviews orphaned by a crash — they would otherwise float above the UI
-  /// with nothing owning them.
-  async closeOrphans(predicate: (label: string) => boolean): Promise<void> {
-    const { getAllWebviews } = await import("@tauri-apps/api/webview");
-    const all = await getAllWebviews();
-    await Promise.all(
-      all
-        .filter((w) => predicate(w.label))
-        .map((w) => w.close().catch(() => {})),
-    );
+  setRect(tabId: string, rect: WebviewRect): Promise<void> {
+    return invoke<void>("browser_set_rect", { tabId, rect: sane(rect) });
+  },
+
+  /// Position and reveal in one call — showing at a stale rectangle paints the
+  /// old position for a frame.
+  show(tabId: string, rect: WebviewRect): Promise<void> {
+    return invoke<void>("browser_show", { tabId, rect: sane(rect) });
+  },
+
+  hide(tabId: string): Promise<void> {
+    return invoke<void>("browser_hide", { tabId });
+  },
+
+  close(tabId: string): Promise<void> {
+    return invoke<void>("browser_close", { tabId });
+  },
+
+  openDevtools(tabId: string): Promise<void> {
+    return invoke<void>("browser_open_devtools", { tabId });
+  },
+
+  /// Close browser webviews no live tab owns. Called on boot to sweep up
+  /// anything a crash left floating above the UI.
+  closeOrphans(): Promise<void> {
+    return invoke<void>("browser_close_orphans");
+  },
+
+  onNavigated(handler: (e: BrowserNavigated) => void): Promise<UnlistenFn> {
+    return listen<BrowserNavigated>(NAVIGATED_EVENT, (e) => handler(e.payload));
+  },
+
+  onTitleChanged(handler: (e: BrowserTitleChanged) => void): Promise<UnlistenFn> {
+    return listen<BrowserTitleChanged>(TITLE_EVENT, (e) => handler(e.payload));
   },
 };

@@ -5554,6 +5554,7 @@ dependencies = [
  "tauri-plugin-fs",
  "tauri-plugin-log",
  "tempfile",
+ "url",
  "uuid",
 ]
 

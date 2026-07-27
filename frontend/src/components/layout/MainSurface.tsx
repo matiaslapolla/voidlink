@@ -9,7 +9,7 @@ import { ConflictTab as ConflictTabView } from "@/components/git/conflict/Confli
 import { CommitGraph } from "@/components/git/history/CommitGraph";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import { BrainSurface } from "@/components/brain/BrainSurface";
-import { BrowserPane, normalizeUrl } from "@/components/browser/BrowserPane";
+import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
 import { EditorHost } from "@/components/editor/EditorHost";
 import { editorController } from "@/components/editor/editorController";
 import { useOpenFiles } from "@/components/editor/useOpenFiles";
@@ -799,13 +799,7 @@ export function MainSurface() {
           <For each={activeBrowserTabs()}>
             {(tab) => {
               const isActive = () => tab.id === activeBrowserId();
-              const host = () => {
-                try {
-                  return new URL(tab.url).host || tab.url;
-                } catch {
-                  return tab.url || "new tab";
-                }
-              };
+              const label = () => browserTabLabel(tab);
               return (
                 <div
                   class={`group flex items-center gap-1.5 px-3 h-full border-r border-border shrink-0 text-[13px] cursor-pointer select-none transition-colors ${
@@ -823,14 +817,14 @@ export function MainSurface() {
                   title={tab.url}
                 >
                   <Globe class="w-3.5 h-3.5 shrink-0 text-info opacity-80" />
-                  <span class="max-w-[160px] truncate">{host()}</span>
+                  <span class="max-w-[160px] truncate">{label()}</span>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       actions.closeBrowserTab(state.activeWorktreeId, tab.id);
                     }}
                     class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
-                    aria-label={`Close browser tab ${host()}`}
+                    aria-label={`Close browser tab ${label()}`}
                   >
                     <X class="w-3 h-3" />
                   </button>
@@ -1094,6 +1088,7 @@ export function MainSurface() {
                 tab={tab}
                 active={tab.id === activeBrowserId()}
                 onUrlChange={(url) => actions.setBrowserUrl(state.activeWorktreeId, tab.id, url)}
+                onTitleChange={(title) => actions.setBrowserTitle(state.activeWorktreeId, tab.id, title)}
               />
             </div>
           )}

@@ -214,13 +214,26 @@ export function TerminalPane(props: TerminalPaneProps) {
     let webglAddon: WebglAddon | null = null;
     if (webgl2Available()) {
       try {
-        const addon = new WebglAddon();
+        // `preserveDrawingBuffer` is the fix for the pane going black when the
+        // app loses focus. By default a WebGL drawing buffer's contents are
+        // undefined after the compositor presents a frame, and xterm only
+        // redraws on damage — so an idle terminal that gets composited again
+        // (window blurred, occluded, tab re-shown) presents an empty buffer and
+        // reads as "the terminal went black". Keeping the buffer costs a little
+        // fill bandwidth per frame; it does not touch the data pipeline, so the
+        // stutter class of problem called out at the top of this file is
+        // unaffected.
+        const addon = new WebglAddon(true);
         // A lost GL context (OOM, GPU reset, system suspend) would otherwise
         // leave a blank canvas. Dispose the addon so xterm falls back to the
         // DOM renderer, and null our ref so cleanup doesn't double-dispose.
         addon.onContextLoss(() => {
           try { addon.dispose(); } catch { /* ignore */ }
           webglAddon = null;
+          // Disposing swaps the DOM renderer back in, but it only paints on the
+          // next damage — without this the grid stays blank until the shell
+          // happens to write something.
+          repaint();
         });
         term.loadAddon(addon);
         webglAddon = addon;
@@ -229,6 +242,20 @@ export function TerminalPane(props: TerminalPaneProps) {
         webglAddon = null;
       }
     }
+
+    /// Force the full grid to repaint, rebuilding the glyph atlas first.
+    ///
+    /// `refresh` alone re-runs the renderer over rows xterm considers damaged,
+    /// which is enough for a stale frame but not for a texture atlas the GPU
+    /// dropped underneath us (DPR change, context recycle, suspend). Clearing
+    /// it first is cheap at the frequency we call this — only on focus,
+    /// visibility and DPR transitions, never per frame.
+    const repaint = () => {
+      try {
+        webglAddon?.clearTextureAtlas();
+        term.refresh(0, term.rows - 1);
+      } catch { /* ignore — the terminal may be mid-teardown */ }
+    };
 
     // ── Device-pixel-ratio changes ────────────────────────────────────
     // The WebGL renderer bakes glyphs into a texture atlas sized for the DPR
@@ -240,10 +267,7 @@ export function TerminalPane(props: TerminalPaneProps) {
     // itself because the query is only true for the DPR it was built with.
     let dprMedia: MediaQueryList | null = null;
     const onDprChange = () => {
-      try {
-        webglAddon?.clearTextureAtlas();
-        term.refresh(0, term.rows - 1);
-      } catch { /* ignore */ }
+      repaint();
       watchDpr();
     };
     const watchDpr = () => {
@@ -256,6 +280,34 @@ export function TerminalPane(props: TerminalPaneProps) {
       }
     };
     watchDpr();
+
+    // ── Repaint on focus / visibility regain ──────────────────────────
+    // Belt to `preserveDrawingBuffer`'s braces. Losing and regaining focus is
+    // exactly when a frame can go stale — the OS composites the window while
+    // xterm has no damage to redraw, and on some GPU/driver combinations the
+    // buffer comes back empty anyway. Repainting on the way back in costs one
+    // frame and makes "click the terminal, it's black" unreachable.
+    //
+    // Deferred to the next frame in every case: the repaint has to land after
+    // the compositor has actually presented the window again, or it repaints
+    // the frame that is about to be thrown away.
+    let repaintFrame: number | null = null;
+    const repaintSoon = () => {
+      if (props.active === false) return;
+      if (repaintFrame !== null) cancelAnimationFrame(repaintFrame);
+      repaintFrame = requestAnimationFrame(() => {
+        repaintFrame = null;
+        repaint();
+      });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") repaintSoon();
+    };
+    // `focusin` (not `focus`) — it bubbles, so it catches focus landing on
+    // xterm's own hidden textarea, which is what "focusing the terminal" is.
+    container.addEventListener("focusin", repaintSoon);
+    window.addEventListener("focus", repaintSoon);
+    document.addEventListener("visibilitychange", onVisibility);
 
     // ── Deep-link providers (path:line, SHAs) ─────────────────────────
     // Use the native xterm link-provider API rather than the web-links
@@ -501,7 +553,7 @@ export function TerminalPane(props: TerminalPaneProps) {
         pendingShowFrame = requestAnimationFrame(() => {
           pendingShowFrame = null;
           doFit();
-          try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
+          repaint();
         });
         markActive(ptyId);
       }
@@ -545,8 +597,12 @@ export function TerminalPane(props: TerminalPaneProps) {
     onCleanup(() => {
       if (fitTimer !== null) clearTimeout(fitTimer);
       if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
+      if (repaintFrame !== null) cancelAnimationFrame(repaintFrame);
       ro.disconnect();
       dprMedia?.removeEventListener("change", onDprChange);
+      container.removeEventListener("focusin", repaintSoon);
+      window.removeEventListener("focus", repaintSoon);
+      document.removeEventListener("visibilitychange", onVisibility);
       unlistenExit();
       unlistenDrop();
       for (const d of linkDisposers) {

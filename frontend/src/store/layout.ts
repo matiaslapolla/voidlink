@@ -72,9 +72,14 @@ export interface OpenFileTab {
 /// An embedded browser tab. The page itself lives in a real Tauri child
 /// webview keyed by `id` — the store only owns the address, so a reload
 /// restores the tab pointing at the same URL.
+///
+/// `title` is whatever the page last reported. It is optional because tabs
+/// persisted before titles existed have none, and because a freshly opened tab
+/// has nothing to show until its first load settles.
 export interface BrowserTab {
   id: string;
   url: string;
+  title?: string;
 }
 
 export type CompareTreeMode = "tree" | "flat";
@@ -308,7 +313,13 @@ function loadBrowserTabs(worktreeIds: string[]): Record<string, BrowserTab[]> {
       const list = Array.isArray(parsed[wtId]) ? parsed[wtId] : [];
       out[wtId] = list
         .filter((t) => t && typeof t.id === "string" && typeof t.url === "string")
-        .map<BrowserTab>((t) => ({ id: t.id, url: t.url }));
+        .map<BrowserTab>((t) => ({
+          id: t.id,
+          url: t.url,
+          // Absent in state persisted before titles were tracked; the tab
+          // label falls back to the host until the page reports one.
+          title: typeof t.title === "string" ? t.title : undefined,
+        }));
     }
     return out;
   } catch {
@@ -1508,6 +1519,14 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       setState(produce((s) => {
         const tab = (s.browserTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
         if (tab) tab.url = url;
+      }));
+    },
+
+    /// Record the title the page reported for itself. Drives the tab label.
+    setBrowserTitle(wtId: string, tabId: string, title: string) {
+      setState(produce((s) => {
+        const tab = (s.browserTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+        if (tab) tab.title = title.trim() || undefined;
       }));
     },
 
