@@ -117,7 +117,17 @@ const DEFAULTS: AppSettings = {
   terminal: {
     // Prefer a nerd-font stack so Starship/powerline glyphs render, with plain
     // system fallbacks if no nerd font is installed.
-    fontFamily: '"JetBrainsMono Nerd Font", "JetBrainsMono NF", "FiraCode Nerd Font", "FiraCode NF", "Cascadia Code", ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace',
+    //
+    // The *Mono* variants come first deliberately. Nerd Fonts ships each icon
+    // twice: at a double-cell advance in the plain family, and squeezed into
+    // one cell in the "Mono"/"NFM" family. xterm assigns the private-use
+    // codepoints those icons live at a width of 1 under every Unicode table it
+    // has, so the plain family draws each prompt icon a cell wider than the
+    // grid reserved — a starship prompt with a handful of icons then sits
+    // several columns right of where the terminal thinks it does, and the
+    // input line redraws over itself. The Mono family is the one meant for
+    // terminals.
+    fontFamily: '"JetBrainsMono Nerd Font Mono", "JetBrainsMono NFM", "JetBrainsMono Nerd Font", "JetBrainsMono NF", "FiraCode Nerd Font Mono", "FiraCode NFM", "Cascadia Code", ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace',
     fontSize: 13,
     lineHeight: 1.2,
     fontWeight: 400,

@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onMount, onCleanup, getOwner, runWithOwner } from "solid-js";
+import { createEffect, createSignal, onMount, onCleanup, getOwner, runWithOwner, untrack } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useSettings } from "@/store/settings";
 import { useTheme } from "@/store/theme";
 import { markActive, recordKeystroke } from "@/commands/terminalHistory";
+import { lastGridSize, rememberGridSize, sizeForPty } from "@/commands/terminalSize";
 
 // Prior perf learning (commit 0b9bfe7): in Tauri's WebKitGTK webview, xterm
 // addons beyond FitAddon hook the data pipeline and cause stutter / glitches.
@@ -231,8 +232,53 @@ export function TerminalPane(props: TerminalPaneProps) {
     }
 
     term.open(container);
-    fitAddon.fit();
-    term.focus();
+
+    // ── Grid size ─────────────────────────────────────────────────────
+    // The shell and the renderer must agree on the column count or every
+    // redraw of the input line paints over the prompt row instead of past it:
+    // zsh computes its cursor moves from the winsize it was given, xterm wraps
+    // at its own grid width. The rule that keeps them together is that the PTY
+    // is told about *grid changes*, not about *fits* — `onResize` fires once
+    // per real change from every path there is (fit, an explicit resize, a
+    // font-option change that reflows), so no path can move the grid without
+    // the shell hearing about it.
+    //
+    // Sizes are published through a promise chain. `resize_pty` is an async
+    // Tauri command and two of them are independent tasks with no ordering
+    // guarantee, so unserialized calls can land oldest-last and strand the
+    // shell on a stale winsize — the very failure this is meant to prevent.
+    let published: { cols: number; rows: number } | null = null;
+    let publishing: Promise<void> = Promise.resolve();
+    const publish = (cols: number, rows: number) => {
+      if (published && published.cols === cols && published.rows === rows) return;
+      published = { cols, rows };
+      publishing = publishing.then(async () => {
+        try {
+          await invoke("resize_pty", { sessionId: ptyId, cols, rows });
+          rememberGridSize(ptyId, cols, rows);
+        } catch {
+          // Session gone, or the ioctl failed. Drop our record of the PTY's
+          // size so the next change retries rather than short-circuiting on a
+          // figure the shell never received.
+          published = null;
+        }
+      });
+    };
+    term.onResize(({ cols, rows }) => publish(cols, rows));
+
+    /// Re-measure the container and reflow the grid to match, reporting
+    /// whether it could be measured at all. Publishing is left to `onResize`.
+    ///
+    /// Fitting while hidden is refused, and not as an optimisation: under
+    /// `display:none` getComputedStyle hands FitAddon the *unresolved* `100%`
+    /// from the pane's `w-full h-full`, so it measures 100px and reflows the
+    /// grid to 11 columns.
+    const refit = (): boolean => {
+      if (props.active === false) return false;
+      if (!container.clientWidth || !container.clientHeight) return false;
+      try { fitAddon.fit(); } catch { return false; }
+      return true;
+    };
 
     // ── WebGL renderer ────────────────────────────────────────────────
     // xterm's default DOM renderer is the slowest path; the WebGL addon is
@@ -270,6 +316,13 @@ export function TerminalPane(props: TerminalPaneProps) {
           // next damage — without this the grid stays blank until the shell
           // happens to write something.
           repaint();
+          // The two renderers disagree about how many columns fit — WebGL
+          // floors the cell box to whole device pixels, the DOM renderer
+          // doesn't — and the gap is large (measured 198 vs 177 columns at
+          // dpr 1, 184 vs 177 at dpr 2), not a rounding wobble. Falling back
+          // without re-fitting would leave the shell wrapping at a width the
+          // renderer no longer uses.
+          refit();
         });
         term.loadAddon(addon);
         webglAddon = addon;
@@ -278,6 +331,30 @@ export function TerminalPane(props: TerminalPaneProps) {
         webglAddon = null;
       }
     }
+
+    // First sizing, deliberately after the renderer is settled: fitting with
+    // the DOM renderer and then again once WebGL swaps the cell metrics would
+    // hand the shell a wrong width first and correct it a tick later, and two
+    // SIGWINCHes during shell startup is exactly what the spawn-time seed
+    // exists to avoid.
+    if (!refit()) {
+      // Mounted hidden — a restored workspace, a background terminal, or a
+      // pane rebuilt after a worktree switch while its shell kept running.
+      // The container can't be measured, so adopt the size the PTY already
+      // has (or the pane guess, for a shell just spawned with it). This goes
+      // through `term.resize`, so `onResize` publishes it: the grid and the
+      // winsize cannot end up disagreeing even when the guess is stale.
+      const hint = sizeForPty(ptyId) ?? lastGridSize();
+      if (hint) {
+        try { term.resize(hint.cols, hint.rows); } catch { /* ignore */ }
+      }
+    }
+    // Nothing moved the grid — a fit that landed on xterm's 80x24 default, or
+    // a hidden pane with no hint. The PTY was spawned from a *guess*, which
+    // may not be that, so state the grid's size outright rather than assume
+    // silence means agreement.
+    if (!published) publish(term.cols, term.rows);
+    term.focus();
 
     /// Force the full grid to repaint, rebuilding the glyph atlas first.
     ///
@@ -304,6 +381,10 @@ export function TerminalPane(props: TerminalPaneProps) {
     let dprMedia: MediaQueryList | null = null;
     const onDprChange = () => {
       repaint();
+      // The WebGL cell box is `floor(charWidth * dpr) / dpr`, so the column
+      // count that fits changes with the DPR even though the container's CSS
+      // size doesn't — ResizeObserver hears nothing about this one.
+      refit();
       watchDpr();
     };
     const watchDpr = () => {
@@ -379,18 +460,6 @@ export function TerminalPane(props: TerminalPaneProps) {
       }
     }
 
-    // The PTY was created at a hardcoded 80x24 on the Rust side. Tell it the
-    // real dimensions now — without this, TUIs launched immediately after
-    // mount (e.g. `claude` right after the shell prompt appears) render at
-    // 80x24 and then misalign when SIGWINCH arrives.
-    if (term.cols > 0 && term.rows > 0) {
-      void invoke("resize_pty", {
-        sessionId: ptyId,
-        cols: term.cols,
-        rows: term.rows,
-      });
-    }
-
     // Ligatures are lazy + opt-in, because they hook the glyph pipeline.
     let ligaturesDisposer: { dispose?: () => void } | null = null;
     const ensureLigatures = async (enabled: boolean) => {
@@ -432,10 +501,15 @@ export function TerminalPane(props: TerminalPaneProps) {
       term.options.scrollSensitivity = s.scrollSensitivity;
       term.options.scrollOnUserInput = s.scrollOnUserInput;
       void ensureLigatures(s.ligatures);
-      try {
-        fitAddon.fit();
-        term.refresh(0, term.rows - 1);
-      } catch { /* ignore */ }
+      // Font metrics changed, so the number of cells that fit changed with
+      // them, and the shell has to hear about it — not just the grid.
+      // `untrack`: refit reads `props.active`, which is a plain getter, not a
+      // memo. Tracking it would subscribe this effect to the active-tab
+      // signal, so every tab switch would re-run it for every mounted pane —
+      // defeating the resize debounce mid-drag and front-running the
+      // deliberate wait-a-frame path below.
+      untrack(refit);
+      try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
     });
 
     // Theme swap on app light/dark toggle. xterm rebuilds its color
@@ -539,32 +613,12 @@ export function TerminalPane(props: TerminalPaneProps) {
 
     // ── Resize: debounced so fit() + resize_pty only fire after drag ends.
     let fitTimer: number | null = null;
-    let lastCols = term.cols;
-    let lastRows = term.rows;
-
-    const doFit = () => {
-      // Never fit against a hidden container: getBoundingClientRect is 0×0
-      // under display:none, and a stray resize_pty would SIGWINCH the TUI to
-      // a tiny width and make it redraw garbled frames.
-      if (props.active === false) return;
-      if (!container.clientWidth || !container.clientHeight) return;
-      try { fitAddon.fit(); } catch { return; }
-      if (term.cols !== lastCols || term.rows !== lastRows) {
-        lastCols = term.cols;
-        lastRows = term.rows;
-        void invoke("resize_pty", {
-          sessionId: ptyId,
-          cols: term.cols,
-          rows: term.rows,
-        });
-      }
-    };
 
     const scheduleFit = () => {
       if (fitTimer !== null) clearTimeout(fitTimer);
       fitTimer = window.setTimeout(() => {
         fitTimer = null;
-        doFit();
+        refit();
       }, RESIZE_DEBOUNCE_MS);
     };
 
@@ -588,7 +642,7 @@ export function TerminalPane(props: TerminalPaneProps) {
         if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
         pendingShowFrame = requestAnimationFrame(() => {
           pendingShowFrame = null;
-          doFit();
+          refit();
           repaint();
         });
         markActive(ptyId);
@@ -598,12 +652,18 @@ export function TerminalPane(props: TerminalPaneProps) {
 
     const outputChannel = new Channel<ArrayBuffer>();
     outputChannel.onmessage = (data: ArrayBuffer) => {
+      // Detaching is a round trip, so chunks can still land after teardown.
+      if (disposed) return;
       term.write(new Uint8Array(data));
     };
-    void invoke("pty_subscribe", {
+    // The token identifies *this* attachment. A pane that unmounts after its
+    // replacement has already subscribed must not detach the live one, so the
+    // backend ignores a token that is no longer current.
+    const subscription = invoke<number>("pty_subscribe", {
       sessionId: ptyId,
       onOutput: outputChannel,
     });
+    void subscription.catch(() => { /* pane will show nothing; nothing to undo */ });
 
     const unlistenExit = await listen(`pty-exit:${ptyId}`, () => props.onExit?.());
 
@@ -631,6 +691,12 @@ export function TerminalPane(props: TerminalPaneProps) {
     });
 
     ownedCleanup(() => {
+      // Detach before disposing the terminal: the channel outlives this pane
+      // otherwise, and the session goes on posting every byte it produces to a
+      // receiver that writes into a disposed xterm.
+      void subscription.then((token) =>
+        invoke("pty_unsubscribe", { sessionId: ptyId, token }),
+      ).catch(() => { /* session already gone */ });
       if (fitTimer !== null) clearTimeout(fitTimer);
       if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
       if (repaintFrame !== null) cancelAnimationFrame(repaintFrame);

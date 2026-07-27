@@ -9,6 +9,7 @@ import type { TerminalSession } from "@/types/workspace";
 import { FileTree } from "@/components/files/FileTree";
 import { pushToast } from "@/commands/toast";
 import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
+import { forgetPtySize } from "@/commands/terminalSize";
 
 const POLL_MS = 1500;
 
@@ -255,6 +256,10 @@ function TerminalRow(props: {
     const timer = setInterval(tick, POLL_MS);
     const unlistenExit = listen<unknown>(`pty-exit:${props.term.ptyId}`, () => {
       forgetTerminalHistory(props.term.ptyId);
+      // The size map survives pane unmounts on purpose (a remounted pane needs
+      // its shell's real winsize), so a dead shell is the only thing that may
+      // clear an entry.
+      forgetPtySize(props.term.ptyId);
     });
     onCleanup(() => {
       alive = false;

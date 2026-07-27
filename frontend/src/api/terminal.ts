@@ -8,8 +8,12 @@ export interface PtyProcessInfo {
 }
 
 export const terminalApi = {
-  createPty(cwd: string): Promise<string> {
-    return invoke<string>("create_pty", { cwd });
+  /// `size` seeds the PTY's winsize at spawn time. Pass the size the pane
+  /// will actually render at when it's known — the shell reads the winsize
+  /// before it prints its first prompt, and a wrong one there mis-wraps the
+  /// prompt in a way SIGWINCH doesn't undo.
+  createPty(cwd: string, size?: { cols: number; rows: number }): Promise<string> {
+    return invoke<string>("create_pty", { cwd, cols: size?.cols, rows: size?.rows });
   },
 
   closePty(sessionId: string): Promise<void> {

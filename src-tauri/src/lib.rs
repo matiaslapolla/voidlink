@@ -16,7 +16,15 @@ mod window;
 
 pub(crate) struct PtySession {
     pub master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
-    pub writer: Mutex<Box<dyn std::io::Write + Send>>,
+    /// Keystrokes queued for the session's writer thread.
+    ///
+    /// Writes are handed off rather than performed in the command so that the
+    /// order bytes reach the shell is fixed at enqueue time, on the IPC thread,
+    /// in the order the frontend sent them. Writing under a mutex from an async
+    /// command instead lets two in-flight `write_pty` calls race for the lock,
+    /// which reorders a fast paste or a bracketed-paste wrapper around its own
+    /// payload.
+    pub input: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
     pub child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     pub shutdown: Arc<AtomicBool>,
     #[cfg(unix)]
@@ -46,16 +54,55 @@ pub(crate) struct PtySink {
     /// `None` while no pane is attached — output is buffered only.
     channel: Option<Channel>,
     /// Retained chunks, oldest first, at the read() boundaries the terminal
-    /// originally saw. Whole chunks are evicted, so a replay can begin partway
-    /// through an escape sequence; the shell's next repaint corrects it, and
-    /// splitting a chunk would guarantee that garbage instead of risking it.
+    /// originally saw. Whole chunks are evicted, so the retained stream is a
+    /// mid-stream cut — see `attach` for how the replay is made safe.
     scrollback: std::collections::VecDeque<Vec<u8>>,
     bytes: usize,
+    /// Set once anything has been evicted. From then on the retained bytes are
+    /// no longer a session from the beginning, so a replay cannot be trusted to
+    /// establish the emulator's mode state on its own.
+    truncated: bool,
+    /// Incremented on every `attach`. Handed to the subscriber so it can
+    /// detach without being able to detach a *later* pane's channel — during a
+    /// remount the new pane can subscribe before the old one's cleanup runs.
+    attach_seq: u64,
+}
+
+/// Put the emulator into a known state before replaying a mid-stream cut.
+///
+/// DECSTR (soft reset) is the blunt instrument that matters: it restores
+/// autowrap, origin mode, the scroll region and the character sets. The single
+/// mode worth naming explicitly afterwards is DECAWM — if a full-screen program
+/// disabled autowrap with `ESC[?7l` and the chunk carrying the matching
+/// `ESC[?7h` was evicted, every line typed after the replay overwrites the last
+/// column in place instead of wrapping, which looks like the input folding back
+/// on itself. SGR reset stops a half-replayed colour run from tinting the rest.
+const REPLAY_PROLOGUE: &[u8] = b"\x1b[!p\x1b[?7h\x1b[m";
+
+/// The tail of `head` starting after its first newline, which is the earliest
+/// byte we can be sure is not inside an escape sequence (no control or escape
+/// sequence xterm parses contains a raw `\n`). Without this the first bytes of
+/// a truncated replay are read as the parameters of a sequence whose introducer
+/// was evicted, and the visible characters that follow are swallowed.
+///
+/// A chunk with no newline at all is kept whole: at 64 KiB that is a full-screen
+/// repaint, and dropping it loses far more than a single mangled sequence costs.
+fn resync(head: &[u8]) -> &[u8] {
+    match head.iter().position(|&b| b == b'\n') {
+        Some(i) => &head[i + 1..],
+        None => head,
+    }
 }
 
 impl PtySink {
     fn new() -> Self {
-        Self { channel: None, scrollback: std::collections::VecDeque::new(), bytes: 0 }
+        Self {
+            channel: None,
+            scrollback: std::collections::VecDeque::new(),
+            bytes: 0,
+            truncated: false,
+            attach_seq: 0,
+        }
     }
 
     /// Record a chunk and forward it to the attached pane, if any. A send
@@ -71,24 +118,46 @@ impl PtySink {
         self.scrollback.push_back(chunk);
         while self.bytes > SCROLLBACK_CAP_BYTES {
             match self.scrollback.pop_front() {
-                Some(old) => self.bytes -= old.len(),
+                Some(old) => {
+                    self.bytes -= old.len();
+                    self.truncated = true;
+                }
                 None => break,
             }
         }
     }
 
     /// Attach a pane and hand it everything the session has produced so far.
-    fn attach(&mut self, channel: Channel) {
+    /// Returns the token the subscriber must present to detach.
+    fn attach(&mut self, channel: Channel) -> u64 {
+        self.attach_seq += 1;
         if self.bytes > 0 {
-            let mut replay = Vec::with_capacity(self.bytes);
-            for chunk in &self.scrollback {
+            let mut replay = Vec::with_capacity(self.bytes + REPLAY_PROLOGUE.len());
+            let mut chunks = self.scrollback.iter();
+            if self.truncated {
+                replay.extend_from_slice(REPLAY_PROLOGUE);
+                if let Some(head) = chunks.next() {
+                    replay.extend_from_slice(resync(head));
+                }
+            }
+            for chunk in chunks {
                 replay.extend_from_slice(chunk);
             }
             if channel.send(InvokeResponseBody::Raw(replay)).is_err() {
-                return;
+                return self.attach_seq;
             }
         }
         self.channel = Some(channel);
+        self.attach_seq
+    }
+
+    /// Drop the attached channel, keeping the session buffering. Ignored when
+    /// `token` is not the current attachment, so a pane tearing down after its
+    /// replacement has already subscribed cannot mute the live pane.
+    fn detach(&mut self, token: u64) {
+        if token == self.attach_seq {
+            self.channel = None;
+        }
     }
 }
 
@@ -216,14 +285,26 @@ async fn create_pty(
             reader_channels.remove(&reader_session_id);
         });
 
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        // One writer thread per session, fed by an ordered queue. The blocking
+        // write happens here rather than in the command so a shell that stops
+        // draining its input (a full pipe) can never stall the IPC thread.
+        let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let (input, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            while let Ok(chunk) = rx.recv() {
+                if std::io::Write::write_all(&mut writer, &chunk).is_err() {
+                    break;
+                }
+                let _ = std::io::Write::flush(&mut writer);
+            }
+        });
 
         #[cfg(unix)]
         let master_fd = pair.master.as_raw_fd().unwrap_or(-1);
 
         let session = PtySession {
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            input: Mutex::new(input),
             child: Mutex::new(child),
             shutdown,
             #[cfg(unix)]
@@ -239,16 +320,23 @@ async fn create_pty(
     .map_err(|e| e.to_string())?
 }
 
+/// Deliberately **not** an async command. A sync handler runs inline as the IPC
+/// message is processed, so calls are enqueued in the order the frontend made
+/// them; async handlers are spawned onto the runtime and are free to interleave,
+/// which is how a fast paste arrives at the shell permuted. All this does is
+/// hand the bytes to the session's writer thread, so running inline costs the
+/// IPC thread nothing.
 #[tauri::command]
-async fn write_pty(
+fn write_pty(
     session_id: String,
     data: String,
     state: tauri::State<'_, PtyStore>,
 ) -> Result<(), String> {
     let session = state.get(&session_id).ok_or("PTY session not found")?;
-    let mut writer = session.writer.lock().map_err(|e| e.to_string())?;
-    std::io::Write::write_all(&mut *writer, data.as_bytes())
-        .map_err(|e| e.to_string())
+    let input = session.input.lock().map_err(|e| e.to_string())?;
+    input
+        .send(data.into_bytes())
+        .map_err(|_| "PTY writer has exited".to_string())
 }
 
 #[tauri::command]
@@ -259,19 +347,19 @@ async fn resize_pty(
     state: tauri::State<'_, PtyStore>,
 ) -> Result<(), String> {
     use portable_pty::PtySize;
-    let session = state.get(&session_id).ok_or("PTY session not found")?;
-    let master = session.master.lock().map_err(|e| e.to_string())?;
-    let result = master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string());
-    drop(master);
-    drop(session);
-    result
+    // `resize` is a blocking ioctl on the master fd, so it belongs on the
+    // blocking pool for the same reason `create_pty` does — an async command
+    // body runs on a runtime worker that must not block.
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = store.get(&session_id).ok_or("PTY session not found")?;
+        let master = session.master.lock().map_err(|e| e.to_string())?;
+        master
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -279,13 +367,37 @@ async fn pty_subscribe(
     session_id: String,
     on_output: Channel,
     state: tauri::State<'_, PtyChannels>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     // Replaying happens under the sink's lock, so live output produced during
     // the replay queues behind it instead of arriving out of order.
     let sink = state
         .entry(session_id)
         .or_insert_with(|| Mutex::new(PtySink::new()));
-    sink.lock().map_err(|_| "pty sink poisoned".to_string())?.attach(on_output);
+    let token = sink
+        .lock()
+        .map_err(|_| "pty sink poisoned".to_string())?
+        .attach(on_output);
+    Ok(token)
+}
+
+/// Detach the pane that holds `token`, leaving the session running and its
+/// output buffered for whoever subscribes next.
+///
+/// Without this a disposed pane's channel is held until the *next* write to it
+/// happens to fail, so every unmounted pane keeps its webview-side receiver
+/// reachable and every byte the shell produces is still serialised and posted
+/// across the IPC boundary to nobody.
+#[tauri::command]
+async fn pty_unsubscribe(
+    session_id: String,
+    token: u64,
+    state: tauri::State<'_, PtyChannels>,
+) -> Result<(), String> {
+    if let Some(sink) = state.get(&session_id) {
+        if let Ok(mut sink) = sink.lock() {
+            sink.detach(token);
+        }
+    }
     Ok(())
 }
 
@@ -737,6 +849,7 @@ pub fn run() {
             write_pty,
             resize_pty,
             pty_subscribe,
+            pty_unsubscribe,
             close_pty,
             pty_process_info,
             git::git_repo_info,

@@ -1,6 +1,7 @@
 import { createStore, produce } from "solid-js/store";
 import { createEffect, createMemo } from "solid-js";
 import { terminalApi } from "@/api/terminal";
+import { lastGridSize } from "@/commands/terminalSize";
 import {
   type PersistedWorkspace,
   type TerminalSession,
@@ -1086,7 +1087,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const found = locateWorktree(wtId);
       const cwd = found?.worktree.path;
       if (!cwd) return null;
-      const ptyId = await terminalApi.createPty(cwd);
+      const ptyId = await terminalApi.createPty(cwd, lastGridSize() ?? undefined);
       const count = (state.terminalsByWorktree[wtId]?.length ?? 0) + 1;
       const term: TerminalSession = {
         id: crypto.randomUUID(),
@@ -1885,7 +1886,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
             // in the worktree's directory: restoring a snapshot into a
             // *different* worktree must not resurrect shells pointing at the
             // old one. The recorded cwd stays on the session for context.
-            const ptyId = await terminalApi.createPty(cwd);
+            const ptyId = await terminalApi.createPty(cwd, lastGridSize() ?? undefined);
             setState(produce((s) => {
               const term: TerminalSession = {
                 id: crypto.randomUUID(),
