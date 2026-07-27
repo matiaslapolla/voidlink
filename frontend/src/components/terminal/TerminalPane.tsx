@@ -230,6 +230,33 @@ export function TerminalPane(props: TerminalPaneProps) {
       }
     }
 
+    // ── Device-pixel-ratio changes ────────────────────────────────────
+    // The WebGL renderer bakes glyphs into a texture atlas sized for the DPR
+    // at construction time. Dragging the window between a Retina and a
+    // non-Retina display (or changing display scaling) leaves that atlas at
+    // the old scale, and the grid renders blurry or smeared until something
+    // else happens to invalidate it. `matchMedia` on the current resolution
+    // is the standard way to hear about the change; the listener re-arms
+    // itself because the query is only true for the DPR it was built with.
+    let dprMedia: MediaQueryList | null = null;
+    const onDprChange = () => {
+      try {
+        webglAddon?.clearTextureAtlas();
+        term.refresh(0, term.rows - 1);
+      } catch { /* ignore */ }
+      watchDpr();
+    };
+    const watchDpr = () => {
+      dprMedia?.removeEventListener("change", onDprChange);
+      try {
+        dprMedia = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+        dprMedia.addEventListener("change", onDprChange);
+      } catch {
+        dprMedia = null;
+      }
+    };
+    watchDpr();
+
     // ── Deep-link providers (path:line, SHAs) ─────────────────────────
     // Use the native xterm link-provider API rather than the web-links
     // addon — it sidesteps the data-pipeline hook called out at the top
@@ -336,6 +363,87 @@ export function TerminalPane(props: TerminalPaneProps) {
       void invoke("write_pty", { sessionId: ptyId, data });
     });
 
+    // ── Wheel scrolling inside full-screen TUIs ───────────────────────
+    // On the alternate screen there is no scrollback to scroll, so a wheel
+    // tick has to be translated into input the app understands ("alternate
+    // scroll"). xterm.js does do this, but it emits exactly *one* arrow key
+    // per wheel event no matter how far the wheel turned — it ignores both
+    // the delta and `scrollSensitivity`. A mouse wheel notch therefore moves
+    // a single line and reads as "scrolling is broken".
+    //
+    // We take the case over: accumulate the real delta, convert it to whole
+    // lines, and send that many cursor keys. Two cases are handed back to
+    // xterm untouched:
+    //   • the normal buffer, where the viewport's own scrollback scroll is
+    //     what the user wants;
+    //   • apps that turned on mouse reporting (lazygit, vim with `set mouse`),
+    //     which want the raw wheel events and do their own scrolling.
+    let wheelRemainder = 0;
+    // A single flick shouldn't dump hundreds of keypresses into the PTY.
+    const MAX_WHEEL_LINES = 20;
+
+    /// Measured row height in CSS px. Taken from the rendered grid rather
+    /// than the font size so `lineHeight` and DPR rounding are included.
+    const cellHeight = (): number => {
+      const rows = container.querySelector(".xterm-rows") as HTMLElement | null;
+      const h = rows?.getBoundingClientRect().height ?? container.clientHeight;
+      return h > 0 && term.rows > 0 ? h / term.rows : 17;
+    };
+
+    term.attachCustomWheelEventHandler((ev) => {
+      if (term.buffer.active.type !== "alternate") return true;
+      if (term.modes.mouseTrackingMode !== "none") return true;
+      if (ev.deltaY === 0) return true;
+
+      let lines: number;
+      if (ev.deltaMode === WheelEvent.DOM_DELTA_LINE) lines = ev.deltaY;
+      else if (ev.deltaMode === WheelEvent.DOM_DELTA_PAGE) lines = ev.deltaY * term.rows;
+      else lines = ev.deltaY / cellHeight();
+      lines *= settings.terminal.scrollSensitivity;
+
+      // Reversing direction mid-gesture must not be damped by the leftover
+      // fraction of the previous direction.
+      if (Math.sign(lines) !== Math.sign(wheelRemainder)) wheelRemainder = 0;
+      wheelRemainder += lines;
+      const whole = Math.trunc(wheelRemainder);
+      wheelRemainder -= whole;
+      // Swallow the event either way: a partial delta is still "handled", and
+      // letting it through would give xterm's one-line fallback a second go.
+      if (whole === 0) return false;
+
+      const count = Math.min(Math.abs(whole), MAX_WHEEL_LINES);
+      const key = term.modes.applicationCursorKeysMode ? "O" : "[";
+      const arrow = whole < 0 ? "A" : "B";
+      void invoke("write_pty", {
+        sessionId: ptyId,
+        data: `\x1b${key}${arrow}`.repeat(count),
+      });
+      return false;
+    });
+
+    // ── Shift+Enter → newline instead of submit ───────────────────────
+    // xterm.js sends a bare CR for Shift+Enter, indistinguishable from
+    // Enter, so multiline input was impossible: zsh submitted the line and
+    // Ink-based TUIs (Claude Code, Codex, OpenCode) treated it as send.
+    // ESC+CR is the sequence every one of them already understands — it is
+    // what Claude Code's own `/terminal-setup` writes into iTerm2 and VS
+    // Code, and zsh's emacs keymap binds `^[^M` to self-insert-unmeta, so
+    // the shell inserts a literal newline and keeps editing.
+    //
+    // Alt/Option+Enter is mapped to the same bytes on purpose: with
+    // `macOptionIsMeta` off xterm would otherwise send a plain CR there too,
+    // making the muscle-memory alternative silently submit.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown" || e.key !== "Enter") return true;
+      if (e.ctrlKey || e.metaKey) return true;
+      if (!e.shiftKey && !e.altKey) return true;
+      e.preventDefault();
+      // Deliberately not recorded as a keystroke: this never completes a
+      // command, so it must not disturb repeat-last-command tracking.
+      void invoke("write_pty", { sessionId: ptyId, data: "\x1b\r" });
+      return false;
+    });
+
     // First focus → mark as the "most recent" PTY so global Cmd+Shift+R
     // knows where to send the repeated command. Also re-mark whenever the
     // pane becomes active.
@@ -438,6 +546,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       if (fitTimer !== null) clearTimeout(fitTimer);
       if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
       ro.disconnect();
+      dprMedia?.removeEventListener("change", onDprChange);
       unlistenExit();
       unlistenDrop();
       for (const d of linkDisposers) {

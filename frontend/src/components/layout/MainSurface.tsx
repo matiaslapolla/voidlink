@@ -1626,6 +1626,13 @@ function TerminalTabItem(props: {
     onCleanup(() => { alive = false; clearInterval(interval); });
   });
 
+  /// While a foreground command runs, the tab wears its name — that is the
+  /// thing the user is looking for when scanning a row of terminals. The
+  /// static label ("Terminal 2") stays in the tooltip and comes back the
+  /// moment the process exits.
+  const displayLabel = () =>
+    (busy() && processName()) || props.term.label;
+
   return (
     <div
       draggable
@@ -1637,15 +1644,10 @@ function TerminalTabItem(props: {
       onClick={props.onSelect}
       onContextMenu={props.onContextMenu}
       onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); props.onClose(); } }}
-      title={props.term.label}
+      title={displayLabel() === props.term.label ? props.term.label : `${props.term.label} — ${displayLabel()}`}
     >
       <LedDot active={props.isActive} busy={busy()} />
-      <span class="max-w-[140px] truncate">
-        {props.term.label}
-        <Show when={busy() && processName()}>
-          <span class="text-muted-foreground text-[11px]"> ({processName()})</span>
-        </Show>
-      </span>
+      <span class="max-w-[140px] truncate">{displayLabel()}</span>
       <button
         onClick={e => { e.stopPropagation(); props.onClose(); }}
         class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"

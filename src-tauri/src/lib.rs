@@ -230,6 +230,297 @@ async fn close_pty(
     Ok(())
 }
 
+/// Foreground-process introspection for terminal tab titles.
+///
+/// The old implementation only read `/proc`, so on macOS every tab reported a
+/// `null` name and never showed what was running. Each platform gets its own
+/// primitives here; the naming heuristics on top of them are shared.
+#[cfg(unix)]
+pub(crate) mod proc_info {
+    /// Display name for `pid`: the executable's basename, refined through
+    /// argv when that executable is a language runtime. `node` alone tells the
+    /// user nothing — `claude-code` or `vite` is the thing they launched.
+    pub fn name(pid: u32) -> Option<String> {
+        let exe = exe_name(pid)?;
+        if !is_runtime(&exe) {
+            return Some(exe);
+        }
+        Some(argv(pid).and_then(|a| script_name(&a)).unwrap_or(exe))
+    }
+
+    /// Interpreters that are never the interesting name — the script they were
+    /// handed is. `env` and the shells appear as the exec'd binary when a
+    /// shebang script is launched.
+    fn is_runtime(name: &str) -> bool {
+        matches!(
+            name,
+            "node" | "node.exe" | "deno" | "bun" | "npx" | "pnpm" | "yarn" | "uv" | "uvx"
+                | "python" | "python2" | "python3" | "pythonw" | "ruby" | "perl" | "php"
+                | "env" | "sh" | "bash" | "zsh" | "fish" | "dash"
+        )
+    }
+
+    /// Basenames that name a role rather than a program. When argv points at
+    /// one we climb to the nearest meaningful ancestor directory instead —
+    /// `.../@anthropic-ai/claude-code/cli.js` reads better as `claude-code`.
+    fn is_generic(stem: &str) -> bool {
+        matches!(
+            stem,
+            "cli" | "index" | "main" | "__main__" | "run" | "start" | "server" | "app" | "bin"
+        )
+    }
+
+    fn is_script_ext(ext: &str) -> bool {
+        matches!(
+            ext,
+            "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" | "py" | "rb" | "pl" | "php" | "sh"
+        )
+    }
+
+    /// Path segments that only describe layout, never the package.
+    fn is_layout_dir(seg: &str) -> bool {
+        matches!(
+            seg,
+            "bin" | ".bin" | "lib" | "libexec" | "src" | "dist" | "build" | "out" | "js"
+                | "esm" | "cjs" | "node_modules" | "site-packages" | "scripts"
+        )
+    }
+
+    /// First non-flag argument after argv[0], reduced to a friendly name.
+    /// Flags are skipped, which incidentally makes `python -m pkg` resolve to
+    /// `pkg` — the module name is the first bare word.
+    fn script_name(argv: &[String]) -> Option<String> {
+        let arg = argv
+            .iter()
+            .skip(1)
+            .find(|a| !a.starts_with('-') && !a.is_empty())?;
+        let segments: Vec<&str> = arg.split('/').filter(|s| !s.is_empty()).collect();
+        let last = *segments.last()?;
+        // Only script extensions are stripped — a bare `rsplit_once('.')`
+        // would turn a module path like `http.server` into `http`.
+        let stem = match last.rsplit_once('.') {
+            Some((s, ext)) if is_script_ext(ext) && !s.is_empty() => s,
+            _ => last,
+        };
+        if !is_generic(stem) {
+            return Some(stem.to_string());
+        }
+        segments
+            .iter()
+            .rev()
+            .skip(1)
+            .find(|s| !is_layout_dir(s) && !s.starts_with('@'))
+            .map(|s| s.to_string())
+            .or_else(|| Some(stem.to_string()))
+    }
+
+    fn basename(path: &str) -> Option<String> {
+        let base = path.rsplit('/').next()?.trim();
+        if base.is_empty() {
+            None
+        } else {
+            Some(base.to_string())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn exe_name(pid: u32) -> Option<String> {
+        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let n = unsafe {
+            libc::proc_pidpath(
+                pid as libc::c_int,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len() as u32,
+            )
+        };
+        if n <= 0 {
+            return None;
+        }
+        buf.truncate(n as usize);
+        basename(&String::from_utf8_lossy(&buf))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn cwd(pid: u32) -> Option<String> {
+        let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+        let n = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                &mut info as *mut _ as *mut libc::c_void,
+                size,
+            )
+        };
+        if n < size {
+            return None;
+        }
+        let path = unsafe {
+            std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr() as *const libc::c_char)
+        }
+        .to_string_lossy()
+        .to_string();
+        if path.is_empty() {
+            None
+        } else {
+            Some(path)
+        }
+    }
+
+    /// macOS has no `/proc/<pid>/cmdline`; argv comes from
+    /// `sysctl kern.procargs2`, whose payload is
+    /// `[argc: i32][exec path]\0…\0[argv[0]]\0[argv[1]]\0…[env]`.
+    #[cfg(target_os = "macos")]
+    fn argv(pid: u32) -> Option<Vec<String>> {
+        let mut argmax: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>();
+        let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+        let ok = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                2,
+                &mut argmax as *mut _ as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if ok != 0 || argmax <= 0 {
+            return None;
+        }
+
+        let mut buf = vec![0u8; argmax as usize];
+        let mut len = buf.len();
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+        let ok = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if ok != 0 {
+            return None;
+        }
+        buf.truncate(len);
+        parse_procargs2(&buf)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
+        if buf.len() < 4 {
+            return None;
+        }
+        let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        if argc <= 0 {
+            return None;
+        }
+        let rest = &buf[4..];
+        // Skip the exec path, then the NUL padding that aligns argv[0].
+        let mut i = rest.iter().position(|&b| b == 0)?;
+        while i < rest.len() && rest[i] == 0 {
+            i += 1;
+        }
+        let mut args = Vec::with_capacity(argc as usize);
+        for chunk in rest[i..].split(|&b| b == 0) {
+            if args.len() == argc as usize {
+                break;
+            }
+            args.push(String::from_utf8_lossy(chunk).to_string());
+        }
+        if args.is_empty() {
+            None
+        } else {
+            Some(args)
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn exe_name(pid: u32) -> Option<String> {
+        if let Ok(path) = std::fs::read_link(format!("/proc/{}/exe", pid)) {
+            if let Some(name) = basename(&path.to_string_lossy()) {
+                return Some(name);
+            }
+        }
+        std::fs::read_to_string(format!("/proc/{}/comm", pid))
+            .ok()
+            .and_then(|s| basename(s.trim()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn cwd(pid: u32) -> Option<String> {
+        std::fs::read_link(format!("/proc/{}/cwd", pid))
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn argv(pid: u32) -> Option<Vec<String>> {
+        let raw = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+        let args: Vec<String> = raw
+            .split(|&b| b == 0)
+            .filter(|c| !c.is_empty())
+            .map(|c| String::from_utf8_lossy(c).to_string())
+            .collect();
+        if args.is_empty() {
+            None
+        } else {
+            Some(args)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn plain_binary_keeps_its_name() {
+            assert!(!is_runtime("claude"));
+            assert!(!is_runtime("lazygit"));
+        }
+
+        #[test]
+        fn runtime_resolves_to_the_script() {
+            let argv = vec!["node".into(), "/usr/local/bin/vite".into(), "--host".into()];
+            assert_eq!(script_name(&argv).as_deref(), Some("vite"));
+        }
+
+        #[test]
+        fn generic_script_climbs_to_the_package_dir() {
+            let argv = vec![
+                "node".into(),
+                "/x/node_modules/@anthropic-ai/claude-code/cli.js".into(),
+            ];
+            assert_eq!(script_name(&argv).as_deref(), Some("claude-code"));
+        }
+
+        #[test]
+        fn flags_are_skipped() {
+            let argv = vec!["python3".into(), "-m".into(), "http.server".into()];
+            assert_eq!(script_name(&argv).as_deref(), Some("http.server"));
+        }
+
+        /// Exercises the real platform primitives against our own process —
+        /// the part that silently returned `None` on macOS before.
+        #[test]
+        fn reads_this_process() {
+            let pid = std::process::id();
+            assert!(name(pid).is_some());
+            assert!(cwd(pid).is_some());
+        }
+
+        #[test]
+        fn runtime_with_no_script_has_no_name() {
+            let argv = vec!["node".into()];
+            assert_eq!(script_name(&argv), None);
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct PtyProcessInfo {
     pub pid: Option<u32>,
@@ -257,14 +548,13 @@ async fn pty_process_info(
             return Ok(PtyProcessInfo { pid: shell_pid, name: None, cwd: None, busy: false });
         }
         let pid = fg_pgid as u32;
-        let name = std::fs::read_to_string(format!("/proc/{}/comm", pid))
-            .ok()
-            .map(|s| s.trim().to_string());
-        let cwd = std::fs::read_link(format!("/proc/{}/cwd", pid))
-            .ok()
-            .map(|p| p.to_string_lossy().to_string());
         let busy = shell_pid.map_or(false, |s| s != pid);
-        return Ok(PtyProcessInfo { pid: Some(pid), name, cwd, busy });
+        return Ok(PtyProcessInfo {
+            pid: Some(pid),
+            name: proc_info::name(pid),
+            cwd: proc_info::cwd(pid),
+            busy,
+        });
     }
     #[cfg(not(unix))]
     {

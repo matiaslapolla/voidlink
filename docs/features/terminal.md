@@ -46,10 +46,25 @@ shell-quoted path plus a trailing space into the PTY. Quoting is bare for
 | `Mod+Shift+\`` | New terminal |
 | `Mod+Shift+R` | Repeat the last command in the last-used terminal |
 | `Mod+W` | Kill the active terminal (it is the active tab) |
+| `Shift+Enter` / `Alt+Enter` | Newline instead of submit — writes `ESC CR` to the PTY |
 
-Everything else goes to the shell. VoidLink installs no
-`attachCustomKeyEventHandler` and no `onKey` handler — whatever the app's global
-keymap doesn't take, xterm encodes and writes to the PTY.
+Everything else goes to the shell: whatever the app's global keymap doesn't
+take, xterm encodes and writes to the PTY. The one exception is the
+`attachCustomKeyEventHandler` for `Shift+Enter`.
+
+### Multiline input
+
+xterm.js encodes `Shift+Enter` as a bare CR, indistinguishable from `Enter`, so
+by default there is no way to type a second line. The pane intercepts it (and
+`Alt+Enter`, which is only `ESC CR` when `macOptionIsMeta` is on) and writes
+`\x1b\r` — the sequence Claude Code's own `/terminal-setup` configures in iTerm2
+and VS Code, and the one Ink-based TUIs read as "newline".
+
+In a plain shell this depends on the shell's keymap: zsh's emacs keymap binds
+`^[^M` to `self-insert-unmeta`, so the line grows instead of running. **bash
+leaves `\e\r` unbound**, so `Shift+Enter` does nothing there — use a trailing
+`\` for line continuation. The chord is never recorded as a keystroke, so it
+does not disturb `Mod+Shift+R`.
 
 ## Environment
 
@@ -95,15 +110,51 @@ Going from hidden to visible re-fits on the next animation frame and forces a
 full refresh, because a `display: none → block` transition does not fire
 `ResizeObserver`.
 
+A `matchMedia('(resolution: <dpr>dppx)')` listener catches the window moving
+between displays of different pixel density. The WebGL glyph atlas is built for
+one DPR, so without this the grid stays blurry after the move; on change we
+call `clearTextureAtlas()`, refresh, and re-arm the query for the new DPR.
+
+## Scrolling
+
+Three different things happen depending on what is on screen:
+
+| State | Wheel behaviour |
+|---|---|
+| Normal buffer (a shell) | Scrolls xterm's own scrollback — 5000 lines by default, `Shift+PageUp` / `Shift+PageDown` do the same from the keyboard. |
+| Alternate screen, app has mouse reporting on (lazygit, `vim` with `set mouse`) | Raw wheel events are forwarded; the app scrolls itself. |
+| Alternate screen, no mouse reporting (most Ink/Ratatui TUIs) | VoidLink sends cursor keys — "alternate scroll". |
+
+That last case is handled by our own `attachCustomWheelEventHandler`, not by
+xterm. xterm's built-in fallback emits exactly **one** arrow key per wheel
+event regardless of how far the wheel turned, and ignores `scrollSensitivity`,
+which makes a full-screen TUI feel like it doesn't scroll at all. Ours
+accumulates the true delta (pixel, line, and page delta modes), converts it to
+whole rows against the measured row height, applies
+**Settings → Terminal → Scroll sensitivity**, and sends that many
+`ESC [ A`/`ESC [ B` — `ESC O A`/`ESC O B` when the app has requested
+application cursor keys. One gesture is capped at 20 rows so a trackpad flick
+can't flood the PTY.
+
 ## Gotchas and limits
 
 - **Terminals always open at the workspace's repo root.** There is no per-cwd
   spawn API. Snapshot restore re-spawns at the repo root too, not at the cwd it
   recorded.
-- **Process name and cwd are Linux-only.** They come from `/proc/{pid}/comm` and
-  `/proc/{pid}/cwd`, which don't exist on macOS — so the sidebar's process
-  sub-line and the tab's ` (name)` suffix never appear there. The "busy"
-  indicator, which uses `tcgetpgrp`, works on both.
+- **The tab title follows the foreground process.** While a command runs, the
+  tab and the sidebar row show its name instead of `Terminal N`; the static
+  label stays in the tooltip and returns when the process exits. The name is
+  polled, so it lags a command's start by up to 1500 ms.
+- **The process name is a heuristic, not `comm`.** It is the foreground
+  process group's executable basename (`proc_pidpath` on macOS,
+  `/proc/{pid}/exe` on Linux). When that is a runtime — `node`, `python`,
+  `bun`, `env`, a shell — the first non-flag argv entry is used instead, so
+  `node .../cli.js` reads as the package directory (`claude-code`) rather than
+  `node`. argv comes from `sysctl kern.procargs2` on macOS and
+  `/proc/{pid}/cmdline` on Linux. Windows reports no name at all.
+- **cwd** comes from `proc_pidinfo(PROC_PIDVNODEPATHINFO)` on macOS and
+  `/proc/{pid}/cwd` on Linux. The "busy" indicator, which uses `tcgetpgrp`,
+  works on both.
 - **Repeat-last-command tracks keystrokes, not history.** It records printable
   characters, handles backspace, resets on `Ctrl+C` / `Ctrl+U`, and snapshots on
   Enter. A command recalled with the up arrow is never recorded, so

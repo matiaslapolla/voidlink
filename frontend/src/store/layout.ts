@@ -5,8 +5,10 @@ import {
   type PersistedWorkspace,
   type TerminalSession,
   type Workspace,
+  isAutoWorkspaceName,
   makeWorkspace,
   makeWorktree,
+  repoDisplayName,
 } from "@/types/workspace";
 import {
   type WorkspaceSnapshot,
@@ -912,7 +914,33 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           main.isSynthetic = true;
         }
       }));
-      if (repoRoot) void actions.hydrateWorktrees(id);
+      if (repoRoot) {
+        void actions.hydrateWorktrees(id);
+        void actions.adoptRepoName(id);
+      }
+    },
+
+    /// Name a workspace after the repository it points at. Runs on every
+    /// folder pick but only ever replaces a name we invented — a workspace
+    /// the user renamed keeps that name forever. The remote's repo name is
+    /// preferred over the folder basename; a folder that isn't a repo still
+    /// gets its basename, which beats `Workspace 3`.
+    async adoptRepoName(workspaceId: string): Promise<void> {
+      const ws = state.workspaces.find((w) => w.id === workspaceId);
+      const repoRoot = ws?.repoRoot;
+      if (!ws || !repoRoot || !isAutoWorkspaceName(ws.name)) return;
+      let remoteUrl: string | null = null;
+      try {
+        remoteUrl = (await gitApi.repoInfo(repoRoot)).remoteUrl;
+      } catch {
+        // Not a repo (or git failed) — the folder name is still the answer.
+      }
+      // The await gave the user time to re-point or rename this workspace;
+      // re-read before writing so we never clobber a newer decision.
+      const current = state.workspaces.find((w) => w.id === workspaceId);
+      if (!current || current.repoRoot !== repoRoot) return;
+      if (!isAutoWorkspaceName(current.name)) return;
+      actions.renameWorkspace(workspaceId, repoDisplayName(repoRoot, remoteUrl));
     },
 
     // ── Terminals ───────────────────────────────────────────────────────

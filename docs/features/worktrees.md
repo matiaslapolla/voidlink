@@ -30,6 +30,18 @@ the badges are invisible until you open it.
 4. Afterwards you're asked `Open worktree "<branch>" as a new workspace?` —
    accepting creates a new workspace pointed at that directory.
 
+### Workspace naming
+
+Picking a repository for a workspace renames it after that repository: the
+remote's repo name when there is one (`git@github.com:me/voidlink.git` →
+`voidlink`), otherwise the root folder's basename. The remote wins because a
+linked worktree at `.worktrees/feature-x` would otherwise be labelled
+`feature-x`.
+
+This only ever replaces a name **VoidLink** invented — `Workspace 3`, or the
+initial `Main`. Rename a workspace yourself (double-click it in the rail) and
+that name is kept, including through later repo changes.
+
 Keeping worktrees inside the repository means one place to find them and one
 directory to delete, and it survives moving the repo. It does depend on
 `.worktrees/` being ignored — an unignored directory here would turn every

@@ -263,6 +263,10 @@ function TerminalRow(props: {
     });
   });
 
+  /// Same rule as the tab strip: the running command's name takes over the
+  /// row while it runs, and the tab's own label falls back in when idle.
+  const displayLabel = () => (busy() && name()) || props.term.label;
+
   // Selecting a tab clears its pending notification badge.
   const select = () => {
     setHasNotification(false);
@@ -284,11 +288,11 @@ function TerminalRow(props: {
       >
         <LedDot active={props.active} busy={busy()} />
         <div class="flex-1 min-w-0">
-          <div class="text-xs truncate flex items-center gap-1.5">
-            <span>{props.term.label}</span>
-            <Show when={busy() && name()}>
-              <span class="text-muted-foreground"> ({name()})</span>
-            </Show>
+          <div
+            class="text-xs truncate flex items-center gap-1.5"
+            title={displayLabel() === props.term.label ? props.term.label : `${props.term.label} — ${displayLabel()}`}
+          >
+            <span class="truncate">{displayLabel()}</span>
             <Show when={hasNotification()}>
               <Bell class="w-2.5 h-2.5 text-warning shrink-0" />
             </Show>

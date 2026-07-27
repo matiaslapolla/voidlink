@@ -104,6 +104,29 @@ export function makeWorkspace(name: string, repoRoot: string | null = null): Wor
   };
 }
 
+/// True for names the app invented — the `Workspace N` counter and the
+/// initial `Main`. Auto names are safe to replace with a repository name when
+/// a folder is picked; anything the user typed is theirs and stays.
+export function isAutoWorkspaceName(name: string): boolean {
+  return /^(workspace(\s+\d+)?|main)$/i.test(name.trim());
+}
+
+/// The name a repository goes by. The remote wins when there is one, since
+/// `~/dev/wt/feature-x` checkouts and renamed clones both lie about the
+/// project's identity; otherwise the root folder's basename.
+export function repoDisplayName(repoRoot: string, remoteUrl?: string | null): string {
+  const remote = remoteUrl?.trim();
+  if (remote) {
+    const name = remote
+      .replace(/\/+$/, "")
+      .replace(/\.git$/i, "")
+      .split(/[/:]/)
+      .pop();
+    if (name) return name;
+  }
+  return repoRoot.replace(/\/+$/, "").split("/").pop() || "Workspace";
+}
+
 /// Display label for a worktree in the rail. Branch name when we have one,
 /// otherwise the directory name; detached HEADs say so explicitly rather than
 /// showing a bare path the user can't act on.
