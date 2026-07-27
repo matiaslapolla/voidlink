@@ -25,7 +25,74 @@ pub(crate) struct PtySession {
 }
 
 pub(crate) type PtyStore = Arc<DashMap<String, PtySession>>;
-pub(crate) type PtyChannels = Arc<DashMap<String, Channel>>;
+
+/// Raw PTY bytes retained per session so a re-subscribing frontend can rebuild
+/// its screen. Sized to cover a screenful of a busy TUI several times over
+/// while staying bounded per session.
+const SCROLLBACK_CAP_BYTES: usize = 512 * 1024;
+
+/// Where a session's output goes, plus what it has already produced.
+///
+/// The frontend does not keep one terminal pane alive per PTY: switching
+/// worktrees swaps the whole pane list, so the xterm instance is disposed and a
+/// fresh, empty one is constructed when the user comes back. With output going
+/// only to a live channel that meant two bugs at once — the returning pane
+/// painted an empty (black) grid, and everything the shell wrote while it was
+/// unmounted was dropped on the floor. Retaining a bounded window of raw bytes
+/// and replaying it on subscribe fixes both, and keeps the channel and the
+/// backlog under one lock so the reader thread can never interleave a live
+/// chunk into the middle of a replay.
+pub(crate) struct PtySink {
+    /// `None` while no pane is attached — output is buffered only.
+    channel: Option<Channel>,
+    /// Retained chunks, oldest first, at the read() boundaries the terminal
+    /// originally saw. Whole chunks are evicted, so a replay can begin partway
+    /// through an escape sequence; the shell's next repaint corrects it, and
+    /// splitting a chunk would guarantee that garbage instead of risking it.
+    scrollback: std::collections::VecDeque<Vec<u8>>,
+    bytes: usize,
+}
+
+impl PtySink {
+    fn new() -> Self {
+        Self { channel: None, scrollback: std::collections::VecDeque::new(), bytes: 0 }
+    }
+
+    /// Record a chunk and forward it to the attached pane, if any. A send
+    /// failure means the pane went away without unsubscribing, so we drop the
+    /// channel and keep buffering rather than logging once per read.
+    fn push(&mut self, chunk: Vec<u8>) {
+        if let Some(ch) = &self.channel {
+            if ch.send(InvokeResponseBody::Raw(chunk.clone())).is_err() {
+                self.channel = None;
+            }
+        }
+        self.bytes += chunk.len();
+        self.scrollback.push_back(chunk);
+        while self.bytes > SCROLLBACK_CAP_BYTES {
+            match self.scrollback.pop_front() {
+                Some(old) => self.bytes -= old.len(),
+                None => break,
+            }
+        }
+    }
+
+    /// Attach a pane and hand it everything the session has produced so far.
+    fn attach(&mut self, channel: Channel) {
+        if self.bytes > 0 {
+            let mut replay = Vec::with_capacity(self.bytes);
+            for chunk in &self.scrollback {
+                replay.extend_from_slice(chunk);
+            }
+            if channel.send(InvokeResponseBody::Raw(replay)).is_err() {
+                return;
+            }
+        }
+        self.channel = Some(channel);
+    }
+}
+
+pub(crate) type PtyChannels = Arc<DashMap<String, Mutex<PtySink>>>;
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -111,6 +178,11 @@ async fn create_pty(
         let session_id = uuid::Uuid::new_v4().to_string();
         let shutdown = Arc::new(AtomicBool::new(false));
 
+        // Register the sink before the reader starts so the shell's login
+        // banner and first prompt are retained even though the frontend has
+        // not had a chance to subscribe yet.
+        chans.insert(session_id.clone(), Mutex::new(PtySink::new()));
+
         let reader_session_id = session_id.clone();
         let reader_app_handle = app_handle.clone();
         let reader_channels = chans.clone();
@@ -130,15 +202,12 @@ async fn create_pty(
                         break;
                     }
                     Ok(n) => {
-                        let chunk = buf[..n].to_vec();
-                        if let Some(ch) = reader_channels.get(&reader_session_id) {
-                            if let Err(e) = ch.send(InvokeResponseBody::Raw(chunk)) {
-                                log::warn!("PTY {}: channel send failed: {}", reader_session_id, e);
-                            }
-                        } else {
-                            let event_name = format!("pty-output:{}", reader_session_id);
-                            if let Err(e) = reader_app_handle.emit(&event_name, chunk) {
-                                log::warn!("PTY {}: event emit failed: {}", reader_session_id, e);
+                        // The sink is created with the session, so this only
+                        // misses if the session was closed mid-read — in which
+                        // case the shutdown flag ends the loop imminently.
+                        if let Some(sink) = reader_channels.get(&reader_session_id) {
+                            if let Ok(mut sink) = sink.lock() {
+                                sink.push(buf[..n].to_vec());
                             }
                         }
                     }
@@ -211,7 +280,12 @@ async fn pty_subscribe(
     on_output: Channel,
     state: tauri::State<'_, PtyChannels>,
 ) -> Result<(), String> {
-    state.insert(session_id, on_output);
+    // Replaying happens under the sink's lock, so live output produced during
+    // the replay queues behind it instead of arriving out of order.
+    let sink = state
+        .entry(session_id)
+        .or_insert_with(|| Mutex::new(PtySink::new()));
+    sink.lock().map_err(|_| "pty sink poisoned".to_string())?.attach(on_output);
     Ok(())
 }
 

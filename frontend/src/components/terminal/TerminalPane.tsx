@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onMount, onCleanup } from "solid-js";
+import { createEffect, createSignal, onMount, onCleanup, getOwner, runWithOwner } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
@@ -149,6 +149,40 @@ export function TerminalPane(props: TerminalPaneProps) {
     return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
   }
 
+  // Everything below is set up after `await document.fonts.ready`, and Solid's
+  // owner is only current for the *synchronous* part of a computation. Anything
+  // registered past that await would attach to a null owner: the effects would
+  // never be disposed and — the damaging one — the onCleanup at the end of the
+  // mount body would silently register nothing, so unmounting a pane left the
+  // xterm alive with its WebGL context, ResizeObserver and window listeners
+  // still attached. Switching worktrees unmounts every pane, so contexts piled
+  // up until the webview hit its live-context ceiling and started dropping the
+  // oldest ones — panes coming back read as black. Re-entering this owner at
+  // each registration site restores normal disposal.
+  const owner = getOwner();
+
+  // Teardown is routed through a cleanup registered *synchronously*, so it is
+  // guaranteed to be armed even if the pane unmounts while the mount body is
+  // still awaiting — rapid worktree switching hits exactly that window, and
+  // handing the disposer to an owner that has already run its cleanups would
+  // strand the terminal just as thoroughly as registering none at all.
+  let disposed = false;
+  let teardown: (() => void) | null = null;
+  const ownedCleanup = (fn: () => void) => {
+    teardown = fn;
+    if (disposed) { teardown = null; fn(); }
+  };
+  const ownedEffect = (fn: () => void) => {
+    if (disposed) return;
+    runWithOwner(owner, () => createEffect(fn));
+  };
+  onCleanup(() => {
+    disposed = true;
+    const fn = teardown;
+    teardown = null;
+    fn?.();
+  });
+
   onMount(async () => {
     const ptyId = props.ptyId;
     const t = settings.terminal;
@@ -158,6 +192,8 @@ export function TerminalPane(props: TerminalPaneProps) {
     } catch {
       // unsupported — proceed
     }
+    // Unmounted while we waited — never build a terminal nobody will show.
+    if (disposed) return;
 
     const term = new Terminal({
       // Required for `term.unicode.activeVersion` (used below).
@@ -377,7 +413,7 @@ export function TerminalPane(props: TerminalPaneProps) {
     // Reactively apply setting changes. Font/size changes need a refresh to
     // repaint the canvas with the new glyph metrics — just setting the option
     // invalidates cached measurements but doesn't redraw the existing grid.
-    createEffect(() => {
+    ownedEffect(() => {
       const s = settings.terminal;
       term.options.fontFamily = s.fontFamily;
       term.options.fontSize = s.fontSize;
@@ -405,7 +441,7 @@ export function TerminalPane(props: TerminalPaneProps) {
     // Theme swap on app light/dark toggle. xterm rebuilds its color
     // cache when `options.theme` is reassigned; a refresh forces a
     // canvas repaint so already-rendered cells pick up the new palette.
-    createEffect(() => {
+    ownedEffect(() => {
       term.options.theme = palette();
       try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
     });
@@ -542,7 +578,7 @@ export function TerminalPane(props: TerminalPaneProps) {
     // re-renders at the current dimensions.
     let wasActive = props.active !== false;
     let pendingShowFrame: number | null = null;
-    createEffect(() => {
+    ownedEffect(() => {
       const active = props.active !== false;
       if (active && !wasActive) {
         if (fitTimer !== null) {
@@ -594,7 +630,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       }
     });
 
-    onCleanup(() => {
+    ownedCleanup(() => {
       if (fitTimer !== null) clearTimeout(fitTimer);
       if (pendingShowFrame !== null) cancelAnimationFrame(pendingShowFrame);
       if (repaintFrame !== null) cancelAnimationFrame(repaintFrame);

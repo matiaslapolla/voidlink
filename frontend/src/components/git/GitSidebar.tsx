@@ -1914,7 +1914,11 @@ function layoutDag(commits: GitCommitInfo[]): {
 
 const LANE_WIDTH = 12;
 const LANE_X_OFFSET = 8;
-const ROW_HEIGHT = 36;
+/// The DAG gutter is drawn as one fixed-height SVG per row, so a row's laid-out
+/// height MUST equal ROW_HEIGHT exactly — any slack leaves an unpainted band
+/// between rows and the lane lines read as dashed. The row body is pinned to
+/// this height below rather than sized by its text.
+const ROW_HEIGHT = 46;
 const COMMIT_RADIUS = 3;
 
 /// Color palette cycled per lane index. Keeps adjacent branches visually
@@ -2044,6 +2048,7 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
           {(row) => (
             <div
               class="flex items-stretch rounded-md hover:bg-accent/40 transition-colors cursor-pointer select-none"
+              style={{ height: `${ROW_HEIGHT}px` }}
               onClick={() => openCommitCompare(row.commit)}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -2059,14 +2064,16 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
               title="Open commit diff (right-click for actions)"
             >
               <DagColumn row={row} maxLanes={layout().maxLanes} />
-              <div class="flex-1 min-w-0 px-2 py-1.5 text-[13px]">
-                <div class="flex items-center gap-2">
+              {/* Leading is pinned (18px + 16px + 12px padding = ROW_HEIGHT) so the
+                  body never outgrows the gutter SVG next to it. */}
+              <div class="flex-1 min-w-0 px-2 py-1.5 text-[13px] flex flex-col justify-center">
+                <div class="flex items-center gap-2 h-[18px]">
                   <span class="font-mono text-muted-foreground text-xs tabular-nums shrink-0">
                     {row.commit.oid.slice(0, 7)}
                   </span>
                   <span class="truncate flex-1 text-foreground">{row.commit.summary}</span>
                 </div>
-                <div class="text-xs text-muted-foreground/80 truncate tabular-nums">
+                <div class="text-xs leading-4 text-muted-foreground/80 truncate tabular-nums">
                   {row.commit.authorName} · {new Date(row.commit.time * 1000).toLocaleString()}
                 </div>
               </div>

@@ -1,5 +1,5 @@
 import { For, Show, createSignal, createMemo, createEffect, on, onCleanup, onMount } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createStore, reconcile } from "solid-js/store";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Portal } from "solid-js/web";
 import { ChevronRight, ChevronDown, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare } from "lucide-solid";
@@ -43,23 +43,28 @@ export function FileTree(props: { root: string; onOpenFile?: (path: string) => v
   const refresh = () => setRefreshKey(k => k + 1);
   const closeMenu = () => setContextMenu(null);
 
-  // The repo's trunk, used by "Compare with …". Resolved once on mount —
-  // prefer `main`, then `master`, else the first local branch. Falls back to
-  // "main" if the lookup fails (the compare just errors visibly if wrong).
+  // The repo's trunk, used by "Compare with …" — prefer `main`, then `master`,
+  // else the first local branch, falling back to "main" if the lookup fails (the
+  // compare just errors visibly if wrong). Re-resolved whenever `root` changes:
+  // the tree is not remounted on a workspace switch (its `<Show>` parent only
+  // swaps the accessor's value), so a mount-only lookup would stay on the
+  // previous repo's trunk.
   const [defaultBranch, setDefaultBranch] = createSignal("main");
-  onMount(async () => {
+  createEffect(on(() => props.root, async (root) => {
+    setDefaultBranch("main");
     try {
-      const branches = await gitApi.listBranches(props.root, false);
+      const branches = await gitApi.listBranches(root, false);
       const names = branches.map((b) => b.name);
       const trunk =
         names.find((n) => n === "main") ??
         names.find((n) => n === "master") ??
         names[0];
-      if (trunk) setDefaultBranch(trunk);
+      // Ignore a response that lost the race against another switch.
+      if (trunk && root === props.root) setDefaultBranch(trunk);
     } catch {
       // keep the "main" default
     }
-  });
+  }));
 
   /// Open a compare tab (trunk → HEAD via merge-base) with this file
   /// pre-selected, so "Compare with main" lands straight on the file's diff.
@@ -170,6 +175,20 @@ export function FileTree(props: { root: string; onOpenFile?: (path: string) => v
       setLoadingDirs(s => { const n = new Set(s); n.delete(path); return n; });
     }
   }
+
+  // Switching workspaces changes `root` in place — the sidebar's `<Show>` keeps
+  // this component mounted and only swaps the accessor's value. Everything keyed
+  // by absolute path (expand set, listings, in-flight markers) belongs to the old
+  // repo at that point, and the new root is absent from `expanded`, so nothing
+  // ever lists it and `walk` renders "Loading…" forever. Rebuild the state around
+  // the new root; the lazy-list effect below then picks it up.
+  createEffect(on(() => props.root, (root) => {
+    setExpanded(new Set([root]));
+    setDirCache(reconcile({}));
+    setLoadingDirs(new Set<string>());
+    setEdit(null);
+    setContextMenu(null);
+  }, { defer: true }));
 
   // Lazily list any expanded dir we haven't cached yet (initial mount + expands).
   createEffect(() => {
