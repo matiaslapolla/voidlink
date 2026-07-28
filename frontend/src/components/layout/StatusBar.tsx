@@ -1,10 +1,21 @@
 import { Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
-import { Eye, EyeOff, GitBranch, GitCommit, Layers, Loader2, Sparkles, FileWarning } from "lucide-solid";
+import { Eye, EyeOff, GitBranch, GitCommit, Layers, Loader2, Maximize2, Minimize2, Sparkles, FileWarning } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { stackApi } from "@/api/stack";
+import { isMac } from "@/api/platform";
 import { useAppStore } from "@/store/LayoutContext";
 import { aiCommitState } from "@/commands/aiCommit";
+import { formatChord } from "@/commands/keys";
+import { primaryChordFor } from "@/commands/keymap";
+import { isZen, maximizedGroupId, toggleMaximizedGroup, toggleZen } from "@/store/focusMode";
 import { blameEnabled, toggleBlame } from "@/components/editor/blameOverlay";
+
+/// The accelerator for an action, derived from the keymap so the label on
+/// screen and the chord that fires can never disagree.
+function chordLabel(actionId: string): string {
+  const chord = primaryChordFor(actionId);
+  return chord ? formatChord(chord, isMac()) : "";
+}
 
 /// Thin always-visible bottom bar that consolidates "what's the state of
 /// my repo *right now*" into one row: branch, ahead/behind, in-flight AI
@@ -140,6 +151,35 @@ export function StatusBar() {
       </Show>
 
       <span class="flex-1" />
+
+      {/* The way out of a focus mode.
+          A user who hits ⌘⌥Z by accident has just lost the rail, both sidebars
+          and every tab strip; the status bar is the one surface that stays, so
+          it carries the mode's name *and* its chord. Naming the chord is what
+          makes the exit reachable with no mouse — clicking the chip is the
+          fallback, not the affordance. */}
+      <Show when={maximizedGroupId()}>
+        <button
+          onClick={() => toggleMaximizedGroup(maximizedGroupId())}
+          title={`Pane maximized — press ${chordLabel("ui.maximize-pane")} to restore the split`}
+          class="flex items-center gap-1 px-1.5 py-0.5 rounded text-primary bg-primary/10 hover:bg-primary/15 transition-colors"
+        >
+          <Minimize2 class="w-3 h-3" />
+          <span class="text-[10px] tracking-wide">
+            Maximized · {chordLabel("ui.maximize-pane")}
+          </span>
+        </button>
+      </Show>
+      <Show when={isZen()}>
+        <button
+          onClick={toggleZen}
+          title={`Zen mode — press ${chordLabel("ui.zen")} to bring the shell back`}
+          class="flex items-center gap-1 px-1.5 py-0.5 rounded text-primary bg-primary/10 hover:bg-primary/15 transition-colors"
+        >
+          <Maximize2 class="w-3 h-3" />
+          <span class="text-[10px] tracking-wide">Zen · {chordLabel("ui.zen")}</span>
+        </button>
+      </Show>
 
       <button
         onClick={toggleBlame}

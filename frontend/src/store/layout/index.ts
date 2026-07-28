@@ -101,6 +101,7 @@ export { PANEL_BOUNDS } from "./prefs";
 export type { PaneGroup, PaneNode, SplitOrientation } from "./panes";
 export {
   MAX_GROUPS,
+  MIN_RATIO,
   canSplit,
   groupCount,
   groupList,

@@ -21,6 +21,7 @@ import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
 import { createAppStore } from "@/store/layout";
 import { isMac } from "@/api/platform";
+import { isZen, toggleMaximizedGroup, toggleZen } from "@/store/focusMode";
 import { CommandPalette } from "@/commands/CommandPalette";
 import { FileFinder } from "@/commands/FileFinder";
 import { ShortcutsCheatSheet } from "@/commands/ShortcutsCheatSheet";
@@ -91,7 +92,8 @@ const EditorView = lazy(() =>
 const GitView = lazy(() => import("@/GitApp").then((m) => ({ default: m.GitSurface })));
 
 function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) {
-  const { state, activeWorkspace, activeWorktree, activeRepoPath, actions } = useAppStore();
+  const { state, activeWorkspace, activeWorktree, activeRepoPath, focusedGroupId, actions } =
+    useAppStore();
 
   // Hydrate the real worktree list for every repo-backed workspace once, on
   // boot. Persisted state only knows what we last saw; git is the truth, and
@@ -571,6 +573,20 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
         run: () => actions.toggleIgnoreWhitespace(),
       },
       {
+        id: "ui.maximize-pane",
+        label: "Maximize / restore the focused pane",
+        description: "Fill the workbench with the focused pane group; press again to restore",
+        group: "View",
+        run: () => toggleMaximizedGroup(focusedGroupId()),
+      },
+      {
+        id: "ui.zen",
+        label: "Toggle zen mode",
+        description: "Hide the rail, both sidebars and the tab strips; the status bar stays",
+        group: "View",
+        run: () => toggleZen(),
+      },
+      {
         id: "app.settings",
         label: "Open settings…",
         group: "App",
@@ -1006,14 +1022,17 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
       // The window's title bar is drawn above the view container in both modes,
       // so the shell itself never draws one.
       titleBar={null}
-      rail={<WorkspaceRail />}
-      sidebar={state.sidebarsSwapped ? rightPane() : leftPane()}
+      // Zen removes the panels rather than sliding them away — a
+      // keyboard-initiated geometry change never animates (MASTER §7.1), and
+      // the pane tree underneath is untouched, so the way back is exact.
+      rail={isZen() ? null : <WorkspaceRail />}
+      sidebar={isZen() ? null : state.sidebarsSwapped ? rightPane() : leftPane()}
       main={
         <MainSurface
           onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
         />
       }
-      rightSidebar={state.sidebarsSwapped ? leftPane() : rightPane()}
+      rightSidebar={isZen() ? null : state.sidebarsSwapped ? leftPane() : rightPane()}
       statusBar={<StatusBar />}
     />
   );

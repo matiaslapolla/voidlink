@@ -51,6 +51,8 @@ export const ACTION_IDS = [
   "ui.swap-sidebars",
   "ui.toggle-diff-mode",
   "ui.toggle-ignore-ws",
+  "ui.maximize-pane",
+  "ui.zen",
   "view.toggle-blame",
   // AI
   "agent.toggle",

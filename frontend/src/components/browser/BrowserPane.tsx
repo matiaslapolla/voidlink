@@ -26,6 +26,15 @@ export { browserTabLabel, normalizeUrl } from "@/components/browser/url";
 export function BrowserPane(props: {
   tab: BrowserTab;
   active: boolean;
+  /// Whether the pane group this tab lives in is on screen at all.
+  ///
+  /// `active` answers "is this the front tab of its group"; this answers "is
+  /// its group being rendered". They come apart the moment panes exist — a
+  /// group that has been maximized away is not covered by anything, it is
+  /// simply not drawn, and a child webview that is not told to hide would go
+  /// on painting over whatever replaced it. Defaults to `true` for callers
+  /// with no groups.
+  groupVisible?: boolean;
   onUrlChange: (url: string) => void;
   onTitleChange: (title: string) => void;
 }) {
@@ -111,7 +120,8 @@ export function BrowserPane(props: {
   /// Single source of truth for "should the page be on screen". Anything that
   /// paints over the tab — a modal, a menu, another tab being active — has to
   /// route through here, because nothing in the DOM can cover a child webview.
-  const shouldShow = () => props.active && !isOverlayOpen() && !error();
+  const shouldShow = () =>
+    props.active && (props.groupVisible ?? true) && !isOverlayOpen() && !error();
 
   createEffect(() => {
     if (!ready()) return;

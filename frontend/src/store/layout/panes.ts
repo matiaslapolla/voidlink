@@ -47,8 +47,11 @@ export type PaneNode =
 export const MAX_GROUPS = 4;
 
 /// Below this a group is unusable — no room for a tab label, let alone a pane.
-/// The reducer refuses splits that would push any sibling under it.
-const MIN_RATIO = 0.1;
+/// The reducer refuses splits that would push any sibling under it. Exported
+/// because the splitter between two groups has to clamp to the same number the
+/// reducer would renormalise to; two different minimums would mean a drag that
+/// silently snaps back.
+export const MIN_RATIO = 0.1;
 
 let idCounter = 0;
 /// Ids only have to be unique within one worktree's tree and stable across a

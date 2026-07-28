@@ -133,6 +133,18 @@ export const KEYMAP: readonly KeymapEntry[] = [
     binding: { meta: true, shift: true, key: "d" },
     note: "D for diff layout. ⌘⌥D would be swallowed by macOS (Dock hiding).",
   },
+  {
+    actionId: "ui.maximize-pane",
+    group: "View",
+    binding: { meta: true, alt: true, key: "m" },
+    note: "M for maximize. ⌘M is minimise-window on macOS and never reaches us; the ⌥ slot is free.",
+  },
+  {
+    actionId: "ui.zen",
+    group: "View",
+    binding: { meta: true, alt: true, key: "z" },
+    note: "Zen has no chord sequences to lean on (`keys.ts` models single chords), and ⌘⇧Z is Monaco's redo — so the ⌥ slot again. The status bar renders whatever this entry says, so the two cannot drift.",
+  },
 
   // ── Tabs ──────────────────────────────────────────────────────────────
   {
