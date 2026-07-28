@@ -43,6 +43,7 @@ export const TAB_STORAGE_KEYS = [
   "voidlink-pinned-tabs",
   "voidlink-browser-tabs",
   "voidlink-editor-tabs",
+  "voidlink-pane-layout",
 ] as const;
 
 /// The subset of localStorage the migration reads and writes, as a plain

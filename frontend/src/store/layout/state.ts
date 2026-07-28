@@ -7,6 +7,7 @@
 /// `layout.test.ts`, and the decomposition is not allowed to move them.
 import type { TerminalSession, Workspace } from "@/types/workspace";
 import { TAB_KINDS, TAB_SPECS } from "./tabs";
+import { singleGroupLayout, type PaneNode } from "./panes";
 import type {
   ActiveItem,
   BrainTab,
@@ -63,6 +64,14 @@ export interface AppStoreState {
   /// independently: clicking a file in the editor must not blank out the
   /// terminal the user is watching in the workbench, and vice versa.
   editorActiveItemByWorktree: Record<string, ActiveItem | null>;
+  /// The split tree per worktree: 1-4 tab groups. The default — one group
+  /// claiming nothing — resolves to today's single-strip workbench, so a
+  /// worktree that has never been split needs no saved geometry at all.
+  paneLayoutByWorktree: Record<string, PaneNode>;
+  /// Which group has keyboard focus, per worktree. `null` means the first.
+  /// Persisted with the geometry: coming back to a split worktree and landing
+  /// in a different pane than you left is disorienting.
+  focusedGroupByWorktree: Record<string, string | null>;
   /// Width of each resizable column, in px. Persisted, so a reload comes back
   /// to the layout the user dragged rather than to the defaults.
   panels: PanelWidths;
@@ -99,6 +108,8 @@ export function seedWorktreeCollections(s: AppStoreState, wtId: string) {
   }
   s.closedTabsByWorktree[wtId] ??= [];
   s.pinnedTabsByWorktree[wtId] ??= [];
+  s.paneLayoutByWorktree[wtId] ??= singleGroupLayout();
+  if (!(wtId in s.focusedGroupByWorktree)) s.focusedGroupByWorktree[wtId] = null;
   if (!(wtId in s.activeItemByWorktree)) s.activeItemByWorktree[wtId] = null;
   if (!(wtId in s.editorActiveItemByWorktree)) s.editorActiveItemByWorktree[wtId] = null;
 }
@@ -112,6 +123,8 @@ export function dropWorktreeCollections(s: AppStoreState, wtId: string) {
   }
   delete s.closedTabsByWorktree[wtId];
   delete s.pinnedTabsByWorktree[wtId];
+  delete s.paneLayoutByWorktree[wtId];
+  delete s.focusedGroupByWorktree[wtId];
   delete s.activeItemByWorktree[wtId];
   delete s.editorActiveItemByWorktree[wtId];
 }

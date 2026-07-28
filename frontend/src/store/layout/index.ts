@@ -30,6 +30,20 @@ import {
 import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
 import type { PanelId } from "./prefs";
 import {
+  groupList,
+  groupOwning,
+  moveTabToGroup,
+  parsePaneLayouts,
+  pruneClosedTabs,
+  removeGroup,
+  serializePaneLayout,
+  setGroupActiveTab,
+  setSplitRatios,
+  singleGroupLayout,
+  splitGroup,
+  type SplitOrientation,
+} from "./panes";
+import {
   TAB_KINDS,
   TAB_SPECS,
   closedTabsEqual,
@@ -84,6 +98,15 @@ export type {
 export { TAB_KINDS, TAB_SPECS, parseEditorTabs, samePath, serializeEditorTabs } from "./tabs";
 export type { DiffMode, GitTab, PanelId, PanelWidths, SidebarTab, UiPrefs } from "./prefs";
 export { PANEL_BOUNDS } from "./prefs";
+export type { PaneGroup, PaneNode, SplitOrientation } from "./panes";
+export {
+  MAX_GROUPS,
+  canSplit,
+  groupCount,
+  groupList,
+  groupOwning,
+  resolveGroupTabs,
+} from "./panes";
 export type { AppStoreState } from "./state";
 export { LAYOUT_STORAGE_KEYS, STORAGE_KEYS, flushWrites, resetLayoutStorage } from "./persistence";
 
@@ -162,6 +185,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
     activeItemByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
     editorActiveItemByWorktree: editorTabs.active,
+    paneLayoutByWorktree: parsePaneLayouts(
+      readJson(STORAGE_KEYS.paneLayout, null),
+      worktreeIds,
+    ),
+    focusedGroupByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
     panels: prefs.panels,
     gitSidebarCollapsed: prefs.gitSidebarCollapsed,
     leftSidebarCollapsed: prefs.leftSidebarCollapsed,
@@ -202,6 +230,15 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   createEffect(() => {
     if (!persist) return;
     writeJson(STORAGE_KEYS.pinnedTabs, state.pinnedTabsByWorktree);
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    const out: Record<string, unknown> = {};
+    for (const [wtId, layout] of Object.entries(state.paneLayoutByWorktree)) {
+      out[wtId] = serializePaneLayout(layout);
+    }
+    writeJson(STORAGE_KEYS.paneLayout, out);
   });
 
   createEffect(() => {
@@ -260,6 +297,52 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activePreviewTabs = activeOf<PreviewTab>("preview");
   const activeBrainTabs = activeOf<BrainTab>("brain");
   const activeBrowserTabs = activeOf<BrowserTab>("browser");
+
+  /// Every workbench tab id for the active worktree, in strip order. The pane
+  /// tree stores claims by id, so this is what turns those claims into content
+  /// — and what tells the tree which claims have gone stale.
+  ///
+  /// Workbench kinds only: the editor window's four kinds live in a different
+  /// window with its own pointer, and a pane group here can never show one.
+  const workbenchTabIds = createMemo(() => [
+    ...activeTerminals().map((t) => t.id),
+    ...activeCompareTabs().map((t) => t.id),
+    ...activeStackTabs().map((t) => t.id),
+    ...activeHistoryTabs().map((t) => t.id),
+    ...activeBrainTabs().map((t) => t.id),
+    ...activeBrowserTabs().map((t) => t.id),
+  ]);
+
+  /// The active worktree's split tree, defaulted rather than `undefined` so no
+  /// render path has to branch on "no geometry yet".
+  const paneLayout = createMemo(
+    () => state.paneLayoutByWorktree[state.activeWorktreeId] ?? singleGroupLayout(),
+  );
+
+  /// The focused group, resolved. A stale id (its group was collapsed) falls
+  /// back to the first group rather than leaving keyboard focus nowhere.
+  const focusedGroupId = createMemo(() => {
+    const groups = groupList(paneLayout());
+    const stored = state.focusedGroupByWorktree[state.activeWorktreeId] ?? null;
+    return groups.some((g) => g.id === stored) ? stored! : (groups[0]?.id ?? null);
+  });
+
+  /// Closing the last tab in a group collapses it, and a claim on a tab that no
+  /// longer exists is dropped. Both are structural, so they run here rather
+  /// than in each of the six per-kind close actions.
+  ///
+  /// The stringify guard is what makes this terminate: `pruneClosedTabs`
+  /// rebuilds split nodes unconditionally, so writing its result back
+  /// unconditionally would retrigger this effect forever.
+  createEffect(() => {
+    const wtId = state.activeWorktreeId;
+    const current = state.paneLayoutByWorktree[wtId];
+    if (!current) return;
+    const next = pruneClosedTabs(current, workbenchTabIds());
+    if (JSON.stringify(next) !== JSON.stringify(current)) {
+      setState("paneLayoutByWorktree", wtId, next);
+    }
+  });
 
   const activeItem = createMemo(
     () => state.activeItemByWorktree[state.activeWorktreeId] ?? null,
@@ -622,6 +705,99 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
     toggleIgnoreWhitespace() {
       setState("ignoreWhitespace", (v) => !v);
+    },
+
+    // ── Pane groups ──────────────────────────────────────────────────────
+    /// Split `groupId` (default: the focused group), returning the new group's
+    /// id or `null` when the four-group cap refused. The caller decides what
+    /// to put in it — a drag drops the dragged tab there, the keybinding moves
+    /// the active one.
+    splitPaneGroup(
+      wtId: string,
+      orientation: SplitOrientation,
+      placement: "before" | "after" = "after",
+      groupId?: string,
+    ): string | null {
+      const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
+      const target = groupId ?? focusedGroupId() ?? groupList(current)[0]?.id;
+      if (!target) return null;
+      const { layout, newGroupId } = splitGroup(current, target, orientation, placement);
+      if (!newGroupId) return null;
+      setState(produce((s) => {
+        s.paneLayoutByWorktree[wtId] = layout;
+        s.focusedGroupByWorktree[wtId] = newGroupId;
+      }));
+      return newGroupId;
+    },
+
+    /// Collapse a group. Its tabs are not closed — they fall back to the first
+    /// group, because a pane going away must never take a terminal with it.
+    closePaneGroup(wtId: string, groupId: string) {
+      const current = state.paneLayoutByWorktree[wtId];
+      if (!current) return;
+      const next = removeGroup(current, groupId);
+      if (next === current) return;
+      setState(produce((s) => {
+        s.paneLayoutByWorktree[wtId] = next;
+        if (s.focusedGroupByWorktree[wtId] === groupId) {
+          s.focusedGroupByWorktree[wtId] = groupList(next)[0]?.id ?? null;
+        }
+      }));
+    },
+
+    /// Move a tab into a group, landing before `beforeTabId` or at the end.
+    /// Focus follows the tab: a drop is a statement about where you want to be
+    /// looking.
+    moveTabToPaneGroup(
+      wtId: string,
+      tabId: string,
+      groupId: string,
+      beforeTabId: string | null = null,
+    ) {
+      const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
+      const next = moveTabToGroup(current, tabId, groupId, beforeTabId);
+      if (next === current) return;
+      setState(produce((s) => {
+        s.paneLayoutByWorktree[wtId] = next;
+        s.focusedGroupByWorktree[wtId] = groupId;
+      }));
+    },
+
+    /// Which group has keyboard focus. Split-aware navigation and the group
+    /// header's `--primary` rule both read it.
+    focusPaneGroup(wtId: string, groupId: string) {
+      setState("focusedGroupByWorktree", wtId, groupId);
+    },
+
+    /// Focus a tab *within* a group, without moving it. The worktree-wide
+    /// active item follows only when the group is the focused one — otherwise
+    /// clicking a tab in a background pane would steal the front pane's tab.
+    setPaneGroupActiveTab(wtId: string, groupId: string, tabId: string | null) {
+      const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
+      setState("paneLayoutByWorktree", wtId, setGroupActiveTab(current, groupId, tabId));
+    },
+
+    /// Drag on a splitter between two groups.
+    setPaneSplitRatios(wtId: string, splitId: string, ratios: number[]) {
+      const current = state.paneLayoutByWorktree[wtId];
+      if (!current) return;
+      setState("paneLayoutByWorktree", wtId, setSplitRatios(current, splitId, ratios));
+    },
+
+    /// Back to one group holding everything. The escape hatch for a split the
+    /// user cannot undo by closing panes one at a time.
+    resetPaneLayout(wtId: string) {
+      setState(produce((s) => {
+        s.paneLayoutByWorktree[wtId] = singleGroupLayout();
+        s.focusedGroupByWorktree[wtId] = null;
+      }));
+    },
+
+    /// Which group is showing `tabId` right now, unclaimed tabs included.
+    paneGroupOwning(wtId: string, tabId: string): string | null {
+      const current = state.paneLayoutByWorktree[wtId];
+      if (!current) return null;
+      return groupOwning(current, tabId, workbenchTabIds());
     },
 
     // ── Panel geometry ───────────────────────────────────────────────────
@@ -1285,6 +1461,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     activeBrowserTabs,
     activeItem,
     editorActiveItem,
+    workbenchTabIds,
+    paneLayout,
+    focusedGroupId,
     activeClosedTabs,
     activePinnedTabs,
     actions,

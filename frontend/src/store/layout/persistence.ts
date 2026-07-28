@@ -29,6 +29,10 @@ export const STORAGE_KEYS = {
   /// that they are the entire contents of another window, losing them on a
   /// workbench reload would close somebody's editor out from under them.
   editorTabs: "voidlink-editor-tabs",
+  /// `Record<worktreeId, PaneNode>` — the split tree per worktree. Geometry is
+  /// per worktree and not synced across windows, so it sits beside the tab
+  /// blobs rather than inside them.
+  paneLayout: "voidlink-pane-layout",
 } as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
