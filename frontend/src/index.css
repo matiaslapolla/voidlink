@@ -41,6 +41,20 @@
 
   --radius: 0.625rem;
 
+  /* ── Motion ───────────────────────────────────────────────────────────── */
+  /* MASTER.md §7.2. Never inline a cubic-bezier or a raw ms value in a
+     component — name a token. Durations are budgets, not defaults: §7.1's
+     frequency gate decides which one a given surface is even allowed. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* entering — decelerate into place */
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0); /* leaving  — accelerate away */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1); /* toggles  — there and back */
+
+  --dur-instant: 0ms; /* keyboard-initiated — §7.1 */
+  --dur-tint: 60ms; /* hover/active colour shift */
+  --dur-micro: 120ms; /* press feedback, toggle, badge in/out */
+  --dur-short: 180ms; /* popover, tooltip, menu, sidebar collapse */
+  --dur-long: 240ms; /* modal, pane split, zen — the ceiling */
+
   --sidebar: oklch(0.213 0.005 270);
   --sidebar-foreground: oklch(0.950 0.006 270);
   --sidebar-primary: oklch(0.655 0.200 270);

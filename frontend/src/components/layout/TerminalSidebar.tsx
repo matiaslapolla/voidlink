@@ -10,6 +10,7 @@ import { FileTree } from "@/components/files/FileTree";
 import { pushToast } from "@/commands/toast";
 import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
+import { StatusLed, terminalSignal } from "@/components/layout/StatusLed";
 
 const POLL_MS = 1500;
 
@@ -336,14 +337,11 @@ function maybeNotify(label: string, lastProcess: string | null) {
   }
 }
 
+/// Thin wrapper over the shared `<StatusLed>` (MASTER.md §7.5.3) so the two
+/// call sites keep their `(active, busy)` shape. The glyph itself lives in
+/// `StatusLed.tsx`; do not re-derive its colours here.
 function LedDot(props: { active: boolean; busy: boolean }) {
-  const color = () =>
-    props.busy
-      ? props.active
-        ? "bg-warning shadow-[0_0_6px_theme(colors.warning)]"
-        : "bg-warning/80"
-      : props.active
-        ? "bg-success shadow-[0_0_6px_theme(colors.success)]"
-        : "bg-muted-foreground/60";
-  return <span class={`w-2 h-2 rounded-full shrink-0 transition-colors ${color()}`} />;
+  return (
+    <StatusLed signal={terminalSignal(props.busy, props.active)} dim={!props.active && props.busy} />
+  );
 }

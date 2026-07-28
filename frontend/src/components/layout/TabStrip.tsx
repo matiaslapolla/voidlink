@@ -28,6 +28,7 @@ import { Portal } from "solid-js/web";
 import { ChevronsRight, Pin, PinOff, X } from "lucide-solid";
 import { terminalApi } from "@/api/terminal";
 import type { TerminalSession } from "@/types/workspace";
+import { StatusLed, terminalSignal } from "@/components/layout/StatusLed";
 
 const POLL_MS = 1500;
 
@@ -457,16 +458,13 @@ function CloseButton(props: { label: string; onClose: () => void }) {
   );
 }
 
+/// Thin wrapper over the shared `<StatusLed>` (MASTER.md §7.5.3) so the two
+/// call sites keep their `(active, busy)` shape. The glyph itself lives in
+/// `StatusLed.tsx`; do not re-derive its colours here.
 function LedDot(props: { active: boolean; busy: boolean }) {
-  const color = () =>
-    props.busy
-      ? props.active
-        ? "bg-warning shadow-[0_0_6px_theme(colors.warning)]"
-        : "bg-warning/80"
-      : props.active
-        ? "bg-success shadow-[0_0_6px_theme(colors.success)]"
-        : "bg-muted-foreground/60";
-  return <span class={`w-2 h-2 rounded-full shrink-0 transition-colors ${color()}`} />;
+  return (
+    <StatusLed signal={terminalSignal(props.busy, props.active)} dim={!props.active && props.busy} />
+  );
 }
 
 /// Overflow chevron at the right edge of the strip. Opens a portal popover
