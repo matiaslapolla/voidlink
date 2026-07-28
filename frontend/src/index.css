@@ -396,4 +396,12 @@ html:not([data-density]) {
     animation-duration: 0ms !important;
     animation-iteration-count: 1 !important;
   }
+  /* MASTER §7.4: functional loops carry state, not decoration, and must be
+     exempted from the zeroing above explicitly. A shimmer that stops looks
+     like a value that finished loading. Opt a loop in with .motion-loop —
+     slower than the default, which is what "reduced", not "removed", means. */
+  .motion-loop {
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

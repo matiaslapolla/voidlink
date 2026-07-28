@@ -1,6 +1,25 @@
-import { Show, For, createResource, createSignal, createEffect, type JSX } from "solid-js";
-import { Check, Layers, Trash2, X } from "lucide-solid";
+import {
+  Show,
+  For,
+  Match,
+  Switch,
+  createResource,
+  createSignal,
+  createEffect,
+  type JSX,
+} from "solid-js";
+import { Check, Layers, Loader2, RefreshCw, Trash2, X } from "lucide-solid";
 import { open } from "@tauri-apps/plugin-dialog";
+import { gitApi } from "@/api/git";
+import type { ConfigEntry, ConfigScope, ConfigSnapshot } from "@/types/git";
+import {
+  CONFIG_GROUPS,
+  displayValue,
+  fieldsInGroup,
+  parseGitBool,
+  resolveProvenance,
+  type ConfigField,
+} from "./gitConfig";
 import {
   AI_KEY_PRESETS,
   aiKeyBindings,
@@ -507,10 +526,20 @@ function ShortcutRow(props: { entry: KeymapEntry }) {
 
 // ─── Reusable rows ───────────────────────────────────────────────────────────
 
-function Section(props: { title: string; children: JSX.Element }) {
+/// `tone="warning"` is used by the Git pane only: with the config scope set to
+/// Global, every header recolours to say that edits land outside the repo. The
+/// colour transition is the pane's whole motion budget — at 0ms a
+/// simultaneous recolour of five headers reads as a repaint glitch rather than
+/// a change of mode.
+function Section(props: { title: string; tone?: "warning"; children: JSX.Element }) {
   return (
     <section>
-      <h3 class="ui-section-label mb-2">{props.title}</h3>
+      <h3
+        class={`ui-section-label mb-2 ${props.tone === "warning" ? "text-warning" : ""}`}
+        style={{ transition: "color var(--dur-short) var(--ease-in-out)" }}
+      >
+        {props.title}
+      </h3>
       <div class="space-y-3">{props.children}</div>
     </section>
   );
@@ -978,13 +1007,476 @@ function AddCustomKey(props: { onAdded: () => void }) {
 
 // ─── Brain Pane ─────────────────────────────────────────────────────────────
 
+// ─── Git Pane ───────────────────────────────────────────────────────────────
+
+/// Settings → Git: real git config on top, voidlink's own identity overrides
+/// underneath.
+///
+/// This is the only pane that writes a file git owns, and the only one that
+/// can write outside the repository. Three consequences shape it:
+///
+///   1. **The scope is stated continuously, never confirmed per write.** The
+///      segmented control plus a permanent line naming the resolved file means
+///      a write is never a surprise (§7.5.1 Anticipation) without a modal in
+///      front of every edit.
+///   2. **No optimistic updates** (§7.5.6). A config write is a filesystem
+///      write outside our control, so every row renders the value that came
+///      back from the re-read, never the value that was typed.
+///   3. **No success toast** (§7.5.5). A write lands in single-digit
+///      milliseconds and the user is looking straight at the row; the new
+///      value and its new provenance mark *are* the feedback.
+function GitPane() {
+  const { activeRepoPath } = useAppStore();
+  const [scope, setScope] = createSignal<ConfigScope>(activeRepoPath() ? "local" : "global");
+  const [readError, setReadError] = createSignal<string | null>(null);
+  const [readAt, setReadAt] = createSignal<Date | null>(null);
+
+  const [snapshot, { refetch }] = createResource(
+    () => activeRepoPath() ?? "",
+    async (repoPath): Promise<ConfigSnapshot | null> => {
+      // Caught rather than left to reject: reading a resource in a failed
+      // state rethrows into render and there is no ErrorBoundary in the
+      // dialog. A cascade that could not be read has to be *reported* — an
+      // empty list would read as "nothing is configured", which is a lie.
+      try {
+        const result = await gitApi.configList(repoPath);
+        setReadError(null);
+        setReadAt(new Date());
+        return result;
+      } catch (e) {
+        setReadError(String(e));
+        return null;
+      }
+    },
+  );
+
+  // Losing the repo while Local is selected would leave writes aimed at a
+  // file that no longer resolves.
+  createEffect(() => {
+    if (!activeRepoPath() && scope() === "local") setScope("global");
+  });
+
+  const entries = () => snapshot()?.entries ?? [];
+  const targetPath = () =>
+    scope() === "local" ? (snapshot()?.scopes.local ?? null) : (snapshot()?.scopes.global ?? null);
+  const loading = () => snapshot.loading && !snapshot();
+
+  /// One write, then a re-read. The re-read is not an optimisation to skip:
+  /// it is the only thing that makes the rendered value true.
+  const applyWrite = async (key: string, value: string | null) => {
+    const repoPath = activeRepoPath() ?? "";
+    const sc = scope();
+    try {
+      if (value === null) await gitApi.configUnset(repoPath, key, sc);
+      else await gitApi.configSet(repoPath, key, value, sc);
+      await refetch();
+    } catch (e) {
+      // Rust already names the resolved file in write errors; append it only
+      // when the failure happened before it got that far.
+      const raw = String(e);
+      const path = targetPath();
+      const named = path && !raw.includes(path) ? `${raw} (${path})` : raw;
+      pushToast(`Couldn't write ${key} — ${named}`, "error", 8000, {
+        label: "Retry",
+        run: () => void applyWrite(key, value),
+      });
+    }
+  };
+
+  const freshness = () => {
+    const at = readAt();
+    if (!at) return "Not read yet";
+    // §7.5.4: this pane has no watcher on .git/config, so it must not imply
+    // liveness it does not have. Saying when it last read is the honest form.
+    return `Last read ${at.toLocaleTimeString()} — voidlink does not watch this file, so an edit made elsewhere shows up only after a refresh`;
+  };
+
+  return (
+    <div class="space-y-4">
+      <div class="flex items-start justify-between gap-3">
+        <p class="text-[11px] text-muted-foreground leading-relaxed">
+          Reads your whole config cascade and writes the keys below to the
+          scope you pick. Everything else in git config is left alone — edit it
+          with <code>git config</code>.
+        </p>
+        <button
+          onClick={() => void refetch()}
+          aria-label="Re-read git config"
+          title={freshness()}
+          class="shrink-0 flex items-center gap-1 px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          <RefreshCw
+            class={`w-3 h-3 ${snapshot.loading ? "animate-spin motion-loop" : ""}`}
+            aria-hidden="true"
+          />
+          Refresh
+        </button>
+      </div>
+
+      <ScopePicker
+        scope={scope()}
+        onChange={setScope}
+        repoOpen={activeRepoPath() !== null}
+        targetPath={targetPath()}
+        loading={loading()}
+      />
+
+      <Show when={readError()}>
+        {(err) => (
+          // Inline, not a toast: a toast for a pane with no content leaves the
+          // user staring at nothing after it fades.
+          <div
+            class="rounded border border-destructive/50 bg-destructive/10 px-3 py-2 space-y-1.5"
+            role="alert"
+          >
+            <p class="text-[11px] text-destructive leading-relaxed">
+              Couldn't read git config. Nothing below is being shown because
+              nothing could be read.
+            </p>
+            <p class="text-[10px] font-mono text-muted-foreground break-all">{err()}</p>
+            <button
+              onClick={() => void refetch()}
+              class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </Show>
+
+      <Show when={!readError()}>
+        <For each={CONFIG_GROUPS}>
+          {(group) => (
+            <Section title={group} tone={scope() === "global" ? "warning" : undefined}>
+              <For each={fieldsInGroup(group)}>
+                {(field) => (
+                  <ConfigFieldRow
+                    field={field}
+                    entries={entries()}
+                    scope={scope()}
+                    loading={loading()}
+                    onWrite={(value) => applyWrite(field.key, value)}
+                  />
+                )}
+              </For>
+            </Section>
+          )}
+        </For>
+      </Show>
+
+      <RepoIdentityOverrides />
+    </div>
+  );
+}
+
+/// The one control in this pane that must not be misread. A segmented toggle
+/// alone looks exactly like the harmless diff-mode toggle, so the resolved
+/// target file is named directly underneath it, permanently — no hover, no
+/// disclosure, no per-write confirmation.
+function ScopePicker(props: {
+  scope: ConfigScope;
+  onChange: (scope: ConfigScope) => void;
+  repoOpen: boolean;
+  targetPath: string | null;
+  loading: boolean;
+}) {
+  const noRepoReason = "No repository is open in this workspace, so there is no .git/config to write";
+
+  return (
+    <div class="space-y-1.5">
+      <div class="flex items-center gap-3">
+        <span id="git-config-scope-label" class="w-28 text-muted-foreground shrink-0">
+          Write scope
+        </span>
+        <div class="flex-1 flex gap-1" role="group" aria-labelledby="git-config-scope-label">
+          <button
+            // Not `disabled`: a disabled button leaves the tab order, and a
+            // keyboard user would never reach the explanation for why it is
+            // off (§7.6 — a disabled control with no stated reason).
+            aria-disabled={!props.repoOpen}
+            aria-pressed={props.scope === "local"}
+            title={props.repoOpen ? "Writes go to this repository's .git/config" : noRepoReason}
+            onClick={() => props.repoOpen && props.onChange("local")}
+            class={`flex-1 px-2 py-1 rounded border text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+              !props.repoOpen
+                ? "opacity-40 cursor-not-allowed border-border text-muted-foreground"
+                : props.scope === "local"
+                  ? "bg-primary/15 border-primary/40 text-primary"
+                  : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
+          >
+            Local
+          </button>
+          <button
+            aria-pressed={props.scope === "global"}
+            title="Writes go to your user-wide git config, outside this repository"
+            onClick={() => props.onChange("global")}
+            class={`flex-1 px-2 py-1 rounded border text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+              props.scope === "global"
+                ? "bg-warning/15 border-warning/40 text-warning"
+                : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
+          >
+            Global
+          </button>
+        </div>
+      </div>
+
+      <div class="flex items-start gap-3">
+        <span class="w-28 shrink-0" aria-hidden="true" />
+        <p class="flex-1 text-[10px] leading-tight text-muted-foreground">
+          <Show
+            when={!props.loading}
+            fallback={<span class="inline-block h-3 w-52 rounded bg-muted animate-pulse motion-loop align-middle" />}
+          >
+            <Show
+              when={props.targetPath}
+              fallback={<span>Nothing to write to — pick a scope with a resolvable file.</span>}
+            >
+              {(path) => (
+                <>
+                  Edits write to <span class="font-mono break-all text-foreground/80">{path()}</span>
+                </>
+              )}
+            </Show>
+          </Show>
+        </p>
+      </div>
+
+      <Show when={!props.repoOpen}>
+        <div class="flex items-start gap-3">
+          <span class="w-28 shrink-0" aria-hidden="true" />
+          <p class="flex-1 text-[10px] leading-tight text-muted-foreground/80">
+            {noRepoReason}. The global cascade below still reads normally.
+          </p>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+/// One config key: label, the right control for its type, and exactly one
+/// provenance mark in a slot reserved at rest.
+///
+/// This is not built on `TextRow` / `ToggleRow` / `SegmentedRow` — it borrows
+/// their class vocabulary instead. Those helpers have no room for the
+/// provenance slot or the Clear action, and they label their inputs with a
+/// `<span>`, which §10.6 does not allow for a field a user types an email
+/// address into.
+function ConfigFieldRow(props: {
+  field: ConfigField;
+  entries: ConfigEntry[];
+  scope: ConfigScope;
+  loading: boolean;
+  onWrite: (value: string | null) => Promise<void>;
+}) {
+  const [busy, setBusy] = createSignal(false);
+  // Held only while the field has focus. Cleared on commit so the row falls
+  // back to the re-read value — never the typed one (§7.5.6).
+  const [draft, setDraft] = createSignal<string | null>(null);
+
+  const inputId = `git-config-${props.field.key.replace(/\./g, "-")}`;
+  const labelId = `${inputId}-label`;
+  const prov = () => resolveProvenance(props.entries, props.field.key, props.scope);
+  const shown = () => displayValue(prov(), props.field);
+
+  /// A config write completes well inside the 80ms band, so the pending state
+  /// only appears if this particular one did not (§7.5.2). The control stays
+  /// focusable and in the tab order throughout (§10.11).
+  const commit = async (value: string | null) => {
+    const timer = window.setTimeout(() => setBusy(true), 80);
+    try {
+      await props.onWrite(value);
+    } finally {
+      window.clearTimeout(timer);
+      setBusy(false);
+      setDraft(null);
+    }
+  };
+
+  const commitText = () => {
+    const typed = draft();
+    if (typed === null) return;
+    const trimmed = typed.trim();
+    if (trimmed === (prov().atScope ?? "")) {
+      setDraft(null);
+      return;
+    }
+    void commit(trimmed === "" ? null : trimmed);
+  };
+
+  return (
+    <div class="density-row flex items-start gap-3">
+      <div class="w-28 shrink-0">
+        {/* A segmented control is a group of buttons, not one labelable
+            element, so it gets `aria-labelledby` and the label is a span.
+            A `<label for>` pointing at nothing is worse than no label. */}
+        <Show
+          when={props.field.kind !== "enum"}
+          fallback={
+            <span id={labelId} class="text-muted-foreground block leading-tight">
+              {props.field.label}
+            </span>
+          }
+        >
+          <label for={inputId} id={labelId} class="text-muted-foreground block leading-tight">
+            {props.field.label}
+          </label>
+        </Show>
+        <span class="block text-[10px] font-mono text-muted-foreground/60 leading-tight break-all">
+          {props.field.key}
+        </span>
+      </div>
+
+      <div class="flex-1 min-w-0 space-y-1">
+        <div
+          class={`flex items-center gap-1.5 ${prov().kind === "inherited" ? "opacity-80" : ""}`}
+        >
+          <Show
+            when={!props.loading}
+            fallback={
+              // The scaffold renders with the real labels and a pulsing value
+              // slot: never a blank pane, never a centred spinner (§7.5.2).
+              <span
+                class="h-5 flex-1 rounded bg-muted animate-pulse motion-loop"
+                aria-busy="true"
+                aria-label={`Reading ${props.field.key}`}
+              />
+            }
+          >
+            <Switch>
+              <Match when={props.field.kind === "boolean"}>
+                <button
+                  id={inputId}
+                  aria-pressed={parseGitBool(shown(), parseGitBool(props.field.fallback))}
+                  onClick={() =>
+                    void commit(
+                      parseGitBool(shown(), parseGitBool(props.field.fallback)) ? "false" : "true",
+                    )
+                  }
+                  class={`px-3 py-1 rounded-full border text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+                    parseGitBool(shown(), parseGitBool(props.field.fallback))
+                      ? "bg-primary/15 border-primary/40 text-primary"
+                      : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                  }`}
+                >
+                  {parseGitBool(shown(), parseGitBool(props.field.fallback)) ? "On" : "Off"}
+                </button>
+              </Match>
+
+              <Match when={props.field.kind === "enum"}>
+                <div class="flex flex-wrap gap-1" role="group" aria-labelledby={labelId}>
+                  <For each={props.field.options ?? []}>
+                    {(opt) => (
+                      <button
+                        aria-pressed={shown() === opt}
+                        onClick={() => void commit(opt)}
+                        class={`px-2 py-1 rounded border text-[11px] font-mono transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+                          shown() === opt
+                            ? "bg-primary/15 border-primary/40 text-primary"
+                            : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                        }`}
+                      >
+                        {opt}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Match>
+
+              <Match when={props.field.kind === "text"}>
+                <input
+                  id={inputId}
+                  type="text"
+                  value={draft() ?? (prov().value ?? "")}
+                  placeholder={props.field.placeholder}
+                  onInput={(e) => setDraft(e.currentTarget.value)}
+                  onBlur={commitText}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commitText();
+                    } else if (e.key === "Escape") {
+                      // Abandon the draft rather than write it. Escape does
+                      // not bubble to close the dialog here on purpose.
+                      e.stopPropagation();
+                      setDraft(null);
+                    }
+                  }}
+                  class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono outline-2 outline-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </Match>
+            </Switch>
+          </Show>
+
+          {/* Icon slot reserved at rest so a spinner arriving causes no
+              reflow (§7.5.2). */}
+          <span class="w-3.5 h-3.5 shrink-0 flex items-center justify-center">
+            <Show when={busy()}>
+              <Loader2 class="w-3 h-3 animate-spin motion-loop text-muted-foreground" aria-hidden="true" />
+              <span class="sr-only">Writing…</span>
+            </Show>
+          </span>
+        </div>
+
+        <Show when={props.field.hint}>
+          <p class="text-[10px] leading-tight text-muted-foreground/70">{props.field.hint}</p>
+        </Show>
+
+        <Show when={prov().kind === "unset" && !props.loading}>
+          <p class="text-[10px] leading-tight text-muted-foreground/60">
+            git's default here is <span class="font-mono">{props.field.fallback}</span>.
+          </p>
+        </Show>
+
+        <Show when={prov().shadowed}>
+          {(shadow) => (
+            <p class="text-[10px] leading-tight text-muted-foreground/60 break-all">
+              {shadow().level}: <span class="font-mono">{shadow().value}</span>
+            </p>
+          )}
+        </Show>
+      </div>
+
+      {/* Provenance slot — reserved at rest, one mark, always carried by
+          text and not by colour (§10.12). */}
+      <div class="w-36 shrink-0 flex items-start justify-end gap-1.5 pt-1">
+        <Show
+          when={!props.loading}
+          fallback={<span class="h-3 w-16 rounded bg-muted animate-pulse motion-loop" />}
+        >
+          <span class="text-[10px] uppercase tracking-wider text-muted-foreground text-right leading-tight">
+            {prov().label}
+          </span>
+        </Show>
+        <span class="w-8 shrink-0">
+          <Show when={prov().atScope !== null && !props.loading}>
+            <button
+              onClick={() => void commit(null)}
+              title={`Remove ${props.field.key} from ${props.scope} config`}
+              aria-label={`Clear ${props.field.key} at ${props.scope} scope`}
+              class="px-1 py-0.5 rounded border border-border text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              Clear
+            </button>
+          </Show>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /// Git identity overrides, one row per repository that has one.
 ///
 /// Rows are only created from the commit box ("Save for this repo") — there is
 /// no "add" here on purpose, because an identity for a repository you have not
 /// opened is not something you can meaningfully type a path for. This pane is
 /// where you review and remove them.
-function GitPane() {
+///
+/// It sits directly under the git-config identity rows and *will* be confused
+/// with them, so the label and the first line of copy exist to separate the
+/// two: this list never reaches git config.
+function RepoIdentityOverrides() {
   const { settings, setRepoIdentity } = useSettings();
   const { activeRepoPath } = useAppStore();
 
@@ -995,12 +1487,13 @@ function GitPane() {
 
   return (
     <div class="space-y-4">
-      <Section title="Commit identity">
+      <Section title="voidlink identity overrides">
         <p class="text-[11px] text-muted-foreground leading-relaxed">
-          Repositories where voidlink commits under a different name than your
-          git config. Set one from the commit box in the git panel — everything
-          else uses <code>user.name</code> and <code>user.email</code> as
-          normal. Your git config is never modified.
+          Separate from the <code>user.name</code> and <code>user.email</code>{" "}
+          rows above: these are applied by voidlink at commit time and are
+          stored in voidlink's own settings, so they never touch git config and
+          committing from the command line in the same repository is
+          unaffected. Set one from the commit box in the git panel.
         </p>
         <Show
           when={entries().length > 0}
