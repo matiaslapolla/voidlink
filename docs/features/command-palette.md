@@ -93,9 +93,17 @@ order, unsorted.
 - **Key handlers are bound to the `<input>`, not the container.** Click a row in
   the palette or file finder and the input loses focus — after which `Esc`,
   arrows, and `Enter` stop working. Click the input again or reopen.
-- **The file finder only sees tracked files.** Its list comes from the git
-  index, so a brand-new untracked file is invisible to `Mod+P` even though the
-  file tree shows it.
+- **The file finder only sees tracked files by default.** Its list comes from
+  the git index, so a brand-new untracked file is invisible to `Mod+P` even
+  though the file tree shows it. Toggle the eye button in the finder header
+  (or `Alt+H`, or Settings → Interface → *Ignored files*) to walk the working
+  tree instead: gitignored and untracked files — a repo's `.env` — become
+  openable. The walk always skips `.git` and build/dependency directories
+  (`node_modules`, `target`, `dist`, `build`, `.next`, `.turbo`, `.venv`,
+  `venv`, `__pycache__`, `.cache`, `coverage`, `vendor`) and caps at 50k paths;
+  anything tracked inside them still shows, since the index is unioned in.
+  The setting is shared with the file tree, which lists ignored entries dimmed
+  when it is on.
 - **The file finder caps at 200 rows** in both the empty-query and filtered
   branches, with no "N more" indicator.
 - **No `scrollIntoView`.** Arrowing past the visible window moves the highlight

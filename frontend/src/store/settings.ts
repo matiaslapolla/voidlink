@@ -35,6 +35,11 @@ export interface UiSettings {
   textSize: UiTextSize;
   density: UiDensity;
   environmentMode: EnvironmentMode;
+  /// Surface gitignored files in the file tree and Cmd+P. Off by default —
+  /// the point of the ignore list is that build output stays out of the way —
+  /// but a repo's `.env` is gitignored and still needs editing, which is the
+  /// case this exists for.
+  showIgnoredFiles: boolean;
 }
 
 /// Non-secret identity of a provider key. `id` is the OS-keychain account the
@@ -113,6 +118,7 @@ const DEFAULTS: AppSettings = {
     // opts in. `mergeDefaults` fills the key in for settings saved before it
     // existed.
     environmentMode: "detached",
+    showIgnoredFiles: false,
   },
   terminal: {
     // Prefer a nerd-font stack so Starship/powerline glyphs render, with plain

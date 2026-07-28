@@ -1,8 +1,9 @@
 import { For, Show, createMemo, createResource, createSignal, onMount } from "solid-js";
 import { Portal } from "solid-js/web";
-import { File, Search } from "lucide-solid";
+import { Eye, EyeOff, File, Search } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { closeFileFinder, isFileFinderOpen } from "@/commands/registry";
+import { useSettings } from "@/store/settings";
 
 function fuzzyScore(path: string, query: string): number {
   if (!query) return 0;
@@ -45,10 +46,18 @@ function FinderContent(props: {
   const [highlight, setHighlight] = createSignal(0);
   let inputRef: HTMLInputElement | undefined;
 
-  // Cache the file list per repo path — re-runs when path changes.
+  const { settings, updateUi } = useSettings();
+  const showIgnored = () => settings.ui.showIgnoredFiles;
+  const toggleIgnored = () => {
+    updateUi({ showIgnoredFiles: !showIgnored() });
+    setHighlight(0);
+  };
+
+  // Cache the file list per repo path — re-runs when the path or the
+  // ignored-files preference changes.
   const [files] = createResource(
-    () => props.repoPath,
-    (p) => gitApi.lsFiles(p),
+    () => ({ path: props.repoPath, includeIgnored: showIgnored() }),
+    (src) => gitApi.lsFiles(src.path, src.includeIgnored),
   );
 
   onMount(() => queueMicrotask(() => inputRef?.focus()));
@@ -87,6 +96,11 @@ function FinderContent(props: {
     } else if (e.key === "Escape") {
       e.preventDefault();
       closeFileFinder();
+    } else if (e.altKey && (e.key === "h" || e.key === "˙")) {
+      // Alt+H mirrors the header button. macOS turns Alt+H into "˙", so both
+      // the letter and the dead-key output are accepted.
+      e.preventDefault();
+      toggleIgnored();
     }
   }
 
@@ -111,15 +125,33 @@ function FinderContent(props: {
                 setHighlight(0);
               }}
               onKeyDown={onKeyDown}
-              placeholder="Open tracked file…"
+              placeholder={showIgnored() ? "Open any file, ignored included…" : "Open tracked file…"}
               class="flex-1 bg-transparent border-0 outline-none text-sm placeholder:text-muted-foreground"
             />
+            <button
+              onClick={() => {
+                toggleIgnored();
+                inputRef?.focus();
+              }}
+              title={
+                showIgnored()
+                  ? "Hide gitignored files (⌥H)"
+                  : "Show gitignored files, e.g. .env (⌥H)"
+              }
+              class={`shrink-0 p-1 rounded transition-colors ${
+                showIgnored()
+                  ? "text-foreground bg-accent/60"
+                  : "text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
+              }`}
+            >
+              {showIgnored() ? <Eye class="w-3.5 h-3.5" /> : <EyeOff class="w-3.5 h-3.5" />}
+            </button>
             <span class="text-[10px] text-muted-foreground/70 tracking-wide">ESC</span>
           </div>
           <div class="max-h-[60vh] overflow-y-auto scrollbar-thin py-1">
             <Show when={files.loading}>
               <div class="px-3 py-6 text-center text-xs text-muted-foreground">
-                Indexing tracked files…
+                {showIgnored() ? "Indexing files…" : "Indexing tracked files…"}
               </div>
             </Show>
             <Show when={!files.loading && ranked().length === 0}>

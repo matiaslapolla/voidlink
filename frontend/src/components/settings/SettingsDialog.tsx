@@ -187,6 +187,22 @@ function UiPane() {
       />
       <div>
         <SegmentedRow
+          label="Ignored files"
+          value={settings.ui.showIgnoredFiles ? "show" : "hide"}
+          options={[
+            { id: "hide", label: "Hide" },
+            { id: "show", label: "Show" },
+          ]}
+          onChange={(v) => updateUi({ showIgnoredFiles: v === "show" })}
+        />
+        <p class="mt-1 ml-[7.75rem] text-[11px] text-muted-foreground/80">
+          Show lists gitignored files in the file tree and Cmd+P, dimmed — the
+          way to edit a repo's <code>.env</code>. Build output directories
+          (node_modules, dist, target…) stay out of Cmd+P either way.
+        </p>
+      </div>
+      <div>
+        <SegmentedRow
           label="Environment mode"
           value={settings.ui.environmentMode}
           options={ENVIRONMENT_MODES}

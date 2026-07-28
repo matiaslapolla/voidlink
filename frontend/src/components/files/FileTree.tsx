@@ -13,11 +13,12 @@ import {
 import { createStore, reconcile } from "solid-js/store";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Portal } from "solid-js/web";
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare, ClipboardCopy, FileCode, Plus, Undo2, UserRound } from "lucide-solid";
+import { ChevronRight, ChevronDown, Eye, EyeOff, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare, ClipboardCopy, FileCode, Plus, Undo2, UserRound } from "lucide-solid";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { fsApi, type FsEntry } from "@/api/fs";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
+import { useSettings } from "@/store/settings";
 import { pushToast } from "@/commands/toast";
 import { emitGitRefsChanged } from "@/commands/gitEvents";
 
@@ -63,8 +64,8 @@ type EditState =
 // old recursive nodes did: a row's own nesting level for real entries (root's
 // children = 1), and the parent dir's depth for the loading/empty placeholders.
 type Row =
-  | { kind: "dir"; path: string; name: string; depth: number; expanded: boolean }
-  | { kind: "file"; path: string; name: string; depth: number }
+  | { kind: "dir"; path: string; name: string; depth: number; expanded: boolean; ignored: boolean }
+  | { kind: "file"; path: string; name: string; depth: number; ignored: boolean }
   | { kind: "draft"; depth: number; draftKind: "file" | "folder" }
   | { kind: "loading"; depth: number }
   | { kind: "empty"; depth: number };
@@ -75,6 +76,10 @@ export function FileTree(props: {
   actions?: FileTreeActions;
 }) {
   const { state, actions } = useAppStore();
+  const { settings, updateUi } = useSettings();
+  /// Whether gitignored entries are listed. Persisted, and shared with the
+  /// Cmd+P picker so both surfaces agree on what "the files" means.
+  const showIgnored = () => settings.ui.showIgnoredFiles;
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
   const [refreshKey, setRefreshKey] = createSignal(0);
   const [edit, setEdit] = createSignal<EditState | null>(null);
@@ -256,7 +261,7 @@ export function FileTree(props: {
   async function loadDir(path: string) {
     setLoadingDirs(s => new Set(s).add(path));
     try {
-      const entries = await fsApi.listDir(path);
+      const entries = await fsApi.listDir(path, showIgnored());
       setDirCache(path, entries);
     } catch (e) {
       pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
@@ -289,6 +294,12 @@ export function FileTree(props: {
   // event) re-lists every currently expanded dir. `defer` skips the mount run,
   // which the effect above already covers.
   createEffect(on(refreshKey, () => {
+    for (const path of expanded()) void loadDir(path);
+  }, { defer: true }));
+
+  // Flipping "show ignored" changes what every listing contains, so every
+  // expanded dir has to be re-listed — not just the ones opened afterwards.
+  createEffect(on(showIgnored, () => {
     for (const path of expanded()) void loadDir(path);
   }, { defer: true }));
 
@@ -326,11 +337,11 @@ export function FileTree(props: {
       if (activeDraft?.parentDir === dirPath) out.push(draftRow(depth));
       for (const e of entries.filter(x => x.isDir).sort(byName)) {
         const exp = isExpanded(e.path);
-        out.push({ kind: "dir", path: e.path, name: e.name, depth, expanded: exp });
+        out.push({ kind: "dir", path: e.path, name: e.name, depth, expanded: exp, ignored: e.ignored });
         if (exp) walk(e.path, depth + 1);
       }
       for (const e of entries.filter(x => !x.isDir).sort(byName))
-        out.push({ kind: "file", path: e.path, name: e.name, depth });
+        out.push({ kind: "file", path: e.path, name: e.name, depth, ignored: e.ignored });
       // "Empty" only for real subdirs (never the root), matching the old tree.
       if (entries.length === 0 && parentDepth > 0) out.push({ kind: "empty", depth: parentDepth });
     };
@@ -381,8 +392,9 @@ export function FileTree(props: {
           <button
             onClick={() => toggleDir(r.path)}
             onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, path: r.path, isDir: true, name: r.name }); }}
-            class="w-full flex items-center gap-1 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors"
+            class={`w-full flex items-center gap-1 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors ${r.ignored ? "opacity-50" : ""}`}
             style={{ "padding-left": `calc(8px + ${r.depth * 12}px)` }}
+            title={r.ignored ? `${r.name} — ignored by git` : undefined}
           >
             <span class="shrink-0 w-3 h-3 text-muted-foreground/60">
               {r.expanded ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
@@ -421,9 +433,9 @@ export function FileTree(props: {
             }}
             onClick={() => props.onOpenFile?.(r.path)}
             onContextMenu={ev => { ev.preventDefault(); setContextMenu({ x: ev.clientX, y: ev.clientY, path: r.path, isDir: false, name: r.name }); }}
-            class="w-full flex items-center gap-1.5 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors"
+            class={`w-full flex items-center gap-1.5 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors ${r.ignored ? "opacity-50" : ""}`}
             style={{ "padding-left": `calc(20px + ${r.depth * 12}px)` }}
-            title={r.path}
+            title={r.ignored ? `${r.path} — ignored by git` : r.path}
           >
             <File class="w-3.5 h-3.5 shrink-0 opacity-60" />
             <span class="truncate text-[13px]">{r.name}</span>
@@ -434,25 +446,48 @@ export function FileTree(props: {
   }
 
   return (
-    <div ref={scrollRef} class="flex-1 h-full overflow-y-auto scrollbar-thin py-1">
-      {/* Inner spacer sized to the full list so the native scrollbar thumb stays
-          proportional; only the windowed rows are absolutely positioned within. */}
-      <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
-        <For each={virtualizer.getVirtualItems()}>
-          {(vi) => {
-            const row = () => rows()[vi.index];
-            return (
-              <div
-                data-index={vi.index}
-                ref={virtualizer.measureElement}
-                class="absolute left-0 top-0 w-full"
-                style={{ transform: `translateY(${vi.start}px)` }}
-              >
-                {renderRow(row())}
-              </div>
-            );
-          }}
-        </For>
+    <div class="flex-1 h-full min-h-0 flex flex-col">
+      {/* Toggle strip. Gitignored files are hidden by default; this is the way
+          back to a repo's `.env` and friends without leaving voidlink. */}
+      <div class="shrink-0 flex items-center justify-end px-1.5 py-0.5 border-b border-border/40">
+        <button
+          onClick={() => updateUi({ showIgnoredFiles: !showIgnored() })}
+          title={
+            showIgnored()
+              ? "Hide gitignored files"
+              : "Show gitignored files, e.g. .env"
+          }
+          class={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] tracking-wide transition-colors ${
+            showIgnored()
+              ? "text-foreground bg-accent/60"
+              : "text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
+          }`}
+        >
+          {showIgnored() ? <Eye class="w-3 h-3" /> : <EyeOff class="w-3 h-3" />}
+          Ignored
+        </button>
+      </div>
+
+      <div ref={scrollRef} class="flex-1 min-h-0 overflow-y-auto scrollbar-thin py-1">
+        {/* Inner spacer sized to the full list so the native scrollbar thumb stays
+            proportional; only the windowed rows are absolutely positioned within. */}
+        <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+          <For each={virtualizer.getVirtualItems()}>
+            {(vi) => {
+              const row = () => rows()[vi.index];
+              return (
+                <div
+                  data-index={vi.index}
+                  ref={virtualizer.measureElement}
+                  class="absolute left-0 top-0 w-full"
+                  style={{ transform: `translateY(${vi.start}px)` }}
+                >
+                  {renderRow(row())}
+                </div>
+              );
+            }}
+          </For>
+        </div>
       </div>
 
       <Show when={contextMenu()}>

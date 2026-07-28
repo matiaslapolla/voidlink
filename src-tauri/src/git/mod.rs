@@ -419,9 +419,11 @@ pub async fn git_list_refs(
 #[tauri::command]
 pub async fn git_ls_files(
     repo_path: String,
+    include_ignored: Option<bool>,
     _state: tauri::State<'_, GitState>,
 ) -> Result<Vec<String>, String> {
-    blocking_git!(git_ls_files_impl(repo_path))
+    let include_ignored = include_ignored.unwrap_or(false);
+    blocking_git!(git_ls_files_impl(repo_path, include_ignored))
 }
 
 #[tauri::command]

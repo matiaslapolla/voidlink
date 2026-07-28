@@ -6,6 +6,9 @@ export interface FsEntry {
   isDir: boolean;
   size: number;
   modified: number | null;
+  /// Only ever true when the entry was listed with `includeIgnored` — it means
+  /// gitignore would otherwise have hidden it.
+  ignored: boolean;
 }
 
 export const fsApi = {

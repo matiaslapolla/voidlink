@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,8 +10,28 @@ pub struct FsEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<i64>,
+    /// True when the entry only surfaced because `include_ignored` was set —
+    /// i.e. gitignore would normally hide it. The tree dims these so an
+    /// ignored `.env` still reads as ignored while being openable.
+    pub ignored: bool,
 }
 
+/// Direct children of `dir` after gitignore filtering. Used to work out which
+/// of the unfiltered entries are only visible because ignores were disabled.
+fn visible_children(dir: &Path) -> HashSet<PathBuf> {
+    let mut b = ignore::WalkBuilder::new(dir);
+    b.hidden(false)
+        .ignore(true)
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(false)
+        .max_depth(Some(1));
+    b.build()
+        .filter_map(|r| r.ok())
+        .filter(|e| e.depth() == 1)
+        .map(|e| e.path().to_path_buf())
+        .collect()
+}
 
 #[tauri::command]
 pub fn fs_list_dir(path: String, include_ignored: Option<bool>) -> Result<Vec<FsEntry>, String> {
@@ -19,14 +40,21 @@ pub fn fs_list_dir(path: String, include_ignored: Option<bool>) -> Result<Vec<Fs
         return Err(format!("Not a directory: {}", path));
     }
 
-    let _include_ignored = include_ignored.unwrap_or(false);
+    let include_ignored = include_ignored.unwrap_or(false);
+    // Only needed to label the extra entries; skipped entirely on the default
+    // path, where nothing ignored is listed in the first place.
+    let visible = if include_ignored {
+        visible_children(dir)
+    } else {
+        HashSet::new()
+    };
 
     // Load gitignore patterns from the directory or any parent.
     let ignore_builder = {
         let mut b = ignore::WalkBuilder::new(dir);
         b.hidden(false)
-         .ignore(true)
-         .git_ignore(!_include_ignored)
+         .ignore(!include_ignored)
+         .git_ignore(!include_ignored)
          .git_global(false)
          .git_exclude(false)
          .max_depth(Some(1));
@@ -58,6 +86,12 @@ pub fn fs_list_dir(path: String, include_ignored: Option<bool>) -> Result<Vec<Fs
             continue;
         }
 
+        // With ignores off the walker will happily descend into `.git`; the
+        // repository's internals are never something to browse.
+        if name == ".git" {
+            continue;
+        }
+
         let metadata = entry_path.metadata().map_err(|e| e.to_string())?;
         let is_dir = metadata.is_dir();
         let size = if is_dir { 0 } else { metadata.len() };
@@ -67,12 +101,15 @@ pub fn fs_list_dir(path: String, include_ignored: Option<bool>) -> Result<Vec<Fs
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
 
+        let ignored = include_ignored && !visible.contains(entry_path);
+
         entries.push(FsEntry {
             name,
             path: entry_path.to_string_lossy().to_string(),
             is_dir,
             size,
             modified,
+            ignored,
         });
     }
 
@@ -158,5 +195,38 @@ pub fn fs_find_repo_root(path: String) -> Result<Option<String>, String> {
             Some(p) if p != current => current = p.to_path_buf(),
             _ => return Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A gitignored file is invisible by default and appears, flagged, once
+    /// ignores are off — the `.env` case the toggle exists for.
+    #[test]
+    fn lists_ignored_entries_only_on_request() {
+        let dir = std::env::temp_dir().join("voidlink-fs-list-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The `ignore` crate only honours `.gitignore` inside a repository, so
+        // the marker directory is part of the fixture.
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".gitignore"), ".env\n").unwrap();
+        std::fs::write(dir.join(".env"), "SECRET=1").unwrap();
+        std::fs::write(dir.join("main.rs"), "").unwrap();
+
+        let path = dir.to_string_lossy().to_string();
+
+        let default = fs_list_dir(path.clone(), None).unwrap();
+        assert!(!default.iter().any(|e| e.name == ".env"));
+        assert!(default.iter().any(|e| e.name == ".gitignore"));
+
+        let all = fs_list_dir(path, Some(true)).unwrap();
+        let env = all.iter().find(|e| e.name == ".env").expect(".env listed");
+        assert!(env.ignored);
+        assert!(!all.iter().find(|e| e.name == "main.rs").unwrap().ignored);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

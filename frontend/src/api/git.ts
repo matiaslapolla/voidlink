@@ -259,8 +259,11 @@ export const gitApi = {
     return invoke<RefList>("git_list_refs", { repoPath });
   },
 
-  lsFiles(repoPath: string): Promise<string[]> {
-    return invoke<string[]>("git_ls_files", { repoPath });
+  /// Paths for the Cmd+P picker. Tracked files only by default; with
+  /// `includeIgnored` the working tree is walked too, so gitignored and
+  /// untracked files (a repo's `.env`, say) become openable.
+  lsFiles(repoPath: string, includeIgnored?: boolean): Promise<string[]> {
+    return invoke<string[]>("git_ls_files", { repoPath, includeIgnored: includeIgnored ?? false });
   },
 
   safeCheckout(

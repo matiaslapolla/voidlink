@@ -25,7 +25,9 @@ IDE — there is no language server, no formatter, and no find-in-files.
 ### Editing
 
 1. Open a file from the file tree, the file finder (`Mod+P`), or a
-   `path:line` link in a terminal.
+   `path:line` link in a terminal. The tree hides gitignored files by default;
+   the `Ignored` toggle above it lists them, dimmed, so a repo's `.env` can be
+   edited. (`.git` is never listed either way.)
 2. Edit. A dirty tab shows a small filled dot in the tab strip.
 3. `Mod+S` saves. Writes go through an atomic temp-file-plus-rename on the Rust
    side.
