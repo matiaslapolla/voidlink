@@ -491,6 +491,15 @@ function EditorPane() {
           onChange={(v) => updateEditor({ smoothScrolling: v })} />
       </Section>
 
+      <Section title="Keybindings">
+        <ToggleRow
+          label="Vim mode"
+          hint="Loads monaco-vim on demand. A mode indicator appears in the title bar."
+          value={settings.editor.vimMode}
+          onChange={(v) => updateEditor({ vimMode: v })}
+        />
+      </Section>
+
       <Section title="Cursor">
         <SegmentedRow label="Style" value={settings.editor.cursorStyle} options={EDITOR_CURSOR_STYLES}
           onChange={(v) => updateEditor({ cursorStyle: v })} />

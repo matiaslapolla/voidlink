@@ -18,7 +18,9 @@ pay Monaco's init cost.
 ## When you'd use it
 
 For reading and light editing next to the git suite. It is a code editor, not an
-IDE — there is no language server, no formatter, and no find-in-files.
+IDE — there is no language server and no find-in-files. Formatting is whatever
+Monaco's bundled workers provide (TypeScript/JavaScript, JSON, CSS, HTML); for
+every other language `Format document` is a no-op until a provider exists.
 
 ## How to use it
 
@@ -28,9 +30,35 @@ IDE — there is no language server, no formatter, and no find-in-files.
    `path:line` link in a terminal. The tree hides gitignored files by default;
    the `Ignored` toggle above it lists them, dimmed, so a repo's `.env` can be
    edited. (`.git` is never listed either way.)
-2. Edit. A dirty tab shows a small filled dot in the tab strip.
+2. Edit. A dirty tab shows a small filled dot in the tab strip. The dot pulses
+   while a write is in flight and clears when it lands — including under
+   autosave, which never hides it.
 3. `Mod+S` saves. Writes go through an atomic temp-file-plus-rename on the Rust
-   side.
+   side. A failed write leaves the tab dirty and raises a toast with `Retry`.
+
+Save can also run format-on-save, trailing-whitespace trimming and
+final-newline insertion, in that order, and can fire on a delay or on blur
+instead of only on `Mod+S`. All four are off by default — see Settings below.
+
+### Settings
+
+`Settings → Editor` configures the editor surface: font family/size/line
+height/ligatures, indentation (tab size, spaces, guides), wrapping, line
+numbers, whitespace rendering, minimap, sticky scroll, bracket colours, cursor
+style and blinking, scrolling, the save pipeline, and Vim mode.
+
+Every setting applies to the running editor — there is no "restart to apply"
+row. The diff and merge panes read the same settings, so all three surfaces
+share one typeface and rhythm.
+
+**Vim mode** is off by default and loads `monaco-vim` on demand, so leaving it
+off costs nothing. With it on, the current mode (`NORMAL`, `INSERT`,
+`VISUAL LINE`…) shows in the editor window's title bar.
+
+**Theming.** Monaco runs on `voidlink-dark` / `voidlink-light`, derived at
+runtime from VoidLink's own CSS custom properties rather than from stock
+`vs` / `vs-dark`. All ten themes work with two theme definitions, because
+switching theme re-reads the tokens and redefines them.
 
 ### Previewing markdown
 
@@ -55,11 +83,18 @@ twice re-activates the existing tab.
 | `Mod+Alt+→` / `Mod+Alt+←` | Cycle tabs |
 | `Mod+Alt+B` | Toggle [inline blame](./blame.md) |
 | `Mod+Shift+D` | Toggle inline / split diff (affects diff panes, not the editor) |
+| `Mod+Shift+I` | Format document |
 
-Everything else in the editor is Monaco's stock 0.55 keymap — VoidLink registers
-no Monaco commands or actions of its own. That means `Mod+F` find, `Mod+Alt+F`
-replace, `Mod+D` add-selection-to-next-match, `Mod+/` toggle comment,
-`Alt+↑`/`Alt+↓` move line, and `F1` quick command all work as shipped.
+Fifteen editing commands — format, duplicate/move line, toggle comment,
+transform case, sort lines, jump to matching bracket, and the three
+multi-cursor commands — are registered as VoidLink actions, so `Mod+K` finds
+them by name and they appear in Monaco's right-click menu. Each one delegates
+to the Monaco built-in rather than reimplementing it, so Monaco's own chords
+keep working unchanged: `Mod+F` find, `Mod+Alt+F` replace, `Mod+D`
+add-selection-to-next-match, `Mod+/` toggle comment, `Alt+↑`/`Alt+↓` move line,
+and `F1` quick command all behave as shipped. Only `Format document` takes a
+global chord; binding the rest would shadow Monaco's with identical behaviour
+and take the key away from the terminal for nothing.
 
 ## Language detection
 
@@ -102,8 +137,11 @@ blocks, no mermaid, no math, and no relative-image resolution.
 - **Models are never re-read from disk.** After a checkout, rebase, or an
   external edit, open tabs still show the content loaded when you first opened
   them. Close and reopen the tab to refresh.
-- **No autosave**, no save-on-blur, no save button. `Mod+S` only.
-- **Dirty tracking is debounced 100 ms** and only clears on save.
+- **Autosave is off by default.** With it off, `Mod+S` is the only way to
+  write — there is no save button.
+- **Format-on-save needs a provider.** With none registered for the language it
+  silently does nothing, which is the intended degradation, not a failure.
+- **Dirty tracking is debounced 100 ms** and only clears on a successful save.
 - **No split editor and no scroll sync** between a file and its preview — they
   are sibling full-width tabs.
 - **A mounted preview ignores a changed `filePath` prop.** It is mounted per

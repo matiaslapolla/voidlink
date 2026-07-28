@@ -82,6 +82,10 @@ export interface EditorSettings {
   insertFinalNewlineOnSave: boolean;
   autoSave: EditorAutoSave;
   autoSaveDelayMs: number;
+  /// Vim keybindings. Off by default, and `monaco-vim` is only imported when
+  /// this is on, so declining it costs nothing. Ships with a mode indicator —
+  /// a Vim mode whose current mode is invisible is unusable.
+  vimMode: boolean;
 }
 
 export interface UiSettings {
@@ -234,6 +238,7 @@ const DEFAULTS: AppSettings = {
     insertFinalNewlineOnSave: false,
     autoSave: "off",
     autoSaveDelayMs: 1000,
+    vimMode: false,
   },
   ai: {
     commitCommand: "",

@@ -51,6 +51,8 @@ import {
 import { ChangesPane } from "@/components/git/GitSidebar";
 import { EditorHost } from "@/components/editor/EditorHost";
 import { editorController } from "@/components/editor/editorController";
+import { editorPaletteActions } from "@/components/editor/editorActions";
+import { vimInNormalMode, vimStatusLabel } from "@/components/editor/vimMode";
 import { useOpenFiles } from "@/components/editor/useOpenFiles";
 import {
   blameEnabled,
@@ -184,6 +186,11 @@ export function EditorSurface(props: {
   const dirtyPaths = createMemo(
     () => new Set(openFiles().filter((f) => f.dirty).map((f) => f.path)),
   );
+  /// A write in flight. The dot stays — it only changes to its pending form
+  /// (§7.6), because the buffer still differs from disk until the write lands.
+  const savingPaths = createMemo(
+    () => new Set(openFiles().filter((f) => f.saving).map((f) => f.path)),
+  );
 
   const activeItem = () => snapshot().active;
   const activeFilePath = () => {
@@ -230,6 +237,28 @@ export function EditorSurface(props: {
       },
     ),
   );
+
+  /// One place a failed write is reported, whether the user pressed ⌘S or an
+  /// autosave timer fired. The buffer stays dirty (the controller never clears
+  /// the flag on a throw), so the toast's Retry is the only thing the user has
+  /// to act on — MASTER §7.5.6, never leave an optimistic clean state standing.
+  function saveWithRetry(path: string): Promise<void> {
+    return editorController.save(path).catch((e) => {
+      pushToast(
+        `Could not save ${baseName(path)}: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+        8000,
+        { label: "Retry", run: () => void saveWithRetry(path) },
+      );
+    });
+  }
+
+  onMount(() => {
+    editorController.autoSaveFailed = (path) => void saveWithRetry(path);
+    onCleanup(() => {
+      editorController.autoSaveFailed = null;
+    });
+  });
 
   // Blame resolves a file to the worktree it belongs to. This window only ever
   // shows one worktree, so that is the whole lookup.
@@ -293,8 +322,12 @@ export function EditorSurface(props: {
         description: "Write the active editor tab to disk",
         group: "File",
         enabled: () => !!editorController.getActivePath(),
-        run: () => void editorController.saveActive(),
+        run: () => {
+          const path = editorController.getActivePath();
+          if (path) void saveWithRetry(path);
+        },
       },
+      ...editorPaletteActions(() => editorController.getEditor()),
       {
         id: "view.toggle-blame",
         label: blameEnabled() ? "Disable inline blame" : "Enable inline blame",
@@ -361,6 +394,7 @@ export function EditorSurface(props: {
         icon: <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />,
         title: f.path,
         dirty: dirtyPaths().has(f.path),
+        saving: savingPaths().has(f.path),
       });
     }
     for (const d of snap.diffs) {
@@ -438,6 +472,23 @@ export function EditorSurface(props: {
         </span>
         <Show when={repoInfo()?.isClean === false}>
           <span class="text-warning">• changes</span>
+        </Show>
+        {/* Vim's current mode. A modal editor whose mode is invisible is
+            unusable, so this ships with the setting rather than waiting for the
+            editor status segment. Absent entirely when Vim mode is off. */}
+        <Show when={vimStatusLabel()}>
+          {(label) => (
+            <span
+              aria-live="polite"
+              class={`shrink-0 font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                vimInNormalMode()
+                  ? "bg-primary/15 border-primary/40 text-primary"
+                  : "bg-transparent border-border text-muted-foreground"
+              }`}
+            >
+              {label()}
+            </span>
+          )}
         </Show>
 
         <span class="ml-auto text-muted-foreground truncate max-w-[40%]">

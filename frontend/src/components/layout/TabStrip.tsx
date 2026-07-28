@@ -61,6 +61,10 @@ export interface TabDescriptor {
   title: string;
   /// Unsaved-changes marker. Editor-window state, so only file tabs set it.
   dirty?: boolean;
+  /// A write for this buffer is in flight. Puts the dirty dot into its pending
+  /// form (MASTER §7.6) rather than replacing or hiding it — the buffer still
+  /// differs from disk until the write lands, so the dot must stay.
+  saving?: boolean;
   /// Present on terminal tabs. Swaps the icon for a live LED + process name;
   /// the strip owns that polling because the tab is the only place it shows.
   terminal?: TerminalSession;
@@ -365,7 +369,10 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
         {props.tab.label}
       </span>
       <Show when={props.tab.dirty}>
-        <span class="w-1.5 h-1.5 rounded-full bg-warning shrink-0" />
+        <span
+          class="w-1.5 h-1.5 rounded-full bg-warning shrink-0"
+          classList={{ "animate-pulse": props.tab.saving }}
+        />
       </Show>
       <Show when={closable()}>
         <CloseButton label={`Close ${props.tab.label}`} onClose={props.onClose} />

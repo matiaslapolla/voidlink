@@ -2,6 +2,7 @@ import { createEffect, onCleanup, onMount } from "solid-js";
 import { editorController } from "./editorController";
 import { useTheme } from "@/store/theme";
 import { useSettings } from "@/store/settings";
+import { disableVim } from "./vimMode";
 
 interface EditorHostProps {
   class?: string;
@@ -19,6 +20,16 @@ export function EditorHost(props: EditorHostProps) {
   createEffect(() => {
     editorController.applyEditorSettings({ ...settings.editor });
   });
+
+  // Vim mode is attached separately from the options above: it is not an
+  // `updateOptions` key but a keydown adapter over the editor, and it has to
+  // wait for the editor to exist. Toggling it off disposes the adapter — no
+  // reload, and no `monaco-vim` chunk fetched for anyone who leaves it off.
+  createEffect(() => {
+    const on = settings.editor.vimMode;
+    void editorController.setVimMode(on);
+  });
+  onCleanup(() => disableVim());
 
   // Registered here, not inside `onMount`: that callback is async, and after the
   // first await Solid's owner is gone, so an `onCleanup` in there would never

@@ -36,6 +36,7 @@ export interface Binding extends Chord {
 export type KeymapGroup =
   | "App"
   | "File"
+  | "Editor"
   | "View"
   | "Tabs"
   | "Workspace"
@@ -48,6 +49,7 @@ export type KeymapGroup =
 export const KEYMAP_GROUPS: readonly KeymapGroup[] = [
   "App",
   "File",
+  "Editor",
   "View",
   "Tabs",
   "Workspace",
@@ -115,6 +117,20 @@ export const KEYMAP: readonly KeymapEntry[] = [
     window: "editor",
     binding: { meta: true, key: "s", scope: "outside-terminal" },
     note: "Ctrl+S is XOFF in a shell — scoped so the terminal keeps flow control.",
+  },
+
+  // ── Editor ────────────────────────────────────────────────────────────
+  // The rest of the editing commands (duplicate/move line, toggle comment,
+  // multi-cursor) are reachable through ⌘K and Monaco's own chords, which
+  // already match every other editor the user has. Binding them globally here
+  // would shadow those with identical behaviour and take the chord away from
+  // the terminal for nothing.
+  {
+    actionId: "editor.format-document",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, shift: true, key: "i", scope: "outside-terminal" },
+    note: "⌥⇧F is VS Code's, but Option remaps the character on macOS so the chord never matches. ⌘⇧I is the Windows/Linux binding and survives both layouts.",
   },
 
   // ── View ──────────────────────────────────────────────────────────────

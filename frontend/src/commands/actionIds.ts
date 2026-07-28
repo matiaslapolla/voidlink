@@ -27,6 +27,8 @@ export const ACTION_IDS = [
   // File
   "file.open",
   "file.save",
+  // Editor
+  "editor.format-document",
   // Terminal
   "terminal.new",
   "terminal.repeat-last",
