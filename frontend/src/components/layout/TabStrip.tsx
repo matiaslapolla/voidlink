@@ -65,6 +65,9 @@ export interface TabDescriptor {
   /// form (MASTER §7.6) rather than replacing or hiding it — the buffer still
   /// differs from disk until the write lands, so the dot must stay.
   saving?: boolean;
+  /// Reloaded from disk while this tab was in the background. The §7.5.3
+  /// *finished* mark, cleared when the tab is next activated.
+  reloaded?: boolean;
   /// Present on terminal tabs. Swaps the icon for a live LED + process name;
   /// the strip owns that polling because the tab is the only place it shows.
   terminal?: TerminalSession;
@@ -368,7 +371,13 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
         </Show>
         {props.tab.label}
       </span>
-      <Show when={props.tab.dirty}>
+      {/* §7.5.3 rule 2: one mark, the highest. Dirty outranks the
+          reloaded-while-you-were-away signal, which is informational. */}
+      <Show when={props.tab.dirty} fallback={
+        <Show when={props.tab.reloaded}>
+          <StatusLed signal="finished" />
+        </Show>
+      }>
         <span
           class="w-1.5 h-1.5 rounded-full bg-warning shrink-0"
           classList={{ "animate-pulse": props.tab.saving }}

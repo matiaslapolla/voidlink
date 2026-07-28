@@ -29,6 +29,7 @@ export const ACTION_IDS = [
   "file.save",
   // Editor
   "editor.format-document",
+  "editor.find-in-files",
   // Terminal
   "terminal.new",
   "terminal.repeat-last",

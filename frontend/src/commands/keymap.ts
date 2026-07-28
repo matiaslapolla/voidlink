@@ -132,6 +132,13 @@ export const KEYMAP: readonly KeymapEntry[] = [
     binding: { meta: true, shift: true, key: "i", scope: "outside-terminal" },
     note: "⌥⇧F is VS Code's, but Option remaps the character on macOS so the chord never matches. ⌘⇧I is the Windows/Linux binding and survives both layouts.",
   },
+  {
+    actionId: "editor.find-in-files",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, alt: true, key: "f", scope: "outside-terminal" },
+    note: "⌘⇧F is the convention but git.fetch already owns it, and moving a chord users have is worse than picking the adjacent one. ⌘⌥ keeps the character unremapped on macOS, same as ⌘⌥B for blame.",
+  },
 
   // ── View ──────────────────────────────────────────────────────────────
   { actionId: "ui.toggle-left-sidebar", group: "View", binding: { meta: true, key: "b" } },

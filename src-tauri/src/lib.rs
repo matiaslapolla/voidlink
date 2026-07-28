@@ -953,6 +953,9 @@ pub fn run() {
             browser::browser_close,
             browser::browser_open_devtools,
             browser::browser_close_orphans,
+            fs::search::fs_search_files,
+            fs::search::fs_search_cancel,
+            fs::fs_stat_files,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

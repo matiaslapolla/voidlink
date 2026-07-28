@@ -24,11 +24,13 @@ import {
   type JSX,
 } from "solid-js";
 import {
+  AlertTriangle,
   ArrowUpRight,
   Eye,
   FileCode,
   FolderTree,
   GitBranch,
+  Search,
   GitCompare,
   GitMerge,
   PanelRight,
@@ -64,6 +66,7 @@ import {
 import { DiffTabView } from "@/components/editor/DiffTabView";
 import { MergeEditor } from "@/components/editor/MergeEditor";
 import { FileTree } from "@/components/files/FileTree";
+import { FindPanel } from "@/components/search/FindPanel";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import { TabStrip, type TabDescriptor, type TabKind } from "@/components/layout/TabStrip";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
@@ -175,6 +178,9 @@ export function EditorSurface(props: {
   const context = () => props.context();
   const snapshot = () => props.tabs();
   const [treeVisible, setTreeVisible] = createSignal(true);
+  /// The left rail shows either the file tree or find-in-files, never both —
+  /// two scrolling trees in a 240px column is a worse answer than a swap.
+  const [searchVisible, setSearchVisible] = createSignal(false);
   const [gitVisible, setGitVisible] = createSignal(true);
 
   const repoPath = createMemo(() => context()?.repoPath ?? null);
@@ -190,6 +196,12 @@ export function EditorSurface(props: {
   /// (§7.6), because the buffer still differs from disk until the write lands.
   const savingPaths = createMemo(
     () => new Set(openFiles().filter((f) => f.saving).map((f) => f.path)),
+  );
+  const reloadedPaths = createMemo(
+    () => new Set(openFiles().filter((f) => f.reloaded).map((f) => f.path)),
+  );
+  const conflictedPaths = createMemo(
+    () => new Set(openFiles().filter((f) => f.conflicted).map((f) => f.path)),
   );
 
   const activeItem = () => snapshot().active;
@@ -310,6 +322,26 @@ export function EditorSurface(props: {
   });
   onMount(() => onCleanup(onGitRefsChanged(() => void refreshGit())));
 
+  /// Notice out-of-band edits under open tabs.
+  ///
+  /// Polled at the two moments the answer can have changed: the window
+  /// regaining focus (an edit from another editor or a terminal) and a git ref
+  /// change (checkout, rebase, stash). Clean buffers reload silently and wear
+  /// the finished mark; dirty ones raise the inline bar below. A checkout
+  /// touching 200 files therefore produces 200 silent reloads and zero
+  /// interruptions, which is the point.
+  onMount(() => {
+    const check = () => void editorController.checkExternalChanges();
+    window.addEventListener("focus", check);
+    const offRefs = onGitRefsChanged(check);
+    // One baseline pass so the first real poll has something to compare to.
+    check();
+    onCleanup(() => {
+      window.removeEventListener("focus", check);
+      offRefs();
+    });
+  });
+
   // ── Commands ─────────────────────────────────────────────────────────────
   // Only the handful that mean something in this window. Ids match the entries
   // in `commands/keymap.ts`, so the chords the user already knows keep working;
@@ -328,6 +360,17 @@ export function EditorSurface(props: {
         },
       },
       ...editorPaletteActions(() => editorController.getEditor()),
+      {
+        id: "editor.find-in-files",
+        label: "Find in files",
+        description: "Search this repository, gitignore-aware",
+        group: "Editor",
+        enabled: () => !!repoPath(),
+        run: () => {
+          setTreeVisible(true);
+          setSearchVisible(true);
+        },
+      },
       {
         id: "view.toggle-blame",
         label: blameEnabled() ? "Disable inline blame" : "Enable inline blame",
@@ -395,6 +438,7 @@ export function EditorSurface(props: {
         title: f.path,
         dirty: dirtyPaths().has(f.path),
         saving: savingPaths().has(f.path),
+        reloaded: reloadedPaths().has(f.path),
       });
     }
     for (const d of snap.diffs) {
@@ -509,6 +553,18 @@ export function EditorSurface(props: {
             <FolderTree class="w-3.5 h-3.5" />
           </HeaderToggle>
           <HeaderToggle
+            active={searchVisible()}
+            onClick={() => {
+              setSearchVisible((v) => !v);
+              if (!searchVisible()) return;
+              setTreeVisible(true);
+            }}
+            title={searchVisible() ? "Show the file tree" : "Find in files"}
+            label={searchVisible() ? "Show file tree" : "Find in files"}
+          >
+            <Search class="w-3.5 h-3.5" />
+          </HeaderToggle>
+          <HeaderToggle
             active={gitVisible()}
             onClick={() => setGitVisible((v) => !v)}
             title={gitVisible() ? "Hide the git panel" : "Show the git panel"}
@@ -569,6 +625,21 @@ export function EditorSurface(props: {
             {/* File tree rail */}
             <Show when={treeVisible()}>
               <aside class="w-60 shrink-0 border-r border-border bg-sidebar flex flex-col min-h-0">
+                <Show when={searchVisible()}>
+                  <FindPanel
+                    root={() => repoPath()}
+                    onClose={() => setSearchVisible(false)}
+                    onOpen={(p, line, column) => {
+                      send({ kind: "open-file", path: p });
+                      // Queue behind the reconcile the request triggers, so the
+                      // model exists before the cursor is moved into it.
+                      void editorController.openFile(p).then(() => {
+                        editorController.revealPosition(line, column);
+                      });
+                    }}
+                  />
+                </Show>
+                <Show when={!searchVisible()}>
                 <div class="px-3 py-1.5 text-[10px] tracking-wide text-muted-foreground/70 border-b border-border/60 shrink-0">
                   Files
                 </div>
@@ -589,6 +660,7 @@ export function EditorSurface(props: {
                     },
                   }}
                 />
+                </Show>
               </aside>
             </Show>
 
@@ -639,10 +711,25 @@ export function EditorSurface(props: {
                 {/* Always mounted so Monaco initialises on window load rather
                     than on the first click. */}
                 <div
-                  class="absolute inset-0"
+                  class="absolute inset-0 flex flex-col"
                   style={{ display: activeItem()?.type === "file" ? "block" : "none" }}
                 >
-                  <EditorHost class="w-full h-full" />
+                  {/* Per-buffer, inline, and it does not steal focus. A modal
+                      here would fire once per file during a rebase; a toast
+                      would scroll away before the user could choose. */}
+                  <Show when={activeFilePath()}>
+                    {(path) => (
+                      <Show when={conflictedPaths().has(path())}>
+                        <ExternalChangeBar
+                          path={path()}
+                          onKeepMine={() => editorController.keepMine(path())}
+                          onTakeTheirs={() => void editorController.takeTheirs(path())}
+                          onShowDiff={() => send({ kind: "open-diff", filePath: path() })}
+                        />
+                      </Show>
+                    )}
+                  </Show>
+                  <EditorHost class="w-full flex-1 min-h-0" />
                 </div>
 
                 <For each={snapshot().diffs}>
@@ -715,6 +802,45 @@ export function EditorSurface(props: {
         )}
       </Show>
     </div>
+  );
+}
+
+/// "This file changed on disk", inline above the buffer it is about.
+///
+/// Three choices, no default, and no focus steal — the user may be mid-word.
+/// It stacks with nothing: only the buffer in front ever shows one.
+function ExternalChangeBar(props: {
+  path: string;
+  onKeepMine: () => void;
+  onTakeTheirs: () => void;
+  onShowDiff: () => void;
+}) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      class="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-warning/40 bg-warning/10 text-[11px]"
+    >
+      <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
+      <span class="flex-1 min-w-0 truncate">
+        This file changed on disk while you had unsaved edits.
+      </span>
+      <BarButton onClick={props.onKeepMine} label="Keep mine">Keep mine</BarButton>
+      <BarButton onClick={props.onTakeTheirs} label="Take theirs">Take theirs</BarButton>
+      <BarButton onClick={props.onShowDiff} label="Show diff">Show diff</BarButton>
+    </div>
+  );
+}
+
+function BarButton(props: { onClick: () => void; label: string; children: JSX.Element }) {
+  return (
+    <button
+      onClick={props.onClick}
+      aria-label={props.label}
+      class="shrink-0 px-2 py-0.5 rounded border border-border bg-background/40 text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {props.children}
+    </button>
   );
 }
 

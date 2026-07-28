@@ -5,6 +5,7 @@ import { applyVoidlinkTheme, monacoThemeName } from "./monacoTheme";
 import { registerEditorActions } from "./editorActions";
 import { applySaveTransforms } from "./saveTransforms";
 import { disableVim, enableVim } from "./vimMode";
+import { changedPaths, planForChanges, toStampMap, type StampMap } from "./externalChanges";
 import type { ThemeMode } from "@/store/theme";
 import { DEFAULT_SETTINGS, type EditorSettings } from "@/store/settings";
 
@@ -17,7 +18,16 @@ type EditorModel = {
   /// §7.5.3), it just enters its pending form (§7.6).
   saving: boolean;
 };
-type OpenFilesMeta = { path: string; dirty: boolean; saving: boolean };
+type OpenFilesMeta = {
+  path: string;
+  dirty: boolean;
+  saving: boolean;
+  /// Reloaded from disk while the user was elsewhere. Clears on activation —
+  /// the §7.5.3 *finished* signal.
+  reloaded: boolean;
+  /// Changed on disk while dirty. Waiting on the inline bar.
+  conflicted: boolean;
+};
 type ChangeListener = (files: OpenFilesMeta[], activePath: string | null) => void;
 
 /// Monaco's side of the editor window: the model cache, the dirty bookkeeping,
@@ -175,6 +185,7 @@ class EditorController {
     const next = activePath && wanted.has(activePath) ? activePath : null;
     // `getModel() === null` catches the first reconcile after init, where the
     // active path already matches but nothing is attached yet.
+    if (next) this.reloaded.delete(next);
     if (next !== this.activePath || this.editor.getModel() === null) {
       this.activePath = next;
       this.editor.setModel(next ? (this.models.get(next)?.model ?? null) : null);
@@ -320,6 +331,8 @@ class EditorController {
 
   setActive(path: string) {
     if (!this.editor || !this.models.has(path)) return;
+    // Seeing the tab is what the "reloaded while you were away" mark was for.
+    this.reloaded.delete(path);
     this.activePath = path;
     this.editor.setModel(this.models.get(path)!.model);
     requestAnimationFrame(() => this.editor?.layout());
@@ -343,7 +356,13 @@ class EditorController {
   getOpenFiles(): OpenFilesMeta[] {
     return this.openOrder.map((p) => {
       const meta = this.models.get(p);
-      return { path: p, dirty: meta?.dirty ?? false, saving: meta?.saving ?? false };
+      return {
+        path: p,
+        dirty: meta?.dirty ?? false,
+        saving: meta?.saving ?? false,
+        reloaded: this.reloaded.has(p),
+        conflicted: this.conflicted.has(p),
+      };
     });
   }
 
@@ -368,6 +387,90 @@ class EditorController {
     this.editor?.updateOptions(editorOptions(next));
     const mOpts = modelOptions(next);
     for (const meta of this.models.values()) meta.model.updateOptions(mOpts);
+  }
+
+  // ── External changes ─────────────────────────────────────────────────────
+
+  private stamps: StampMap = {};
+  /// Buffers whose disk content moved while they had unsaved edits. The editor
+  /// surface renders an inline bar for whichever of these is in front — one
+  /// bar, per buffer, never a modal and never a queue of them.
+  private conflicted = new Set<string>();
+  /// Buffers reloaded from disk while the user was looking elsewhere. Cleared
+  /// when the tab is next activated (§7.5.3, the *finished* signal).
+  private reloaded = new Set<string>();
+
+  /// Re-stat every open file and reconcile.
+  ///
+  /// Clean buffers are reloaded silently; dirty ones are left alone and flagged
+  /// so the surface can offer the choice. Returns how many of each, so a caller
+  /// that wants one aggregated notice for a 200-file checkout has the number
+  /// without having to count events.
+  async checkExternalChanges(): Promise<{ reloaded: number; conflicted: number }> {
+    const paths = [...this.models.keys()];
+    if (paths.length === 0) return { reloaded: 0, conflicted: 0 };
+
+    const stamps = await fsApi.statFiles(paths);
+    const changed = changedPaths(this.stamps, stamps);
+    this.stamps = toStampMap(stamps);
+    if (changed.length === 0) return { reloaded: 0, conflicted: 0 };
+
+    const plan = planForChanges(changed, (p) => this.models.get(p)?.dirty ?? false);
+    for (const path of plan.reload) await this.reloadFromDisk(path);
+    for (const path of plan.conflicted) this.conflicted.add(path);
+    if (plan.reload.length || plan.conflicted.length) this.notify();
+    return { reloaded: plan.reload.length, conflicted: plan.conflicted.length };
+  }
+
+  /// Replace a buffer's text with what is on disk, keeping the viewport.
+  ///
+  /// `pushEditOperations` rather than `setValue` so the scroll position and
+  /// folds survive — a silent reload that jumps the user to line 1 is not
+  /// silent.
+  private async reloadFromDisk(path: string) {
+    const meta = this.models.get(path);
+    if (!meta) return;
+    let content: string;
+    try {
+      content = await fsApi.readFile(path);
+    } catch {
+      // A file that vanished stays as it was in the buffer. Truncating the
+      // user's open tab because the file was deleted would lose more than it
+      // fixes.
+      return;
+    }
+    if (meta.model.getValue() === content) return;
+    meta.model.pushEditOperations(
+      [],
+      [{ range: meta.model.getFullModelRange(), text: content }],
+      () => null,
+    );
+    meta.dirty = false;
+    this.conflicted.delete(path);
+    // Only worth signalling if the user was not watching it happen.
+    if (path !== this.activePath) this.reloaded.add(path);
+  }
+
+  /// Resolve an inline-bar conflict by taking what is on disk.
+  async takeTheirs(path: string) {
+    const meta = this.models.get(path);
+    if (!meta) return;
+    meta.dirty = false;
+    await this.reloadFromDisk(path);
+    this.conflicted.delete(path);
+    this.reloaded.delete(path);
+    this.notify();
+  }
+
+  /// Resolve an inline-bar conflict by keeping the buffer. The next save
+  /// overwrites the on-disk version, which is what the user just asked for.
+  keepMine(path: string) {
+    this.conflicted.delete(path);
+    this.notify();
+  }
+
+  hasExternalConflict(path: string | null): boolean {
+    return !!path && this.conflicted.has(path);
   }
 
   /// Turn Vim bindings on or off against the shared editor.

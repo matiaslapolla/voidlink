@@ -18,7 +18,7 @@ pay Monaco's init cost.
 ## When you'd use it
 
 For reading and light editing next to the git suite. It is a code editor, not an
-IDE — there is no language server and no find-in-files. Formatting is whatever
+IDE — there is no language server. Formatting is whatever
 Monaco's bundled workers provide (TypeScript/JavaScript, JSON, CSS, HTML); for
 every other language `Format document` is a no-op until a provider exists.
 
@@ -39,6 +39,32 @@ every other language `Format document` is a no-op until a provider exists.
 Save can also run format-on-save, trailing-whitespace trimming and
 final-newline insertion, in that order, and can fire on a delay or on blur
 instead of only on `Mod+S`. All four are off by default — see Settings below.
+
+### Finding across files
+
+`Mod+Alt+F` opens the search panel in the left rail (⌘⇧F is already git fetch).
+Traversal is gitignore-aware by default, using the same `ignore`-crate walk as
+the file tree, with an `Ignored` toggle for the same escape hatch. Matching is
+plain substring with optional case-sensitivity and whole-word — not regex.
+
+Results stream in as the walk runs rather than appearing at the end, and the
+match count updates live. Starting a new query cancels the in-flight one, and
+the superseded walk's results never render. When the result cap is reached the
+panel says so with the real number and offers to keep going. Binary and
+non-UTF-8 files are skipped; files over 4 MB are skipped.
+
+`Replace with` + `All` rewrites every match on disk. A match whose recorded
+position no longer holds the searched text is skipped rather than replaced —
+the file may have changed since the walk — and the count of skips is reported.
+
+### External changes
+
+Open files are re-stat'd when the window regains focus and after every git ref
+change. A clean buffer reloads from disk silently, keeping its scroll position,
+and its tab wears a green mark until you next look at it. A buffer with unsaved
+edits is left alone and gets an inline bar above the editor —
+`Keep mine` / `Take theirs` / `Show diff` — per buffer, never a modal. A
+checkout touching 200 files produces 200 silent reloads and no interruptions.
 
 ### Settings
 
@@ -84,6 +110,7 @@ twice re-activates the existing tab.
 | `Mod+Alt+B` | Toggle [inline blame](./blame.md) |
 | `Mod+Shift+D` | Toggle inline / split diff (affects diff panes, not the editor) |
 | `Mod+Shift+I` | Format document |
+| `Mod+Alt+F` | Find in files |
 
 Fifteen editing commands — format, duplicate/move line, toggle comment,
 transform case, sort lines, jump to matching bracket, and the three
@@ -134,9 +161,12 @@ blocks, no mermaid, no math, and no relative-image resolution.
 - **A failed read looks like an empty file.** `openFile` catches the error,
   logs a warning to the console, and creates the model with empty content — so
   saving that tab would truncate the real file. There is no guard.
-- **Models are never re-read from disk.** After a checkout, rebase, or an
-  external edit, open tabs still show the content loaded when you first opened
-  them. Close and reopen the tab to refresh.
+- **External changes are polled, not watched.** Detection happens on window
+  focus and on git ref changes, not the instant a file is written. A watcher
+  would mean a new dependency and an OS handle per open file for information
+  only ever acted on at those two moments.
+- **A deleted file leaves its buffer as it was.** Truncating an open tab
+  because the file vanished loses more than it fixes.
 - **Autosave is off by default.** With it off, `Mod+S` is the only way to
   write — there is no save button.
 - **Format-on-save needs a provider.** With none registered for the language it
