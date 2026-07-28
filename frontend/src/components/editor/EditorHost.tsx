@@ -7,7 +7,7 @@ interface EditorHostProps {
 }
 
 export function EditorHost(props: EditorHostProps) {
-  const { mode } = useTheme();
+  const { mode, theme } = useTheme();
   let containerRef!: HTMLDivElement;
 
   // Registered here, not inside `onMount`: that callback is async, and after the
@@ -19,13 +19,16 @@ export function EditorHost(props: EditorHostProps) {
   onCleanup(() => editorController.dispose());
 
   onMount(async () => {
-    const theme = mode() === "light" ? "vs" : "vs-dark";
-    await editorController.init(containerRef, theme);
+    await editorController.init(containerRef, mode());
 
-    // Keep Monaco's theme in sync with the app theme. init() already
-    // applied the current value; this effect handles future toggles.
+    // Keep Monaco's theme in sync with the app theme. init() already applied
+    // the current value; this effect handles future changes. It tracks
+    // `theme()` and not just `mode()` because the eight named themes swap every
+    // token without changing mode — `monokai` → `dracula` is a colour change
+    // Monaco has to follow, and reading `mode()` alone would miss it.
     createEffect(() => {
-      editorController.setTheme(mode() === "light" ? "vs" : "vs-dark");
+      theme();
+      editorController.setThemeMode(mode());
     });
 
     // Save is not handled here. ⌘S / Ctrl+S is a `file.save` entry in

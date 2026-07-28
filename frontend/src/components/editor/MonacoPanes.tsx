@@ -14,6 +14,7 @@
 import { createEffect, on, onCleanup, onMount } from "solid-js";
 import type * as Monaco from "monaco-editor";
 import { inferLanguage, loadMonaco, SHARED_EDITOR_OPTIONS } from "./monaco";
+import { applyVoidlinkTheme, monacoThemeName } from "./monacoTheme";
 import { useTheme } from "@/store/theme";
 
 let uriCounter = 0;
@@ -26,8 +27,27 @@ function scratchUri(monaco: typeof Monaco, path: string, role: string): Monaco.U
   );
 }
 
-function monacoTheme(mode: "light" | "dark"): "vs" | "vs-dark" {
-  return mode === "light" ? "vs" : "vs-dark";
+/// Keep every pane in this window on the VoidLink themes, re-derived whenever
+/// the app theme changes.
+///
+/// Monaco's theme registry and `setTheme` are both global, so this is
+/// idempotent across panes — several diff tabs mounted at once all call it and
+/// the last one wins with the same answer. Cheaper than a shared subscription,
+/// and it keeps each pane's mount self-contained.
+function useMonacoThemeSync(getMonaco: () => typeof Monaco | null) {
+  const { mode, theme } = useTheme();
+  createEffect(
+    on(
+      // `theme()` and not just `mode()`: switching monokai → dracula rewrites
+      // every token without changing mode.
+      () => [theme(), mode()] as const,
+      ([, m]) => {
+        const monaco = getMonaco();
+        if (monaco) applyVoidlinkTheme(monaco, m);
+      },
+      { defer: true },
+    ),
+  );
 }
 
 export interface MonacoPaneProps {
@@ -47,14 +67,19 @@ export interface MonacoPaneProps {
 export function MonacoPane(props: MonacoPaneProps) {
   const { mode } = useTheme();
   let container!: HTMLDivElement;
+  let monacoRef: typeof Monaco | null = null;
   let editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   let model: Monaco.editor.ITextModel | null = null;
   /// Set while we push `props.text` into the model, so the resulting change
   /// event isn't mistaken for the user typing and echoed back to the parent.
   let applyingExternal = false;
 
+  useMonacoThemeSync(() => monacoRef);
+
   onMount(async () => {
     const monaco = await loadMonaco();
+    monacoRef = monaco;
+    applyVoidlinkTheme(monaco, mode());
     model = monaco.editor.createModel(
       props.text,
       inferLanguage(props.path),
@@ -63,7 +88,7 @@ export function MonacoPane(props: MonacoPaneProps) {
     editor = monaco.editor.create(container, {
       ...SHARED_EDITOR_OPTIONS,
       model,
-      theme: monacoTheme(mode()),
+      theme: monacoThemeName(mode()),
       readOnly: props.readOnly ?? false,
       lineNumbers: "on",
     });
@@ -77,6 +102,7 @@ export function MonacoPane(props: MonacoPaneProps) {
       model?.dispose();
       editor = null;
       model = null;
+      monacoRef = null;
     });
   });
 
@@ -125,13 +151,18 @@ export interface MonacoDiffPaneProps {
 export function MonacoDiffPane(props: MonacoDiffPaneProps) {
   const { mode } = useTheme();
   let container!: HTMLDivElement;
+  let monacoRef: typeof Monaco | null = null;
   let editor: Monaco.editor.IStandaloneDiffEditor | null = null;
   let originalModel: Monaco.editor.ITextModel | null = null;
   let modifiedModel: Monaco.editor.ITextModel | null = null;
   let applyingExternal = false;
 
+  useMonacoThemeSync(() => monacoRef);
+
   onMount(async () => {
     const monaco = await loadMonaco();
+    monacoRef = monaco;
+    applyVoidlinkTheme(monaco, mode());
     const language = inferLanguage(props.path);
     originalModel = monaco.editor.createModel(
       props.original,
@@ -145,7 +176,7 @@ export function MonacoDiffPane(props: MonacoDiffPaneProps) {
     );
     editor = monaco.editor.createDiffEditor(container, {
       ...SHARED_EDITOR_OPTIONS,
-      theme: monacoTheme(mode()),
+      theme: monacoThemeName(mode()),
       renderSideBySide: props.sideBySide,
       ignoreTrimWhitespace: props.ignoreWhitespace ?? false,
       readOnly: !props.modifiedEditable,
@@ -167,6 +198,7 @@ export function MonacoDiffPane(props: MonacoDiffPaneProps) {
       editor = null;
       originalModel = null;
       modifiedModel = null;
+      monacoRef = null;
     });
   });
 

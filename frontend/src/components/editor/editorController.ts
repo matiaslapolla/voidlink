@@ -1,6 +1,8 @@
 import type * as Monaco from "monaco-editor";
 import { fsApi } from "@/api/fs";
 import { inferLanguage, loadMonaco, SHARED_EDITOR_OPTIONS } from "./monaco";
+import { applyVoidlinkTheme, monacoThemeName } from "./monacoTheme";
+import type { ThemeMode } from "@/store/theme";
 
 type EditorModel = { path: string; model: Monaco.editor.ITextModel; dirty: boolean };
 type OpenFilesMeta = { path: string; dirty: boolean };
@@ -27,7 +29,7 @@ class EditorController {
   private _initResolve!: () => void;
   private _initPromise: Promise<void> = new Promise(r => { this._initResolve = r; });
 
-  async init(container: HTMLElement, theme: "vs-dark" | "vs" = "vs-dark") {
+  async init(container: HTMLElement, mode: ThemeMode = "dark") {
     if (this.editor) return; // already initialised
 
     // MonacoEnvironment is configured inside loadMonaco(), before Monaco can
@@ -35,10 +37,14 @@ class EditorController {
     const monaco = await loadMonaco();
     this.monaco = monaco;
 
+    // Define the VoidLink themes before the first `create`, so the editor never
+    // paints a frame of stock `vs-dark` on top of a solarized shell.
+    applyVoidlinkTheme(monaco, mode);
+
     this.editor = monaco.editor.create(container, {
       ...SHARED_EDITOR_OPTIONS,
       model: null,
-      theme,
+      theme: monacoThemeName(mode),
     });
 
     this._initResolve();
@@ -216,8 +222,12 @@ class EditorController {
   getActivePath() { return this.activePath; }
   layout() { this.editor?.layout(); }
 
-  setTheme(theme: "vs-dark" | "vs") {
-    this.monaco?.editor.setTheme(theme);
+  /// Re-derive the VoidLink Monaco themes from the current cascade and apply
+  /// the one for `mode`. Takes the app's mode rather than a Monaco theme name
+  /// because the mapping — and the token re-read a named-theme switch needs —
+  /// belongs in `monacoTheme.ts`, not in every caller.
+  setThemeMode(mode: ThemeMode) {
+    if (this.monaco) applyVoidlinkTheme(this.monaco, mode);
   }
 
   subscribe(fn: ChangeListener): () => void {
