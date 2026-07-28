@@ -953,6 +953,10 @@ pub fn run() {
             browser::browser_close,
             browser::browser_open_devtools,
             browser::browser_close_orphans,
+            git::git_config_list,
+            git::git_config_get,
+            git::git_config_set,
+            git::git_config_unset,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

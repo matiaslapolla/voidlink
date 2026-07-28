@@ -7,6 +7,7 @@ pub(crate) mod branch;
 pub(crate) mod cli;
 pub(crate) mod cmd;
 pub(crate) mod compare;
+pub(crate) mod config;
 pub(crate) mod conflict;
 pub(crate) mod diff;
 pub(crate) mod discard;
@@ -43,6 +44,10 @@ use branch::{
     git_list_branches_impl, git_rename_branch_impl,
 };
 use compare::git_diff_refs_impl;
+use config::{
+    git_config_get_impl, git_config_set_impl, git_config_snapshot_impl, git_config_unset_impl,
+    ConfigEntry, ConfigSnapshot,
+};
 use conflict::{
     git_conflict_versions_impl, git_list_conflicts_impl, git_resolve_conflict_impl,
     ConflictVersions,
@@ -326,6 +331,52 @@ pub async fn git_config_identity(
     _state: tauri::State<'_, GitState>,
 ) -> Result<Option<CommitIdentity>, String> {
     blocking_git!(git_config_identity_impl(repo_path))
+}
+
+/// The whole effective config cascade plus the files a write would land in.
+/// Shadowed entries are included — the same key can appear at more than one
+/// level, which is how a caller tells "set here" from "set here, overriding
+/// global". Reads are unrestricted; only writes are allowlisted.
+#[tauri::command]
+pub async fn git_config_list(
+    repo_path: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<ConfigSnapshot, String> {
+    blocking_git!(git_config_snapshot_impl(repo_path))
+}
+
+/// The winning value for one key, or `None` when it is set nowhere.
+#[tauri::command]
+pub async fn git_config_get(
+    repo_path: String,
+    key: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<Option<ConfigEntry>, String> {
+    blocking_git!(git_config_get_impl(repo_path, key))
+}
+
+/// Write one allowlisted key at `local` or `global`. Rejects anything outside
+/// the allowlist server-side; errors name the resolved file.
+#[tauri::command]
+pub async fn git_config_set(
+    repo_path: String,
+    key: String,
+    value: String,
+    scope: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_config_set_impl(repo_path, key, value, scope))
+}
+
+/// Remove the key at that scope so the cascade falls through again.
+#[tauri::command]
+pub async fn git_config_unset(
+    repo_path: String,
+    key: String,
+    scope: String,
+    _state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(git_config_unset_impl(repo_path, key, scope))
 }
 
 #[tauri::command]
