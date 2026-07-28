@@ -13,7 +13,8 @@
 
 import { createEffect, on, onCleanup, onMount } from "solid-js";
 import type * as Monaco from "monaco-editor";
-import { inferLanguage, loadMonaco, SHARED_EDITOR_OPTIONS } from "./monaco";
+import { editorOptions, inferLanguage, loadMonaco, modelOptions } from "./monaco";
+import { useSettings } from "@/store/settings";
 import { applyVoidlinkTheme, monacoThemeName } from "./monacoTheme";
 import { useTheme } from "@/store/theme";
 
@@ -50,6 +51,31 @@ function useMonacoThemeSync(getMonaco: () => typeof Monaco | null) {
   );
 }
 
+/// Push settings changes into a live pane.
+///
+/// Every editor setting has to apply without a reload, and these panes are
+/// created once and then live for the lifetime of a diff or merge tab — so the
+/// same derivation that seeds `create` also feeds `updateOptions`. `tabSize` and
+/// `insertSpaces` go to the models rather than the editor; see `monaco.ts`.
+function useEditorOptionsSync(
+  getEditor: () => {
+    updateOptions(o: Monaco.editor.IEditorOptions & Monaco.editor.IGlobalEditorOptions): void;
+  } | null,
+  getModels: () => (Monaco.editor.ITextModel | null)[],
+) {
+  const { settings } = useSettings();
+  createEffect(
+    on(
+      () => [editorOptions(settings.editor), modelOptions(settings.editor)] as const,
+      ([opts, mOpts]) => {
+        getEditor()?.updateOptions(opts);
+        for (const m of getModels()) m?.updateOptions(mOpts);
+      },
+      { defer: true },
+    ),
+  );
+}
+
 export interface MonacoPaneProps {
   /// Full text to show. Replacing it rewrites the model in place rather than
   /// recreating the editor, so scroll position and folds survive an edit
@@ -66,6 +92,7 @@ export interface MonacoPaneProps {
 /// One editable (or read-only) buffer.
 export function MonacoPane(props: MonacoPaneProps) {
   const { mode } = useTheme();
+  const { settings } = useSettings();
   let container!: HTMLDivElement;
   let monacoRef: typeof Monaco | null = null;
   let editor: Monaco.editor.IStandaloneCodeEditor | null = null;
@@ -75,6 +102,7 @@ export function MonacoPane(props: MonacoPaneProps) {
   let applyingExternal = false;
 
   useMonacoThemeSync(() => monacoRef);
+  useEditorOptionsSync(() => editor, () => [model]);
 
   onMount(async () => {
     const monaco = await loadMonaco();
@@ -85,8 +113,9 @@ export function MonacoPane(props: MonacoPaneProps) {
       inferLanguage(props.path),
       scratchUri(monaco, props.path, props.readOnly ? "ro" : "rw"),
     );
+    model.updateOptions(modelOptions(settings.editor));
     editor = monaco.editor.create(container, {
-      ...SHARED_EDITOR_OPTIONS,
+      ...editorOptions(settings.editor),
       model,
       theme: monacoThemeName(mode()),
       readOnly: props.readOnly ?? false,
@@ -150,6 +179,7 @@ export interface MonacoDiffPaneProps {
 /// A side-by-side (or inline) diff of two texts.
 export function MonacoDiffPane(props: MonacoDiffPaneProps) {
   const { mode } = useTheme();
+  const { settings } = useSettings();
   let container!: HTMLDivElement;
   let monacoRef: typeof Monaco | null = null;
   let editor: Monaco.editor.IStandaloneDiffEditor | null = null;
@@ -158,6 +188,7 @@ export function MonacoDiffPane(props: MonacoDiffPaneProps) {
   let applyingExternal = false;
 
   useMonacoThemeSync(() => monacoRef);
+  useEditorOptionsSync(() => editor, () => [originalModel, modifiedModel]);
 
   onMount(async () => {
     const monaco = await loadMonaco();
@@ -174,8 +205,10 @@ export function MonacoDiffPane(props: MonacoDiffPaneProps) {
       language,
       scratchUri(monaco, props.path, "modified"),
     );
+    originalModel.updateOptions(modelOptions(settings.editor));
+    modifiedModel.updateOptions(modelOptions(settings.editor));
     editor = monaco.editor.createDiffEditor(container, {
-      ...SHARED_EDITOR_OPTIONS,
+      ...editorOptions(settings.editor),
       theme: monacoThemeName(mode()),
       renderSideBySide: props.sideBySide,
       ignoreTrimWhitespace: props.ignoreWhitespace ?? false,

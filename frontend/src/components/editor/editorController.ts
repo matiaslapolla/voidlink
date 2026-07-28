@@ -1,8 +1,9 @@
 import type * as Monaco from "monaco-editor";
 import { fsApi } from "@/api/fs";
-import { inferLanguage, loadMonaco, SHARED_EDITOR_OPTIONS } from "./monaco";
+import { editorOptions, inferLanguage, loadMonaco, modelOptions } from "./monaco";
 import { applyVoidlinkTheme, monacoThemeName } from "./monacoTheme";
 import type { ThemeMode } from "@/store/theme";
+import { DEFAULT_SETTINGS, type EditorSettings } from "@/store/settings";
 
 type EditorModel = { path: string; model: Monaco.editor.ITextModel; dirty: boolean };
 type OpenFilesMeta = { path: string; dirty: boolean };
@@ -25,6 +26,13 @@ class EditorController {
   private listeners = new Set<ChangeListener>();
   private disposeMap = new Map<string, Monaco.IDisposable>();
 
+  /// The last editor settings pushed in from the store, kept as a plain
+  /// snapshot so `init` and `ensureModel` — neither of which runs inside a
+  /// tracking scope — can seed a new editor or model without importing the
+  /// store's reactivity into a class that has none. `EditorHost` owns the
+  /// subscription and calls `applyEditorSettings`.
+  private settings: EditorSettings = DEFAULT_SETTINGS.editor;
+
   // Resolved once init() completes — openFile() awaits this so rapid clicks work.
   private _initResolve!: () => void;
   private _initPromise: Promise<void> = new Promise(r => { this._initResolve = r; });
@@ -42,7 +50,7 @@ class EditorController {
     applyVoidlinkTheme(monaco, mode);
 
     this.editor = monaco.editor.create(container, {
-      ...SHARED_EDITOR_OPTIONS,
+      ...editorOptions(this.settings),
       model: null,
       theme: monacoThemeName(mode),
     });
@@ -92,6 +100,9 @@ class EditorController {
 
     const uri = this.monaco.Uri.file(path);
     const model = this.monaco.editor.createModel(content, inferLanguage(path), uri);
+    // Indentation is a model option, so a freshly-created model does not
+    // inherit it from the editor it is about to be attached to.
+    model.updateOptions(modelOptions(this.settings));
     const meta: EditorModel = { path, model, dirty: false };
     this.models.set(path, meta);
 
@@ -221,6 +232,19 @@ class EditorController {
 
   getActivePath() { return this.activePath; }
   layout() { this.editor?.layout(); }
+
+  /// Take a new editor-settings snapshot and push it into the live editor and
+  /// every cached model. Idempotent, and safe before `init` — the snapshot is
+  /// what the next `create` will be built from.
+  ///
+  /// This is what makes "a setting that only takes effect on reload is a bug"
+  /// true: there is no second path by which options reach Monaco.
+  applyEditorSettings(next: EditorSettings) {
+    this.settings = next;
+    this.editor?.updateOptions(editorOptions(next));
+    const mOpts = modelOptions(next);
+    for (const meta of this.models.values()) meta.model.updateOptions(mOpts);
+  }
 
   /// Re-derive the VoidLink Monaco themes from the current cascade and apply
   /// the one for `mode`. Takes the app's mode rather than a Monaco theme name

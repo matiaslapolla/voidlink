@@ -1,6 +1,7 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
 import { editorController } from "./editorController";
 import { useTheme } from "@/store/theme";
+import { useSettings } from "@/store/settings";
 
 interface EditorHostProps {
   class?: string;
@@ -8,7 +9,16 @@ interface EditorHostProps {
 
 export function EditorHost(props: EditorHostProps) {
   const { mode, theme } = useTheme();
+  const { settings } = useSettings();
   let containerRef!: HTMLDivElement;
+
+  // The store's only route into the controller. Registered in the component
+  // body rather than inside `onMount`'s async callback so it exists before the
+  // first `init`, and so Solid still owns it — after the first `await` there is
+  // no owner and the effect would never be disposed.
+  createEffect(() => {
+    editorController.applyEditorSettings({ ...settings.editor });
+  });
 
   // Registered here, not inside `onMount`: that callback is async, and after the
   // first await Solid's owner is gone, so an `onCleanup` in there would never

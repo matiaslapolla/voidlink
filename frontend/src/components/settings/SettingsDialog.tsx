@@ -7,6 +7,12 @@ import {
   useSettings,
   type AiKeyBinding,
   type CursorStyle,
+  type EditorAutoSave,
+  type EditorCursorBlinking,
+  type EditorCursorStyle,
+  type EditorLineNumbers,
+  type EditorRenderWhitespace,
+  type EditorWordWrap,
   type EnvironmentMode,
   type UiDensity,
   type UiTextSize,
@@ -30,7 +36,7 @@ interface SettingsDialogProps {
   onClose: () => void;
 }
 
-type Tab = "ui" | "theme" | "terminal" | "keyboard" | "ai" | "git" | "stack" | "brain";
+type Tab = "ui" | "theme" | "editor" | "terminal" | "keyboard" | "ai" | "git" | "stack" | "brain";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -100,6 +106,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <div class="flex items-center gap-1 border-b border-border px-2 py-1 text-xs">
             <TabButton active={tab() === "ui"} onClick={() => setTab("ui")}>UI</TabButton>
             <TabButton active={tab() === "theme"} onClick={() => setTab("theme")}>Theme</TabButton>
+            <TabButton active={tab() === "editor"} onClick={() => setTab("editor")}>Editor</TabButton>
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</TabButton>
             <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
@@ -111,6 +118,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs">
             <Show when={tab() === "ui"}><UiPane /></Show>
             <Show when={tab() === "theme"}><ThemePane /></Show>
+            <Show when={tab() === "editor"}><EditorPane /></Show>
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
             <Show when={tab() === "keyboard"}><KeyboardPane /></Show>
             <Show when={tab() === "ai"}><AiPane /></Show>
@@ -360,6 +368,162 @@ const FONT_PRESETS: { label: string; stack: string }[] = [
     stack: '"DejaVu Sans Mono", monospace',
   },
 ];
+
+// ─── Editor Pane ─────────────────────────────────────────────────────────────
+
+const EDITOR_WORD_WRAP: { id: EditorWordWrap; label: string }[] = [
+  { id: "off", label: "Off" },
+  { id: "on", label: "Viewport" },
+  { id: "bounded", label: "Column" },
+];
+
+const EDITOR_WHITESPACE: { id: EditorRenderWhitespace; label: string }[] = [
+  { id: "none", label: "None" },
+  { id: "selection", label: "Selection" },
+  { id: "boundary", label: "Boundary" },
+  { id: "all", label: "All" },
+];
+
+const EDITOR_LINE_NUMBERS: { id: EditorLineNumbers; label: string }[] = [
+  { id: "on", label: "On" },
+  { id: "off", label: "Off" },
+  { id: "relative", label: "Relative" },
+];
+
+const EDITOR_CURSOR_STYLES: { id: EditorCursorStyle; label: string }[] = [
+  { id: "line", label: "Line" },
+  { id: "block", label: "Block" },
+  { id: "underline", label: "Underline" },
+];
+
+const EDITOR_CURSOR_BLINKING: { id: EditorCursorBlinking; label: string }[] = [
+  { id: "blink", label: "Blink" },
+  { id: "smooth", label: "Smooth" },
+  { id: "phase", label: "Phase" },
+  { id: "expand", label: "Expand" },
+  { id: "solid", label: "Solid" },
+];
+
+const EDITOR_AUTO_SAVE: { id: EditorAutoSave; label: string }[] = [
+  { id: "off", label: "Off" },
+  { id: "afterDelay", label: "After delay" },
+  { id: "onFocusChange", label: "On blur" },
+];
+
+/// Every setting here applies to the running editor through `updateOptions` —
+/// there is no "restart to apply" row, by design (see `monaco.ts`).
+function EditorPane() {
+  const { settings, updateEditor } = useSettings();
+  return (
+    <div class="space-y-6">
+      <Section title="Font">
+        <TextRow
+          label="Font family"
+          value={settings.editor.fontFamily}
+          placeholder="'Geist Mono Variable', monospace"
+          onInput={(v) => updateEditor({ fontFamily: v })}
+        />
+        <div class="flex flex-wrap gap-1 pl-28">
+          <For each={FONT_PRESETS}>
+            {(p) => (
+              <button
+                onClick={() => updateEditor({ fontFamily: p.stack })}
+                class="px-2 py-0.5 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                title={p.stack}
+              >
+                {p.label}
+              </button>
+            )}
+          </For>
+        </div>
+        <SliderRow label="Font size" value={settings.editor.fontSize} min={8} max={28} step={1}
+          format={(v) => `${v}px`} onInput={(v) => updateEditor({ fontSize: v })} />
+        {/* Monaco's own convention: 0 derives the height from the font size,
+            and anything up to 8 is a multiplier. Surfacing that as "Auto"
+            rather than hiding it behind a second toggle. */}
+        <SliderRow label="Line height" value={settings.editor.lineHeight} min={0} max={3} step={0.05}
+          format={(v) => (v === 0 ? "Auto" : `${v.toFixed(2)}×`)}
+          onInput={(v) => updateEditor({ lineHeight: v })} />
+        <ToggleRow
+          label="Ligatures"
+          hint="Render =>, !== and friends as single glyphs, if the font has them."
+          value={settings.editor.fontLigatures}
+          onChange={(v) => updateEditor({ fontLigatures: v })}
+        />
+      </Section>
+
+      <Section title="Indentation">
+        <SliderRow label="Tab size" value={settings.editor.tabSize} min={1} max={8} step={1}
+          format={(v) => `${v} spaces`} onInput={(v) => updateEditor({ tabSize: v })} />
+        <ToggleRow label="Insert spaces" value={settings.editor.insertSpaces}
+          onChange={(v) => updateEditor({ insertSpaces: v })} />
+        <ToggleRow label="Indent guides" value={settings.editor.indentGuides}
+          onChange={(v) => updateEditor({ indentGuides: v })} />
+      </Section>
+
+      <Section title="Wrapping">
+        <SegmentedRow label="Word wrap" value={settings.editor.wordWrap} options={EDITOR_WORD_WRAP}
+          onChange={(v) => updateEditor({ wordWrap: v })} />
+        <Show when={settings.editor.wordWrap === "bounded"}>
+          <SliderRow label="Wrap column" value={settings.editor.wordWrapColumn} min={40} max={200} step={1}
+            format={(v) => `${v} cols`} onInput={(v) => updateEditor({ wordWrapColumn: v })} />
+        </Show>
+      </Section>
+
+      <Section title="Display">
+        <SegmentedRow label="Line numbers" value={settings.editor.lineNumbers} options={EDITOR_LINE_NUMBERS}
+          onChange={(v) => updateEditor({ lineNumbers: v })} />
+        <SegmentedRow label="Whitespace" value={settings.editor.renderWhitespace} options={EDITOR_WHITESPACE}
+          onChange={(v) => updateEditor({ renderWhitespace: v })} />
+        <ToggleRow label="Minimap" value={settings.editor.minimap}
+          onChange={(v) => updateEditor({ minimap: v })} />
+        <ToggleRow
+          label="Sticky scroll"
+          hint="Pin the enclosing scopes to the top of the viewport."
+          value={settings.editor.stickyScroll}
+          onChange={(v) => updateEditor({ stickyScroll: v })}
+        />
+        <ToggleRow label="Bracket colors" value={settings.editor.bracketPairColorization}
+          onChange={(v) => updateEditor({ bracketPairColorization: v })} />
+        <ToggleRow label="Scroll past end" value={settings.editor.scrollBeyondLastLine}
+          onChange={(v) => updateEditor({ scrollBeyondLastLine: v })} />
+        <ToggleRow label="Smooth scrolling" value={settings.editor.smoothScrolling}
+          onChange={(v) => updateEditor({ smoothScrolling: v })} />
+      </Section>
+
+      <Section title="Cursor">
+        <SegmentedRow label="Style" value={settings.editor.cursorStyle} options={EDITOR_CURSOR_STYLES}
+          onChange={(v) => updateEditor({ cursorStyle: v })} />
+        <SegmentedRow label="Blinking" value={settings.editor.cursorBlinking} options={EDITOR_CURSOR_BLINKING}
+          onChange={(v) => updateEditor({ cursorBlinking: v })} />
+      </Section>
+
+      <Section title="Save">
+        <ToggleRow
+          label="Format on save"
+          hint="Uses whatever formatter the language provides. No provider means no change."
+          value={settings.editor.formatOnSave}
+          onChange={(v) => updateEditor({ formatOnSave: v })}
+        />
+        <ToggleRow label="Trim whitespace" value={settings.editor.trimTrailingWhitespaceOnSave}
+          onChange={(v) => updateEditor({ trimTrailingWhitespaceOnSave: v })} />
+        <ToggleRow label="Final newline" value={settings.editor.insertFinalNewlineOnSave}
+          onChange={(v) => updateEditor({ insertFinalNewlineOnSave: v })} />
+        <SegmentedRow label="Auto save" value={settings.editor.autoSave} options={EDITOR_AUTO_SAVE}
+          onChange={(v) => updateEditor({ autoSave: v })} />
+        <Show when={settings.editor.autoSave === "afterDelay"}>
+          <SliderRow label="Delay" value={settings.editor.autoSaveDelayMs} min={200} max={10000} step={100}
+            format={(v) => `${(v / 1000).toFixed(1)}s`}
+            onInput={(v) => updateEditor({ autoSaveDelayMs: v })} />
+        </Show>
+        <p class="text-[10px] text-muted-foreground/70 leading-relaxed">
+          Auto save never hides the dirty dot — it appears on the first edit and
+          clears on the write, so a pending save is always visible.
+        </p>
+      </Section>
+    </div>
+  );
+}
 
 function TerminalPane() {
   const { settings, updateTerminal } = useSettings();
