@@ -12,16 +12,12 @@ import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
 import { StatusLed, terminalSignal } from "@/components/layout/StatusLed";
 import { Splitter } from "@/components/layout/Splitter";
+import { PANEL_BOUNDS } from "@/store/layout";
 
 const POLL_MS = 1500;
 
-const SIDEBAR_MIN_WIDTH = 180;
-const SIDEBAR_MAX_WIDTH = 520;
-const SIDEBAR_DEFAULT_WIDTH = 256;
-
 export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) {
   const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
-  const [sidebarWidth, setSidebarWidth] = createSignal(SIDEBAR_DEFAULT_WIDTH);
 
   async function chooseRepo() {
     const ws = activeWorkspace();
@@ -57,7 +53,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
   return (
     <aside
       class="flex flex-col border-r border-border bg-sidebar overflow-hidden relative"
-      style={{ width: `${sidebarWidth()}px` }}
+      style={{ width: `${state.panels.sidebar}px` }}
     >
       {/* Repo picker — h-9 to match center column tab bar */}
       <div class="h-9 px-3 border-b border-border flex items-center shrink-0">
@@ -200,11 +196,11 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
       <Splitter
         side="end"
         label="Files and terminals sidebar width"
-        value={sidebarWidth()}
-        min={SIDEBAR_MIN_WIDTH}
-        max={SIDEBAR_MAX_WIDTH}
-        defaultValue={SIDEBAR_DEFAULT_WIDTH}
-        onResize={setSidebarWidth}
+        value={state.panels.sidebar}
+        min={PANEL_BOUNDS.sidebar.min}
+        max={PANEL_BOUNDS.sidebar.max}
+        defaultValue={PANEL_BOUNDS.sidebar.default}
+        onResize={(w) => actions.setPanelWidth("sidebar", w)}
       />
     </aside>
   );

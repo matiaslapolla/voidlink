@@ -25,7 +25,30 @@ export interface SidebarSections {
   terminals: boolean;
 }
 
+/// The three resizable columns of the shell, in px.
+///
+/// These lived in `createSignal` inside `WorkspaceRail`, `TerminalSidebar` and
+/// `GitSidebar`, which meant every reload — and, in stacked mode, every switch
+/// away from the workbench view and back — threw the user's layout away. They
+/// are geometry, not view state, so they belong to the store.
+export interface PanelWidths {
+  rail: number;
+  sidebar: number;
+  gitSidebar: number;
+}
+
+export type PanelId = keyof PanelWidths;
+
+/// Bounds and defaults, moved here from the three components so the clamp that
+/// `<Splitter>` applies and the clamp that hydration applies are the same one.
+export const PANEL_BOUNDS: Record<PanelId, { min: number; max: number; default: number }> = {
+  rail: { min: 160, max: 380, default: 212 },
+  sidebar: { min: 180, max: 520, default: 256 },
+  gitSidebar: { min: 220, max: 600, default: 320 },
+};
+
 export interface UiPrefs {
+  panels: PanelWidths;
   gitSidebarCollapsed: boolean;
   leftSidebarCollapsed: boolean;
   sidebarsSwapped: boolean;
@@ -41,6 +64,11 @@ export interface UiPrefs {
 /// assumption list). Kept here so Wave 5's density preference has a home that
 /// is already persisted rather than needing a new key.
 export const DEFAULT_PREFS: UiPrefs = {
+  panels: {
+    rail: PANEL_BOUNDS.rail.default,
+    sidebar: PANEL_BOUNDS.sidebar.default,
+    gitSidebar: PANEL_BOUNDS.gitSidebar.default,
+  },
   gitSidebarCollapsed: false,
   leftSidebarCollapsed: false,
   sidebarsSwapped: false,
@@ -67,6 +95,7 @@ export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
   if (!parsed || typeof parsed !== "object") return { ...DEFAULT_PREFS };
   const d = DEFAULT_PREFS;
   return {
+    panels: parsePanelWidths(parsed.panels),
     gitSidebarCollapsed: parsed.gitSidebarCollapsed ?? d.gitSidebarCollapsed,
     leftSidebarCollapsed: parsed.leftSidebarCollapsed ?? d.leftSidebarCollapsed,
     sidebarsSwapped: parsed.sidebarsSwapped ?? d.sidebarsSwapped,
@@ -90,6 +119,26 @@ export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
       files: parsed.sidebarSections?.files ?? d.sidebarSections.files,
       terminals: parsed.sidebarSections?.terminals ?? d.sidebarSections.terminals,
     },
+  };
+}
+
+/// Clamp on the way in as well as on the way out. A width persisted by a build
+/// with different bounds — or hand-edited — must not be able to render a 4000px
+/// rail that leaves no room for the workbench and no handle to drag back.
+export function clampPanelWidth(panel: PanelId, value: number): number {
+  const { min, max, default: fallback } = PANEL_BOUNDS[panel];
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function parsePanelWidths(raw: Partial<PanelWidths> | undefined): PanelWidths {
+  return {
+    rail: clampPanelWidth("rail", raw?.rail ?? PANEL_BOUNDS.rail.default),
+    sidebar: clampPanelWidth("sidebar", raw?.sidebar ?? PANEL_BOUNDS.sidebar.default),
+    gitSidebar: clampPanelWidth(
+      "gitSidebar",
+      raw?.gitSidebar ?? PANEL_BOUNDS.gitSidebar.default,
+    ),
   };
 }
 

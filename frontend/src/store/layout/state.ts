@@ -21,7 +21,14 @@ import type {
   StackTab,
   TabCollectionKey,
 } from "./tabs";
-import type { GitSections, SidebarSections, DiffMode, GitTab, SidebarTab } from "./prefs";
+import type {
+  GitSections,
+  SidebarSections,
+  DiffMode,
+  GitTab,
+  PanelWidths,
+  SidebarTab,
+} from "./prefs";
 
 export interface AppStoreState {
   workspaces: Workspace[];
@@ -56,6 +63,9 @@ export interface AppStoreState {
   /// independently: clicking a file in the editor must not blank out the
   /// terminal the user is watching in the workbench, and vice versa.
   editorActiveItemByWorktree: Record<string, ActiveItem | null>;
+  /// Width of each resizable column, in px. Persisted, so a reload comes back
+  /// to the layout the user dragged rather than to the defaults.
+  panels: PanelWidths;
   gitSidebarCollapsed: boolean;
   leftSidebarCollapsed: boolean;
   sidebarsSwapped: boolean;

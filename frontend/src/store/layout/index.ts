@@ -27,7 +27,8 @@ import {
   readRaw,
   writeJson,
 } from "./persistence";
-import { loadPrefs, persistPrefs } from "./prefs";
+import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
+import type { PanelId } from "./prefs";
 import {
   TAB_KINDS,
   TAB_SPECS,
@@ -81,7 +82,8 @@ export type {
   TabKindSpec,
 } from "./tabs";
 export { TAB_KINDS, TAB_SPECS, parseEditorTabs, samePath, serializeEditorTabs } from "./tabs";
-export type { DiffMode, GitTab, SidebarTab, UiPrefs } from "./prefs";
+export type { DiffMode, GitTab, PanelId, PanelWidths, SidebarTab, UiPrefs } from "./prefs";
+export { PANEL_BOUNDS } from "./prefs";
 export type { AppStoreState } from "./state";
 export { LAYOUT_STORAGE_KEYS, STORAGE_KEYS, flushWrites, resetLayoutStorage } from "./persistence";
 
@@ -160,6 +162,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
     activeItemByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
     editorActiveItemByWorktree: editorTabs.active,
+    panels: prefs.panels,
     gitSidebarCollapsed: prefs.gitSidebarCollapsed,
     leftSidebarCollapsed: prefs.leftSidebarCollapsed,
     sidebarsSwapped: prefs.sidebarsSwapped,
@@ -209,6 +212,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   createEffect(() => {
     if (!persist) return;
     persistPrefs({
+      panels: state.panels,
       gitSidebarCollapsed: state.gitSidebarCollapsed,
       leftSidebarCollapsed: state.leftSidebarCollapsed,
       sidebarsSwapped: state.sidebarsSwapped,
@@ -618,6 +622,13 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
     toggleIgnoreWhitespace() {
       setState("ignoreWhitespace", (v) => !v);
+    },
+
+    // ── Panel geometry ───────────────────────────────────────────────────
+    /// Resize one of the shell's three columns. Called on every frame of a
+    /// `<Splitter>` drag, which is why the write path behind it is debounced.
+    setPanelWidth(panel: PanelId, width: number) {
+      setState("panels", panel, clampPanelWidth(panel, width));
     },
 
     // ── File tabs ────────────────────────────────────────────────────────

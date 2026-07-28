@@ -39,10 +39,8 @@ import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
 import { openEditorTab, openGitWindow } from "@/api/windows";
 import { Splitter } from "@/components/layout/Splitter";
+import { PANEL_BOUNDS } from "@/store/layout";
 
-const GIT_SIDEBAR_MIN_WIDTH = 220;
-const GIT_SIDEBAR_MAX_WIDTH = 600;
-const GIT_SIDEBAR_DEFAULT_WIDTH = 320;
 import { useAppStore } from "@/store/LayoutContext";
 import { samePath, type AppStore } from "@/store/layout";
 
@@ -141,7 +139,6 @@ function Section(props: {
 export function GitSidebar(props: GitSidebarProps) {
   const { state, activeDiffTabs, editorActiveItem, actions } = useAppStore();
 
-  const [sidebarWidth, setSidebarWidth] = createSignal(GIT_SIDEBAR_DEFAULT_WIDTH);
   const [sectionHeights, setSectionHeights] = createSignal({ changes: 200, branches: 140, worktrees: 120, stack: 160, stashes: 120, history: 200, openedDiffs: 140 });
 
   function startSectionResize(key: keyof ReturnType<typeof sectionHeights>) {
@@ -269,16 +266,16 @@ export function GitSidebar(props: GitSidebarProps) {
   return (
     <aside
       class="flex flex-col border-l border-border bg-sidebar overflow-hidden relative"
-      style={{ width: `${sidebarWidth()}px` }}
+      style={{ width: `${state.panels.gitSidebar}px` }}
     >
       <Splitter
         side="start"
         label="Git sidebar width"
-        value={sidebarWidth()}
-        min={GIT_SIDEBAR_MIN_WIDTH}
-        max={GIT_SIDEBAR_MAX_WIDTH}
-        defaultValue={GIT_SIDEBAR_DEFAULT_WIDTH}
-        onResize={setSidebarWidth}
+        value={state.panels.gitSidebar}
+        min={PANEL_BOUNDS.gitSidebar.min}
+        max={PANEL_BOUNDS.gitSidebar.max}
+        defaultValue={PANEL_BOUNDS.gitSidebar.default}
+        onResize={(w) => actions.setPanelWidth("gitSidebar", w)}
       />
 
       {/* Header */}

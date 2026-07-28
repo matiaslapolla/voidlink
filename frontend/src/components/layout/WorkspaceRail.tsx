@@ -17,10 +17,7 @@ import { gitApi } from "@/api/git";
 import { worktreeLabel, type Workspace, type Worktree } from "@/types/workspace";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { Splitter } from "@/components/layout/Splitter";
-
-const MIN_WIDTH = 160;
-const MAX_WIDTH = 380;
-const DEFAULT_WIDTH = 212;
+import { PANEL_BOUNDS } from "@/store/layout";
 
 /// The far-left vertical rail: every workspace, and under each one its
 /// worktrees. Replaces the old horizontal workspace tab bar — the tab strip in
@@ -30,7 +27,6 @@ const DEFAULT_WIDTH = 212;
 /// `hydrateWorktrees`) rather than being recomputed here.
 export function WorkspaceRail() {
   const { state, actions } = useAppStore();
-  const [width, setWidth] = createSignal(DEFAULT_WIDTH);
   const [renaming, setRenaming] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal("");
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
@@ -194,7 +190,7 @@ export function WorkspaceRail() {
     <nav
       aria-label="Workspaces"
       class="flex flex-col border-r border-border bg-sidebar overflow-hidden relative shrink-0"
-      style={{ width: `${width()}px` }}
+      style={{ width: `${state.panels.rail}px` }}
       onDragOver={onDragOverEnd}
       onDrop={onDropAtEnd}
     >
@@ -402,11 +398,11 @@ export function WorkspaceRail() {
       <Splitter
         side="end"
         label="Workspace rail width"
-        value={width()}
-        min={MIN_WIDTH}
-        max={MAX_WIDTH}
-        defaultValue={DEFAULT_WIDTH}
-        onResize={setWidth}
+        value={state.panels.rail}
+        min={PANEL_BOUNDS.rail.min}
+        max={PANEL_BOUNDS.rail.max}
+        defaultValue={PANEL_BOUNDS.rail.default}
+        onResize={(w) => actions.setPanelWidth("rail", w)}
       />
     </nav>
   );
