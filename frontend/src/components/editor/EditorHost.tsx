@@ -1,22 +1,33 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
 import { editorController } from "./editorController";
+import type { GroupId } from "./editorGroups";
 import { useTheme } from "@/store/theme";
 import { useSettings } from "@/store/settings";
-import { disableVim } from "./vimMode";
 
 interface EditorHostProps {
   class?: string;
+  /// Which editor group this host owns. One host per group; omitted means the
+  /// single-group default, which is the only case that existed before splits.
+  groupId?: GroupId;
+  /// File to show once this group's editor exists. Only meaningful for a group
+  /// created by a split — the primary group's content comes from `reconcile`.
+  seedPath?: () => string | null;
 }
 
 export function EditorHost(props: EditorHostProps) {
   const { mode, theme } = useTheme();
   const { settings } = useSettings();
+  const groupId = () => props.groupId ?? "primary";
   let containerRef!: HTMLDivElement;
 
   // The store's only route into the controller. Registered in the component
   // body rather than inside `onMount`'s async callback so it exists before the
   // first `init`, and so Solid still owns it — after the first `await` there is
   // no owner and the effect would never be disposed.
+  //
+  // Every host runs this; the call is idempotent and pushes to *all* groups, so
+  // a second host costs one redundant `updateOptions` and buys not having to
+  // decide which host is the privileged one.
   createEffect(() => {
     editorController.applyEditorSettings({ ...settings.editor });
   });
@@ -25,22 +36,28 @@ export function EditorHost(props: EditorHostProps) {
   // `updateOptions` key but a keydown adapter over the editor, and it has to
   // wait for the editor to exist. Toggling it off disposes the adapter — no
   // reload, and no `monaco-vim` chunk fetched for anyone who leaves it off.
+  // The controller decides *which* editor it lands on, because that follows
+  // group focus rather than the host that happened to ask.
   createEffect(() => {
     const on = settings.editor.vimMode;
     void editorController.setVimMode(on);
   });
-  onCleanup(() => disableVim());
 
   // Registered here, not inside `onMount`: that callback is async, and after the
   // first await Solid's owner is gone, so an `onCleanup` in there would never
   // run. Unmounting really happens — in stacked mode the editor is a view, and
-  // turning the mode off removes it — and `init` early-returns while an editor
-  // exists, so without handing the controller back its uninitialised state the
-  // next mount would attach to a detached container and render blank forever.
-  onCleanup(() => editorController.dispose());
+  // turning the mode off removes it — and `init` early-returns while that group
+  // has an editor, so without handing the controller back its uninitialised
+  // state the next mount would attach to a detached container and render blank
+  // forever. Disposing the *last* group is also what detaches Vim and drops the
+  // models; closing one pane of a split leaves both alone.
+  onCleanup(() => editorController.disposeGroup(groupId()));
 
   onMount(async () => {
-    await editorController.init(containerRef, mode());
+    await editorController.init(containerRef, mode(), groupId());
+
+    const seed = props.seedPath?.() ?? null;
+    if (seed) await editorController.showInGroup(groupId(), seed);
 
     // Keep Monaco's theme in sync with the app theme. init() already applied
     // the current value; this effect handles future changes. It tracks

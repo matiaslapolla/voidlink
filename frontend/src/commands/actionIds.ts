@@ -30,6 +30,10 @@ export const ACTION_IDS = [
   // Editor
   "editor.format-document",
   "editor.find-in-files",
+  "editor.split-right",
+  "editor.split-down",
+  "editor.close-group",
+  "editor.focus-next-group",
   // Terminal
   "terminal.new",
   "terminal.repeat-last",

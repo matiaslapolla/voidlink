@@ -34,6 +34,7 @@ import {
   GitCompare,
   GitMerge,
   PanelRight,
+  Columns2,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { isMac } from "@/api/platform";
@@ -52,6 +53,18 @@ import {
 } from "@/api/windows";
 import { ChangesPane } from "@/components/git/GitSidebar";
 import { EditorHost } from "@/components/editor/EditorHost";
+import { EditorGroupsView } from "@/components/editor/EditorGroupsView";
+import {
+  DEFAULT_SPLIT_FRACTION,
+  SINGLE_GROUP,
+  cycleFocus,
+  focusGroup,
+  isSplit,
+  splitEditor,
+  unsplit,
+  type GroupId,
+  type SplitLayout,
+} from "@/components/editor/editorGroups";
 import { editorController } from "@/components/editor/editorController";
 import { editorPaletteActions } from "@/components/editor/editorActions";
 import { vimInNormalMode, vimStatusLabel } from "@/components/editor/vimMode";
@@ -188,7 +201,7 @@ export function EditorSurface(props: {
 
   // ── Monaco ───────────────────────────────────────────────────────────────
 
-  const { openFiles } = useOpenFiles();
+  const { openFiles, groups } = useOpenFiles();
   const dirtyPaths = createMemo(
     () => new Set(openFiles().filter((f) => f.dirty).map((f) => f.path)),
   );
@@ -209,6 +222,41 @@ export function EditorSurface(props: {
     const item = activeItem();
     return item?.type === "file" ? item.path : null;
   };
+
+  // ── Editor groups ────────────────────────────────────────────────────────
+  //
+  // Local to this window, and deliberately not part of the broadcast snapshot:
+  // the tab *list* is the workbench's, but how many panes this window draws it
+  // in is nobody else's business. `api/windows.ts` therefore stays exactly as
+  // it was — split panes send no new requests and honour the same contract.
+
+  const [split, setSplit] = createSignal<SplitLayout>(SINGLE_GROUP);
+  const [splitFraction, setSplitFraction] = createSignal(DEFAULT_SPLIT_FRACTION);
+  /// What the new pane opens on when a split is created: whatever the pane it
+  /// was split off was showing. A blank second editor would make the user open
+  /// the file twice to get the side-by-side they asked for.
+  const [seedPath, setSeedPath] = createSignal<string | null>(null);
+
+  /// Focus is the controller's — Monaco reports it whenever the caret lands in
+  /// a pane, including routes this component never sees (the find widget, a
+  /// peek, a command). Mirroring it back into the layout keeps the focus ring
+  /// and the "which group gets the next file" decision reading the same value.
+  createEffect(() => {
+    const focused = groups().find((g) => g.focused)?.id;
+    if (focused) setSplit((l) => focusGroup(l, focused));
+  });
+
+  const groupPath = (id: GroupId) => groups().find((g) => g.id === id)?.activePath ?? null;
+
+  function doSplit(orientation: "horizontal" | "vertical") {
+    setSeedPath(editorController.getActivePath());
+    setSplit((l) => splitEditor(l, orientation));
+  }
+
+  function focusEditorGroup(id: GroupId) {
+    setSplit((l) => focusGroup(l, id));
+    editorController.focusGroup(id);
+  }
 
   /// Fold each snapshot into Monaco's model cache. This is the only thing that
   /// opens or closes a model in this window — clicking a tab sends a request to
@@ -264,6 +312,24 @@ export function EditorSurface(props: {
       );
     });
   }
+
+  /// Session restore is filed per workspace, so the repo has to be known before
+  /// the first file opens. This effect runs on the same `repoPath()` the tab
+  /// snapshot arrives with, which is ahead of any `reconcile`.
+  createEffect(() => {
+    editorController.setSessionKey(repoPath());
+  });
+
+  /// A closing window gets no unmount, so the coalesced session write has to be
+  /// forced here or the last few positions are lost on every quit.
+  onMount(() => {
+    const flush = () => editorController.persistSession();
+    window.addEventListener("beforeunload", flush);
+    onCleanup(() => {
+      window.removeEventListener("beforeunload", flush);
+      flush();
+    });
+  });
 
   onMount(() => {
     editorController.autoSaveFailed = (path) => void saveWithRetry(path);
@@ -369,6 +435,41 @@ export function EditorSurface(props: {
         run: () => {
           setTreeVisible(true);
           setSearchVisible(true);
+        },
+      },
+      {
+        id: "editor.split-right",
+        label: isSplit(split()) ? "Split editor side by side" : "Split editor right",
+        description: "Show a second editor group beside this one",
+        group: "Editor",
+        enabled: () => !!editorController.getEditor(),
+        run: () => doSplit("horizontal"),
+      },
+      {
+        id: "editor.split-down",
+        label: isSplit(split()) ? "Stack editor groups" : "Split editor down",
+        description: "Show a second editor group below this one",
+        group: "Editor",
+        enabled: () => !!editorController.getEditor(),
+        run: () => doSplit("vertical"),
+      },
+      {
+        id: "editor.close-group",
+        label: "Close the other editor group",
+        description: "Return to a single editor pane",
+        group: "Editor",
+        enabled: () => isSplit(split()),
+        run: () => setSplit((l) => unsplit(l)),
+      },
+      {
+        id: "editor.focus-next-group",
+        label: "Focus the other editor group",
+        group: "Editor",
+        enabled: () => isSplit(split()),
+        run: () => {
+          const next = cycleFocus(split());
+          setSplit(next);
+          editorController.focusGroupEditor(next.focused);
         },
       },
       {
@@ -564,6 +665,22 @@ export function EditorSurface(props: {
           >
             <Search class="w-3.5 h-3.5" />
           </HeaderToggle>
+          {/* Splitting is a ⌘⌥\ / palette command; this is the pointer route
+              to the same state, and it doubles as the indication that the view
+              *is* split, which the seam alone reads as ambiguous next to a
+              sidebar border. */}
+          <HeaderToggle
+            active={isSplit(split())}
+            onClick={() => (isSplit(split()) ? setSplit((l) => unsplit(l)) : doSplit("horizontal"))}
+            title={
+              isSplit(split())
+                ? "Close the second editor group"
+                : "Split the editor side by side"
+            }
+            label={isSplit(split()) ? "Close editor group" : "Split editor"}
+          >
+            <Columns2 class="w-3.5 h-3.5" />
+          </HeaderToggle>
           <HeaderToggle
             active={gitVisible()}
             onClick={() => setGitVisible((v) => !v)}
@@ -711,25 +828,42 @@ export function EditorSurface(props: {
                 {/* Always mounted so Monaco initialises on window load rather
                     than on the first click. */}
                 <div
-                  class="absolute inset-0 flex flex-col"
+                  class="absolute inset-0"
                   style={{ display: activeItem()?.type === "file" ? "block" : "none" }}
                 >
-                  {/* Per-buffer, inline, and it does not steal focus. A modal
-                      here would fire once per file during a rebase; a toast
-                      would scroll away before the user could choose. */}
-                  <Show when={activeFilePath()}>
-                    {(path) => (
-                      <Show when={conflictedPaths().has(path())}>
-                        <ExternalChangeBar
-                          path={path()}
-                          onKeepMine={() => editorController.keepMine(path())}
-                          onTakeTheirs={() => void editorController.takeTheirs(path())}
-                          onShowDiff={() => send({ kind: "open-diff", filePath: path() })}
+                  <EditorGroupsView
+                    layout={split}
+                    fraction={splitFraction}
+                    onFraction={setSplitFraction}
+                    onFocusGroup={focusEditorGroup}
+                    renderGroup={(groupId) => (
+                      <>
+                        {/* Per-buffer, inline, and it does not steal focus. A
+                            modal here would fire once per file during a rebase;
+                            a toast would scroll away before the user could
+                            choose. Per *group*, because a split can have a
+                            conflicted file in one pane and a clean one in the
+                            other, and a bar over the wrong buffer is a lie. */}
+                        <Show when={groupPath(groupId)}>
+                          {(path) => (
+                            <Show when={conflictedPaths().has(path())}>
+                              <ExternalChangeBar
+                                path={path()}
+                                onKeepMine={() => editorController.keepMine(path())}
+                                onTakeTheirs={() => void editorController.takeTheirs(path())}
+                                onShowDiff={() => send({ kind: "open-diff", filePath: path() })}
+                              />
+                            </Show>
+                          )}
+                        </Show>
+                        <EditorHost
+                          class="w-full flex-1 min-h-0"
+                          groupId={groupId}
+                          seedPath={groupId === "primary" ? undefined : seedPath}
                         />
-                      </Show>
+                      </>
                     )}
-                  </Show>
-                  <EditorHost class="w-full flex-1 min-h-0" />
+                  />
                 </div>
 
                 <For each={snapshot().diffs}>

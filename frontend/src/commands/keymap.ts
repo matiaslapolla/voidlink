@@ -139,6 +139,13 @@ export const KEYMAP: readonly KeymapEntry[] = [
     binding: { meta: true, alt: true, key: "f", scope: "outside-terminal" },
     note: "⌘⇧F is the convention but git.fetch already owns it, and moving a chord users have is worse than picking the adjacent one. ⌘⌥ keeps the character unremapped on macOS, same as ⌘⌥B for blame.",
   },
+  {
+    actionId: "editor.split-right",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, alt: true, key: "\\", scope: "outside-terminal" },
+    note: "VS Code's split is bare ⌘\\, but ui.swap-sidebars has owned that since before the editor had groups and moving a chord users already have is worse than taking the adjacent one. Split-down, close-group and focus-next-group stay palette-only: they are far rarer than split-right, and every remaining ⌘⌥ punctuation chord is remapped by at least one macOS keyboard layout.",
+  },
 
   // ── View ──────────────────────────────────────────────────────────────
   { actionId: "ui.toggle-left-sidebar", group: "View", binding: { meta: true, key: "b" } },
