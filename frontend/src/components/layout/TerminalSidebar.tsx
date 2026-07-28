@@ -11,27 +11,17 @@ import { pushToast } from "@/commands/toast";
 import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
 import { StatusLed, terminalSignal } from "@/components/layout/StatusLed";
+import { Splitter } from "@/components/layout/Splitter";
 
 const POLL_MS = 1500;
 
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_WIDTH = 520;
+const SIDEBAR_DEFAULT_WIDTH = 256;
+
 export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) {
   const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
-  const [sidebarWidth, setSidebarWidth] = createSignal(256);
-
-  function startResize(e: MouseEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = sidebarWidth();
-    function onMove(mv: MouseEvent) {
-      setSidebarWidth(Math.max(180, Math.min(520, startW + mv.clientX - startX)));
-    }
-    function onUp() {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
+  const [sidebarWidth, setSidebarWidth] = createSignal(SIDEBAR_DEFAULT_WIDTH);
 
   async function chooseRepo() {
     const ws = activeWorkspace();
@@ -207,10 +197,14 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
         </button>
       </div>
 
-      {/* Resize handle on right edge */}
-      <div
-        class="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-primary/30 transition-colors"
-        onMouseDown={startResize}
+      <Splitter
+        side="end"
+        label="Files and terminals sidebar width"
+        value={sidebarWidth()}
+        min={SIDEBAR_MIN_WIDTH}
+        max={SIDEBAR_MAX_WIDTH}
+        defaultValue={SIDEBAR_DEFAULT_WIDTH}
+        onResize={setSidebarWidth}
       />
     </aside>
   );

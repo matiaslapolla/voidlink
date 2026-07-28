@@ -16,9 +16,11 @@ import { pushToast } from "@/commands/toast";
 import { gitApi } from "@/api/git";
 import { worktreeLabel, type Workspace, type Worktree } from "@/types/workspace";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
+import { Splitter } from "@/components/layout/Splitter";
 
 const MIN_WIDTH = 160;
 const MAX_WIDTH = 380;
+const DEFAULT_WIDTH = 212;
 
 /// The far-left vertical rail: every workspace, and under each one its
 /// worktrees. Replaces the old horizontal workspace tab bar — the tab strip in
@@ -28,7 +30,7 @@ const MAX_WIDTH = 380;
 /// `hydrateWorktrees`) rather than being recomputed here.
 export function WorkspaceRail() {
   const { state, actions } = useAppStore();
-  const [width, setWidth] = createSignal(212);
+  const [width, setWidth] = createSignal(DEFAULT_WIDTH);
   const [renaming, setRenaming] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal("");
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
@@ -48,20 +50,6 @@ export function WorkspaceRail() {
   // Re-hydrating on the shared refresh pulse keeps the rail's badges honest
   // without it owning a poller.
   onMount(() => onCleanup(onGitRefsChanged(() => void actions.hydrateAllWorktrees())));
-
-  function startResize(e: MouseEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = width();
-    const onMove = (mv: MouseEvent) =>
-      setWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startW + mv.clientX - startX)));
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
 
   const isCollapsed = (id: string) => collapsed().has(id);
   function toggleCollapsed(id: string) {
@@ -411,10 +399,14 @@ export function WorkspaceRail() {
         )}
       </Show>
 
-      {/* Resize handle on right edge */}
-      <div
-        class="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-primary/30 transition-colors"
-        onMouseDown={startResize}
+      <Splitter
+        side="end"
+        label="Workspace rail width"
+        value={width()}
+        min={MIN_WIDTH}
+        max={MAX_WIDTH}
+        defaultValue={DEFAULT_WIDTH}
+        onResize={setWidth}
       />
     </nav>
   );

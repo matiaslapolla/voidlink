@@ -38,6 +38,11 @@ import { StatusBadge } from "@/components/git/shared/StatusBadge";
 import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
 import { openEditorTab, openGitWindow } from "@/api/windows";
+import { Splitter } from "@/components/layout/Splitter";
+
+const GIT_SIDEBAR_MIN_WIDTH = 220;
+const GIT_SIDEBAR_MAX_WIDTH = 600;
+const GIT_SIDEBAR_DEFAULT_WIDTH = 320;
 import { useAppStore } from "@/store/LayoutContext";
 import { samePath, type AppStore } from "@/store/layout";
 
@@ -136,23 +141,8 @@ function Section(props: {
 export function GitSidebar(props: GitSidebarProps) {
   const { state, activeDiffTabs, editorActiveItem, actions } = useAppStore();
 
-  const [sidebarWidth, setSidebarWidth] = createSignal(320);
+  const [sidebarWidth, setSidebarWidth] = createSignal(GIT_SIDEBAR_DEFAULT_WIDTH);
   const [sectionHeights, setSectionHeights] = createSignal({ changes: 200, branches: 140, worktrees: 120, stack: 160, stashes: 120, history: 200, openedDiffs: 140 });
-
-  function startWidthResize(e: MouseEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = sidebarWidth();
-    function onMove(mv: MouseEvent) {
-      setSidebarWidth(Math.max(220, Math.min(600, startW - (mv.clientX - startX))));
-    }
-    function onUp() {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
 
   function startSectionResize(key: keyof ReturnType<typeof sectionHeights>) {
     return (e: MouseEvent) => {
@@ -281,10 +271,14 @@ export function GitSidebar(props: GitSidebarProps) {
       class="flex flex-col border-l border-border bg-sidebar overflow-hidden relative"
       style={{ width: `${sidebarWidth()}px` }}
     >
-      {/* Left resize handle */}
-      <div
-        class="absolute top-0 left-0 w-1 h-full cursor-col-resize z-20 hover:bg-primary/30 transition-colors"
-        onMouseDown={startWidthResize}
+      <Splitter
+        side="start"
+        label="Git sidebar width"
+        value={sidebarWidth()}
+        min={GIT_SIDEBAR_MIN_WIDTH}
+        max={GIT_SIDEBAR_MAX_WIDTH}
+        defaultValue={GIT_SIDEBAR_DEFAULT_WIDTH}
+        onResize={setSidebarWidth}
       />
 
       {/* Header */}
