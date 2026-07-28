@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createRoot } from "solid-js";
+import { createAppStore } from "./layout";
 import {
   LAYOUT_VERSION,
   LAYOUT_VERSION_KEY,
@@ -140,6 +142,216 @@ describe("migrateLayoutStorage", () => {
       [LAYOUT_VERSION_KEY]: null,
     });
     expect(after[WORKSPACES_KEY]).toBe("[]");
+  });
+});
+
+// ── v1 → v2 ────────────────────────────────────────────────────────────────
+//
+// v2 accompanies the `store/layout.ts` → `store/layout/` decomposition. The
+// thing worth proving is a negative: a user on the v1 build reloads into
+// *exactly* the tabs, pins and active items they had. So the assertions below
+// are not about the snapshot's shape — they are about what a real store
+// hydrates to after the migration has run over realistic saved state.
+
+const WT_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WT_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+const STACK_TABS_KEY = "voidlink-stack-tabs";
+const BROWSER_TABS_KEY = "voidlink-browser-tabs";
+const EDITOR_TABS_KEY = "voidlink-editor-tabs";
+
+/// Everything a heavy user has on disk at v1: two worktrees in one workspace,
+/// all six tab blobs populated, pins set, and an editor pointer per worktree.
+function v1Snapshot(): StorageSnapshot {
+  return {
+    [LAYOUT_VERSION_KEY]: "1",
+    [WORKSPACES_KEY]: JSON.stringify([
+      {
+        id: WS_A,
+        name: "voidlink",
+        repoRoot: "/repo",
+        worktrees: [
+          { id: WT_A, path: "/repo", branch: "main", isMain: true, isSynthetic: false },
+          { id: WT_B, path: "/repo-wt", branch: "feat", isMain: false, isSynthetic: false },
+        ],
+        activeWorktreeId: WT_A,
+        isRepo: true,
+      },
+    ]),
+    "voidlink-active-workspace": WS_A,
+    [COMPARE_TABS_KEY]: JSON.stringify({
+      [WT_A]: [
+        {
+          id: "cmp-1",
+          baseRef: "main",
+          headRef: "feat",
+          useMergeBase: false,
+          selectedFilePath: "/repo/x.ts",
+          treeMode: "flat",
+          treeFilter: "src",
+        },
+      ],
+      [WT_B]: [],
+    }),
+    [STACK_TABS_KEY]: JSON.stringify({
+      [WT_A]: [{ id: "stk-1", trunk: "main", topBranch: "feat-3" }],
+      [WT_B]: [],
+    }),
+    [BROWSER_TABS_KEY]: JSON.stringify({
+      [WT_A]: [{ id: "brw-1", url: "https://example.com", title: "Example" }],
+      [WT_B]: [],
+    }),
+    [EDITOR_TABS_KEY]: JSON.stringify({
+      files: {
+        [WT_A]: [
+          { id: "f1", path: "/repo/a.ts" },
+          { id: "f2", path: "/repo/b.ts" },
+        ],
+        [WT_B]: [{ id: "f3", path: "/repo-wt/c.ts" }],
+      },
+      diffs: { [WT_A]: [{ id: "d1", filePath: "/repo/d.ts" }], [WT_B]: [] },
+      conflicts: { [WT_A]: [], [WT_B]: [{ id: "x1", filePath: "/repo-wt/e.ts" }] },
+      previews: { [WT_A]: [{ id: "p1", filePath: "/repo/README.md" }], [WT_B]: [] },
+      active: {
+        [WT_A]: { type: "file", id: "f2", path: "/repo/b.ts" },
+        [WT_B]: { type: "conflict", id: "x1" },
+      },
+    }),
+    [PINNED_TABS_KEY]: JSON.stringify({ [WT_A]: ["f1", "cmp-1"], [WT_B]: [] }),
+    // Something the layout store has never heard of, which must survive.
+    "voidlink-settings": JSON.stringify({ theme: "monokai" }),
+  };
+}
+
+describe("migrateLayoutStorage v1 → v2", () => {
+  it("stamps v2 and leaves every well-formed blob byte-identical", () => {
+    const before = v1Snapshot();
+    const after = migrateLayoutStorage(before);
+
+    expect(after[LAYOUT_VERSION_KEY]).toBe("2");
+    for (const key of [
+      WORKSPACES_KEY,
+      COMPARE_TABS_KEY,
+      STACK_TABS_KEY,
+      BROWSER_TABS_KEY,
+      EDITOR_TABS_KEY,
+      PINNED_TABS_KEY,
+    ]) {
+      expect(after[key], `${key} was rewritten`).toBe(before[key]);
+    }
+  });
+
+  it("carries keys it does not own through untouched", () => {
+    const after = migrateLayoutStorage(v1Snapshot());
+    expect(after["voidlink-settings"]).toBe(JSON.stringify({ theme: "monokai" }));
+  });
+
+  it("is a no-op when run twice", () => {
+    const once = migrateLayoutStorage(v1Snapshot());
+    expect(migrateLayoutStorage(once)).toEqual(once);
+  });
+
+  it("quarantines a blob that is not a JSON object, and only that blob", () => {
+    const after = migrateLayoutStorage({
+      ...v1Snapshot(),
+      [STACK_TABS_KEY]: '{"wt": [{"id": "trunc',
+    });
+    expect(after[STACK_TABS_KEY]).toBe("{}");
+    // Its neighbour is untouched.
+    expect(after[COMPARE_TABS_KEY]).toBe(v1Snapshot()[COMPARE_TABS_KEY]);
+  });
+
+  it("does not mutate its input", () => {
+    const before = v1Snapshot();
+    const frozen = JSON.stringify(before);
+    migrateLayoutStorage(before);
+    expect(JSON.stringify(before)).toBe(frozen);
+  });
+});
+
+describe("a v1 user's session after the upgrade", () => {
+  /// Drive the real thing: seed a fake `localStorage` with the v1 snapshot,
+  /// build a store (which runs the migration on the way in), and check what the
+  /// user actually sees. Inspecting the snapshot would prove the transform
+  /// self-consistent; only this proves the tabs came back.
+  function hydrate(snapshot: StorageSnapshot) {
+    const backing = new Map<string, string>();
+    for (const [k, v] of Object.entries(snapshot)) if (v !== null) backing.set(k, v);
+    (globalThis as { localStorage: Storage }).localStorage = {
+      get length() {
+        return backing.size;
+      },
+      clear: () => backing.clear(),
+      getItem: (k: string) => backing.get(k) ?? null,
+      key: (i: number) => [...backing.keys()][i] ?? null,
+      removeItem: (k: string) => void backing.delete(k),
+      setItem: (k: string, v: string) => void backing.set(k, String(v)),
+    };
+    return backing;
+  }
+
+  it("reloads into exactly the same open tabs, pins and active items", () => {
+    hydrate(v1Snapshot());
+    createRoot((dispose) => {
+      const store = createAppStore({ persist: false });
+      const s = store.state;
+
+      expect(s.activeWorkspaceId).toBe(WS_A);
+      expect(s.activeWorktreeId).toBe(WT_A);
+
+      expect(s.openFilesByWorktree[WT_A].map((f) => f.path)).toEqual([
+        "/repo/a.ts",
+        "/repo/b.ts",
+      ]);
+      expect(s.openFilesByWorktree[WT_B].map((f) => f.path)).toEqual(["/repo-wt/c.ts"]);
+      expect(s.diffTabsByWorktree[WT_A].map((d) => d.filePath)).toEqual(["/repo/d.ts"]);
+      expect(s.conflictTabsByWorktree[WT_B].map((c) => c.filePath)).toEqual([
+        "/repo-wt/e.ts",
+      ]);
+      expect(s.previewTabsByWorktree[WT_A].map((p) => p.filePath)).toEqual([
+        "/repo/README.md",
+      ]);
+      expect(s.compareTabsByWorktree[WT_A]).toEqual([
+        {
+          id: "cmp-1",
+          baseRef: "main",
+          headRef: "feat",
+          useMergeBase: false,
+          selectedFilePath: "/repo/x.ts",
+          treeMode: "flat",
+          treeFilter: "src",
+        },
+      ]);
+      expect(s.stackTabsByWorktree[WT_A]).toEqual([
+        { id: "stk-1", trunk: "main", topBranch: "feat-3" },
+      ]);
+      expect(s.browserTabsByWorktree[WT_A]).toEqual([
+        { id: "brw-1", url: "https://example.com", title: "Example" },
+      ]);
+
+      expect(s.pinnedTabsByWorktree[WT_A]).toEqual(["f1", "cmp-1"]);
+      expect(s.editorActiveItemByWorktree[WT_A]).toMatchObject({ type: "file", id: "f2" });
+      expect(s.editorActiveItemByWorktree[WT_B]).toMatchObject({
+        type: "conflict",
+        id: "x1",
+      });
+      // The workbench pointer has never been persisted, and still is not.
+      expect(s.activeItemByWorktree[WT_A]).toBeNull();
+
+      dispose();
+    });
+  });
+
+  it("loses one key, not the session, when a blob is corrupt", () => {
+    hydrate({ ...v1Snapshot(), [STACK_TABS_KEY]: "{ truncated" });
+    createRoot((dispose) => {
+      const store = createAppStore({ persist: false });
+      expect(store.state.stackTabsByWorktree[WT_A]).toEqual([]);
+      // Everything else still came back.
+      expect(store.state.openFilesByWorktree[WT_A]).toHaveLength(2);
+      expect(store.state.compareTabsByWorktree[WT_A]).toHaveLength(1);
+      dispose();
+    });
   });
 });
 

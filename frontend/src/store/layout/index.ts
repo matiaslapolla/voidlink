@@ -1,533 +1,89 @@
+/// `createAppStore()` — the workbench's single source of truth, composed from
+/// the four modules beside this one.
+///
+/// This file used to be 2049 lines holding ten parallel tab collections, eight
+/// storage keys, every UI preference and every action. What is left here is the
+/// composition and the tab actions themselves; `tabs.ts` owns what a tab kind
+/// *is*, `persistence.ts` owns every `localStorage` touch, `prefs.ts` owns the
+/// UI preferences and `workspaces.ts` owns the two-level workspace model.
+///
+/// The public surface — the object returned at the bottom, and every type
+/// re-exported below — is unchanged, so `@/store/layout` keeps resolving for
+/// all ~40 importers and `layout.test.ts` passes unmodified. That is the
+/// decomposition's whole proof.
 import { createStore, produce } from "solid-js/store";
 import { createEffect, createMemo } from "solid-js";
 import { terminalApi } from "@/api/terminal";
 import { lastGridSize } from "@/commands/terminalSize";
-import {
-  type PersistedWorkspace,
-  type TerminalSession,
-  type Workspace,
-  isAutoWorkspaceName,
-  makeWorkspace,
-  makeWorktree,
-  repoDisplayName,
-} from "@/types/workspace";
+import type { TerminalSession } from "@/types/workspace";
 import {
   type WorkspaceSnapshot,
   snapshotsFor,
   upsertSnapshot,
 } from "@/commands/snapshots";
-import { gitApi } from "@/api/git";
-import { WORKSPACES_KEY, runLayoutMigration } from "@/store/migrate";
+import {
+  STORAGE_KEYS,
+  readJson,
+  readRaw,
+  writeJson,
+} from "./persistence";
+import { loadPrefs, persistPrefs } from "./prefs";
+import {
+  TAB_KINDS,
+  TAB_SPECS,
+  closedTabsEqual,
+  deserializeTabRecord,
+  isEditorKind,
+  parseEditorTabs,
+  serializeEditorTabs,
+} from "./tabs";
+import type {
+  ActiveItem,
+  BrainTab,
+  BrowserTab,
+  ClosedTab,
+  CompareTab,
+  CompareTreeMode,
+  ConflictTab,
+  DiffTab,
+  HistoryTab,
+  OpenFileTab,
+  PreviewTab,
+  StackTab,
+  TabKind,
+} from "./tabs";
+import { type AppStoreState, CLOSED_TAB_HISTORY_LIMIT } from "./state";
+import {
+  createWorkspaceActions,
+  loadWorkspaces,
+  persistWorkspaces,
+} from "./workspaces";
 
-const ACTIVE_WS_KEY = "voidlink-active-workspace";
+// ── Public surface re-exports ─────────────────────────────────────────────
+// Everything `layout.ts` exported, from the same specifier. Consumers import
+// `@/store/layout`; where a type physically lives is this directory's business.
 
-export type DiffMode = "inline" | "split";
-export type GitTab = "changes" | "branches" | "history";
-export type SidebarTab = "files" | "terminals";
-
-export interface DiffTab {
-  id: string;
-  filePath: string;
-}
-
-export type ActiveItem =
-  | { type: "terminal"; id: string }
-  | { type: "diff"; id: string }
-  | { type: "file"; id: string; path: string }
-  | { type: "compare"; id: string }
-  | { type: "stack"; id: string }
-  | { type: "conflict"; id: string }
-  | { type: "history"; id: string }
-  | { type: "preview"; id: string; path: string }
-  | { type: "brain"; id: string }
-  | { type: "browser"; id: string };
-
-export interface ConflictTab {
-  id: string;
-  filePath: string;
-}
-
-/// A commit-graph tab. Repo-wide (the graph spans every branch), so it
-/// carries no params beyond its id — one per workspace is enough.
-export interface HistoryTab {
-  id: string;
-}
-
-export interface PreviewTab {
-  id: string;
-  filePath: string;
-}
-
-/// A Brain (second-brain vault browser) tab. Reads a single vault path from
-/// settings, not per-tab state, so — like HistoryTab — one per workspace is
-/// all we ever need.
-export interface BrainTab {
-  id: string;
-}
-
-export interface OpenFileTab {
-  id: string;
-  path: string;
-}
-
-/// An embedded browser tab. The page itself lives in a real Tauri child
-/// webview keyed by `id` — the store only owns the address, so a reload
-/// restores the tab pointing at the same URL.
-///
-/// `title` is whatever the page last reported. It is optional because tabs
-/// persisted before titles existed have none, and because a freshly opened tab
-/// has nothing to show until its first load settles.
-export interface BrowserTab {
-  id: string;
-  url: string;
-  title?: string;
-}
-
-export type CompareTreeMode = "tree" | "flat";
-
-export interface CompareTab {
-  id: string;
-  baseRef: string;
-  headRef: string;
-  useMergeBase: boolean;
-  selectedFilePath: string | null;
-  treeMode: CompareTreeMode;
-  treeFilter: string;
-}
-
-/// Persistent identifier for a stack tab. We don't cache the chain itself —
-/// each render re-runs discovery so the tab stays correct as branches move.
-/// `trunk` + `topBranch` together pick the stack out across reloads.
-export interface StackTab {
-  id: string;
-  trunk: string;
-  topBranch: string;
-}
-
-/// Snapshot of a closed tab kept so `reopenLastClosedTab` can recreate
-/// it. We capture *enough state* to reconstruct, not the original id —
-/// reopening always produces a fresh id so we don't collide with any
-/// future tab. Terminals aren't snapshot-able (the PTY is gone).
-export type ClosedTab =
-  | { type: "file"; path: string }
-  | { type: "diff"; filePath: string }
-  | {
-      type: "compare";
-      baseRef: string;
-      headRef: string;
-      useMergeBase: boolean;
-      selectedFilePath: string | null;
-      treeMode: CompareTreeMode;
-      treeFilter: string;
-    }
-  | { type: "stack"; trunk: string; topBranch: string };
-
-const CLOSED_TAB_HISTORY_LIMIT = 20;
-
-interface AppStoreState {
-  workspaces: Workspace[];
-  activeWorkspaceId: string;
-  /// The worktree every `*ByWorktree` collection below is currently read
-  /// through. Denormalised from `activeWorkspace.activeWorktreeId` so the whole
-  /// component tree can key off a single field; `selectWorkspace` /
-  /// `selectWorktree` are the only writers and they keep both in step.
-  activeWorktreeId: string;
-  terminalsByWorktree: Record<string, TerminalSession[]>;
-  diffTabsByWorktree: Record<string, DiffTab[]>;
-  openFilesByWorktree: Record<string, OpenFileTab[]>;
-  compareTabsByWorktree: Record<string, CompareTab[]>;
-  stackTabsByWorktree: Record<string, StackTab[]>;
-  conflictTabsByWorktree: Record<string, ConflictTab[]>;
-  historyTabsByWorktree: Record<string, HistoryTab[]>;
-  previewTabsByWorktree: Record<string, PreviewTab[]>;
-  brainTabsByWorktree: Record<string, BrainTab[]>;
-  browserTabsByWorktree: Record<string, BrowserTab[]>;
-  /// LIFO stack of recently closed tabs, capped at CLOSED_TAB_HISTORY_LIMIT.
-  /// Lives in memory only — closing the app drops the history (matches
-  /// what most editors do with reopen-last-closed).
-  closedTabsByWorktree: Record<string, ClosedTab[]>;
-  /// Pinned tab IDs per worktree; pins survive close-all-others actions
-  /// and render leftmost in the tab strip.
-  pinnedTabsByWorktree: Record<string, string[]>;
-  /// Which tab is in front *in the workbench* — terminals, compares, stacks,
-  /// the commit graph, brain and browser tabs.
-  activeItemByWorktree: Record<string, ActiveItem | null>;
-  /// Which tab is in front *in the editor window* — files, diffs, conflicts and
-  /// previews. Two pointers rather than one because the windows focus
-  /// independently: clicking a file in the editor must not blank out the
-  /// terminal the user is watching in the workbench, and vice versa.
-  editorActiveItemByWorktree: Record<string, ActiveItem | null>;
-  gitSidebarCollapsed: boolean;
-  leftSidebarCollapsed: boolean;
-  sidebarsSwapped: boolean;
-  diffMode: DiffMode;
-  gitTab: GitTab;
-  ignoreWhitespace: boolean;
-  sidebarTab: SidebarTab;
-  gitSections: { changes: boolean; branches: boolean; worktrees: boolean; stack: boolean; stashes: boolean; history: boolean; openedDiffs: boolean };
-  sidebarSections: { files: boolean; terminals: boolean };
-}
-
-const GIT_PREFS_KEY = "voidlink-git-prefs";
-
-interface GitPrefs {
-  gitSidebarCollapsed: boolean;
-  leftSidebarCollapsed: boolean;
-  sidebarsSwapped: boolean;
-  diffMode: DiffMode;
-  gitTab: GitTab;
-  ignoreWhitespace: boolean;
-  sidebarTab: SidebarTab;
-  gitSections: { changes: boolean; branches: boolean; worktrees: boolean; stack: boolean; stashes: boolean; history: boolean; openedDiffs: boolean };
-  sidebarSections: { files: boolean; terminals: boolean };
-}
-
-function loadGitPrefs(): GitPrefs {
-  try {
-    const raw = localStorage.getItem(GIT_PREFS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<GitPrefs>;
-      return {
-        gitSidebarCollapsed: parsed.gitSidebarCollapsed ?? false,
-        leftSidebarCollapsed: parsed.leftSidebarCollapsed ?? false,
-        sidebarsSwapped: parsed.sidebarsSwapped ?? false,
-        diffMode: parsed.diffMode === "split" ? "split" : "inline",
-        gitTab:
-          parsed.gitTab === "branches" || parsed.gitTab === "history"
-            ? parsed.gitTab
-            : "changes",
-        ignoreWhitespace: parsed.ignoreWhitespace ?? false,
-        sidebarTab: parsed.sidebarTab === "files" ? "files" : "terminals",
-        gitSections: {
-          changes: parsed.gitSections?.changes ?? true,
-          branches: parsed.gitSections?.branches ?? true,
-          worktrees: parsed.gitSections?.worktrees ?? false,
-          stack: parsed.gitSections?.stack ?? true,
-          stashes: parsed.gitSections?.stashes ?? false,
-          history: parsed.gitSections?.history ?? true,
-          openedDiffs: parsed.gitSections?.openedDiffs ?? true,
-        },
-        sidebarSections: {
-          files: parsed.sidebarSections?.files ?? true,
-          terminals: parsed.sidebarSections?.terminals ?? true,
-        },
-      };
-    }
-  } catch {
-    // ignore
-  }
-  return {
-    gitSidebarCollapsed: false,
-    leftSidebarCollapsed: false,
-    sidebarsSwapped: false,
-    diffMode: "inline",
-    gitTab: "changes",
-    ignoreWhitespace: false,
-    sidebarTab: "terminals",
-    gitSections: { changes: true, branches: true, worktrees: false, stack: true, stashes: false, history: true, openedDiffs: true },
-    sidebarSections: { files: true, terminals: true },
-  };
-}
-
-const COMPARE_TABS_KEY = "voidlink-compare-tabs";
-const STACK_TABS_KEY = "voidlink-stack-tabs";
-const PINNED_TABS_KEY = "voidlink-pinned-tabs";
-const BROWSER_TABS_KEY = "voidlink-browser-tabs";
-/// The editor window's four tab collections, in one blob. These used to be
-/// memory-only — the workbench reseeded them empty on every boot — but now that
-/// they are the entire contents of another window, losing them on a workbench
-/// reload would close somebody's editor out from under them.
-const EDITOR_TABS_KEY = "voidlink-editor-tabs";
-
-/// Compare two absolute paths for "same directory". We can't call
-/// `fs::canonicalize` from the frontend, so we normalise what we can see:
-/// trailing slashes, duplicate separators, and macOS's `/private` prefix for
-/// `/tmp` and `/var` (git reports the resolved form, our stored path may not).
-export function samePath(a: string, b: string): boolean {
-  return normalizePath(a) === normalizePath(b);
-}
-
-function normalizePath(p: string): string {
-  return p
-    .replace(/\/{2,}/g, "/")
-    .replace(/\/+$/, "")
-    .replace(/^\/private\/(tmp|var)\b/, "/$1");
-}
-
-function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
-  if (a.type !== b.type) return false;
-  switch (a.type) {
-    case "file":
-      return b.type === "file" && a.path === b.path;
-    case "diff":
-      return b.type === "diff" && a.filePath === b.filePath;
-    case "compare":
-      return (
-        b.type === "compare" && a.baseRef === b.baseRef && a.headRef === b.headRef
-      );
-    case "stack":
-      return b.type === "stack" && a.trunk === b.trunk && a.topBranch === b.topBranch;
-  }
-}
-
-function loadPinnedTabs(worktreeIds: string[]): Record<string, string[]> {
-  const empty = Object.fromEntries(worktreeIds.map((id) => [id, [] as string[]]));
-  try {
-    const raw = localStorage.getItem(PINNED_TABS_KEY);
-    if (!raw) return empty;
-    const parsed = JSON.parse(raw) as Record<string, string[]>;
-    if (!parsed || typeof parsed !== "object") return empty;
-    const out: Record<string, string[]> = { ...empty };
-    for (const wtId of worktreeIds) {
-      const list = Array.isArray(parsed[wtId]) ? parsed[wtId] : [];
-      out[wtId] = list.filter((id): id is string => typeof id === "string");
-    }
-    return out;
-  } catch {
-    return empty;
-  }
-}
-
-function loadStackTabs(worktreeIds: string[]): Record<string, StackTab[]> {
-  const empty = Object.fromEntries(worktreeIds.map((id) => [id, [] as StackTab[]]));
-  try {
-    const raw = localStorage.getItem(STACK_TABS_KEY);
-    if (!raw) return empty;
-    const parsed = JSON.parse(raw) as Record<string, StackTab[]>;
-    if (!parsed || typeof parsed !== "object") return empty;
-    const out: Record<string, StackTab[]> = { ...empty };
-    for (const wtId of worktreeIds) {
-      const list = Array.isArray(parsed[wtId]) ? parsed[wtId] : [];
-      out[wtId] = list
-        .filter(
-          (t) =>
-            t &&
-            typeof t.id === "string" &&
-            typeof t.trunk === "string" &&
-            typeof t.topBranch === "string",
-        )
-        .map<StackTab>((t) => ({ id: t.id, trunk: t.trunk, topBranch: t.topBranch }));
-    }
-    return out;
-  } catch {
-    return empty;
-  }
-}
-
-function loadBrowserTabs(worktreeIds: string[]): Record<string, BrowserTab[]> {
-  const empty = Object.fromEntries(worktreeIds.map((id) => [id, [] as BrowserTab[]]));
-  try {
-    const raw = localStorage.getItem(BROWSER_TABS_KEY);
-    if (!raw) return empty;
-    const parsed = JSON.parse(raw) as Record<string, BrowserTab[]>;
-    if (!parsed || typeof parsed !== "object") return empty;
-    const out: Record<string, BrowserTab[]> = { ...empty };
-    for (const wtId of worktreeIds) {
-      const list = Array.isArray(parsed[wtId]) ? parsed[wtId] : [];
-      out[wtId] = list
-        .filter((t) => t && typeof t.id === "string" && typeof t.url === "string")
-        .map<BrowserTab>((t) => ({
-          id: t.id,
-          url: t.url,
-          // Absent in state persisted before titles were tracked; the tab
-          // label falls back to the host until the page reports one.
-          title: typeof t.title === "string" ? t.title : undefined,
-        }));
-    }
-    return out;
-  } catch {
-    return empty;
-  }
-}
-
-/// Shape persisted under `EDITOR_TABS_KEY`. Every collection is validated
-/// field by field on the way in: this is user-editable JSON on disk, and a
-/// malformed entry should cost one tab, not the boot.
-export interface PersistedEditorTabs {
-  files: Record<string, OpenFileTab[]>;
-  diffs: Record<string, DiffTab[]>;
-  conflicts: Record<string, ConflictTab[]>;
-  previews: Record<string, PreviewTab[]>;
-  active: Record<string, ActiveItem | null>;
-}
-
-/// Project the live store down to what `EDITOR_TABS_KEY` holds.
-///
-/// Pulled out of the persist effect so the write side is a pure function the
-/// tests can exercise: `loadEditorTabs(serializeEditorTabs(state))` is the
-/// round-trip a workbench reload performs, and it is worth knowing that it
-/// holds without standing up a reactive root.
-export function serializeEditorTabs(source: {
-  openFilesByWorktree: Record<string, OpenFileTab[]>;
-  diffTabsByWorktree: Record<string, DiffTab[]>;
-  conflictTabsByWorktree: Record<string, ConflictTab[]>;
-  previewTabsByWorktree: Record<string, PreviewTab[]>;
-  editorActiveItemByWorktree: Record<string, ActiveItem | null>;
-}): PersistedEditorTabs {
-  return {
-    files: source.openFilesByWorktree,
-    diffs: source.diffTabsByWorktree,
-    conflicts: source.conflictTabsByWorktree,
-    previews: source.previewTabsByWorktree,
-    active: source.editorActiveItemByWorktree,
-  };
-}
-
-/// Read back what `serializeEditorTabs` wrote, defensively. Anything that fails
-/// validation costs one tab, never the boot.
-export function parseEditorTabs(
-  raw: string | null,
-  worktreeIds: string[],
-): PersistedEditorTabs {
-  const empty = (): PersistedEditorTabs => ({
-    files: Object.fromEntries(worktreeIds.map((id) => [id, [] as OpenFileTab[]])),
-    diffs: Object.fromEntries(worktreeIds.map((id) => [id, [] as DiffTab[]])),
-    conflicts: Object.fromEntries(worktreeIds.map((id) => [id, [] as ConflictTab[]])),
-    previews: Object.fromEntries(worktreeIds.map((id) => [id, [] as PreviewTab[]])),
-    active: Object.fromEntries(worktreeIds.map((id) => [id, null])),
-  });
-  try {
-    if (!raw) return empty();
-    const parsed = JSON.parse(raw) as Partial<PersistedEditorTabs>;
-    if (!parsed || typeof parsed !== "object") return empty();
-    const out = empty();
-    const withPath = <T extends { id: string; path: string }>(list: unknown): T[] =>
-      (Array.isArray(list) ? list : []).filter(
-        (t): t is T =>
-          !!t && typeof t.id === "string" && typeof t.path === "string",
-      );
-    const withFilePath = <T extends { id: string; filePath: string }>(list: unknown): T[] =>
-      (Array.isArray(list) ? list : []).filter(
-        (t): t is T =>
-          !!t && typeof t.id === "string" && typeof t.filePath === "string",
-      );
-    for (const wtId of worktreeIds) {
-      out.files[wtId] = withPath<OpenFileTab>(parsed.files?.[wtId]);
-      out.diffs[wtId] = withFilePath<DiffTab>(parsed.diffs?.[wtId]);
-      out.conflicts[wtId] = withFilePath<ConflictTab>(parsed.conflicts?.[wtId]);
-      out.previews[wtId] = withFilePath<PreviewTab>(parsed.previews?.[wtId]);
-      const active = parsed.active?.[wtId];
-      // Only the four editor kinds may sit in this pointer; anything else is
-      // stale state from an older build and is safer dropped than honoured.
-      out.active[wtId] =
-        active &&
-        typeof active.id === "string" &&
-        (active.type === "file" ||
-          active.type === "diff" ||
-          active.type === "conflict" ||
-          active.type === "preview")
-          ? active
-          : null;
-    }
-    return out;
-  } catch {
-    return empty();
-  }
-}
-
-/// `parseEditorTabs` against real storage. Separate so the parser stays pure.
-function loadEditorTabs(worktreeIds: string[]): PersistedEditorTabs {
-  try {
-    return parseEditorTabs(localStorage.getItem(EDITOR_TABS_KEY), worktreeIds);
-  } catch {
-    // `localStorage` itself is absent (a non-browser host); no tabs to restore.
-    return parseEditorTabs(null, worktreeIds);
-  }
-}
-
-function loadCompareTabs(worktreeIds: string[]): Record<string, CompareTab[]> {
-  const empty = Object.fromEntries(worktreeIds.map((id) => [id, [] as CompareTab[]]));
-  try {
-    const raw = localStorage.getItem(COMPARE_TABS_KEY);
-    if (!raw) return empty;
-    const parsed = JSON.parse(raw) as Record<string, CompareTab[]>;
-    if (!parsed || typeof parsed !== "object") return empty;
-    const out: Record<string, CompareTab[]> = { ...empty };
-    for (const wtId of worktreeIds) {
-      const list = Array.isArray(parsed[wtId]) ? parsed[wtId] : [];
-      out[wtId] = list
-        .filter(
-          (t) =>
-            t &&
-            typeof t.id === "string" &&
-            typeof t.baseRef === "string" &&
-            typeof t.headRef === "string",
-        )
-        .map<CompareTab>((t) => ({
-          id: t.id,
-          baseRef: t.baseRef,
-          headRef: t.headRef,
-          useMergeBase: typeof t.useMergeBase === "boolean" ? t.useMergeBase : true,
-          selectedFilePath:
-            typeof t.selectedFilePath === "string" ? t.selectedFilePath : null,
-          treeMode: t.treeMode === "flat" ? "flat" : "tree",
-          treeFilter: typeof t.treeFilter === "string" ? t.treeFilter : "",
-        }));
-    }
-    return out;
-  } catch {
-    return empty;
-  }
-}
-
-/// Rebuild a runtime `Workspace` from its persisted form. Defensive about
-/// every field because this is user-editable JSON on disk: a workspace with no
-/// worktrees array (or an empty one) is repaired with a synthetic main worktree
-/// rather than crashing the app on boot.
-function reviveWorkspace(p: PersistedWorkspace): Workspace {
-  const repoRoot = p.repoRoot ?? null;
-  const worktrees = (Array.isArray(p.worktrees) ? p.worktrees : [])
-    .filter((w) => w && typeof w.id === "string" && typeof w.path === "string")
-    .map((w) =>
-      makeWorktree({
-        id: w.id,
-        path: w.path,
-        branch: typeof w.branch === "string" ? w.branch : null,
-        isMain: !!w.isMain,
-        isSynthetic: !!w.isSynthetic,
-      }),
-    );
-  if (worktrees.length === 0) {
-    worktrees.push(
-      makeWorktree({ id: p.id, path: repoRoot ?? "", isMain: true, isSynthetic: true }),
-    );
-  }
-  const activeWorktreeId = worktrees.some((w) => w.id === p.activeWorktreeId)
-    ? p.activeWorktreeId
-    : worktrees[0].id;
-  return {
-    id: p.id,
-    name: p.name,
-    repoRoot,
-    worktrees,
-    activeWorktreeId,
-    isRepo: !!p.isRepo,
-  };
-}
-
-function loadWorkspaces(): { workspaces: Workspace[]; activeId: string } {
-  // Upgrade the on-disk shape before we read a byte of it. Idempotent and
-  // gated on `voidlink-layout-version`, so this is a no-op on every boot after
-  // the first — see `store/migrate.ts` for why the tab blobs need no re-keying.
-  runLayoutMigration(localStorage);
-  try {
-    const raw = localStorage.getItem(WORKSPACES_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as PersistedWorkspace[];
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const workspaces = parsed.map(reviveWorkspace);
-        const stored = localStorage.getItem(ACTIVE_WS_KEY);
-        const activeId =
-          stored && workspaces.some((w) => w.id === stored) ? stored : workspaces[0].id;
-        return { workspaces, activeId };
-      }
-    }
-  } catch {
-    // ignore
-  }
-  const first = makeWorkspace("Main");
-  return { workspaces: [first], activeId: first.id };
-}
+export type {
+  ActiveItem,
+  BrainTab,
+  BrowserTab,
+  ClosedTab,
+  CompareTab,
+  CompareTreeMode,
+  ConflictTab,
+  DiffTab,
+  HistoryTab,
+  OpenFileTab,
+  PersistedEditorTabs,
+  PreviewTab,
+  StackTab,
+  TabKind,
+  TabKindSpec,
+} from "./tabs";
+export { TAB_KINDS, TAB_SPECS, parseEditorTabs, samePath, serializeEditorTabs } from "./tabs";
+export type { DiffMode, GitTab, SidebarTab, UiPrefs } from "./prefs";
+export type { AppStoreState } from "./state";
+export { LAYOUT_STORAGE_KEYS, STORAGE_KEYS, flushWrites, resetLayoutStorage } from "./persistence";
 
 export interface CreateAppStoreOptions {
   /// Whether this store writes its state back to localStorage.
@@ -541,17 +97,45 @@ export interface CreateAppStoreOptions {
   persist?: boolean;
 }
 
+/// Load one kind's persisted collection through the registry. Kinds that share
+/// the editor blob are loaded by `parseEditorTabs` instead, and memory-only
+/// kinds come back empty.
+function loadKindRecord<K extends TabKind>(
+  kind: K,
+  worktreeIds: string[],
+): Record<string, unknown[]> {
+  const spec = TAB_SPECS[kind];
+  if (!spec.storage || spec.storage.field) {
+    return Object.fromEntries(worktreeIds.map((id) => [id, [] as unknown[]]));
+  }
+  return deserializeTabRecord(kind, readJson(spec.storage.key, null), worktreeIds);
+}
+
+function loadPinnedTabs(worktreeIds: string[]): Record<string, string[]> {
+  const empty = Object.fromEntries(worktreeIds.map((id) => [id, [] as string[]]));
+  const parsed = readJson<Record<string, unknown> | null>(STORAGE_KEYS.pinnedTabs, null);
+  if (!parsed || typeof parsed !== "object") return empty;
+  const out: Record<string, string[]> = { ...empty };
+  for (const wtId of worktreeIds) {
+    const list = parsed[wtId];
+    out[wtId] = Array.isArray(list)
+      ? list.filter((id): id is string => typeof id === "string")
+      : [];
+  }
+  return out;
+}
+
 export function createAppStore(options: CreateAppStoreOptions = {}) {
   const persist = options.persist ?? true;
   const { workspaces, activeId } = loadWorkspaces();
-  const gitPrefs = loadGitPrefs();
+  const prefs = loadPrefs();
   // Every tab collection is keyed by worktree id, so the seed set is the union
   // of every workspace's worktrees — not one slot per workspace.
   const worktreeIds = workspaces.flatMap((w) => w.worktrees.map((wt) => wt.id));
   const emptyPerWorktree = <T,>() =>
     Object.fromEntries(worktreeIds.map((id) => [id, [] as T[]]));
   const activeWorkspaceOnLoad = workspaces.find((w) => w.id === activeId) ?? workspaces[0];
-  const editorTabs = loadEditorTabs(worktreeIds);
+  const editorTabs = parseEditorTabs(readRaw(STORAGE_KEYS.editorTabs), worktreeIds);
   const [state, setState] = createStore<AppStoreState>({
     workspaces,
     activeWorkspaceId: activeId,
@@ -559,104 +143,82 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     terminalsByWorktree: emptyPerWorktree<TerminalSession>(),
     diffTabsByWorktree: editorTabs.diffs,
     openFilesByWorktree: editorTabs.files,
-    compareTabsByWorktree: loadCompareTabs(worktreeIds),
-    stackTabsByWorktree: loadStackTabs(worktreeIds),
+    compareTabsByWorktree: loadKindRecord("compare", worktreeIds) as Record<
+      string,
+      CompareTab[]
+    >,
+    stackTabsByWorktree: loadKindRecord("stack", worktreeIds) as Record<string, StackTab[]>,
     conflictTabsByWorktree: editorTabs.conflicts,
     historyTabsByWorktree: emptyPerWorktree<HistoryTab>(),
     previewTabsByWorktree: editorTabs.previews,
     brainTabsByWorktree: emptyPerWorktree<BrainTab>(),
-    browserTabsByWorktree: loadBrowserTabs(worktreeIds),
+    browserTabsByWorktree: loadKindRecord("browser", worktreeIds) as Record<
+      string,
+      BrowserTab[]
+    >,
     closedTabsByWorktree: emptyPerWorktree<ClosedTab>(),
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
     activeItemByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
     editorActiveItemByWorktree: editorTabs.active,
-    gitSidebarCollapsed: gitPrefs.gitSidebarCollapsed,
-    leftSidebarCollapsed: gitPrefs.leftSidebarCollapsed,
-    sidebarsSwapped: gitPrefs.sidebarsSwapped,
-    diffMode: gitPrefs.diffMode,
-    gitTab: gitPrefs.gitTab,
-    ignoreWhitespace: gitPrefs.ignoreWhitespace,
-    sidebarTab: gitPrefs.sidebarTab,
-    gitSections: gitPrefs.gitSections,
-    sidebarSections: gitPrefs.sidebarSections,
+    gitSidebarCollapsed: prefs.gitSidebarCollapsed,
+    leftSidebarCollapsed: prefs.leftSidebarCollapsed,
+    sidebarsSwapped: prefs.sidebarsSwapped,
+    diffMode: prefs.diffMode,
+    gitTab: prefs.gitTab,
+    ignoreWhitespace: prefs.ignoreWhitespace,
+    sidebarTab: prefs.sidebarTab,
+    gitSections: prefs.gitSections,
+    sidebarSections: prefs.sidebarSections,
   });
 
   createEffect(() => {
     if (!persist) return;
-    const serialized: PersistedWorkspace[] = state.workspaces.map((w) => ({
-      id: w.id,
-      name: w.name,
-      repoRoot: w.repoRoot,
-      worktrees: w.worktrees.map((wt) => ({
-        id: wt.id,
-        path: wt.path,
-        branch: wt.branch,
-        isMain: wt.isMain,
-        isSynthetic: wt.isSynthetic,
-      })),
-      activeWorktreeId: w.activeWorktreeId,
-      isRepo: w.isRepo,
-    }));
-    localStorage.setItem(WORKSPACES_KEY, JSON.stringify(serialized));
-    localStorage.setItem(ACTIVE_WS_KEY, state.activeWorkspaceId);
+    persistWorkspaces(state.workspaces, state.activeWorkspaceId);
+  });
+
+  // One effect per kind that owns a key of its own, driven by the registry
+  // rather than by three hand-written copies. Kinds that share the editor blob
+  // are handled by the effect below; memory-only kinds write nothing.
+  for (const kind of TAB_KINDS) {
+    const spec = TAB_SPECS[kind];
+    const storage = spec.storage;
+    if (!storage || storage.field) continue;
+    createEffect(() => {
+      if (!persist) return;
+      const record = state[spec.stateKey] as Record<string, { id: string }[]>;
+      const out: Record<string, unknown[]> = {};
+      for (const [wtId, list] of Object.entries(record)) {
+        out[wtId] = list.map((t) =>
+          (spec.serialize as (tab: { id: string }) => unknown)(t),
+        );
+      }
+      writeJson(storage.key, out);
+    });
+  }
+
+  createEffect(() => {
+    if (!persist) return;
+    writeJson(STORAGE_KEYS.pinnedTabs, state.pinnedTabsByWorktree);
   });
 
   createEffect(() => {
     if (!persist) return;
-    localStorage.setItem(
-      COMPARE_TABS_KEY,
-      JSON.stringify(state.compareTabsByWorktree),
-    );
+    writeJson(STORAGE_KEYS.editorTabs, serializeEditorTabs(state));
   });
 
   createEffect(() => {
     if (!persist) return;
-    localStorage.setItem(
-      STACK_TABS_KEY,
-      JSON.stringify(state.stackTabsByWorktree),
-    );
-  });
-
-  createEffect(() => {
-    if (!persist) return;
-    localStorage.setItem(
-      PINNED_TABS_KEY,
-      JSON.stringify(state.pinnedTabsByWorktree),
-    );
-  });
-
-  createEffect(() => {
-    if (!persist) return;
-    localStorage.setItem(
-      BROWSER_TABS_KEY,
-      JSON.stringify(state.browserTabsByWorktree),
-    );
-  });
-
-  createEffect(() => {
-    if (!persist) return;
-    localStorage.setItem(
-      EDITOR_TABS_KEY,
-      JSON.stringify(serializeEditorTabs(state)),
-    );
-  });
-
-  createEffect(() => {
-    if (!persist) return;
-    localStorage.setItem(
-      GIT_PREFS_KEY,
-      JSON.stringify({
-        gitSidebarCollapsed: state.gitSidebarCollapsed,
-        leftSidebarCollapsed: state.leftSidebarCollapsed,
-        sidebarsSwapped: state.sidebarsSwapped,
-        diffMode: state.diffMode,
-        gitTab: state.gitTab,
-        ignoreWhitespace: state.ignoreWhitespace,
-        sidebarTab: state.sidebarTab,
-        gitSections: state.gitSections,
-        sidebarSections: state.sidebarSections,
-      } satisfies GitPrefs),
-    );
+    persistPrefs({
+      gitSidebarCollapsed: state.gitSidebarCollapsed,
+      leftSidebarCollapsed: state.leftSidebarCollapsed,
+      sidebarsSwapped: state.sidebarsSwapped,
+      diffMode: state.diffMode,
+      gitTab: state.gitTab,
+      ignoreWhitespace: state.ignoreWhitespace,
+      sidebarTab: state.sidebarTab,
+      gitSections: state.gitSections,
+      sidebarSections: state.sidebarSections,
+    });
   });
 
   const activeWorkspace = createMemo(
@@ -675,36 +237,26 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     const path = activeWorktree()?.path ?? "";
     return path.length > 0 ? path : null;
   });
-  const activeTerminals = createMemo(
-    () => state.terminalsByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activeDiffTabs = createMemo(
-    () => state.diffTabsByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activeOpenFiles = createMemo(
-    () => state.openFilesByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activeCompareTabs = createMemo(
-    () => state.compareTabsByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activeStackTabs = createMemo(
-    () => state.stackTabsByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activeConflictTabs = createMemo(
-    () => state.conflictTabsByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activeHistoryTabs = createMemo(
-    () => state.historyTabsByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activePreviewTabs = createMemo(
-    () => state.previewTabsByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activeBrainTabs = createMemo(
-    () => state.brainTabsByWorktree[state.activeWorktreeId] ?? [],
-  );
-  const activeBrowserTabs = createMemo(
-    () => state.browserTabsByWorktree[state.activeWorktreeId] ?? [],
-  );
+
+  /// The ten `active*Tabs` memos, generated from the registry. Adding a kind
+  /// used to mean writing an eleventh by hand; now the spec entry is enough.
+  const activeOf = <T,>(kind: TabKind) =>
+    createMemo(
+      () =>
+        (state[TAB_SPECS[kind].stateKey] as Record<string, T[]>)[state.activeWorktreeId] ?? [],
+    );
+
+  const activeTerminals = activeOf<TerminalSession>("terminal");
+  const activeDiffTabs = activeOf<DiffTab>("diff");
+  const activeOpenFiles = activeOf<OpenFileTab>("file");
+  const activeCompareTabs = activeOf<CompareTab>("compare");
+  const activeStackTabs = activeOf<StackTab>("stack");
+  const activeConflictTabs = activeOf<ConflictTab>("conflict");
+  const activeHistoryTabs = activeOf<HistoryTab>("history");
+  const activePreviewTabs = activeOf<PreviewTab>("preview");
+  const activeBrainTabs = activeOf<BrainTab>("brain");
+  const activeBrowserTabs = activeOf<BrowserTab>("browser");
+
   const activeItem = createMemo(
     () => state.activeItemByWorktree[state.activeWorktreeId] ?? null,
   );
@@ -720,45 +272,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     () => state.pinnedTabsByWorktree[state.activeWorktreeId] ?? [],
   );
 
-  /// Create the (empty) tab collections a worktree needs. Called from every
-  /// path that introduces a worktree id — workspace creation, wizard, and
-  /// hydration — so no collection lookup ever has to invent a default.
-  function seedWorktreeCollections(s: AppStoreState, wtId: string) {
-    s.terminalsByWorktree[wtId] ??= [];
-    s.diffTabsByWorktree[wtId] ??= [];
-    s.openFilesByWorktree[wtId] ??= [];
-    s.compareTabsByWorktree[wtId] ??= [];
-    s.stackTabsByWorktree[wtId] ??= [];
-    s.conflictTabsByWorktree[wtId] ??= [];
-    s.historyTabsByWorktree[wtId] ??= [];
-    s.previewTabsByWorktree[wtId] ??= [];
-    s.brainTabsByWorktree[wtId] ??= [];
-    s.browserTabsByWorktree[wtId] ??= [];
-    s.closedTabsByWorktree[wtId] ??= [];
-    s.pinnedTabsByWorktree[wtId] ??= [];
-    if (!(wtId in s.activeItemByWorktree)) s.activeItemByWorktree[wtId] = null;
-    if (!(wtId in s.editorActiveItemByWorktree)) s.editorActiveItemByWorktree[wtId] = null;
-  }
-
-  /// Drop everything keyed by a worktree id. The caller is responsible for
-  /// killing that worktree's PTYs first — this only touches store state.
-  function dropWorktreeCollections(s: AppStoreState, wtId: string) {
-    delete s.terminalsByWorktree[wtId];
-    delete s.diffTabsByWorktree[wtId];
-    delete s.openFilesByWorktree[wtId];
-    delete s.compareTabsByWorktree[wtId];
-    delete s.stackTabsByWorktree[wtId];
-    delete s.conflictTabsByWorktree[wtId];
-    delete s.historyTabsByWorktree[wtId];
-    delete s.previewTabsByWorktree[wtId];
-    delete s.brainTabsByWorktree[wtId];
-    delete s.browserTabsByWorktree[wtId];
-    delete s.closedTabsByWorktree[wtId];
-    delete s.pinnedTabsByWorktree[wtId];
-    delete s.activeItemByWorktree[wtId];
-    delete s.editorActiveItemByWorktree[wtId];
-  }
-
   /// Find a worktree anywhere in the store by id, with its owning workspace.
   function locateWorktree(wtId: string) {
     for (const ws of state.workspaces) {
@@ -767,9 +280,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     }
     return null;
   }
-
-  // Keep the previous default: a fresh workspace with one terminal focuses it.
-  // Items are focused directly by their spawn/select actions below.
 
   /// Push `tab` to the workspace's closed-tab LIFO. Same snapshot present
   /// multiple times back-to-back collapses to a single entry so closing
@@ -813,271 +323,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     if (idx !== -1) arr.splice(idx, 1);
   }
 
+  const workspaceActions = createWorkspaceActions({ state, setState, locateWorktree });
+
   const actions = {
-    // ── Workspaces ──────────────────────────────────────────────────────
-    addWorkspace(name?: string, repoRoot: string | null = null) {
-      const count = state.workspaces.length + 1;
-      const ws = makeWorkspace(name ?? `Workspace ${count}`, repoRoot);
-      setState(produce((s) => {
-        s.workspaces.push(ws);
-        for (const wt of ws.worktrees) seedWorktreeCollections(s, wt.id);
-        s.activeWorkspaceId = ws.id;
-        s.activeWorktreeId = ws.activeWorktreeId;
-      }));
-      return ws.id;
-    },
-
-    removeWorkspace(id: string) {
-      const ws = state.workspaces.find((w) => w.id === id);
-      const worktreeIds = ws?.worktrees.map((wt) => wt.id) ?? [id];
-      for (const wtId of worktreeIds) {
-        for (const t of state.terminalsByWorktree[wtId] ?? []) {
-          void terminalApi.closePty(t.ptyId).catch(() => {});
-        }
-      }
-      setState(produce((s) => {
-        s.workspaces = s.workspaces.filter((w) => w.id !== id);
-        for (const wtId of worktreeIds) dropWorktreeCollections(s, wtId);
-        if (s.workspaces.length === 0) {
-          const fresh = makeWorkspace("Main");
-          s.workspaces.push(fresh);
-          for (const wt of fresh.worktrees) seedWorktreeCollections(s, wt.id);
-          s.activeWorkspaceId = fresh.id;
-          s.activeWorktreeId = fresh.activeWorktreeId;
-        } else if (s.activeWorkspaceId === id) {
-          const next = s.workspaces[s.workspaces.length - 1];
-          s.activeWorkspaceId = next.id;
-          s.activeWorktreeId = next.activeWorktreeId;
-        }
-      }));
-    },
-
-    renameWorkspace(id: string, name: string) {
-      setState("workspaces", (w) => w.id === id, "name", name.trim() || "Workspace");
-    },
-
-    /// Switch workspaces, restoring whichever worktree that workspace was last
-    /// looking at. Selecting a workspace never silently resets you to main.
-    selectWorkspace(id: string) {
-      const ws = state.workspaces.find((w) => w.id === id);
-      if (!ws) return;
-      setState(produce((s) => {
-        s.activeWorkspaceId = id;
-        s.activeWorktreeId = ws.activeWorktreeId;
-      }));
-    },
-
-    // ── Worktrees ───────────────────────────────────────────────────────
-    /// Make `wtId` the active worktree (switching workspaces if needed). The
-    /// whole tab set swaps as a side effect because every collection is keyed
-    /// by worktree id.
-    selectWorktree(wtId: string) {
-      const found = locateWorktree(wtId);
-      if (!found) return;
-      setState(produce((s) => {
-        s.activeWorkspaceId = found.workspace.id;
-        s.activeWorktreeId = wtId;
-        const ws = s.workspaces.find((w) => w.id === found.workspace.id);
-        if (ws) ws.activeWorktreeId = wtId;
-        seedWorktreeCollections(s, wtId);
-      }));
-    },
-
-    /// Register a worktree the wizard (or hydration) just discovered. Returns
-    /// the worktree id. Matching is by path so re-adding an existing worktree
-    /// updates it in place instead of orphaning its tabs.
-    addWorktree(
-      workspaceId: string,
-      init: { path: string; branch: string | null; isMain?: boolean },
-    ): string | null {
-      const ws = state.workspaces.find((w) => w.id === workspaceId);
-      if (!ws) return null;
-      const existing = ws.worktrees.find((wt) => samePath(wt.path, init.path));
-      if (existing) {
-        setState(
-          "workspaces",
-          (w) => w.id === workspaceId,
-          "worktrees",
-          (wt) => wt.id === existing.id,
-          (wt) => ({ ...wt, branch: init.branch, isSynthetic: false }),
-        );
-        return existing.id;
-      }
-      const wt = makeWorktree({
-        path: init.path,
-        branch: init.branch,
-        isMain: init.isMain ?? false,
-      });
-      setState(produce((s) => {
-        const target = s.workspaces.find((w) => w.id === workspaceId);
-        if (!target) return;
-        target.worktrees.push(wt);
-        seedWorktreeCollections(s, wt.id);
-      }));
-      return wt.id;
-    },
-
-    /// Forget a worktree and everything open inside it. The main worktree is
-    /// never removable — that is the workspace itself.
-    removeWorktree(workspaceId: string, wtId: string) {
-      const ws = state.workspaces.find((w) => w.id === workspaceId);
-      const wt = ws?.worktrees.find((w) => w.id === wtId);
-      if (!ws || !wt || wt.isMain) return;
-      for (const t of state.terminalsByWorktree[wtId] ?? []) {
-        void terminalApi.closePty(t.ptyId).catch(() => {});
-      }
-      setState(produce((s) => {
-        const target = s.workspaces.find((w) => w.id === workspaceId);
-        if (!target) return;
-        target.worktrees = target.worktrees.filter((w) => w.id !== wtId);
-        dropWorktreeCollections(s, wtId);
-        const fallback = target.worktrees.find((w) => w.isMain) ?? target.worktrees[0];
-        if (!fallback) return;
-        if (target.activeWorktreeId === wtId) target.activeWorktreeId = fallback.id;
-        if (s.activeWorktreeId === wtId) s.activeWorktreeId = target.activeWorktreeId;
-      }));
-    },
-
-    /// Reconcile a workspace's worktree list against `git worktree list`.
-    /// Existing entries are matched by canonicalised path so their ids — and
-    /// therefore their open tabs — survive. Entries git no longer reports are
-    /// dropped, but only on a successful listing: a failed call means "not a
-    /// repo (yet)" and leaves the synthetic worktree in place.
-    async hydrateWorktrees(workspaceId: string): Promise<void> {
-      const ws = state.workspaces.find((w) => w.id === workspaceId);
-      if (!ws?.repoRoot) return;
-      let listed;
-      try {
-        listed = await gitApi.listWorktrees(ws.repoRoot);
-      } catch {
-        setState("workspaces", (w) => w.id === workspaceId, "isRepo", false);
-        return;
-      }
-      if (listed.length === 0) return;
-      // PTYs belonging to worktrees git no longer reports have to be collected
-      // *before* the state update, because that update deletes the very
-      // collections we'd need to find them in — otherwise we leak a shell per
-      // removed worktree.
-      const orphanedPtys: string[] = [];
-      setState(produce((s) => {
-        const target = s.workspaces.find((w) => w.id === workspaceId);
-        if (!target) return;
-        const keptIds = new Set<string>();
-        const next: typeof target.worktrees = [];
-        for (const info of listed) {
-          const prior =
-            target.worktrees.find((wt) => samePath(wt.path, info.path)) ??
-            // The migrated/synthetic main worktree may still be pointing at the
-            // repo root under a different spelling; adopt it for git's main
-            // entry so its tabs come along.
-            (info.isMain ? target.worktrees.find((wt) => wt.isMain) : undefined);
-          const id = prior?.id ?? crypto.randomUUID();
-          keptIds.add(id);
-          next.push({
-            id,
-            path: info.path,
-            branch: info.branch,
-            isMain: info.isMain,
-            isSynthetic: false,
-            isDirty: info.isDirty,
-            ahead: info.ahead,
-            behind: info.behind,
-            isLocked: info.isLocked,
-            isDetached: info.isDetached,
-          });
-          seedWorktreeCollections(s, id);
-        }
-        for (const old of target.worktrees) {
-          if (keptIds.has(old.id)) continue;
-          for (const t of s.terminalsByWorktree[old.id] ?? []) orphanedPtys.push(t.ptyId);
-          dropWorktreeCollections(s, old.id);
-        }
-        target.worktrees = next;
-        target.isRepo = true;
-        if (!keptIds.has(target.activeWorktreeId)) {
-          target.activeWorktreeId = (next.find((w) => w.isMain) ?? next[0]).id;
-        }
-        if (s.activeWorkspaceId === workspaceId) {
-          s.activeWorktreeId = target.activeWorktreeId;
-        }
-      }));
-      for (const ptyId of orphanedPtys) void terminalApi.closePty(ptyId).catch(() => {});
-    },
-
-    /// Hydrate every workspace that has a repo root. Fire-and-forget on boot.
-    async hydrateAllWorktrees(): Promise<void> {
-      await Promise.all(
-        state.workspaces
-          .filter((w) => !!w.repoRoot)
-          .map((w) => actions.hydrateWorktrees(w.id)),
-      );
-    },
-
-    /// Drop the workspace `fromId` immediately before `toId`. If `toId` is
-    /// `null`, drop at the end. No-op when the move would leave order
-    /// unchanged. Used by drag-and-drop on the workspace tab bar.
-    reorderWorkspace(fromId: string, toId: string | null) {
-      setState(produce((s) => {
-        const from = s.workspaces.findIndex((w) => w.id === fromId);
-        if (from === -1) return;
-        const [item] = s.workspaces.splice(from, 1);
-        if (toId === null) {
-          s.workspaces.push(item);
-          return;
-        }
-        const to = s.workspaces.findIndex((w) => w.id === toId);
-        if (to === -1) {
-          s.workspaces.push(item);
-          return;
-        }
-        s.workspaces.splice(to, 0, item);
-      }));
-    },
-
-    /// Point a workspace at a folder. The main worktree follows the root — it
-    /// *is* the root — and we immediately try to read the real worktree list so
-    /// picking a repo with linked worktrees populates the rail without a reload.
-    setRepoRoot(id: string, repoRoot: string | null) {
-      setState(produce((s) => {
-        const ws = s.workspaces.find((w) => w.id === id);
-        if (!ws) return;
-        ws.repoRoot = repoRoot;
-        ws.isRepo = false;
-        const main = ws.worktrees.find((w) => w.isMain) ?? ws.worktrees[0];
-        if (main) {
-          main.path = repoRoot ?? "";
-          main.branch = null;
-          main.isSynthetic = true;
-        }
-      }));
-      if (repoRoot) {
-        void actions.hydrateWorktrees(id);
-        void actions.adoptRepoName(id);
-      }
-    },
-
-    /// Name a workspace after the repository it points at. Runs on every
-    /// folder pick but only ever replaces a name we invented — a workspace
-    /// the user renamed keeps that name forever. The remote's repo name is
-    /// preferred over the folder basename; a folder that isn't a repo still
-    /// gets its basename, which beats `Workspace 3`.
-    async adoptRepoName(workspaceId: string): Promise<void> {
-      const ws = state.workspaces.find((w) => w.id === workspaceId);
-      const repoRoot = ws?.repoRoot;
-      if (!ws || !repoRoot || !isAutoWorkspaceName(ws.name)) return;
-      let remoteUrl: string | null = null;
-      try {
-        remoteUrl = (await gitApi.repoInfo(repoRoot)).remoteUrl;
-      } catch {
-        // Not a repo (or git failed) — the folder name is still the answer.
-      }
-      // The await gave the user time to re-point or rename this workspace;
-      // re-read before writing so we never clobber a newer decision.
-      const current = state.workspaces.find((w) => w.id === workspaceId);
-      if (!current || current.repoRoot !== repoRoot) return;
-      if (!isAutoWorkspaceName(current.name)) return;
-      actions.renameWorkspace(workspaceId, repoDisplayName(repoRoot, remoteUrl));
-    },
+    ...workspaceActions,
 
     // ── Terminals ───────────────────────────────────────────────────────
     /// Spawn a PTY rooted at the worktree's own directory — not the
@@ -1361,10 +610,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     toggleSidebarsSwapped() {
       setState("sidebarsSwapped", (v) => !v);
     },
-    setGitTab(tab: GitTab) {
+    setGitTab(tab: AppStoreState["gitTab"]) {
       setState("gitTab", tab);
     },
-    setDiffMode(mode: DiffMode) {
+    setDiffMode(mode: AppStoreState["diffMode"]) {
       setState("diffMode", mode);
     },
     toggleIgnoreWhitespace() {
@@ -1413,7 +662,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
 
     // ── Sidebar tab ──────────────────────────────────────────────────────
-    setSidebarTab(tab: SidebarTab) {
+    setSidebarTab(tab: AppStoreState["sidebarTab"]) {
       setState("sidebarTab", tab);
     },
 
@@ -1945,11 +1194,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           ? { type: "diff", id: firstDiff.id }
           : null;
 
-      const restoredIsEditorKind =
-        restored?.type === "file" ||
-        restored?.type === "diff" ||
-        restored?.type === "conflict" ||
-        restored?.type === "preview";
+      const restoredIsEditorKind = !!restored && isEditorKind(restored.type);
 
       setState(
         "activeItemByWorktree",
@@ -1981,28 +1226,17 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
     // ── Item tab reordering ──────────────────────────────────────────────
     /// Reorder a tab inside one of the per-workspace lists. `kind` selects
-    /// which list (file/terminal/diff/compare/stack); `fromId` is the moved
-    /// item; `toId === null` drops at the end. Drag-and-drop on the unified
-    /// tab bar in MainSurface routes through this single action so all tab
-    /// types stay consistent.
+    /// which list; `fromId` is the moved item; `toId === null` drops at the
+    /// end. Drag-and-drop on the unified tab bar in MainSurface routes through
+    /// this single action so all tab types stay consistent. Which state field
+    /// a kind lives in comes from the registry.
     reorderItemTab(
       wtId: string,
       kind: "file" | "terminal" | "diff" | "compare" | "stack" | "preview",
       fromId: string,
       toId: string | null,
     ) {
-      const key: keyof AppStoreState =
-        kind === "file"
-          ? "openFilesByWorktree"
-          : kind === "terminal"
-            ? "terminalsByWorktree"
-            : kind === "diff"
-              ? "diffTabsByWorktree"
-              : kind === "compare"
-                ? "compareTabsByWorktree"
-                : kind === "stack"
-                  ? "stackTabsByWorktree"
-                  : "previewTabsByWorktree";
+      const key = TAB_SPECS[kind].stateKey;
       setState(produce((s) => {
         const arr = (s[key] as Record<string, { id: string }[]>)[wtId];
         if (!arr) return;
