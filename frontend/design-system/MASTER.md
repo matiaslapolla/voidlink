@@ -17,6 +17,8 @@ Source of truth for all UI in the VoidLink Tauri desktop app. Read this before b
 3. **Reversible by default.** Destructive ops (close workspace, kill terminal, discard changes, force push) need confirmation or undo. Cheap ops (stage/unstage) don't.
 4. **Semantic tokens, never raw hex.** All colors go through CSS variables defined in `index.css` / `themes.css`. Components should not inline `oklch(...)` or hex.
 5. **One primary action per surface.** The git panel has one primary CTA (Commit). The settings dialog has one (Done). Don't compete.
+6. **Alive means truthful, not animated.** A tool feels alive when it always tells you the real current state of your repo, your buffers and your background work — not when it moves. In a surface the user looks at for eight hours, motion is a cost. Liveness is bought with §7.5 (presence, freshness, acknowledgement), and it is *spent* by §7 (motion). Reach for §7.5 first.
+7. **Proactive means the app speaks first.** If VoidLink knows something the user would want to know — a background command finished, a fetch found you 12 commits behind, a file changed under an open buffer, a language server died — it surfaces it without being asked, at the lowest interruption level that will actually be seen (§7.5). Silence about known state is a bug.
 
 ## 3. Color tokens
 
@@ -118,20 +120,168 @@ Horizontal padding stays rem-based (Tailwind `px-2 / px-2.5 / px-3`) and scales 
 
 ## 7. Motion
 
-Global transitions are forced in `index.css`:
+Motion in VoidLink is rationed, not decorative. The governing question is never "would this look nice moving?" but **"how many times per session will the user see it?"** — because an animation the user triggers 200 times a day is a 200×-per-day tax on their perceived speed.
+
+### 7.1 The frequency gate (apply before writing any transition)
+
+| How often the user sees it | Budget | Examples |
+|---|---|---|
+| **Keyboard-initiated, any frequency** | **0ms. No animation. Ever.** | Command palette open/close, `Cmd+P`, tab next/prev, jump-to-tab-N, MRU cycle, pane focus, stage/unstage, save |
+| **> 50× per session** | 0–60ms, colour/tint only | Row hover, tab hover, focus ring, sidebar row selection |
+| **5–50× per session** | 120–180ms | Context menu, tooltip, popover, sidebar collapse, toast enter, badge appear |
+| **< 5× per session** | up to 240ms | Modal, first paint of a new pane, split creation, zen enter/exit |
+
+**240ms is a hard ceiling.** Anything longer needs a written reason in the component. A keyboard-driven surface that animates is a bug, not a flourish — the user's hand has already moved on.
+
+### 7.2 Tokens
+
+Define in `index.css`; never inline a `cubic-bezier` or a raw ms value in a component.
 
 ```css
-.transition-colors  { transition-duration: 60ms;  timing: linear; }
-.transition-opacity { transition-duration: 80ms;  timing: linear; }
-.transition-all     { transition-duration: 80ms; }
+:root {
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);   /* entering  — decelerate into place */
+  --ease-in:     cubic-bezier(0.7, 0, 0.84, 0);   /* leaving   — accelerate away */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);  /* toggles   — there and back */
+
+  --dur-instant: 0ms;    /* keyboard-initiated — see 7.1 */
+  --dur-tint:   60ms;    /* hover/active colour shift (today's .transition-colors) */
+  --dur-micro: 120ms;    /* press feedback, toggle, badge in/out */
+  --dur-short: 180ms;    /* popover, tooltip, menu, sidebar collapse */
+  --dur-long:  240ms;    /* modal, pane split, zen — the ceiling */
+}
 ```
 
-This is intentional — IDE chrome should not feel animated. Follow these rules:
+The forced `!important` durations in `index.css` stay as the floor for the 145 existing `transition-colors` sites. New surfaces name a token.
 
-1. **No new keyframe animations without reason.** The RefreshCw button should spin *only when actually refreshing*, not decoratively.
-2. **State changes are color/opacity only.** Never animate layout (width/height/top/left).
-3. **Respect `prefers-reduced-motion`.** Any animation longer than the global 60–80ms (currently: none, but e.g. future toast slide-in) must check the media query.
-4. **Instant for critical feedback.** Button pressed state should be immediate, not eased.
+**Exits run at ~75% of their enter** (`--ease-in`). A menu that closes as slowly as it opens feels stuck.
+
+### 7.3 Rules
+
+1. **Never `transition: all`.** Name the properties. (`transition-all` exists at 9 sites — do not add a tenth.)
+2. **Animate `transform` and `opacity` only.** Never `width`, `height`, `top`, `left`, `margin`, `padding`. Expanding regions animate `grid-template-rows: 0fr → 1fr`.
+3. **Focus rings appear instantly.** Never transition a focus ring's opacity, transform or width. Keyboard users need the indicator on the same frame.
+4. **No bounce, overshoot or elastic easing on chrome.** Reserve overshoot for pointer-driven physical interactions only — and VoidLink currently has none that qualify.
+5. **No uniform hover-scale.** `hover:scale-*` across unrelated elements is the single loudest generic-UI tell. Hover is a tint shift.
+6. **One hover effect per element.** Not translate + scale + shadow + colour.
+7. **Never animate from `scale(0)`.** Popovers and menus enter at `scale(0.97)` + `opacity: 0`, from their trigger's `transform-origin` — not from centre. Modals are the exception: they keep `transform-origin: center`.
+8. **Transitions, not keyframes, for anything retriggerable.** Toasts, badges and tab states can fire in rapid succession; keyframes restart from zero, transitions retarget from the current value.
+9. **Keyframes are reserved for functional loops** — `animate-spin` on an in-flight refresh, `animate-pulse` on a genuinely indeterminate region. Both must stop when the work stops. A spinner that spins when nothing is loading is a lie about state (§7.5).
+10. **Pointer-driven motion tracks 1:1 and is interruptible.** Splitter drags, tab drag-reorder and any future sheet follow the pointer every frame with `setPointerCapture`, respect the grab offset, and can be reversed mid-motion. Never run a fixed-duration animation for something the user is holding.
+11. **Enter and exit along the same path.** A panel that slides in from the right dismisses to the right.
+12. **Tooltip delays are asymmetric.** Hover delays 600–800ms so a pointer crossing the toolbar doesn't fire ten tooltips; **keyboard focus shows it at 0ms** — a keyboard user asked for it explicitly. Once one tooltip is open, adjacent ones open instantly with no delay and no transition until the group is left. Equal hover and focus delays are a tell.
+
+### 7.4 Reduced motion
+
+`index.css` already zeroes transition and animation durations under `prefers-reduced-motion: reduce`. Two additions for new work:
+
+- **Functional loops keep running** — spinners and indeterminate shimmers still animate (slower is fine); they carry state, not decoration. Exempt them from the global zeroing explicitly rather than losing the state signal.
+- **Presence signals must not depend on motion.** An LED that only reads as "running" because it pulses is invisible under reduced motion. Every pulsing signal also differs in colour or fill (§7.5).
+
+Also honour `prefers-reduced-transparency: reduce` on any future `backdrop-filter` surface (raise opacity, drop the blur) and `prefers-contrast: more` (near-solid backgrounds, defined borders).
+
+## 7.5 Liveness & presence
+
+This is where VoidLink earns "alive". Motion (§7) is the smallest part of it; this section is the rest.
+
+### 7.5.1 The four channels
+
+| Channel | Contract |
+|---|---|
+| **Acknowledgement** | Every user action produces a visible response within **80ms** — the perceptual threshold below which cause and effect read as simultaneous. The response may be the result, an optimistic state, or the control entering its pending state. Never nothing. |
+| **Truth** | Every value derived from disk or git declares its freshness (§7.5.4). A stale number rendered as if it were live is the primary "dead UI" failure in a git client. |
+| **Attention** | Work happening where the user isn't looking reports itself where the user *is* looking, escalating until it's visible (§7.5.3). |
+| **Anticipation** | Surfaces show what's next or what's possible before being asked: ahead/behind counts, dirty markers, conflict warnings before a merge, the destructive-scope warning before a write. |
+
+### 7.5.2 Progress taxonomy
+
+Choose by expected duration. Do not use a global indicator for a local operation.
+
+| Expected | Treatment |
+|---|---|
+| **< 80ms** | Nothing. Render the result. |
+| **80–400ms** | The invoking control's own pending state: icon slot swaps to a spinner, label unchanged, control stays focusable. No global indicator, no toast, no layout shift. |
+| **400ms – 3s** | Determinate bar when total is knowable; otherwise `animate-pulse` on the affected region only. The region stays readable — never blank it. Never block the rest of the shell. |
+| **> 3s, or backgroundable** | Hand it to the status bar and/or a tab badge, release the UI immediately, and report completion through §7.5.3. Blocking the shell on a long git operation is forbidden. |
+
+Every control that can enter a pending state **reserves its icon slot at rest**, so the spinner's arrival causes no reflow.
+
+### 7.5.3 Activity vocabulary
+
+A closed set. Do not invent a new dot.
+
+| Signal | Mark | Token | Clears when |
+|---|---|---|---|
+| Dirty / unsaved | Filled dot, replaces the close affordance | `--warning` | Saved |
+| Running | LED, pulsing | `--warning` | Process exits |
+| Finished while you were away | LED, solid | `--success` | Tab receives focus |
+| Failed | LED, solid | `--destructive` | Explicitly acknowledged — never on focus alone |
+| Bell / attention requested | LED, solid | `--info` | Tab receives focus |
+| Stale | Ghosted value (60% opacity) + refresh affordance | `--muted-foreground` | Refreshed |
+
+Rules:
+
+1. **Activity is never invisible.** A signal on a tab in a hidden group escalates to the group header; a signal in a hidden group escalates to the status bar. A user must never have to open a pane to discover something happened in it.
+2. **Precedence when a tab carries several signals**: failed > running > bell > finished > dirty. Show one mark, the highest.
+3. **Badges never move layout.** The mark occupies a slot reserved at rest.
+4. **Colour is never the only channel.** Each signal differs in fill *and* motion *and* position, so it survives reduced motion, colourblindness, and the eight themes.
+5. Reuse the existing LED glyph and its `shadow-[0_0_6px_...]` glow (§6) rather than introducing a second status shape. If it generalises past two uses, promote it to a `<StatusLed>` primitive.
+
+### 7.5.4 Freshness contract
+
+Every git-derived or disk-derived value renders in exactly one of three states, and the state is visible:
+
+- **Live** — backed by a watcher or refreshed on the event that changes it. Renders normally.
+- **Refreshing** — `animate-pulse` on the value itself, not on its container. Old value stays visible underneath; never flash to a skeleton or a dash.
+- **Stale** — 60% opacity plus a refresh affordance, with the reason available on hover (`Last read 4m ago`).
+
+A component that cannot say which of the three it is has a bug, not a styling gap.
+
+### 7.5.5 Interruption levels
+
+Pick the lowest level that will actually be seen.
+
+| Level | Surface | Use for |
+|---|---|---|
+| **Ambient** | Badge, LED, status-bar segment | Anything the user did not just ask for. Never steals focus. |
+| **Transient** | Toast, 5–8s, with an Undo or Retry affordance where one exists | Failures, and effects the user cannot see from where they are |
+| **Blocking** | Modal | Destructive *and* irreversible only (force push, discard, delete workspace), or credential entry |
+
+- **Silent success is the default.** If the user can see the effect, do not toast it. A toast for a completed stage-file is noise; a toast for a background fetch that found 12 new commits is the point.
+- **Undo beats confirm** for anything reversible: do the thing, toast with Undo. Reserve confirmation for the genuinely irreversible, and make it type the name of what's being destroyed.
+
+### 7.5.6 Optimistic updates
+
+Permitted for reversible, local, fast operations: stage/unstage, pin tab, reorder tab, rename, toggle a setting, collapse a section.
+
+Forbidden for network operations and history rewriting: push, force push, fetch, pull, rebase, discard, reset, branch delete. These show a pending state and wait for the real result.
+
+On failure of an optimistic update: revert the visual state, then a transient toast naming what failed and offering Retry. Never leave the optimistic state standing.
+
+## 7.6 Interaction states
+
+Every interactive element has **nine** states here — the standard eight plus *pending*, which an IDE needs constantly and which VoidLink currently has no vocabulary for. A control missing any applicable state is unfinished.
+
+| State | Treatment |
+|---|---|
+| Default | Base styling |
+| Hover | Tint shift only, `--dur-tint`. Gate behind `@media (hover: hover)`. |
+| Focus | `focus-visible:ring-2 ring-ring`, instant, ≥3:1 against both element and surface |
+| Active / pressed | Immediate, no easing. Chrome buttons deepen the tint; the primary CTA may use `scale(0.98)`. |
+| **Pending** | Icon slot swaps to `animate-spin`; label unchanged; control stays focusable and stays in the tab order. Never disable as a way of saying "busy". |
+| Disabled | `opacity-40` **and** `cursor-not-allowed` **and** `aria-disabled` — three channels. Plus a `title` explaining *why*. A disabled control with no stated reason is an anti-pattern. |
+| Error | `--destructive` border, message text, `aria-invalid`. Never colour alone. |
+| Success | Quiet. Value settles; no celebration for an ordinary operation. |
+| Empty | See §9.7 |
+
+### The no-layout-shift rule
+
+**`border-width` is constant across every state.** Default, hover, focus, error, disabled — always the same. State changes go to `background-color`, `outline` or `border-color`. Inputs reserve `outline: 2px solid transparent` at rest so the focus ring costs no geometry.
+
+Also constant across states: `padding`, `height`, and the icon slot's width. Any state change that reflows is a bug the eye catches even when the user can't name it.
+
+### Applies to
+
+Chrome button (§9.1), row (§9.2), segmented toggle (§9.3), pill toggle (§9.4), primary CTA (§9.5), every text input, and any new splitter, drop target or tab. The splitter additionally needs a hover-widened hit area (≥8px, visual width unchanged), a keyboard resize step, and double-click-to-reset.
 
 ## 8. Iconography
 
@@ -208,7 +358,11 @@ Centered icon + short message. See `TerminalSurface.tsx` / `TerminalSidebar.tsx`
 6. **Text inputs need `<label htmlFor>`**, not placeholder-only. This includes the commit textarea and the workspace rename input.
 7. **Destructive confirmations**: close workspace, kill terminal (if busy), discard changes, force push. Quick stage/unstage is safe — no confirm.
 8. **Color-plus-icon**: diff rows already have `+`/`-` gutter chars — keep them at ≥70% opacity so colorblind users don't rely on red/green alone.
-9. **`prefers-reduced-motion`**: gate any animation longer than the global 80ms behind the media query.
+9. **`prefers-reduced-motion`**: gate any animation longer than the global 80ms behind the media query. Presence signals (§7.5.3) must remain legible without motion — pulse is never the only difference between two states.
+10. **Live regions for proactive announcements.** Anything the app surfaces unprompted (§7.5.5 ambient and transient) needs an `aria-live` region: `polite` for ambient status and toasts, `assertive` only for failures. A badge that only exists visually is invisible to a screen reader — and "proactive" that only works for sighted users isn't proactive.
+11. **Pending is not disabled.** A control doing work stays focusable and in the tab order (§7.6). Removing it from the tab order mid-operation drops keyboard focus into nowhere.
+12. **Status colour is never the only channel.** `--success` / `--warning` / `--destructive` LEDs must also differ in fill or position, so they survive both colourblindness and all eight themes — several of which shift these hues substantially.
+13. **Contrast on tinted status backgrounds.** The `bg-success/10 text-success` pattern is borderline at the default oklch pair (§3). Validate every status-on-tint pair at 4.5:1 in the two extreme themes (`solarized-light`, `monokai`), not just the default dark.
 
 ## 11. Anti-patterns (do not ship)
 
@@ -216,10 +370,36 @@ Centered icon + short message. See `TerminalSurface.tsx` / `TerminalSidebar.tsx`
 - New `text-[Xpx]` sizes without adding them to the table in §4.
 - Interactive `<div>`s. Always `<button>` / `<a>` / input elements.
 - Emoji used as an icon.
-- New keyframe animations.
+- New keyframe animations for anything that isn't a functional loop (§7.3.9).
 - Destructive action hidden behind hover-only opacity.
 - Modal without focus trap.
 - `!important` outside `index.css` (the forced transition durations are the only intentional uses).
+- **Animating a keyboard-initiated transition** (§7.1). Palette, tab switch, jump-to-tab, MRU cycle, save — instant, always.
+- **`transition: all` / `transition-all`** on any new surface (§7.3.1).
+- **A uniform `hover:scale-*`** across unrelated elements (§7.3.5).
+- **A spinner or pulse running while nothing is in flight** — it's a false statement about state (§7.5.4).
+- **A stale git-derived number rendered as if it were live** (§7.5.4).
+- **A background signal that only exists inside a hidden pane** (§7.5.3 rule 1).
+- **A toast for an effect the user can already see** (§7.5.5).
+- **Optimistic UI on a network or history-rewriting operation** (§7.5.6).
+- **A disabled control with no stated reason** (§7.6).
+- **Disabling a control to indicate "busy"** — that's the pending state (§7.6).
+- A state change that shifts `border-width`, `padding`, `height` or an icon slot (§7.6).
+- A second status-indicator shape competing with the LED (§7.5.3 rule 5).
+
+## 11.5 Brand & visual identity
+
+VoidLink ships eight borrowed editor themes, so **identity cannot live in colour** — a user on `solarized-light` and a user on `dracula` must both recognise the app. The identity lives in the things that survive a theme swap:
+
+1. **Density as a stance.** Tight rows, a 10px floor, `text-[10px] uppercase tracking-wider` section labels. VoidLink is denser than VS Code and admits it. Do not loosen spacing to look "modern".
+2. **The LED as the status glyph.** One shape carries every liveness signal (§7.5.3) across the whole app — terminal health, background work, tab activity, sync state. It is the most recognisable mark in the product; keep it singular.
+3. **Tinted-primary selection.** `bg-primary/15 border-primary/40 text-primary` is the app's "this one is active" idiom, in segmented controls, pills and tabs alike. Not fills, not underline-only, not shadows.
+4. **Geist Variable against a Nerd Font mono.** UI type is a single humanist sans; everything repo-derived (paths, hashes, diffs, terminal) is mono. The seam between the two is deliberate — it tells you what's VoidLink and what's your repo.
+5. **Frameless macOS chrome.** The window is the app; no redrawn title bars, no fake IDE chrome inside the app's own UI.
+
+The identity risk to guard against: as the editor and workbench grow, they drift toward VS Code's proportions by default, because Monaco brings them. Monaco themes must be derived from VoidLink's tokens (not stock `vs`/`vs-dark`), and Monaco chrome — breadcrumbs, tab strip, status segment — must use VoidLink's row, label and LED patterns rather than Monaco's.
+
+
 
 ## 12. File map
 
