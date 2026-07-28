@@ -3,29 +3,8 @@ import { Portal } from "solid-js/web";
 import { Eye, EyeOff, File, Search } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { closeFileFinder, isFileFinderOpen } from "@/commands/registry";
+import { fuzzyScore } from "@/commands/fuzzy";
 import { useSettings } from "@/store/settings";
-
-function fuzzyScore(path: string, query: string): number {
-  if (!query) return 0;
-  const t = path.toLowerCase();
-  const q = query.toLowerCase();
-  const idx = t.indexOf(q);
-  if (idx !== -1) {
-    // Heavily prefer matches on the file name (last segment).
-    const slash = t.lastIndexOf("/");
-    if (idx > slash) return 2000 - (idx - slash);
-    return 1000 - idx;
-  }
-  let score = 0;
-  let ti = 0;
-  for (const ch of q) {
-    const found = t.indexOf(ch, ti);
-    if (found === -1) return -1;
-    score -= found - ti;
-    ti = found + 1;
-  }
-  return 100 + score;
-}
 
 export function FileFinder(props: {
   repoPath: string | null;

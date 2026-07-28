@@ -54,6 +54,8 @@ import {
 import { ChangesPane } from "@/components/git/GitSidebar";
 import { EditorHost } from "@/components/editor/EditorHost";
 import { EditorGroupsView } from "@/components/editor/EditorGroupsView";
+import { Breadcrumbs } from "@/components/editor/Breadcrumbs";
+import { GoToSymbol } from "@/components/editor/GoToSymbol";
 import {
   DEFAULT_SPLIT_FRACTION,
   SINGLE_GROUP,
@@ -236,6 +238,7 @@ export function EditorSurface(props: {
   /// was split off was showing. A blank second editor would make the user open
   /// the file twice to get the side-by-side they asked for.
   const [seedPath, setSeedPath] = createSignal<string | null>(null);
+  const [symbolPickerOpen, setSymbolPickerOpen] = createSignal(false);
 
   /// Focus is the controller's — Monaco reports it whenever the caret lands in
   /// a pane, including routes this component never sees (the find widget, a
@@ -436,6 +439,14 @@ export function EditorSurface(props: {
           setTreeVisible(true);
           setSearchVisible(true);
         },
+      },
+      {
+        id: "editor.go-to-symbol",
+        label: "Go to symbol in file",
+        description: "Jump to a declaration in the file in front",
+        group: "Editor",
+        enabled: () => !!editorController.getActivePath(),
+        run: () => setSymbolPickerOpen(true),
       },
       {
         id: "editor.split-right",
@@ -856,6 +867,18 @@ export function EditorSurface(props: {
                             </Show>
                           )}
                         </Show>
+                        {/* Where you are, and what you are inside of. The app's
+                            own row idiom, not Monaco's breadcrumb widget —
+                            MASTER §11.5. */}
+                        <Breadcrumbs
+                          groupId={groupId}
+                          path={() => groupPath(groupId)}
+                          repoRoot={repoPath}
+                          onGoToSymbol={() => {
+                            focusEditorGroup(groupId);
+                            setSymbolPickerOpen(true);
+                          }}
+                        />
                         <EditorHost
                           class="w-full flex-1 min-h-0"
                           groupId={groupId}
@@ -935,6 +958,10 @@ export function EditorSurface(props: {
           </div>
         )}
       </Show>
+
+      {/* ⇧⌘O. A portal, so it is above the panes without either of them
+          needing to know it exists. */}
+      <GoToSymbol open={symbolPickerOpen} onClose={() => setSymbolPickerOpen(false)} />
     </div>
   );
 }

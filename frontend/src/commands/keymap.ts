@@ -140,6 +140,13 @@ export const KEYMAP: readonly KeymapEntry[] = [
     note: "⌘⇧F is the convention but git.fetch already owns it, and moving a chord users have is worse than picking the adjacent one. ⌘⌥ keeps the character unremapped on macOS, same as ⌘⌥B for blame.",
   },
   {
+    actionId: "editor.go-to-symbol",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, shift: true, key: "o", scope: "outside-terminal" },
+    note: "VS Code's own chord, and unclaimed here. Scoped out of the terminal, where ⌘⇧O is nothing but ought to stay nothing.",
+  },
+  {
     actionId: "editor.split-right",
     group: "Editor",
     window: "editor",

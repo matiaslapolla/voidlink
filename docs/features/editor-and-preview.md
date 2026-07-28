@@ -40,6 +40,39 @@ Save can also run format-on-save, trailing-whitespace trimming and
 final-newline insertion, in that order, and can fire on a delay or on blur
 instead of only on `Mod+S`. All four are off by default — see Settings below.
 
+### Splitting the view
+
+The editor area holds one or two groups. `Mod+Alt+\` (or the columns button in
+the header, or `Split editor right` / `Split editor down` in `Mod+K`) opens a
+second group beside or below the first, showing whatever the first was showing;
+`Close the other editor group` returns to one. The seam drags, nudges with the
+arrow keys when focused, and double-clicks back to an even split.
+
+The two groups share one buffer per file — editing on the left updates the right
+— and only the focused group follows the tab strip. The split is local to the
+window; the tab list is still owned by the workbench.
+
+### Breadcrumbs and go-to-symbol
+
+Above each group is a breadcrumb row: the file's path relative to the repository
+root, then the chain of symbols the cursor is inside. Clicking a symbol jumps to
+it; clicking the file name opens the symbol picker (`Mod+Shift+O`), which lists
+every symbol in the file with fuzzy filtering.
+
+Symbols come from Monaco's document-symbol contract. Until a language server
+exists, VoidLink registers its own regex-and-indentation outline for
+TypeScript, JavaScript, Rust, Go, Python and Markdown; other languages show the
+path and nothing after it. The parser is deliberately approximate — a symbol's
+range ends where the next same-or-shallower one begins — and is replaced, not
+extended, once a real provider is registered.
+
+### Session restore
+
+Cursor position, scroll offset and folded regions are remembered per file and
+restored when you reopen it, via Monaco's own view state. Storage is
+localStorage, per repository, capped at the 200 most recently touched files, and
+any corruption degrades to "the file opens at line 1".
+
 ### Finding across files
 
 `Mod+Alt+F` opens the search panel in the left rail (⌘⇧F is already git fetch).
@@ -111,6 +144,8 @@ twice re-activates the existing tab.
 | `Mod+Shift+D` | Toggle inline / split diff (affects diff panes, not the editor) |
 | `Mod+Shift+I` | Format document |
 | `Mod+Alt+F` | Find in files |
+| `Mod+Shift+O` | Go to symbol in the active file |
+| `Mod+Alt+\` | Split the editor side by side |
 
 Fifteen editing commands — format, duplicate/move line, toggle comment,
 transform case, sort lines, jump to matching bracket, and the three
@@ -172,8 +207,13 @@ blocks, no mermaid, no math, and no relative-image resolution.
 - **Format-on-save needs a provider.** With none registered for the language it
   silently does nothing, which is the intended degradation, not a failure.
 - **Dirty tracking is debounced 100 ms** and only clears on a successful save.
-- **No split editor and no scroll sync** between a file and its preview — they
-  are sibling full-width tabs.
+- **Two editor groups maximum, and no scroll sync** between a file and its
+  preview — preview is a sibling full-width tab, not a pane.
+- **Directory segments in the breadcrumb are labels, not buttons.** This window
+  has no folder view to navigate to, so there is nothing for them to do yet.
+- **The outline is regex-based.** It misses declarations split across lines and
+  does not understand macros; it is a placeholder for a language server, not a
+  parser.
 - **A mounted preview ignores a changed `filePath` prop.** It is mounted per
   tab, so this is currently unreachable, but the effect that would handle it is
   a documented no-op.

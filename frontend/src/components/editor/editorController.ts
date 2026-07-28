@@ -7,6 +7,7 @@ import { applySaveTransforms } from "./saveTransforms";
 import { disableVim, enableVim } from "./vimMode";
 import { changedPaths, planForChanges, toStampMap, type StampMap } from "./externalChanges";
 import { EditorSessionStore } from "./sessionRestore";
+import { installOutlineProvider } from "./documentSymbols";
 import type { GroupId } from "./editorGroups";
 import type { ThemeMode } from "@/store/theme";
 import { DEFAULT_SETTINGS, type EditorSettings } from "@/store/settings";
@@ -113,6 +114,9 @@ class EditorController {
     // Define the VoidLink themes before the first `create`, so the editor never
     // paints a frame of stock `vs-dark` on top of a solarized shell.
     applyVoidlinkTheme(monaco, mode);
+    // Symbols for the languages Monaco has no provider for. Idempotent — every
+    // group's init calls it, exactly one registration happens.
+    installOutlineProvider(monaco);
 
     const editor = monaco.editor.create(container, {
       ...editorOptions(this.settings),

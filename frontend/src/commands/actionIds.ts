@@ -34,6 +34,7 @@ export const ACTION_IDS = [
   "editor.split-down",
   "editor.close-group",
   "editor.focus-next-group",
+  "editor.go-to-symbol",
   // Terminal
   "terminal.new",
   "terminal.repeat-last",
