@@ -394,7 +394,6 @@ export async function refreshBlameFor(repoPath: string, filePath: string) {
     decorations.push({
       range: new monaco.Range(b.line, maxCol, b.line, maxCol),
       options: {
-        description: "voidlink-blame",
         after: {
           content: annotationText(b),
           inlineClassName: b.uncommitted
@@ -410,7 +409,7 @@ export async function refreshBlameFor(repoPath: string, filePath: string) {
 
 /// Swap one file's decorations, in a single batched model change.
 ///
-/// Goes through `changeDecorations` rather than the editor's
+/// Goes through the model's `deltaDecorations` rather than the editor's
 /// `createDecorationsCollection`: a collection is scoped to one editor and is
 /// dropped when that editor's model changes, and blame has to survive both — a
 /// split shows the same model in two groups, and both need the annotations.
@@ -421,11 +420,7 @@ function setDecorations(
   decorations: Monaco.editor.IModelDeltaDecoration[],
 ) {
   const prev = activeDecorations.get(filePath) ?? [];
-  const next: string[] = [];
-  model.changeDecorations((accessor) => {
-    for (const id of prev) accessor.removeDecoration(id);
-    for (const d of decorations) next.push(accessor.addDecoration(d.range, d.options));
-  });
+  const next = model.deltaDecorations(prev, decorations);
   if (next.length === 0) activeDecorations.delete(filePath);
   else activeDecorations.set(filePath, next);
 }
@@ -439,9 +434,7 @@ export function clearBlameFor(filePath: string) {
   if (!prev?.length) return;
   const model = editorController.getModel(filePath);
   if (!model) return;
-  model.changeDecorations((accessor) => {
-    for (const id of prev) accessor.removeDecoration(id);
-  });
+  model.deltaDecorations(prev, []);
 }
 
 export function clearAllBlame() {
