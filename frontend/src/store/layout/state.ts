@@ -8,6 +8,7 @@
 import type { TerminalSession, Workspace } from "@/types/workspace";
 import { TAB_KINDS, TAB_SPECS } from "./tabs";
 import { singleGroupLayout, type PaneNode } from "./panes";
+import { emptyTabGroupState, type TabGroupState } from "./tabGroups";
 import { emptyNavHistory, type GroupMru, type NavHistory } from "./navigation";
 import type {
   ActiveItem,
@@ -71,6 +72,12 @@ export interface AppStoreState {
   /// claiming nothing — resolves to today's single-strip workbench, so a
   /// worktree that has never been split needs no saved geometry at all.
   paneLayoutByWorktree: Record<string, PaneNode>;
+  /// The labelled, collapsible tab groups inside each pane group's strip, per
+  /// worktree, plus that worktree's auto-grouping mode. A *second axis* over
+  /// the pane tree, not part of it: a tab in no tab group renders exactly as it
+  /// did before groups existed, so a worktree that never groups anything keeps
+  /// an empty state here forever.
+  tabGroupsByWorktree: Record<string, TabGroupState>;
   /// Per-group most-recently-used tab order, per worktree. `Ctrl+Tab` cycles
   /// this; `tab.next` / `tab.prev` deliberately do not — document order and
   /// recency are two different questions and both have their users.
@@ -119,6 +126,7 @@ export function seedWorktreeCollections(s: AppStoreState, wtId: string) {
   s.closedTabsByWorktree[wtId] ??= [];
   s.pinnedTabsByWorktree[wtId] ??= [];
   s.paneLayoutByWorktree[wtId] ??= singleGroupLayout();
+  s.tabGroupsByWorktree[wtId] ??= emptyTabGroupState();
   s.tabMruByWorktree[wtId] ??= {};
   s.navHistoryByWorktree[wtId] ??= emptyNavHistory();
   if (!(wtId in s.focusedGroupByWorktree)) s.focusedGroupByWorktree[wtId] = null;
@@ -136,6 +144,7 @@ export function dropWorktreeCollections(s: AppStoreState, wtId: string) {
   delete s.closedTabsByWorktree[wtId];
   delete s.pinnedTabsByWorktree[wtId];
   delete s.paneLayoutByWorktree[wtId];
+  delete s.tabGroupsByWorktree[wtId];
   delete s.tabMruByWorktree[wtId];
   delete s.navHistoryByWorktree[wtId];
   delete s.focusedGroupByWorktree[wtId];

@@ -33,6 +33,15 @@ export const STORAGE_KEYS = {
   /// per worktree and not synced across windows, so it sits beside the tab
   /// blobs rather than inside them.
   paneLayout: "voidlink-pane-layout",
+  /// `Record<worktreeId, TabGroupState>` — the labelled, collapsible tab groups
+  /// *inside* each pane group's strip. A second axis over the pane tree rather
+  /// than part of it (see `tabGroups.ts`), so it gets its own key: a worktree
+  /// that has never grouped a tab persists nothing, and the geometry blob keeps
+  /// the exact shape older builds wrote.
+  tabGroups: "voidlink-tab-groups",
+  /// `Record<workspaceId, LayoutPreset[]>` — named arrangements. Read and
+  /// written by `layout/presets.ts` *through this module*, like snapshots.
+  layoutPresets: "voidlink-layout-presets",
   /// `Record<worktreeId, Record<groupId, tabId[]>>` — the per-group tab MRU
   /// `Ctrl+Tab` cycles. Persisted so the first cycle after a reload lands
   /// somewhere meaningful instead of on whatever happens to be leftmost.
@@ -64,11 +73,13 @@ export const STORAGE_KEYS = {
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
 
 /// Every key a layout reset clears — which is every key above *except*
-/// snapshots. A snapshot is a document the user named and saved; "my panes are
-/// broken, start over" must not also throw those away. Settings and AI keys
-/// live under their own names and are likewise untouched.
+/// snapshots and layout presets. Both are documents the user named and saved;
+/// "my panes are broken, start over" must not also throw those away. Settings
+/// and AI keys live under their own names and are likewise untouched.
+const RESET_EXEMPT: string[] = [STORAGE_KEYS.snapshots, STORAGE_KEYS.layoutPresets];
+
 export const LAYOUT_STORAGE_KEYS: string[] = Object.values(STORAGE_KEYS).filter(
-  (key) => key !== STORAGE_KEYS.snapshots,
+  (key) => !RESET_EXEMPT.includes(key),
 );
 
 /// `localStorage` is absent in the test runner and in any non-browser host, and

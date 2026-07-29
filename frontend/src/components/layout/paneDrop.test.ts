@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { MIN_RATIO } from "@/store/layout";
 import {
+  EDGE_ZONE,
   dropIntentAt,
   previewRect,
   ratiosAfterDrag,
@@ -66,7 +68,23 @@ describe("dropIntentAt", () => {
     });
   });
 
-  it("refuses the edge zones at the four-group cap, with the reason", () => {
+  /// Eight groups fit now, so a pane can be a lot narrower than it used to be.
+  /// The narrowest the reducer will produce is `MIN_RATIO` of the content area
+  /// — 120px on a 1200px window — and the edge zone there is still 24px, which
+  /// is a target a pointer can hit. This is the assertion that catches a future
+  /// cap raise making the split gesture unreachable.
+  it("keeps its edge zones hittable in the narrowest pane the cap allows", () => {
+    const narrow = { width: 1200 * MIN_RATIO, height: 500 };
+    const edgePx = narrow.width * EDGE_ZONE;
+    expect(edgePx).toBeGreaterThanOrEqual(24);
+    // One pixel inside the zone splits; one pixel outside it moves.
+    expect(dropIntentAt(narrow, { x: edgePx - 1, y: 250 }, ok).kind).toBe("edge");
+    expect(dropIntentAt(narrow, { x: edgePx + 1, y: 250 }, ok).kind).toBe("body");
+    // The centre is still the majority of the pane.
+    expect(narrow.width - 2 * edgePx).toBeGreaterThan(edgePx);
+  });
+
+  it("refuses the edge zones at the cap, with the reason", () => {
     expect(dropIntentAt(SIZE, { x: 10, y: 250 }, { canSplit: false })).toEqual({
       kind: "refused",
       reason: SPLIT_CAP_REASON,

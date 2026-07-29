@@ -2,18 +2,23 @@
 
 ## What it does
 
-Four nested levels of container. Everything else in VoidLink hangs off one of
-them, and almost every "where did my state go?" question is answered by knowing
-which level a thing belongs to.
+Nested containers. Everything else in VoidLink hangs off one of them, and almost
+every "where did my state go?" question is answered by knowing which one a thing
+belongs to.
 
 ```
-workspace          a folder you opened — usually a git repo
-└── worktree       one checkout of that repo (the main one, plus any `git worktree add`)
-    └── pane group one tab strip and the area under it; 1–4 per worktree, in a split tree
-        └── tab    a terminal, a compare, a stack, the commit graph, brain, a browser page…
+workspace            a folder you opened — usually a git repo
+└── worktree         one checkout of that repo (the main one, plus any `git worktree add`)
+    └── pane group   one tab strip and the area under it; 1–8 per worktree, in a split tree
+        └── tab group   an optional named, coloured, collapsible set of tabs in that strip
+            └── tab      a terminal, a compare, a stack, the commit graph, brain, a browser page…
 ```
 
-## The four levels
+Tab groups are the one optional level. A tab in no tab group renders exactly as
+it did before they existed, which is why the diagram above is still the same
+model it was — with one axis added rather than one level inserted.
+
+## The levels
 
 ### Workspace
 
@@ -55,14 +60,21 @@ With two or more:
   mark (see [Activity and escalation](#activity-and-escalation)).
 
 Groups live in a **recursive split tree**: any group can be split horizontally
-or vertically, and the tree caps at four groups. Splits, their orientation and
-their flex ratios persist per worktree.
+or vertically, and the tree caps at **eight** groups. Splits, their orientation
+and their flex ratios persist per worktree.
+
+Eight is a number, not a principle. The reducer was always recursive; what sets
+the ceiling is what stays usable. No pane is ever narrower than `MIN_RATIO`
+(10%) of the content area, so the narrowest possible pane on a 1200px window is
+120px — enough for a strip, and enough for the 24px edge zones a split drop
+needs to stay hittable.
 
 Create one by dragging a tab into the outer 20% of another group's body — the
 prospective new group fills with `bg-primary/15` **at the exact geometry it
 would occupy**, so you see the resulting layout before releasing. At the
-four-group cap the edge zones stop responding, take `cursor: no-drop`, and say
-why in the drag ghost.
+cap the edge zones stop responding, take `cursor: no-drop`, and say why in the
+drag ghost — quoting the cap itself, so raising it cannot leave the refusal
+citing a number that is no longer true.
 
 Drop a tab on a group's *body* (the middle 60%) to move it into that group
 without splitting; drop it on a strip to place it between two specific tabs,
@@ -80,6 +92,76 @@ scrollback and a browser pane would tear down and re-create its child webview.
 Dragging a terminal into the pane beside it would wipe the output you dragged
 it there to read. So the pane list stays flat and only its
 `left/top/width/height` change.
+
+### Tab group
+
+A **named, coloured, collapsible set of tabs inside one pane group's strip**.
+Optional, and orthogonal to everything above it: the pane tree answers "which
+rectangle is this tab in", a tab group answers "how are that rectangle's tabs
+arranged". A tab in no group renders exactly as it does without groups at all.
+
+A group shows as a chip at the left of the strip: a colour dot, a disclosure
+triangle, and the label. Double-click the label to rename it inline. Click the
+chip to collapse — collapsed, it shows the member count instead of its members,
+and nothing else in the strip moves.
+
+| Want | Do |
+|---|---|
+| Make a group | Right-click a tab → *New tab group* |
+| Rename it | Double-click the chip's label |
+| Recolour it | Right-click the chip → one of the five swatches |
+| Collapse / expand | Click the chip |
+| Add a tab | Drag it onto the chip, or onto any tab already inside the group |
+| Remove a tab | Drag it onto the strip's empty space, or right-click → *Remove from group* |
+| Reorder groups | Drag one chip onto another |
+| Move the whole group to another pane | Drag its chip into that pane |
+| Dissolve it | Right-click the chip → *Dissolve group* |
+
+Three rules are load-bearing:
+
+- **A tab is in at most one group**, and a group never spans two pane groups —
+  a group whose members were split across two strips would have no strip to
+  render in.
+- **Moving a group between panes re-claims each member through the pane
+  reducer**, never by writing the pane's claim list directly, so the two models
+  cannot disagree about who owns what.
+- **A collapsed group is not a place activity goes to die.** A signal on a
+  hidden member surfaces on the chip — the same escalation rule that carries a
+  hidden pane's signal to the status bar. See
+  [Activity and escalation](#activity-and-escalation).
+
+Groups render at the left of the strip in their own order, then the ungrouped
+tabs in the order they already had. Position is taken from the group list rather
+than from where the first member happens to sit, because otherwise reordering
+groups would be a gesture with no visible effect.
+
+Colours come from the five `--chart-*` tokens every theme already defines. There
+is no group palette.
+
+#### Auto-grouping
+
+A worktree can derive its groups instead of being told them, from
+`Mod+K → Tab groups`:
+
+| Mode | Groups by |
+|---|---|
+| `manual` (default) | nothing — you assign tabs by hand |
+| `by kind` | the tab's kind, read from the tab registry |
+| `by worktree` | the tab's originating worktree |
+
+Derived groups are **read-only**, and the way that is enforced is the point:
+renaming, recolouring, collapsing, dissolving or hand-editing one *materialises*
+the current derivation as ordinary manual groups and drops the worktree back to
+`manual`. Your edit lands, and the rule that would have undone it stops
+applying. Nothing silently fights you.
+
+Buckets of one tab are left ungrouped — a chip around a single tab is more
+chrome than the tab it wraps.
+
+**Known limit:** every workbench tab collection is keyed by worktree id, so
+every tab in a worktree *is* from that worktree, and `by worktree` currently
+yields one bucket. The axis only earns its keep once a pane can show another
+worktree's tab.
 
 ### Tab
 
@@ -160,11 +242,18 @@ tab swaps the mark for the ×.
 Escalation, in order:
 
 1. A signal on a tab in a group you are looking at shows on the tab.
-2. A signal on a tab in a **background group** also shows on that group's
+2. A signal on a tab hidden inside a **collapsed tab group** shows on that
+   group's chip. Collapsing hides the tabs, so it would otherwise hide their
+   marks with them.
+3. A signal on a tab in a **background pane group** also shows on that group's
    header slot.
-3. A signal in a group that is **not on screen at all** — maximized away, or
-   every group under zen — shows in the **status bar**, as a
+4. A signal in a pane group that is **not on screen at all** — maximized away,
+   or every group under zen — shows in the **status bar**, as a
    `n hidden panes` segment carrying the mark.
+
+The steps compose rather than replace each other: a failure on a tab inside a
+collapsed group inside a maximized-away pane still reaches the status bar,
+because the chip is off screen too.
 
 So: run a failing build in a terminal in group B, focus group A, and the failure
 is visible from A without opening B. Maximize A and it moves to the status bar.
@@ -191,6 +280,35 @@ reports nothing exactly when you have the least chance of noticing.
 `pty-exit` is emitted with a unit payload — so `failed` is currently only
 raised by non-terminal work (a failed AI commit draft). Closing that gap needs
 the Rust side to report the exit status.
+
+## Layout presets
+
+A **named arrangement**, recalled from the palette. It captures the pane tree,
+the tab-group structure, each pane group's front tab and the three panel widths
+— and **no tab contents at all**.
+
+| Want | Do |
+|---|---|
+| Save the current arrangement | `Mod+K → Layout: save arrangement as…` |
+| Recall one | `Mod+K → Layout: apply "<name>"` |
+| Rename / delete one | `Mod+K → Layout: rename/delete "<name>"` |
+
+Presets are stored per workspace and applied to the active worktree.
+
+**This is not a snapshot.** A [snapshot](./snapshots.md) is a whole *session*:
+restoring one closes every tab, reopens the ones it recorded, respawns the
+terminals and restores the sidebar prefs — which is why it addresses everything
+by content key. A preset opens nothing, closes nothing and spawns nothing. It
+rearranges whatever happens to be open right now, which is why it addresses tabs
+by id.
+
+**It degrades, it never fails.** Apply a preset whose groups name tabs this
+worktree does not have and it places the ones that exist and leaves the rest of
+the geometry empty, where the pane's own empty state already says what to do
+about it. An arrangement that half-fits is still an arrangement.
+
+*Reset layout* does not delete presets, for the same reason it does not delete
+snapshots: they are documents you named and saved.
 
 ## The status bar
 
@@ -227,10 +345,11 @@ Everything is `localStorage`, written through one debounced path in
 |---|---|
 | Workspaces and worktrees, active workspace | global |
 | Open tabs (per kind), pins, active tab | per worktree |
-| Pane geometry, MRU order, navigation history | per worktree |
+| Pane geometry, tab groups, MRU order, navigation history | per worktree |
 | Closed-tab history | per worktree |
 | Sidebar collapse/widths, diff mode, git section order and collapse | global |
 | Snapshots | per workspace ([snapshots](./snapshots.md)) |
+| Layout presets | per workspace |
 
 Writes go to a temp key and are then committed, and a corrupt or
 partially-written blob degrades **that one key** to defaults with a toast —
@@ -259,7 +378,10 @@ Four surfaces are deliberately excluded:
 
 ## Gotchas and limits
 
-- **Four groups is the cap.** A free-form grid is a different feature.
+- **Eight pane groups is the cap.** A free-form grid is still a different
+  feature.
+- **Tab groups live inside one pane group.** There is no group that spans two
+  panes, because there would be no strip to draw it in.
 - **Pane geometry is per worktree, not per window.** Two windows on the same
   worktree do not sync their splits.
 - **Activity is session state and is never persisted.** A bell that rang
@@ -276,5 +398,6 @@ Four surfaces are deliberately excluded:
 
 - [Keyboard shortcuts](./keyboard-shortcuts.md) — the full keymap
 - [Workspace snapshots](./snapshots.md) — saving and restoring a whole session
+  (a different thing from a layout preset, above)
 - [Terminal](./terminal.md), [Embedded browser](./browser.md),
   [Branch compare](./branch-compare.md) — what individual tab kinds do

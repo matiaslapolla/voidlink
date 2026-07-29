@@ -95,6 +95,13 @@ export const ACTION_IDS = [
   "workspace.switch",
   "snapshot.save",
   "snapshot.manage",
+  // Layout — named arrangements, and how tab groups are decided. The
+  // per-preset apply/rename/delete ids are generated at runtime from user data
+  // (like `snapshot.restore.<name>`) and are deliberately not declared here.
+  "layout.preset.save",
+  "layout.autogroup.off",
+  "layout.autogroup.kind",
+  "layout.autogroup.worktree",
   // Tabs
   "tab.close",
   "tab.next",

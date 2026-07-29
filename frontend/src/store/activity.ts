@@ -156,6 +156,14 @@ export interface EscalationInput {
   visibleGroupIds: ReadonlySet<string>;
   /// The group whose strip the user is working in, or `null`.
   focusedGroupId: string | null;
+  /// Collapsed **tab groups**: group id → the pane group its chip renders in,
+  /// and the tabs it is hiding. A collapsed group renders none of its members,
+  /// so it is a new hiding place and the same rule applies — a signal in one
+  /// must surface on the chip. Absent means "no collapsed groups".
+  collapsedTabGroups?: ReadonlyMap<
+    string,
+    { paneGroupId: string; tabIds: readonly string[] }
+  >;
   /// Zen hides every tab strip, so there is no group header to escalate *to* —
   /// everything goes one level further, to the status bar.
   zen: boolean;
@@ -164,6 +172,10 @@ export interface EscalationInput {
 export interface Escalation {
   /// Group id → the mark for that group's reserved header slot.
   groups: Map<string, ActivitySignal>;
+  /// Tab group id → the mark for its collapsed chip. Only collapsed groups
+  /// appear: an expanded group's members each wear their own mark, and a chip
+  /// repeating it would be a second control saying the same thing.
+  tabGroups: Map<string, ActivitySignal>;
   /// The mark the status bar must carry, and the tabs it is about (so the
   /// segment's `aria-label` and tooltip can name them rather than saying
   /// "something happened somewhere").
@@ -179,8 +191,15 @@ export interface Escalation {
 ///     each wearing its own.
 ///   • A signal in a group that is off screen — maximized away, or all of them
 ///     under zen — → the status bar, because no header of its own is rendered.
+///
+/// A collapsed tab group adds a third, *finer* stop between the tab and the
+/// group header: its members are not rendered at all, so their marks surface on
+/// the chip. It does not replace the two rules above — a collapsed group in a
+/// maximized-away pane still reaches the status bar, because the chip is not on
+/// screen either.
 export function escalate(input: EscalationInput): Escalation {
   const groups = new Map<string, ActivitySignal>();
+  const tabGroups = new Map<string, ActivitySignal>();
   const offScreen: ActivitySignal[] = [];
   const offScreenTabs: string[] = [];
 
@@ -206,9 +225,24 @@ export function escalate(input: EscalationInput): Escalation {
     if (mark) groups.set(groupId, mark);
   }
 
+  // Collapsed tab groups, after the pane pass so `groups` is already decided.
+  // A chip only earns a mark when it is actually on screen; when it is not, the
+  // pane pass above has already routed its members to the status bar.
+  for (const [tabGroupId, { paneGroupId, tabIds }] of input.collapsedTabGroups ?? []) {
+    if (input.zen || !input.visibleGroupIds.has(paneGroupId)) continue;
+    const live: ActivitySignal[] = [];
+    for (const tabId of tabIds) {
+      const s = input.tabSignals.get(tabId);
+      if (s?.length) live.push(...s);
+    }
+    const mark = highestSignal(live);
+    if (mark) tabGroups.set(tabGroupId, mark);
+  }
+
   const statusMark = highestSignal(offScreen);
   return {
     groups,
+    tabGroups,
     statusBar: statusMark ? { signal: statusMark, tabIds: offScreenTabs } : null,
   };
 }

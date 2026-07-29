@@ -300,6 +300,21 @@ export function MainSurface(props: MainSurfaceProps) {
     setVisibleTabs(seen);
   });
 
+  /// Every collapsed tab group, with the pane its chip renders in. A collapsed
+  /// group is a hiding place, so `escalate` has to know about it — the rule
+  /// that already carries a hidden pane's signal to the status bar is the same
+  /// one that carries a hidden member's signal to the chip.
+  const collapsedTabGroups = createMemo(() => {
+    const out = new Map<string, { paneGroupId: string; tabIds: readonly string[] }>();
+    for (const group of groups()) {
+      for (const tabGroup of actions.tabGroupsOfPane(group.id)) {
+        if (!tabGroup.collapsed) continue;
+        out.set(tabGroup.id, { paneGroupId: group.id, tabIds: tabGroup.tabIds });
+      }
+    }
+    return out;
+  });
+
   /// The escalation snapshot. Recomputed on any change to the signals, the
   /// group membership, what is on screen or which group has focus.
   const escalation = createMemo(() => {
@@ -316,9 +331,11 @@ export function MainSurface(props: MainSurfaceProps) {
       groupTabs: groupTabIds(),
       visibleGroupIds: visibleGroups(),
       focusedGroupId: focusedGroupId(),
+      collapsedTabGroups: collapsedTabGroups(),
       zen: isZen(),
     });
   });
+
 
   /// Hand the off-screen half to the status bar. An effect rather than the
   /// status bar reading `escalation()` directly, because the two components
@@ -426,7 +443,14 @@ export function MainSurface(props: MainSurfaceProps) {
     }),
   );
 
+  /// A drop landed in `groupId`. One payload covers both shapes of drag: a
+  /// whole tab group moves as a unit through the action that re-claims each
+  /// member via the pane reducer, and a lone tab moves as it always did.
   function moveTabHere(payload: TabDragPayload, groupId: string, beforeTabId: string | null) {
+    if (payload.tabGroupId) {
+      actions.moveTabGroupToPane(state.activeWorktreeId, payload.tabGroupId, groupId);
+      return;
+    }
     actions.moveTabToPaneGroup(state.activeWorktreeId, payload.id, groupId, beforeTabId);
   }
 
@@ -442,7 +466,7 @@ export function MainSurface(props: MainSurfaceProps) {
     const wtId = state.activeWorktreeId;
     const newGroupId = actions.splitPaneGroup(wtId, orientation, placement, groupId);
     if (!newGroupId) return;
-    actions.moveTabToPaneGroup(wtId, payload.id, newGroupId, null);
+    moveTabHere(payload, newGroupId, null);
   }
 
   function selectTab(tab: TabDescriptor, groupId: string) {
@@ -671,6 +695,25 @@ export function MainSurface(props: MainSurfaceProps) {
             groupId={groupId}
             groupHeader={header()}
             groupActivity={escalation().groups.get(groupId)}
+            tabGroups={actions.tabGroupsOfPane(groupId)}
+            tabGroupActivity={(id) => escalation().tabGroups.get(id)}
+            onToggleTabGroup={(id) => actions.toggleTabGroup(state.activeWorktreeId, id)}
+            onRenameTabGroup={(id, label) =>
+              actions.renameTabGroup(state.activeWorktreeId, id, label)
+            }
+            onRecolorTabGroup={(id, color) =>
+              actions.recolorTabGroup(state.activeWorktreeId, id, color)
+            }
+            onDissolveTabGroup={(id) => actions.dissolveTabGroup(state.activeWorktreeId, id)}
+            onCreateTabGroup={(tabIds) =>
+              actions.createTabGroup(state.activeWorktreeId, groupId, tabIds)
+            }
+            onAssignTab={(tabId, tabGroupId, before) =>
+              actions.assignTabToGroup(state.activeWorktreeId, tabId, tabGroupId, before)
+            }
+            onReorderTabGroup={(id, before) =>
+              actions.reorderTabGroup(state.activeWorktreeId, id, before)
+            }
             onFocusGroup={focusGroup}
             onMoveTab={(payload, before) => moveTabHere(payload, groupId, before)}
             onSelect={(tab) => selectTab(tab, groupId)}

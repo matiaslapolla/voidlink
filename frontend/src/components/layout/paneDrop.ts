@@ -5,6 +5,7 @@
 /// twentieth of the pane the pointer is in, what the resulting split would look
 /// like, what a splitter drag does to a ratio list — and none of them need a
 /// browser to be wrong in a way a user would notice.
+import { MAX_GROUPS } from "@/store/layout/panes";
 import type { SplitOrientation } from "@/store/layout";
 
 export interface Rect {
@@ -16,6 +17,12 @@ export interface Rect {
 
 /// How much of each edge is a split zone. 20% per the workbench prompt's
 /// `<design>`; the centre 60% × 60% is "drop into this group".
+///
+/// It stays a fraction rather than becoming a pixel floor even now that eight
+/// groups fit. The narrowest pane the reducer will produce is `MIN_RATIO` of
+/// the content area — on a 1200px surface, 120px — and 20% of that is 24px,
+/// which is a comfortable target. A pixel floor would only start eating the
+/// centre zone, and "drop into this group" is the common gesture.
 export const EDGE_ZONE = 0.2;
 
 /// What a pointer at a given position inside a group body means.
@@ -37,7 +44,9 @@ export type DropIntent =
   /// arrive after the gesture it is about.
   | { kind: "refused"; reason: string };
 
-export const SPLIT_CAP_REASON = "4 panes is the maximum — close one to split again";
+/// Derived from the reducer's cap rather than written out, so raising the cap
+/// cannot leave the refusal quoting a number that is no longer true.
+export const SPLIT_CAP_REASON = `${MAX_GROUPS} panes is the maximum — close one to split again`;
 
 /// `splitGroup` always creates a two-child split with even ratios, so the new
 /// group takes exactly half of the group being split. That constant is what

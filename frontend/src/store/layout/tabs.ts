@@ -489,6 +489,24 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
   },
 };
 
+/// What an auto-derived tab group of one kind is called (Wave 4's `kind` mode).
+///
+/// A `Record<TabKind, string>` rather than a list, so adding a kind is a
+/// compile error here rather than a group chip labelled `undefined`. The
+/// derivation reads this instead of carrying its own copy of the kind set.
+export const TAB_KIND_GROUP_LABELS: Record<TabKind, string> = {
+  file: "Files",
+  terminal: "Terminals",
+  diff: "Diffs",
+  compare: "Compares",
+  stack: "Stacks",
+  conflict: "Conflicts",
+  history: "Commit graph",
+  preview: "Previews",
+  brain: "Brain",
+  browser: "Browser",
+};
+
 /// Render/iteration order. Also the order the tab strip lays kinds out in, so
 /// it is not merely `Object.keys`.
 export const TAB_KINDS: TabKind[] = [

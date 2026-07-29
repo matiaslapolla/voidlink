@@ -42,15 +42,25 @@ export type PaneNode =
       children: PaneNode[];
     };
 
-/// Four covers terminal-beside-graph-beside-browser, which is the case the
-/// split exists for. A free-form grid is a different feature.
-export const MAX_GROUPS = 4;
+/// Eight. Four covered terminal-beside-graph-beside-browser; a review layout —
+/// a diff, a terminal, a graph and a browser down each half of the window —
+/// wants twice that. It is a number, not a principle: the reducer is recursive
+/// and does not care, so the ceiling is set by what stays *usable*, which is
+/// `MIN_RATIO` below. A free-form grid is still a different feature.
+export const MAX_GROUPS = 8;
 
 /// Below this a group is unusable — no room for a tab label, let alone a pane.
 /// The reducer refuses splits that would push any sibling under it. Exported
 /// because the splitter between two groups has to clamp to the same number the
 /// reducer would renormalise to; two different minimums would mean a drag that
 /// silently snaps back.
+///
+/// Left at 0.1 for eight groups, deliberately. Eight evenly-split panes are
+/// 12.5% each, which is *above* the floor — so the floor never binds at the cap
+/// and raising it would only shrink the range a splitter drag can reach.
+/// `normalizeRatios` clamps each entry to at least this before renormalising,
+/// which stays coherent while `MAX_GROUPS * MIN_RATIO <= 1`; at eight that is
+/// 0.8, with room to spare.
 export const MIN_RATIO = 0.1;
 
 let idCounter = 0;
@@ -146,15 +156,58 @@ export function groupOwning(
 /// Normalise to sum 1 with every entry at or above `MIN_RATIO`. Called on the
 /// way out of every mutation, so no consumer ever has to defend against a
 /// tree whose ratios don't add up.
+///
+/// **Why this is not clamp-then-divide.** It used to be, and that only holds
+/// the floor when the clamped values happen to sum to roughly 1. Raise one
+/// entry to 0.99 and clamp seven siblings up to 0.1 and the total is 1.69 —
+/// dividing through then lands every sibling at 0.059, *under* the floor the
+/// clamp was there to enforce. With four groups the error was small enough to
+/// hide; with eight it is a 71px pane on a 1200px window. So the floor is
+/// applied *after* normalising, by water-filling: pin whatever falls under it,
+/// redistribute what is left proportionally among the rest, repeat. Each pass
+/// pins at least one more entry, so it terminates in at most `count` passes.
 export function normalizeRatios(ratios: number[], count: number): number[] {
-  const even = 1 / Math.max(1, count);
-  const raw = Array.from({ length: count }, (_, i) => {
+  const n = Math.max(1, count);
+  const even = 1 / n;
+  const raw = Array.from({ length: n }, (_, i) => {
     const v = ratios[i];
     return Number.isFinite(v) && v > 0 ? v : even;
   });
-  const clamped = raw.map((v) => Math.max(MIN_RATIO, v));
-  const total = clamped.reduce((a, b) => a + b, 0);
-  return clamped.map((v) => v / total);
+  // No arrangement can satisfy the floor at this count. `MAX_GROUPS` is what
+  // stops this being reachable; splitting evenly is the least-bad answer if it
+  // ever is.
+  if (n * MIN_RATIO > 1) return raw.map(() => even);
+
+  const total = raw.reduce((a, b) => a + b, 0);
+  const out = raw.map((v) => v / total);
+  const pinned = new Array<boolean>(n).fill(false);
+
+  for (let pass = 0; pass < n; pass++) {
+    let budget = 1;
+    let freeTotal = 0;
+    let freeCount = 0;
+    for (let i = 0; i < n; i++) {
+      if (pinned[i]) budget -= out[i];
+      else {
+        freeTotal += out[i];
+        freeCount += 1;
+      }
+    }
+    if (freeCount === 0) break;
+    for (let i = 0; i < n; i++) {
+      if (pinned[i]) continue;
+      out[i] = freeTotal > 0 ? (out[i] / freeTotal) * budget : budget / freeCount;
+    }
+    let changed = false;
+    for (let i = 0; i < n; i++) {
+      if (pinned[i] || out[i] >= MIN_RATIO) continue;
+      out[i] = MIN_RATIO;
+      pinned[i] = true;
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  return out;
 }
 
 /// Resize one split. `ratios` is taken as a proposal and normalised.

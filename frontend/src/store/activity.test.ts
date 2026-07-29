@@ -144,6 +144,48 @@ describe("escalate", () => {
     expect(out.statusBar?.tabIds.sort()).toEqual(["a1", "b1"]);
   });
 
+  /// A collapsed tab group renders none of its members, so it is a new place
+  /// for a signal to die in. The chip is the finer stop; the status bar is
+  /// still the last one.
+  it("escalates a signal inside a collapsed tab group to the group chip", () => {
+    const out = escalate({
+      ...base,
+      focusedGroupId: "B",
+      tabSignals: sig({ b1: ["failed"] }),
+      collapsedTabGroups: new Map([["tg1", { paneGroupId: "B", tabIds: ["b1", "b2"] }]]),
+    });
+    expect(out.tabGroups.get("tg1")).toBe("failed");
+    expect(out.statusBar).toBeNull();
+  });
+
+  it("marks an expanded group's chip with nothing — its tabs wear their own", () => {
+    const out = escalate({ ...base, tabSignals: sig({ b1: ["failed"] }) });
+    expect(out.tabGroups.size).toBe(0);
+  });
+
+  /// The same tab, same collapsed group, in a pane that is maximized away:
+  /// the chip is off screen too, so the status bar still has to carry it.
+  it("still reaches the status bar when the collapsed group's pane is hidden", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ b1: ["failed"] }),
+      visibleGroupIds: new Set(["A"]),
+      collapsedTabGroups: new Map([["tg1", { paneGroupId: "B", tabIds: ["b1", "b2"] }]]),
+    });
+    expect(out.tabGroups.size).toBe(0);
+    expect(out.statusBar).toEqual({ signal: "failed", tabIds: ["b1"] });
+  });
+
+  it("gives a collapsed chip one mark, the highest of its hidden members", () => {
+    const out = escalate({
+      ...base,
+      focusedGroupId: "B",
+      tabSignals: sig({ b1: ["finished"], b2: ["running"] }),
+      collapsedTabGroups: new Map([["tg1", { paneGroupId: "B", tabIds: ["b1", "b2"] }]]),
+    });
+    expect(out.tabGroups.get("tg1")).toBe("running");
+  });
+
   it("reports nothing when nothing is signalling", () => {
     const out = escalate({ ...base, tabSignals: sig({}) });
     expect(out.groups.size).toBe(0);

@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_GROUPS,
+  MIN_RATIO,
   canSplit,
   groupCount,
   groupList,
@@ -28,6 +29,20 @@ import {
 } from "./panes";
 
 const TABS = ["t1", "t2", "t3", "t4"];
+
+/// Split repeatedly until the reducer refuses. Returns the tree and the id of
+/// the last group created, which is the one to try the refused split on.
+function splitToCap(): { layout: PaneNode; last: string } {
+  let layout: PaneNode = singleGroupLayout("g1");
+  let last = "g1";
+  for (let i = 1; i < MAX_GROUPS; i++) {
+    const r = splitGroup(layout, last, i % 2 === 0 ? "column" : "row", "after");
+    expect(r.newGroupId).not.toBeNull();
+    layout = r.layout;
+    last = r.newGroupId!;
+  }
+  return { layout, last };
+}
 
 /// A two-group tree with `t3` moved into the second group.
 function twoGroups() {
@@ -88,20 +103,75 @@ describe("splitting", () => {
     expect(groupCount(b.layout)).toBe(3);
   });
 
-  it("refuses past the four-group cap, leaving the tree untouched", () => {
-    let layout: PaneNode = singleGroupLayout("g1");
-    let last = "g1";
-    for (let i = 1; i < MAX_GROUPS; i++) {
-      const r = splitGroup(layout, last, "row", "after");
-      layout = r.layout;
-      last = r.newGroupId!;
-    }
+  it("refuses past the cap, leaving the tree untouched", () => {
+    const { layout, last } = splitToCap();
     expect(groupCount(layout)).toBe(MAX_GROUPS);
     expect(canSplit(layout)).toBe(false);
 
     const refused = splitGroup(layout, last, "row", "after");
     expect(refused.newGroupId).toBeNull();
     expect(refused.layout).toBe(layout);
+  });
+
+  /// Eight is the cap now. The reducer was always recursive, so what these
+  /// assert is that the *constraints* still hold at the new number: ratios add
+  /// up, no pane is starved below the floor, and collapse still walks back.
+  it("splits all the way to eight groups", () => {
+    expect(MAX_GROUPS).toBe(8);
+    const { layout } = splitToCap();
+    expect(groupCount(layout)).toBe(MAX_GROUPS);
+    expect(new Set(groupList(layout).map((g) => g.id)).size).toBe(MAX_GROUPS);
+  });
+
+  it("keeps every split's ratios summing to one at the cap", () => {
+    const { layout } = splitToCap();
+    const walk = (node: PaneNode) => {
+      if (node.kind !== "split") return;
+      expect(node.ratios.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+      node.children.forEach(walk);
+    };
+    walk(layout);
+  });
+
+  /// `normalizeRatios` clamps each entry to `MIN_RATIO` before renormalising,
+  /// which only stays coherent while `MAX_GROUPS * MIN_RATIO <= 1`. At eight
+  /// that is 0.8 — this is the assertion that catches a future cap raise that
+  /// forgets to lower the floor with it.
+  it("respects MIN_RATIO with every group in one flat split", () => {
+    const ratios = normalizeRatios([], MAX_GROUPS);
+    expect(MAX_GROUPS * MIN_RATIO).toBeLessThanOrEqual(1);
+    expect(Math.min(...ratios)).toBeGreaterThanOrEqual(MIN_RATIO);
+    expect(ratios.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+    // A hand-edited blob that starves seven panes to feed one is repaired.
+    const starved = normalizeRatios([0.99, ...Array(MAX_GROUPS - 1).fill(0.001)], MAX_GROUPS);
+    expect(Math.min(...starved)).toBeGreaterThanOrEqual(MIN_RATIO);
+    expect(starved.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+  });
+
+  it("collapses back down one group at a time from the cap", () => {
+    let layout = splitToCap().layout;
+    for (let n = MAX_GROUPS; n > 1; n--) {
+      const victim = groupList(layout)[groupList(layout).length - 1];
+      layout = removeGroup(layout, victim.id);
+      expect(groupCount(layout)).toBe(n - 1);
+      expect(collectRatios(layout).every((r) => r >= MIN_RATIO)).toBe(true);
+    }
+    expect(layout.kind).toBe("group");
+  });
+
+  it("rejects a stored tree with more groups than the cap", () => {
+    const overfull = {
+      kind: "split",
+      id: "s",
+      orientation: "row",
+      ratios: Array(MAX_GROUPS + 1).fill(1 / (MAX_GROUPS + 1)),
+      children: Array.from({ length: MAX_GROUPS + 1 }, (_, i) => ({
+        kind: "group",
+        id: `g${i}`,
+        group: { id: `g${i}`, tabIds: [], activeTabId: null },
+      })),
+    };
+    expect(parsePaneLayout(overfull)).toBeNull();
   });
 
   it("ignores a split of a group that does not exist", () => {
@@ -256,21 +326,6 @@ describe("the geometry serializer", () => {
 
     const back = parsePaneLayout(JSON.parse(JSON.stringify(serializePaneLayout(layout))));
     expect(back).toEqual(layout);
-  });
-
-  it("rejects a tree with more groups than the cap", () => {
-    const overfull = {
-      kind: "split",
-      id: "s",
-      orientation: "row",
-      ratios: [0.2, 0.2, 0.2, 0.2, 0.2],
-      children: Array.from({ length: 5 }, (_, i) => ({
-        kind: "group",
-        id: `g${i}`,
-        group: { id: `g${i}`, tabIds: [], activeTabId: null },
-      })),
-    };
-    expect(parsePaneLayout(overfull)).toBeNull();
   });
 
   it("rejects duplicate group ids, which would make claims ambiguous", () => {
