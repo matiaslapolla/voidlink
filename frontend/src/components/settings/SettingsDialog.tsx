@@ -17,6 +17,7 @@ import {
   type UiDensity,
   type UiTextSize,
 } from "@/store/settings";
+import { LSP_SERVERS } from "@/components/editor/lspServers";
 import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
 import { stackApi } from "@/api/stack";
@@ -529,6 +530,40 @@ function EditorPane() {
           Auto save never hides the dirty dot — it appears on the first edit and
           clears on the write, so a pending save is always visible.
         </p>
+      </Section>
+
+      {/* Language servers. The paths are blank by default and stay blank for
+          almost everyone: a server installed normally is found on PATH, and an
+          empty field reads as "nothing to do here" rather than as a setting
+          somebody forgot to fill in. */}
+      <Section title="Language servers">
+        <ToggleRow
+          label="Enabled"
+          hint="Completions, hover, diagnostics and formatting from a server you already have installed. Nothing is downloaded."
+          value={settings.editor.lspEnabled}
+          onChange={(v) => updateEditor({ lspEnabled: v })}
+        />
+        <Show when={settings.editor.lspEnabled}>
+          <For each={LSP_SERVERS}>
+            {(spec) => (
+              <TextRow
+                label={spec.id}
+                value={settings.editor.lspServerPaths[spec.id] ?? ""}
+                placeholder={`found on PATH (${spec.monacoLanguages.join(", ")})`}
+                onInput={(v) =>
+                  updateEditor({
+                    lspServerPaths: { ...settings.editor.lspServerPaths, [spec.id]: v },
+                  })
+                }
+              />
+            )}
+          </For>
+          <p class="text-[10px] text-muted-foreground/70 leading-relaxed">
+            Leave a path blank to search PATH. A server that is not installed is
+            not an error — the editor works exactly as it does now and the
+            status bar shows nothing at all.
+          </p>
+        </Show>
       </Section>
     </div>
   );

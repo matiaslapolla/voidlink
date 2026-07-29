@@ -69,6 +69,13 @@ import {
 } from "@/components/editor/editorGroups";
 import { editorController } from "@/components/editor/editorController";
 import { editorPaletteActions } from "@/components/editor/editorActions";
+import { loadMonaco } from "@/components/editor/monaco";
+import {
+  createLspBridge,
+  INERT_LSP_BRIDGE,
+  type LspBridge,
+} from "@/components/editor/lspBridge";
+import { LspLogDialog } from "@/components/editor/LspLogDialog";
 import { EditorEmptyState } from "@/components/editor/EditorEmptyState";
 import { EditorStatusBar } from "@/components/editor/EditorStatusBar";
 import { useOpenFiles } from "@/components/editor/useOpenFiles";
@@ -351,6 +358,60 @@ export function EditorSurface(props: {
     send({ kind: "open-file", path });
   }
 
+  // ── Language servers ──────────────────────────────────────────────────────
+  //
+  // One bridge per editor window. Everything it does is conditional on a binary
+  // actually being installed, so a machine with neither server sees exactly
+  // today's editor: no session, no status segment, no error.
+
+  const { settings: appSettings } = useSettings();
+  const [lspBridge, setLspBridge] = createSignal<LspBridge>(INERT_LSP_BRIDGE);
+  const [lspLog, setLspLog] = createSignal<
+    { server: string; binary: string; lines: string[] } | null
+  >(null);
+
+  onMount(() => {
+    // `onCleanup` is registered synchronously, before the await: after
+    // `loadMonaco()` resolves Solid's owner is gone and a cleanup registered
+    // there would never run, leaving a server process alive per window close.
+    let bridge: LspBridge | null = null;
+    let cancelled = false;
+    onCleanup(() => {
+      cancelled = true;
+      bridge?.dispose();
+      bridge = null;
+    });
+    void loadMonaco()
+      .then((monaco) => {
+        if (cancelled) return;
+        bridge = createLspBridge(monaco, {
+          workspaceRoot: repoPath,
+          settings: () => appSettings.editor,
+          // The single toast at three consecutive crashes; `shouldToastCrash`
+          // in `lspStatus.ts` owns that policy and the bridge is its only
+          // caller.
+          onToast: (message) => pushToast(message, "error"),
+        });
+        setLspBridge(() => bridge as LspBridge);
+      })
+      .catch((e) => {
+        // Monaco failing to load is already fatal for the editor surface; it is
+        // not this feature's job to report it a second time.
+        console.warn("[lsp] Monaco unavailable, language features are off", e);
+      });
+  });
+
+  // Settings and workspace both change what should be running. `refresh` is
+  // idempotent, so re-running it on any of them is cheaper than working out
+  // which one moved.
+  createEffect(() => {
+    // Read every dependency before the call so the effect tracks all three.
+    void repoPath();
+    void appSettings.editor.lspEnabled;
+    void appSettings.editor.lspServerPaths;
+    lspBridge().refresh();
+  });
+
   /// Session restore is filed per workspace, so the repo has to be known before
   /// the first file opens. This effect runs on the same `repoPath()` the tab
   /// snapshot arrives with, which is ahead of any `reconcile`.
@@ -461,6 +522,31 @@ export function EditorSurface(props: {
         run: () => {
           const path = editorController.getActivePath();
           if (path) void saveWithRetry(path);
+        },
+      },
+      {
+        // Monaco's own go-to-definition can only navigate to a model that
+        // already exists, and this window does not own the tab list — opening a
+        // file is a request to the workbench. So the cross-file case goes
+        // through the bridge and the same `open-file` request everything else
+        // uses. Within an already-open file, Monaco's F12 keeps working too.
+        id: "editor.go-to-definition",
+        label: "Go to definition",
+        description: "Jump to where the symbol under the cursor is defined",
+        group: "Editor",
+        enabled: () => !!editorController.getActivePath(),
+        run: async () => {
+          const target = await lspBridge().definitionAtCursor();
+          if (!target) {
+            // Honest, and names the two reasons it can happen. A silent no-op
+            // reads as a broken keybinding.
+            pushToast("No definition found — the language server may still be indexing", "warning");
+            return;
+          }
+          send({ kind: "open-file", path: target.path });
+          // The open is a round trip through the workbench; the reveal has to
+          // wait for the model to be attached here.
+          setTimeout(() => editorController.revealPosition(target.line, target.column), 120);
         },
       },
       {
@@ -972,6 +1058,8 @@ export function EditorSurface(props: {
                 onGoToLine={() => {
                   void editorController.getEditor()?.getAction("editor.action.gotoLine")?.run();
                 }}
+                onShowLspLog={() => setLspLog(lspBridge().activeLog())}
+                onRestartLsp={() => lspBridge().restartActive()}
               />
             </main>
 
@@ -1002,6 +1090,10 @@ export function EditorSurface(props: {
       {/* ⇧⌘O. A portal, so it is above the panes without either of them
           needing to know it exists. */}
       <GoToSymbol open={symbolPickerOpen} onClose={() => setSymbolPickerOpen(false)} />
+
+      {/* What the status segment's `log` click opens. Rendered here rather than
+          inside the status bar so it sits above the panes. */}
+      <LspLogDialog log={lspLog} onClose={() => setLspLog(null)} />
     </div>
   );
 }

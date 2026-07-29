@@ -86,6 +86,20 @@ export interface EditorSettings {
   /// this is on, so declining it costs nothing. Ships with a mode indicator —
   /// a Vim mode whose current mode is invisible is unusable.
   vimMode: boolean;
+  /// Start language servers for files that have one. On by default: a server
+  /// is only ever started when its binary is already installed, so the setting
+  /// costs nothing for the users who have none, and the ones who installed
+  /// rust-analyzer did so in order to use it.
+  ///
+  /// Like `formatOnSave`, `autoSave` and `vimMode`, this is not a Monaco option
+  /// — the "must apply through `updateOptions`" rule above is about the fields
+  /// that *are*. Turning it off stops the running servers immediately; it does
+  /// not need a reload either.
+  lspEnabled: boolean;
+  /// Override where a server's binary lives, keyed by server id (see
+  /// `components/editor/lspServers.ts`). An empty or absent value means "find
+  /// it on `PATH`", which is the case for everyone who installed it normally.
+  lspServerPaths: Record<string, string>;
 }
 
 export interface UiSettings {
@@ -239,6 +253,8 @@ const DEFAULTS: AppSettings = {
     autoSave: "off",
     autoSaveDelayMs: 1000,
     vimMode: false,
+    lspEnabled: true,
+    lspServerPaths: {},
   },
   ai: {
     commitCommand: "",

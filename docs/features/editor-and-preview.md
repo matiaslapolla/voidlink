@@ -17,10 +17,18 @@ pay Monaco's init cost.
 
 ## When you'd use it
 
-For reading and light editing next to the git suite. It is a code editor, not an
-IDE — there is no language server. Formatting is whatever
-Monaco's bundled workers provide (TypeScript/JavaScript, JSON, CSS, HTML); for
-every other language `Format document` is a no-op until a provider exists.
+For reading and light editing next to the git suite, with as much language
+intelligence as your machine already has installed. If `rust-analyzer` or
+`typescript-language-server` is on your `PATH`, VoidLink starts it and you get
+completions, hover, signature help, go-to-definition, references, real symbols,
+diagnostics and formatting. If neither is installed, none of that appears and
+nothing breaks — no error, no blocked editor, and no status chip. Formatting
+then falls back to whatever Monaco's bundled workers provide
+(TypeScript/JavaScript, JSON, CSS, HTML), and for every other language
+`Format document` stays a no-op.
+
+It is still not a full IDE: there is no debugger, no rename, no refactoring, no
+quick fixes and no extension API.
 
 ## How to use it
 
@@ -59,12 +67,15 @@ root, then the chain of symbols the cursor is inside. Clicking a symbol jumps to
 it; clicking the file name opens the symbol picker (`Mod+Shift+O`), which lists
 every symbol in the file with fuzzy filtering.
 
-Symbols come from Monaco's document-symbol contract. Until a language server
-exists, VoidLink registers its own regex-and-indentation outline for
-TypeScript, JavaScript, Rust, Go, Python and Markdown; other languages show the
-path and nothing after it. The parser is deliberately approximate — a symbol's
-range ends where the next same-or-shallower one begins — and is replaced, not
-extended, once a real provider is registered.
+Symbols come from Monaco's document-symbol contract. A running language server
+is preferred automatically; without one, VoidLink falls back to its own
+regex-and-indentation outline for TypeScript, JavaScript, Rust, Go, Python and
+Markdown, and other languages show the path and nothing after it. The fallback
+parser is deliberately approximate — a symbol's range ends where the next
+same-or-shallower one begins — and a server that answers with symbols replaces
+it for that language without either knowing about the other. A server that is
+still indexing answers with nothing, and the regex outline covers the gap
+rather than the breadcrumb emptying itself for ten seconds on every file open.
 
 ### The status bar
 
@@ -78,8 +89,14 @@ The right edge is reserved for the language server. It has five states — absen
 starting, ready, degraded, stopped — and *absent means absent*: with no server
 installed, there is no segment, not a permanent grey warning. A stopped server
 shows a `--destructive` LED that persists until you click it to restart, because
-a crash is not something a focus change should clear. The feed behind it lands
-with the LSP bridge; the states are wired now.
+a crash is not something a focus change should clear. Clicking a healthy
+segment opens that server's output log — its stderr, plus the absolute path of
+the binary that produced it, which is the first thing worth knowing when
+completions look wrong.
+
+The segment reports on the server for the file in front, not on every server
+running: opening a `.ts` tab next to a `.rs` one swaps which server the chip
+describes.
 
 ### Session restore
 
@@ -221,16 +238,41 @@ blocks, no mermaid, no math, and no relative-image resolution.
   because the file vanished loses more than it fixes.
 - **Autosave is off by default.** With it off, `Mod+S` is the only way to
   write — there is no save button.
-- **Format-on-save needs a provider.** With none registered for the language it
-  silently does nothing, which is the intended degradation, not a failure.
+- **Format-on-save needs a provider.** A language server supplies one; without
+  one (and outside the languages Monaco's own workers cover) it silently does
+  nothing, which is the intended degradation, not a failure.
 - **Dirty tracking is debounced 100 ms** and only clears on a successful save.
 - **Two editor groups maximum, and no scroll sync** between a file and its
   preview — preview is a sibling full-width tab, not a pane.
 - **Directory segments in the breadcrumb are labels, not buttons.** This window
   has no folder view to navigate to, so there is nothing for them to do yet.
-- **The outline is regex-based.** It misses declarations split across lines and
-  does not understand macros; it is a placeholder for a language server, not a
-  parser.
+- **The fallback outline is regex-based.** With no language server for the
+  language it misses declarations split across lines and does not understand
+  macros. A running server replaces it.
+- **Language servers are yours, not ours.** Nothing is bundled or downloaded.
+  Two are supported — `rust-analyzer` for `.rs` and `typescript-language-server`
+  for TS/JS — found on `PATH` or pointed at explicitly in Settings → Editor →
+  Language servers. `PATH` is augmented with the usual install directories
+  (`~/.cargo/bin`, `~/.local/bin`, Homebrew, a few version managers) because a
+  Finder-launched macOS app inherits almost none of your shell's.
+- **Adding a third server is a code change**, not a config file. There is no
+  plugin API and none is planned.
+- **Document sync is full-text, debounced 250 ms.** Every edit sends the whole
+  buffer rather than a range diff — simpler and impossible to desynchronise,
+  but it would matter on a very large file.
+- **A crashed server restarts up to five times** with a backoff, and toasts once
+  at three consecutive crashes, never on each cycle. Past that the status chip
+  stays `stopped` until you click it. The editor is never affected: a dead
+  server just means every provider answers "nothing".
+- **The bridge implements eight features and declines the rest.** Completion,
+  hover, signature help, definition, references, document symbols, diagnostics
+  and formatting. No rename, no code actions, no inlay hints, no semantic
+  tokens, no call hierarchy — and no `workspace/applyEdit`, so a server can
+  never write a file you did not ask it to.
+- **`Go to definition` across files goes through the command palette.** Monaco's
+  own F12 can only navigate inside a file that is already open, because this
+  window does not own the tab list; the palette entry asks the server and opens
+  the target through the workbench.
 - **A mounted preview ignores a changed `filePath` prop.** It is mounted per
   tab, so this is currently unreachable, but the effect that would handle it is
   a documented no-op.
