@@ -5,9 +5,11 @@ import { cssColorToHex, parseCssColor } from "./cssColor";
 import {
   deriveMonacoTheme,
   monacoThemeName,
+  otherMode,
   THEME_TOKEN_NAMES,
   VOIDLINK_DARK,
   VOIDLINK_LIGHT,
+  voidlinkThemeDefinitions,
   type ThemeTokens,
 } from "./monacoTheme";
 
@@ -123,6 +125,107 @@ describe("deriveMonacoTheme", () => {
   it("names the two themes by app mode", () => {
     expect(monacoThemeName("dark")).toBe(VOIDLINK_DARK);
     expect(monacoThemeName("light")).toBe(VOIDLINK_LIGHT);
+  });
+});
+
+/// The theme pair can never invert.
+///
+/// The bug this locks down: `applyVoidlinkTheme` used to define BOTH names from
+/// the one snapshot the cascade can hold. Under `solarized-light` that made
+/// `voidlink-dark` a "dark" theme whose `editor.background` was `#fdf6e3`. It
+/// only stayed invisible while the applied name always matched the tokens just
+/// read, and Monaco's dynamic import breaks that: a theme switch during the
+/// chunk load could apply `voidlink-dark` built from light tokens, which is the
+/// "editor background drifts to the opposite theme" report.
+///
+/// So: the active name is derived from the live tokens, and the *other* name is
+/// a colourless `base`-only definition — `vs` is light and `vs-dark` is dark by
+/// construction, so whichever name a stale `setTheme` lands on, it cannot show
+/// the wrong mode's body. Asserted for all ten themes, against the real CSS,
+/// because `--elev-1` is `var(--background)` and each theme redefines that.
+describe("the light and dark definitions can never invert", () => {
+  const SRC = join(__dirname, "..", "..");
+  const indexCss = readFileSync(join(SRC, "index.css"), "utf8");
+  const themesCss = readFileSync(join(SRC, "themes.css"), "utf8");
+
+  function backgroundOf(css: string, selector: string): string {
+    const at = css.indexOf(`${selector} {`);
+    if (at === -1) throw new Error(`no rule for ${selector}`);
+    const open = css.indexOf("{", at);
+    const body = css.slice(open + 1, css.indexOf("}", open));
+    const m = body.match(/--background:\s*([^;]+);/);
+    if (!m) throw new Error(`no --background in ${selector}`);
+    return m[1].trim();
+  }
+
+  /// Every VoidLink theme, its mode, and the island colour the editor body takes
+  /// (`--elev-1` is `var(--background)`, see index.css). Ten entries, because ten
+  /// is the number of themes the app ships.
+  const ALL_THEMES: { id: string; mode: "dark" | "light"; selector: string; css: string }[] = [
+    { id: "dark", mode: "dark", selector: ":root", css: indexCss },
+    { id: "light", mode: "light", selector: ":root.light", css: indexCss },
+    ...(
+      [
+        ["github-dark", "dark"],
+        ["github-light", "light"],
+        ["monokai", "dark"],
+        ["solarized-dark", "dark"],
+        ["solarized-light", "light"],
+        ["nord", "dark"],
+        ["dracula", "dark"],
+        ["one-dark", "dark"],
+      ] as const
+    ).map(([id, mode]) => ({
+      id,
+      mode,
+      selector: `:root.${mode}[data-theme="${id}"]`,
+      css: themesCss,
+    })),
+  ];
+
+  /// Mean channel value, 0-1. Every VoidLink dark theme sits below 0.20 and
+  /// every light one above 0.85, so a midpoint threshold is not a close call —
+  /// it separates "dark body" from "light body" with a wide margin.
+  function brightness(hex: string): number {
+    const m = hex.match(/^#([0-9a-fA-F]{6})/);
+    if (!m) throw new Error(`not a 6-digit hex: ${hex}`);
+    const n = Number.parseInt(m[1], 16);
+    return ((n >> 16) + ((n >> 8) & 0xff) + (n & 0xff)) / (3 * 255);
+  }
+
+  it("covers all ten themes", () => {
+    expect(ALL_THEMES).toHaveLength(10);
+  });
+
+  it.each(ALL_THEMES)(
+    "$id: the applied name carries a $mode body and the other name carries none",
+    ({ mode, selector, css }) => {
+      const bg = backgroundOf(css, selector);
+      const defs = voidlinkThemeDefinitions(mode, tokens({ "--elev-1": bg, "--background": bg }));
+
+      const active = defs[monacoThemeName(mode)];
+      const inactive = defs[monacoThemeName(otherMode(mode))];
+
+      // The applied theme's body is on the right side of the line.
+      const lit = brightness(active.colors["editor.background"]);
+      if (mode === "dark") expect(lit).toBeLessThan(0.5);
+      else expect(lit).toBeGreaterThan(0.5);
+
+      // The other name names no background at all, so it inherits its stock
+      // base's — which is the correct mode by construction. This is the
+      // assertion that used to fail: it carried the active theme's hex.
+      expect(inactive.colors["editor.background"]).toBeUndefined();
+      expect(inactive.base).toBe(otherMode(mode) === "light" ? "vs" : "vs-dark");
+      expect(inactive.rules).toEqual([]);
+    },
+  );
+
+  it("registers exactly the two names, whichever mode is active", () => {
+    for (const mode of ["dark", "light"] as const) {
+      expect(Object.keys(voidlinkThemeDefinitions(mode, tokens())).sort()).toEqual(
+        [VOIDLINK_DARK, VOIDLINK_LIGHT].sort(),
+      );
+    }
   });
 });
 

@@ -99,7 +99,18 @@ class EditorController {
   /// Early-returns while that group already has an editor — the same contract
   /// the single-editor version had, now per group, because `EditorHost` can
   /// re-run `onMount` against a group that was never torn down.
-  async init(container: HTMLElement, mode: ThemeMode = "dark", groupId: GroupId = "primary") {
+  ///
+  /// `mode` is an accessor, not a value, and that is load-bearing: the first
+  /// `loadMonaco()` fetches a chunk (200-500ms cold), and a theme switch during
+  /// that window used to leave a snapshotted `mode` behind. The editor then read
+  /// the *new* cascade's tokens and registered them under the *old* mode's name,
+  /// so a light theme could be applied as `voidlink-dark` — a light body under a
+  /// dark inheritance floor. Reading it after the await is the whole fix.
+  async init(
+    container: HTMLElement,
+    mode: () => ThemeMode = () => "dark",
+    groupId: GroupId = "primary",
+  ) {
     if (this.groups.has(groupId)) return;
 
     // MonacoEnvironment is configured inside loadMonaco(), before Monaco can
@@ -112,9 +123,13 @@ class EditorController {
     // first one's slot.
     if (this.groups.has(groupId)) return;
 
+    // Read the mode *now*, after every await above, so it and the tokens
+    // `applyVoidlinkTheme` is about to read come from the same cascade.
+    const liveMode = mode();
+
     // Define the VoidLink themes before the first `create`, so the editor never
     // paints a frame of stock `vs-dark` on top of a solarized shell.
-    applyVoidlinkTheme(monaco, mode);
+    applyVoidlinkTheme(monaco, liveMode);
     // Symbols for the languages Monaco has no provider for. Idempotent — every
     // group's init calls it, exactly one registration happens.
     installOutlineProvider(monaco);
@@ -122,7 +137,7 @@ class EditorController {
     const editor = monaco.editor.create(container, {
       ...editorOptions(this.settings),
       model: null,
-      theme: monacoThemeName(mode),
+      theme: monacoThemeName(liveMode),
     });
 
     const group: EditorGroup = { id: groupId, editor, activePath: null, disposables: [] };

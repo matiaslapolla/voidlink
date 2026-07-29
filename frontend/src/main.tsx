@@ -4,6 +4,7 @@ import GitApp from "./GitApp.tsx";
 import EditorApp from "./EditorApp.tsx";
 import { initPlatform } from "@/api/platform";
 import { isEditorWindow, isGitWindow } from "@/api/windows";
+import { bridgeThemeAcrossWindows } from "@/store/theme";
 import "./index.css";
 
 // One bundle serves all three windows; the Tauri window label decides which
@@ -15,6 +16,12 @@ import "./index.css";
 // flashing the wrong shell. initPlatform never rejects.
 void initPlatform().then(() => {
   const root = document.getElementById("root")!;
+  // Every root, not just the satellites: the theme picker lives in the
+  // workbench today but nothing about the channel assumes that, and a workbench
+  // that ignored the broadcast would be the next asymmetry to debug. Installed
+  // here rather than in a component because it is per *window*, and the roots
+  // are the only per-window scope there is.
+  bridgeThemeAcrossWindows();
   if (isGitWindow()) {
     document.title = "Voidlink Git";
     render(() => <GitApp />, root);

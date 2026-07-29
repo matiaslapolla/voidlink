@@ -43,6 +43,26 @@ export function EditorHost(props: EditorHostProps) {
     void editorController.setVimMode(on);
   });
 
+  // Keep Monaco's theme in sync with the app theme.
+  //
+  // In the component body for the same reason as the two effects above, and it
+  // matters more here: created inside `onMount`'s async callback (after `init`
+  // and `showInGroup`) this had no owner, so it leaked one subscription per
+  // mount cycle *and* — because `init` can reject — was sometimes never created
+  // at all, leaving that window unable to follow a theme change for the rest of
+  // the session. That is the "the editor keeps the old theme" report.
+  //
+  // It tracks `theme()` and not just `mode()` because the eight named themes
+  // swap every token without changing mode — `monokai` → `dracula` is a colour
+  // change Monaco has to follow, and reading `mode()` alone would miss it.
+  //
+  // Running before Monaco exists is fine: `setThemeMode` no-ops without it, and
+  // `init` applies the current theme itself before the first `create`.
+  createEffect(() => {
+    theme();
+    editorController.setThemeMode(mode());
+  });
+
   // Registered here, not inside `onMount`: that callback is async, and after the
   // first await Solid's owner is gone, so an `onCleanup` in there would never
   // run. Unmounting really happens — in stacked mode the editor is a view, and
@@ -54,20 +74,12 @@ export function EditorHost(props: EditorHostProps) {
   onCleanup(() => editorController.disposeGroup(groupId()));
 
   onMount(async () => {
-    await editorController.init(containerRef, mode(), groupId());
+    // `mode` goes in as an accessor: `init` awaits the Monaco chunk before it
+    // reads the theme, and a value snapshotted here would be stale by then.
+    await editorController.init(containerRef, mode, groupId());
 
     const seed = props.seedPath?.() ?? null;
     if (seed) await editorController.showInGroup(groupId(), seed);
-
-    // Keep Monaco's theme in sync with the app theme. init() already applied
-    // the current value; this effect handles future changes. It tracks
-    // `theme()` and not just `mode()` because the eight named themes swap every
-    // token without changing mode — `monokai` → `dracula` is a colour change
-    // Monaco has to follow, and reading `mode()` alone would miss it.
-    createEffect(() => {
-      theme();
-      editorController.setThemeMode(mode());
-    });
 
     // Save is not handled here. ⌘S / Ctrl+S is a `file.save` entry in
     // `commands/keymap.ts` — feature components own no key handling, and

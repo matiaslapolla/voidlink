@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { onThemeChange, publishThemeChange } from "@/api/windows";
 
 export type ThemeMode = "dark" | "light";
 
@@ -89,7 +90,18 @@ function getThemeDef(id: string): ThemeDef {
   return THEMES.find((t) => t.id === id) ?? THEMES[0];
 }
 
-function applyTheme(id: string) {
+/// Write the theme into this document and tell the other windows.
+///
+/// Mutating `<html>` is inherently per-document, and until the broadcast existed
+/// that was the *entire* propagation mechanism: `localStorage` is shared but
+/// nothing re-read it, so a satellite window (which hydrates once, at module
+/// eval, and is reused rather than recreated) kept whatever theme it opened on
+/// forever. This is the single mutation point, so it is also the single place
+/// the change has to leave the window from.
+///
+/// `broadcast` is false when we are *applying* a remote change — see
+/// `bridgeThemeAcrossWindows` for why re-publishing would ping-pong.
+function applyTheme(id: string, broadcast = true) {
   const def = getThemeDef(id);
   const root = document.documentElement;
 
@@ -106,18 +118,46 @@ function applyTheme(id: string) {
   }
 
   localStorage.setItem(STORAGE_KEY, id);
+  if (broadcast) void publishThemeChange(id);
 }
 
-// Apply immediately on load (no flash)
+// Apply immediately on load (no flash). Deliberately does not broadcast: this
+// is us catching up to the stored value, not a change anyone else has to hear,
+// and a satellite booting would otherwise shout its stale hydration at the
+// workbench.
 const initial = loadTheme();
-applyTheme(initial);
+applyTheme(initial, false);
 
 const [themeId, setThemeIdRaw] = createSignal<string>(initial);
 
-function setTheme(id: string) {
+function setTheme(id: string, broadcast = true) {
   if (!THEMES.some((t) => t.id === id)) return;
+  // Idempotent: re-applying the theme already on screen would redefine the
+  // Monaco themes and repaint every editor for nothing, and it is the second
+  // line of defence against a broadcast loop.
+  if (id === themeId()) return;
   setThemeIdRaw(id);
-  applyTheme(id);
+  applyTheme(id, broadcast);
+}
+
+/// Follow theme changes made in another window. Call once per window root.
+///
+/// Returns a disposer for symmetry with `bridgeGitRefsAcrossWindows`; in
+/// practice the roots live as long as the window does.
+export function bridgeThemeAcrossWindows(): () => void {
+  let disposed = false;
+  let unlisten: (() => void) | null = null;
+  // `broadcast: false` — the sender already told everyone. Echoing it back
+  // would have this window and the sender hand the same value to each other
+  // forever (the `source` guard only drops our *own* emit, not the cycle).
+  void onThemeChange((id) => setTheme(id, false)).then((fn) => {
+    if (disposed) void fn();
+    else unlisten = fn;
+  });
+  return () => {
+    disposed = true;
+    if (unlisten) unlisten();
+  };
 }
 
 /**
@@ -156,8 +196,10 @@ export function useTheme() {
     theme: themeId,
     /** Current mode: "dark" or "light" */
     mode: () => getThemeDef(themeId()).mode,
-    /** Set theme by ID */
-    setTheme,
+    /** Set theme by ID. Wrapped rather than passed through so the internal
+     * `broadcast` flag stays internal — a UI that suppressed it would silently
+     * reintroduce the cross-window drift this channel exists to fix. */
+    setTheme: (id: string) => setTheme(id),
     /** Toggle between dark/light (with smart pairing) */
     toggleTheme,
     /** All available theme definitions */

@@ -61,24 +61,28 @@ function backgroundOf(css: string, selector: string): string {
 }
 
 /// Every block in the app that defines its own `--background`, with the mode
-/// whose `--canvas` rule applies to it. `store/theme.ts` sets the `light`
-/// class and `data-theme` together, so a `:root.light[data-theme=...]` block
-/// is always matched by the `:root.light` canvas rule, never by `:root`'s.
+/// whose `--canvas` rule applies to it. `store/theme.ts` sets the mode class and
+/// `data-theme` together, so a `:root.light[data-theme=...]` block is always
+/// matched by the `:root.light` canvas rule, never by `:root`'s.
+///
+/// Both halves name their mode class. The dark blocks used to be a bare
+/// `:root[data-theme=...]`, which tied on specificity with `:root.light` and lost
+/// the tie to import order — see the header of `themes.css`.
 const SURFACES: { name: string; css: string; selector: string; mode: "dark" | "light" }[] = [
   { name: "default dark", css: indexCss, selector: ":root", mode: "dark" },
   { name: "default light", css: indexCss, selector: ":root.light", mode: "light" },
-  { name: "github-dark", css: themesCss, selector: ':root[data-theme="github-dark"]', mode: "dark" },
+  { name: "github-dark", css: themesCss, selector: ':root.dark[data-theme="github-dark"]', mode: "dark" },
   {
     name: "github-light",
     css: themesCss,
     selector: ':root.light[data-theme="github-light"]',
     mode: "light",
   },
-  { name: "monokai", css: themesCss, selector: ':root[data-theme="monokai"]', mode: "dark" },
+  { name: "monokai", css: themesCss, selector: ':root.dark[data-theme="monokai"]', mode: "dark" },
   {
     name: "solarized-dark",
     css: themesCss,
-    selector: ':root[data-theme="solarized-dark"]',
+    selector: ':root.dark[data-theme="solarized-dark"]',
     mode: "dark",
   },
   {
@@ -87,9 +91,9 @@ const SURFACES: { name: string; css: string; selector: string; mode: "dark" | "l
     selector: ':root.light[data-theme="solarized-light"]',
     mode: "light",
   },
-  { name: "nord", css: themesCss, selector: ':root[data-theme="nord"]', mode: "dark" },
-  { name: "dracula", css: themesCss, selector: ':root[data-theme="dracula"]', mode: "dark" },
-  { name: "one-dark", css: themesCss, selector: ':root[data-theme="one-dark"]', mode: "dark" },
+  { name: "nord", css: themesCss, selector: ':root.dark[data-theme="nord"]', mode: "dark" },
+  { name: "dracula", css: themesCss, selector: ':root.dark[data-theme="dracula"]', mode: "dark" },
+  { name: "one-dark", css: themesCss, selector: ':root.dark[data-theme="one-dark"]', mode: "dark" },
 ];
 
 /// Below this, two surfaces separated only by lightness read as one surface.

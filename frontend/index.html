@@ -6,11 +6,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Voidlink</title>
     <script>
-      // Apply saved theme before first paint to prevent flash
+      // Apply the saved theme before first paint, so frame one is the palette
+      // the user chose rather than default dark.
+      //
+      // This has to do BOTH things `store/theme.ts#applyTheme` does — the mode
+      // class *and* `data-theme` — because eight of the ten themes are selected
+      // purely by the attribute. Setting only the class used to paint the first
+      // frame in default dark/light for all eight, and worse: `github-light`
+      // and `solarized-light` are light themes that are not the string
+      // "light", so they got `.dark` and inverted until Solid booted.
+      //
+      // LIGHT_THEMES must match the `mode: "light"` entries in
+      // `frontend/src/store/theme.ts`. It cannot import them — this runs before
+      // any module — so it is duplicated here and nowhere else.
       try {
-        var t = localStorage.getItem("voidlink-theme");
-        if (t === "light") document.documentElement.classList.add("light");
-        else document.documentElement.classList.add("dark");
+        var LIGHT_THEMES = ["light", "github-light", "solarized-light"];
+        var t = localStorage.getItem("voidlink-theme") || "dark";
+        var root = document.documentElement;
+        root.classList.add(LIGHT_THEMES.indexOf(t) === -1 ? "dark" : "light");
+        // The default pair carry no attribute: they are `:root` / `:root.light`.
+        if (t !== "dark" && t !== "light") root.setAttribute("data-theme", t);
       } catch(e) { document.documentElement.classList.add("dark"); }
     </script>
   </head>

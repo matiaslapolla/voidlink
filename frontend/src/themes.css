@@ -5,6 +5,17 @@
  * The default "dark" and "light" themes use :root / :root.light in index.css.
  * These overrides set ALL CSS variables so themes are self-contained.
  *
+ * Every block is qualified by its MODE CLASS as well as the attribute —
+ * `:root.dark[data-theme="nord"]`, not `:root[data-theme="nord"]`. Not
+ * decoration: `:root.light` in index.css is 0-2-0, a bare
+ * `:root[data-theme="…"]` is also 0-2-0, and this file is @imported FIRST, so on
+ * a tie `:root.light` won. Any moment where the class and the attribute
+ * disagreed — a pre-paint script that set one and not the other, a half-applied
+ * theme — painted light tokens under a dark theme. `store/theme.ts` sets both
+ * atomically so it is unreachable today; 0-3-0 makes it unreachable by
+ * construction. The light blocks already read `:root.light[data-theme="…"]`,
+ * so this is only making the dark half symmetric.
+ *
  * Colors use oklch for perceptual uniformity, converted from the reference
  * hex palettes.
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -12,7 +23,7 @@
 /* ── GitHub Dark ────────────────────────────────────────────────────────────
  * bg #0d1117  fg #e6edf3  primary #58a6ff  border #30363d  sidebar #010409
  */
-:root[data-theme="github-dark"] {
+:root.dark[data-theme="github-dark"] {
   color-scheme: dark;
 
   --background: oklch(0.140 0.010 250);
@@ -114,7 +125,7 @@
 /* ── Monokai ────────────────────────────────────────────────────────────────
  * bg #272822  fg #f8f8f2  primary #a6e22e  accent-yellow #e6db74  border #3e3d32
  */
-:root[data-theme="monokai"] {
+:root.dark[data-theme="monokai"] {
   color-scheme: dark;
 
   --background: oklch(0.220 0.015 100);
@@ -165,7 +176,7 @@
 /* ── Solarized Dark ─────────────────────────────────────────────────────────
  * bg #002b36  fg #839496  primary #268bd2  border #073642
  */
-:root[data-theme="solarized-dark"] {
+:root.dark[data-theme="solarized-dark"] {
   color-scheme: dark;
 
   --background: oklch(0.240 0.040 220);
@@ -267,7 +278,7 @@
 /* ── Nord ───────────────────────────────────────────────────────────────────
  * bg #2e3440  fg #eceff4  primary #88c0d0  border #3b4252
  */
-:root[data-theme="nord"] {
+:root.dark[data-theme="nord"] {
   color-scheme: dark;
 
   --background: oklch(0.265 0.015 250);
@@ -318,7 +329,7 @@
 /* ── Dracula ────────────────────────────────────────────────────────────────
  * bg #282a36  fg #f8f8f2  primary #bd93f9  border #44475a
  */
-:root[data-theme="dracula"] {
+:root.dark[data-theme="dracula"] {
   color-scheme: dark;
 
   --background: oklch(0.235 0.020 285);
@@ -369,7 +380,7 @@
 /* ── One Dark ───────────────────────────────────────────────────────────────
  * bg #282c34  fg #abb2bf  primary #61afef  border #3e4452
  */
-:root[data-theme="one-dark"] {
+:root.dark[data-theme="one-dark"] {
   color-scheme: dark;
 
   --background: oklch(0.240 0.012 260);
