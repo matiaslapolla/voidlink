@@ -881,7 +881,13 @@ function TabGroupChip(props: {
       onDrop={props.onDrop}
       onDragEnd={props.onDragEnd}
       onContextMenu={props.onContextMenu}
-      class="flex items-center gap-1.5 pl-2 pr-1.5 h-full border-r border-border shrink-0 text-[12px] select-none cursor-pointer text-muted-foreground hover:text-foreground transition-colors"
+      // A chip is a tab card that happens to hold a group rather than a
+      // document, so it takes the same geometry: `h-7` inside the `h-9` strip,
+      // `--space-3xs` of separation, `--island-radius-inner`. It keeps a
+      // permanent transparent border for the same reason the cards do — state
+      // moves `border-color` and `background-color` only, never
+      // `border-width`, so hovering a chip cannot reflow the strip (§7.6).
+      class="flex items-center gap-1.5 pl-2 pr-1.5 h-7 mx-[var(--space-3xs)] rounded-[var(--island-radius-inner)] border border-transparent shrink-0 text-[12px] select-none cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60 transition-colors"
       classList={{ "opacity-50": props.dragging }}
       title={
         props.group.collapsed
@@ -983,7 +989,7 @@ function TabGroupContextMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[9999] py-1 text-[13px]"
+            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[13px]"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <div class="px-3 py-1 text-[11px] text-muted-foreground truncate border-b border-border/50">
