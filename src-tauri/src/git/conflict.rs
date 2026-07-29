@@ -1,5 +1,7 @@
-use git2::{Repository, StatusOptions};
+use git2::StatusOptions;
 use serde::{Deserialize, Serialize};
+
+use super::repo::open_repo;
 
 /// Versions of a conflicted file that the index has stored at the
 /// three merge stages. `working` is what's currently on disk (the
@@ -17,8 +19,14 @@ pub struct ConflictVersions {
 /// List paths the index marks as conflicted. We use `StatusOptions`
 /// rather than walking the index manually so submodules / ignored
 /// rules behave the same as `git status`.
+///
+/// Opened with `discover`, like every other command: `Repository::open` requires
+/// the exact repo root, so with `repoPath` pointing at a subdirectory this threw
+/// — and because it is called *before* the refresh broadcast on the
+/// conflict-routing path, its throw swallowed the refresh and the
+/// "operation in progress" banner never appeared at all.
 pub(crate) fn git_list_conflicts_impl(repo_path: String) -> Result<Vec<String>, String> {
-    let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
+    let repo = open_repo(&repo_path)?;
     let mut opts = StatusOptions::new();
     opts.include_untracked(false).include_ignored(false);
     let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
@@ -39,12 +47,13 @@ pub(crate) fn git_list_conflicts_impl(repo_path: String) -> Result<Vec<String>, 
 ///   - 1 = base (common ancestor)
 ///   - 2 = ours (current branch)
 ///   - 3 = theirs (the branch we're merging in)
+///
 /// Missing stages can occur for add/add or delete/modify conflicts.
 pub(crate) fn git_conflict_versions_impl(
     repo_path: String,
     file_path: String,
 ) -> Result<ConflictVersions, String> {
-    let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
+    let repo = open_repo(&repo_path)?;
     let workdir = repo
         .workdir()
         .ok_or_else(|| "bare repos can't have conflicts".to_string())?;
@@ -100,7 +109,7 @@ pub(crate) fn git_resolve_conflict_impl(
     file_path: String,
     content: String,
 ) -> Result<(), String> {
-    let repo = Repository::open(&repo_path).map_err(|e| e.to_string())?;
+    let repo = open_repo(&repo_path)?;
     let workdir = repo
         .workdir()
         .ok_or_else(|| "bare repos can't be resolved".to_string())?;

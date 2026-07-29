@@ -208,7 +208,7 @@ fn submit_one(
     // No existing PR. Create one as draft so the user gets to review what
     // voidlink opened before requesting reviewers.
     let create_url = format!("{}/repos/{}/{}/pulls", GITHUB_API, owner, repo_name);
-    let title = format!("{}", branch);
+    let title = branch.to_string();
     let body = patch_footer(None, footer);
     let payload = serde_json::json!({
         "title": title,

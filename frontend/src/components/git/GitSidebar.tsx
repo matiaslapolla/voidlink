@@ -83,6 +83,8 @@ import { pushToast } from "@/commands/toast";
 import { shortcutLabel } from "@/commands/shortcuts";
 import { textPrompt } from "@/commands/prompt";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
+import { createInFlight, dedupeConcurrent } from "@/commands/inflight";
+import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import {
   AI_COMMIT_REQUEST_EVENT,
@@ -94,13 +96,24 @@ import type { GitCommitInfo } from "@/types/git";
 
 type LucideIcon = Component<{ class?: string }>;
 
-function IconBtn(props: { label: string; onClick: () => void; children: JSX.Element; class?: string }) {
+/// A header icon button. `disabled` exists because Fetch (and every Remotes
+/// action) sat next to a Pull button that had one, with nothing stopping a second
+/// click while the first request was still out.
+function IconBtn(props: {
+  label: string;
+  onClick: () => void;
+  children: JSX.Element;
+  class?: string;
+  disabled?: boolean;
+  title?: string;
+}) {
   return (
     <button
       onClick={props.onClick}
+      disabled={props.disabled}
       aria-label={props.label}
-      title={props.label}
-      class={`p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors ${props.class ?? ""}`}
+      title={props.title ?? props.label}
+      class={`p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${props.class ?? ""}`}
     >
       {props.children}
     </button>
@@ -270,6 +283,19 @@ export function GitSidebar(props: GitSidebarProps) {
 
   const isRefreshing = () => repoInfo.loading || status.loading;
 
+  /// `repoInfo()` rethrows when the resource errored, and this component reads it
+  /// straight inside JSX — the header, the ahead/behind button, the operation
+  /// banner's `<Show>`. One failing read there took the whole aside down, so the
+  /// header goes through accessors that turn an error into "no data plus a
+  /// message" instead. The sections get a real ErrorBoundary; the header cannot,
+  /// because losing the header means losing the refresh button that fixes it.
+  const info = () => (repoInfo.error ? null : (repoInfo() ?? null));
+  const infoError = () => {
+    const e: unknown = repoInfo.error;
+    if (!e) return "";
+    return e instanceof Error ? e.message : String(e);
+  };
+
   // ── The freshness contract (§7.5.4) ──────────────────────────────────────
   // Ahead/behind, the dirty marker and the branch state are the numbers most
   // likely to go stale: nothing local has to happen for the remote to move
@@ -280,7 +306,7 @@ export function GitSidebar(props: GitSidebarProps) {
   const clock = createFreshnessClock();
   const [readAt, setReadAt] = createSignal<number | null>(null);
   createEffect(() => {
-    if (!isRefreshing() && repoInfo() !== undefined) setReadAt(Date.now());
+    if (!isRefreshing() && info() !== null) setReadAt(Date.now());
   });
   const freshness = () =>
     freshnessOf({ loading: isRefreshing(), readAt: readAt(), now: clock() });
@@ -311,19 +337,46 @@ export function GitSidebar(props: GitSidebarProps) {
     });
   });
 
+  /// Compare the current branch against its upstream.
+  ///
+  /// No upstream means there is nothing to compare *against* — falling back to
+  /// "main" invented a ref that may not exist in this repo (and is the wrong
+  /// answer even when it does), so the compare tab opened onto an error.
   function openUpstreamCompare() {
-    const info = repoInfo();
-    if (!info?.currentBranch) return;
-    const base = info.upstream ?? "main";
+    const current = info();
+    if (!current?.currentBranch) return;
+    if (!current.upstream) {
+      pushToast(
+        `${current.currentBranch} has no upstream — push it first, or use Compare branches.`,
+        "info",
+        4000,
+      );
+      return;
+    }
     actions.openCompareTab(props.worktreeId, {
-      baseRef: base,
-      headRef: info.currentBranch,
+      baseRef: current.upstream,
+      headRef: current.currentBranch,
       useMergeBase: false,
     });
   }
 
   const [syncing, setSyncing] = createSignal(false);
   const [remotesOpen, setRemotesOpen] = createSignal(false);
+
+  /// Why Pull cannot run right now, or `null` when it can.
+  ///
+  /// Enabled-in-every-state meant clicking it on a detached HEAD, an unborn
+  /// branch or a branch with no upstream produced a raw porcelain error string in
+  /// a toast. The button now says the reason before you press it.
+  const pullBlockedReason = (): string | null => {
+    const current = info();
+    if (!current) return null;
+    if (current.operation) return `Finish or abort the ${current.operation} first`;
+    if (current.isDetached) return "HEAD is detached — check out a branch to pull";
+    if (!current.headOid) return "This branch has no commits yet — nothing to pull into";
+    if (!current.upstream) return "No upstream is set for this branch";
+    return null;
+  };
 
   async function doFetch() {
     setSyncing(true);
@@ -431,17 +484,26 @@ export function GitSidebar(props: GitSidebarProps) {
         <GitBranch class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
         <span
           class={`font-medium truncate ${freshnessClass(freshness())}`}
-          title={freshTitle() || (repoInfo()?.upstream ?? "no upstream")}
+          title={infoError() || freshTitle() || (info()?.upstream ?? "no upstream")}
         >
-          {repoInfo()?.currentBranch ?? "—"}
+          {info()?.currentBranch ?? "—"}
         </span>
-        <Show when={(repoInfo()?.ahead ?? 0) > 0 || (repoInfo()?.behind ?? 0) > 0}>
+        {/* The repo state failed to read. Said out loud rather than rendered as
+            a dash that looks like "no branch". */}
+        <Show when={infoError()}>
+          <span class="text-destructive truncate" title={infoError()}>
+            git state unavailable
+          </span>
+        </Show>
+        <Show when={(info()?.ahead ?? 0) > 0 || (info()?.behind ?? 0) > 0}>
           <button
             onClick={openUpstreamCompare}
             title={
-              repoInfo()?.upstream
-                ? `Compare with ${repoInfo()!.upstream}`
-                : "Compare with main"
+              info()?.aheadBehindUnknown
+                ? "Ahead/behind could not be computed here (shallow clone?)"
+                : info()?.upstream
+                  ? `Compare with ${info()!.upstream}`
+                  : "No upstream to compare with"
             }
             aria-label="Compare with upstream"
             class="flex items-center gap-1 px-1 rounded hover:bg-accent/60 transition-colors tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -449,16 +511,16 @@ export function GitSidebar(props: GitSidebarProps) {
             {/* The freshness class goes on the value, never on the container
                 (§7.5.4) — the number is what the reader is trusting. */}
             <span class={`flex items-center gap-1 ${freshnessClass(freshness())}`}>
-              <Show when={(repoInfo()?.ahead ?? 0) > 0}>
-                <span class="text-success">↑{repoInfo()!.ahead}</span>
+              <Show when={(info()?.ahead ?? 0) > 0}>
+                <span class="text-success">↑{info()!.ahead}</span>
               </Show>
-              <Show when={(repoInfo()?.behind ?? 0) > 0}>
-                <span class="text-destructive">↓{repoInfo()!.behind}</span>
+              <Show when={(info()?.behind ?? 0) > 0}>
+                <span class="text-destructive">↓{info()!.behind}</span>
               </Show>
             </span>
           </button>
         </Show>
-        <Show when={repoInfo()?.isClean === false}>
+        <Show when={info()?.isClean === false}>
           <span class={`text-warning text-xs ${freshnessClass(freshness())}`} title={freshTitle()}>
             • changes
           </span>
@@ -478,23 +540,28 @@ export function GitSidebar(props: GitSidebarProps) {
           </button>
         </Show>
         <div class="ml-auto flex items-center gap-0.5">
-          <IconBtn label="Fetch from origin" onClick={() => void doFetch()}>
+          <IconBtn
+            label="Fetch from origin"
+            onClick={() => void doFetch()}
+            disabled={syncing()}
+          >
             <DownloadCloud class={`w-3 h-3 ${syncing() ? "animate-pulse" : ""}`} />
           </IconBtn>
           <button
             onClick={() => void doPull()}
-            disabled={syncing()}
+            disabled={syncing() || pullBlockedReason() !== null}
             aria-label="Pull from origin"
             title={
-              (repoInfo()?.behind ?? 0) > 0
-                ? `Pull ${repoInfo()!.behind} commit(s) from upstream`
-                : "Pull from origin"
+              pullBlockedReason() ??
+              ((info()?.behind ?? 0) > 0
+                ? `Pull ${info()!.behind} commit(s) from upstream`
+                : "Pull from origin")
             }
             class="flex items-center gap-0.5 px-1 py-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors disabled:opacity-40 tabular-nums"
           >
             <ArrowDownToLine class="w-3 h-3" />
-            <Show when={(repoInfo()?.behind ?? 0) > 0}>
-              <span class="text-[10px] text-destructive">{repoInfo()!.behind}</span>
+            <Show when={(info()?.behind ?? 0) > 0}>
+              <span class="text-[10px] text-destructive">{info()!.behind}</span>
             </Show>
           </button>
           <IconBtn label="Manage remotes" onClick={() => setRemotesOpen(true)}>
@@ -524,13 +591,13 @@ export function GitSidebar(props: GitSidebarProps) {
       <RemotesDialog repoPath={props.repoPath} open={remotesOpen()} onClose={() => setRemotesOpen(false)} />
 
       {/* Operation-in-progress banner (merge/rebase/cherry-pick/revert) */}
-      <Show when={repoInfo()?.operation}>
+      <Show when={info()?.operation}>
         {(op) => (
           <OperationBanner
             repoPath={props.repoPath}
             worktreeId={props.worktreeId}
             operation={op()}
-            hasConflicts={repoInfo()?.hasConflicts ?? false}
+            hasConflicts={info()?.hasConflicts ?? false}
           />
         )}
       </Show>
@@ -555,7 +622,11 @@ export function GitSidebar(props: GitSidebarProps) {
               canMoveUp={i() > 0}
               canMoveDown={i() < state.gitSectionOrder.length - 1}
             >
-              {renderSection(key)}
+              {/* Per-section rather than one boundary around the lot: a repo
+                  state that breaks History should not take Changes with it. */}
+              <GitErrorBoundary surface={SECTION_LABELS[key]} onRetry={refreshAll}>
+                {renderSection(key)}
+              </GitErrorBoundary>
             </Section>
           )}
         </For>
@@ -591,6 +662,8 @@ export function ChangesPane(props: {
 }) {
   const { actions } = useAppStore();
   const { settings, setRepoIdentity } = useSettings();
+  // One gate for every mutating action this pane offers. See commands/inflight.
+  const { busy, run } = createInFlight();
   const [commitMsg, setCommitMsg] = createSignal("");
   const [committing, setCommitting] = createSignal(false);
   const [commitError, setCommitError] = createSignal("");
@@ -758,20 +831,59 @@ export function ChangesPane(props: {
       pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
     }
   }
+  /// Discard everything, saying what "everything" actually covers.
+  ///
+  /// The old copy said "ALL changes … Tracked files revert to HEAD" while sitting
+  /// in the *unstaged* header, which was wrong twice: `checkout_head` discards
+  /// staged work too (so the wording undersold what was about to happen), and it
+  /// passed `includeUntracked: false` (so on an untracked-only tree the user
+  /// confirmed a destructive action and nothing happened at all). Untracked files
+  /// are now their own explicit question, because deleting files git does not
+  /// know about is a different decision from reverting tracked ones.
   async function discardAllChanges() {
-    const ok = await dialogConfirm(
-      "Discard ALL changes in the working tree? Tracked files revert to HEAD. This cannot be undone.",
-      { title: "Discard all changes", kind: "warning" },
-    );
-    if (!ok) return;
-    try {
-      await gitApi.discardAll(props.repoPath, false);
-      pushToast("Discarded working-tree changes", "info", 2500);
-      emitGitRefsChanged();
-      props.onRefresh();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+    const all = props.status ?? [];
+    const untracked = all.filter((f) => f.status === "untracked");
+    const tracked = all.filter((f) => f.status !== "untracked");
+
+    if (all.length === 0) {
+      pushToast("Nothing to discard — the working tree is clean.", "info", 2500);
+      return;
     }
+
+    let includeUntracked = false;
+    if (tracked.length > 0) {
+      const ok = await dialogConfirm(
+        `Discard all changes to ${tracked.length} tracked file(s)? Staged and unstaged edits both revert to HEAD. This cannot be undone.`,
+        { title: "Discard tracked changes", kind: "warning" },
+      );
+      if (!ok) return;
+    }
+    if (untracked.length > 0) {
+      includeUntracked = await dialogConfirm(
+        `Also delete ${untracked.length} untracked file(s) from disk? They are not in git, so this cannot be undone.`,
+        { title: "Delete untracked files", kind: "warning" },
+      );
+      // Nothing at all was confirmed — don't run a no-op that reports success.
+      if (!includeUntracked && tracked.length === 0) return;
+    }
+
+    await run(async () => {
+      try {
+        await gitApi.discardAll(props.repoPath, includeUntracked);
+        pushToast(
+          includeUntracked
+            ? "Discarded tracked changes and deleted untracked files"
+            : "Discarded changes to tracked files",
+          "info",
+          2500,
+        );
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+        props.onRefresh();
+      }
+    });
   }
   async function stashChanges() {
     const res = await promptWithToggles({
@@ -1246,12 +1358,16 @@ export function ChangesPane(props: {
           <span class="flex-1">
             Changes (<span class="tabular-nums">{unstagedRows().length}</span>)
           </span>
-          <Show when={unstaged().length > 0}>
+          {/* Shown whenever there is anything to discard, not only when the
+              unstaged list is non-empty: this reverts staged work too, and on an
+              untracked-only tree there was previously no way to reach it. */}
+          <Show when={(props.status ?? []).length > 0}>
             <button
               onClick={() => void discardAllChanges()}
-              title="Discard all changes"
-              aria-label="Discard all changes"
-              class="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              disabled={busy()}
+              title="Discard changes in the working tree"
+              aria-label="Discard changes in the working tree"
+              class="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Trash2 class="w-3 h-3" />
             </button>
@@ -1578,6 +1694,7 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
 /// there is exactly one place that knows how to set a worktree up.
 export function WorktreesPane(props: { repoPath: string }) {
   const { activeWorkspace, actions } = useAppStore();
+  const { busy, run } = createInFlight();
   const [worktrees, { refetch }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listWorktrees(p),
@@ -1608,33 +1725,55 @@ export function WorktreesPane(props: { repoPath: string }) {
     if (id) actions.selectWorktree(id);
   }
 
+  /// `git worktree remove` fails for several unrelated reasons, and `--force`
+  /// only answers one of them. Offering force on *every* failure meant a lock, a
+  /// missing directory or a permissions error led the user straight to a button
+  /// whose whole job is discarding changes.
+  function isDirtyRefusal(message: string): boolean {
+    const m = message.toLowerCase();
+    return (
+      m.includes("contains modified or untracked files") ||
+      m.includes("is dirty") ||
+      m.includes("use --force") ||
+      m.includes("use 'remove -f'")
+    );
+  }
+
   async function remove(path: string, label: string) {
     const ok = await dialogConfirm(`Remove worktree "${label}"? Its directory will be deleted.`, {
       title: "Remove worktree",
       kind: "warning",
     });
     if (!ok) return;
-    try {
-      await gitApi.removeWorktree(props.repoPath, path, false);
-      pushToast(`Removed worktree ${label}`, "info", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      // git refuses if the worktree is dirty — offer the force path.
-      const msg = e instanceof Error ? e.message : String(e);
-      const force = await dialogConfirm(`${msg}\n\nForce-remove anyway (discards changes)?`, {
-        title: "Force-remove worktree",
-        kind: "warning",
-      });
-      if (force) {
-        try {
-          await gitApi.removeWorktree(props.repoPath, path, true);
-          pushToast(`Removed worktree ${label}`, "info", 2500);
+    await run(async () => {
+      try {
+        const warning = await gitApi.removeWorktree(props.repoPath, path, false);
+        pushToast(`Removed worktree ${label}`, "info", 2500);
+        if (warning) pushToast(warning, "warning", 6000);
+        emitGitRefsChanged();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!isDirtyRefusal(msg)) {
+          pushToast(msg, "error", 7000);
           emitGitRefsChanged();
+          return;
+        }
+        const force = await dialogConfirm(
+          `${msg}\n\nForce-remove anyway (discards uncommitted changes in that worktree)?`,
+          { title: "Force-remove worktree", kind: "warning" },
+        );
+        if (!force) return;
+        try {
+          const warning = await gitApi.removeWorktree(props.repoPath, path, true);
+          pushToast(`Removed worktree ${label}`, "info", 2500);
+          if (warning) pushToast(warning, "warning", 6000);
         } catch (e2) {
           pushToast(e2 instanceof Error ? e2.message : String(e2), "error", 6000);
+        } finally {
+          emitGitRefsChanged();
         }
       }
-    }
+    });
   }
 
   return (
@@ -1689,6 +1828,17 @@ export function WorktreesPane(props: { repoPath: string }) {
                   ●
                 </span>
               </Show>
+              {/* A worktree whose status could not be read must not render as
+                  clean — the absence of a dot would be a claim we cannot make. */}
+              <Show when={wt.statusUnknown}>
+                <span
+                  class="text-muted-foreground/70 shrink-0"
+                  title="Could not read this worktree's status — it may be missing or unreachable"
+                  aria-label="status unknown"
+                >
+                  ?
+                </span>
+              </Show>
               <Show when={wt.ahead > 0}>
                 <span
                   class="text-success tabular-nums shrink-0"
@@ -1724,9 +1874,10 @@ export function WorktreesPane(props: { repoPath: string }) {
                 </button>
                 <button
                   onClick={() => void remove(wt.path, label())}
+                  disabled={busy()}
                   title="Remove worktree"
                   aria-label={`Remove worktree ${label()}`}
-                  class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
+                  class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <X class="w-3 h-3" />
                 </button>
@@ -1852,36 +2003,48 @@ export function TagsPane(props: { repoPath: string }) {
 
 export function StashesPane(props: { repoPath: string; worktreeId: string }) {
   const { actions } = useAppStore();
+  const { busy, run } = createInFlight();
   const [stashes, { refetch }] = createResource(
     () => props.repoPath,
     (p) => gitApi.stashList(p),
   );
   onMount(() => onCleanup(onGitRefsChanged(() => refetch())));
 
-  async function apply(index: number, pop: boolean) {
-    try {
-      if (pop) await gitApi.stashPop(props.repoPath, index);
-      else await gitApi.stashApply(props.repoPath, index);
-      pushToast(pop ? "Popped stash" : "Applied stash", "success", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+  /// Stash actions carry the entry's `oid`, not just its position: the stash is
+  /// a stack, and anything that pushes onto it (this pane's own Stash button, an
+  /// auto-stash on branch switch, `git stash` in the app's terminal) shifts every
+  /// index. Rust refuses when the oid at that position is not the one we saw, so
+  /// a stale list errors instead of dropping someone else's work.
+  async function apply(entry: StashEntry, pop: boolean) {
+    await run(async () => {
+      try {
+        if (pop) await gitApi.stashPop(props.repoPath, entry.index, entry.oid);
+        else await gitApi.stashApply(props.repoPath, entry.index, entry.oid);
+        pushToast(pop ? "Popped stash" : "Applied stash", "success", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+      }
+    });
   }
 
-  async function drop(index: number, message: string) {
-    const ok = await dialogConfirm(`Drop stash "${message}"? This cannot be undone.`, {
+  async function drop(entry: StashEntry) {
+    const ok = await dialogConfirm(`Drop stash "${entry.message}"? This cannot be undone.`, {
       title: "Drop stash",
       kind: "warning",
     });
     if (!ok) return;
-    try {
-      await gitApi.stashDrop(props.repoPath, index);
-      pushToast("Dropped stash", "info", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.stashDrop(props.repoPath, entry.index, entry.oid);
+        pushToast("Dropped stash", "info", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+      }
+    });
   }
 
   function showDiff(index: number) {
@@ -1911,26 +2074,29 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
                 {s.message}
               </button>
               <button
-                onClick={() => void apply(s.index, false)}
+                onClick={() => void apply(s, false)}
+                disabled={busy()}
                 title="Apply (keep stash)"
                 aria-label="Apply stash"
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
+                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Plus class="w-3 h-3" />
               </button>
               <button
-                onClick={() => void apply(s.index, true)}
+                onClick={() => void apply(s, true)}
+                disabled={busy()}
                 title="Pop (apply and remove)"
                 aria-label="Pop stash"
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
+                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <ArrowDownToLine class="w-3 h-3" />
               </button>
               <button
-                onClick={() => void drop(s.index, s.message)}
+                onClick={() => void drop(s)}
+                disabled={busy()}
                 title="Drop stash"
                 aria-label="Drop stash"
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
+                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <X class="w-3 h-3" />
               </button>

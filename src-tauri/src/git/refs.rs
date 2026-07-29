@@ -50,17 +50,22 @@ pub(crate) fn git_list_refs_impl(repo_path: String) -> Result<RefList, String> {
     let mut recent_commits = Vec::new();
     let mut walk = repo.revwalk().map_err(|e| e.message().to_string())?;
     walk.set_sorting(Sort::TIME).ok();
-    // Walk all refs so commits unique to feature branches still show up.
-    if walk.push_glob("refs/heads/*").is_ok() || walk.push_head().is_ok() {
-        for oid in walk.take(RECENT_COMMITS_LIMIT).flatten() {
-            let Ok(commit) = repo.find_commit(oid) else { continue };
-            recent_commits.push(RecentCommit {
-                oid: oid.to_string(),
-                short_oid: oid.to_string().chars().take(7).collect(),
-                summary: commit.summary().unwrap_or("").to_string(),
-                time: commit.time().seconds(),
-            });
-        }
+    // Walk all refs so commits unique to feature branches still show up, AND
+    // HEAD, which is not one of them when it is detached. These used to be
+    // `||`-chained, but `push_glob` returns Ok even when it matched nothing, so
+    // `push_head` never ran and a detached HEAD's walk omitted exactly the
+    // commits the user was standing on. Both pushes are attempted; both are
+    // allowed to fail (an unborn HEAD has nothing to push and no history).
+    walk.push_glob("refs/heads/*").ok();
+    walk.push_head().ok();
+    for oid in walk.take(RECENT_COMMITS_LIMIT).flatten() {
+        let Ok(commit) = repo.find_commit(oid) else { continue };
+        recent_commits.push(RecentCommit {
+            oid: oid.to_string(),
+            short_oid: oid.to_string().chars().take(7).collect(),
+            summary: commit.summary().unwrap_or("").to_string(),
+            time: commit.time().seconds(),
+        });
     }
 
     Ok(RefList {
@@ -68,4 +73,52 @@ pub(crate) fn git_list_refs_impl(repo_path: String) -> Result<RefList, String> {
         tags,
         recent_commits,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::testfix::{commit_all, init_repo, write_file};
+
+    #[test]
+    fn a_repo_with_no_commits_returns_an_empty_ref_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let refs = git_list_refs_impl(tmp.path().to_string_lossy().to_string())
+            .expect("an unborn HEAD must not error the ref picker");
+        assert!(refs.branches.is_empty());
+        assert!(refs.recent_commits.is_empty());
+    }
+
+    #[test]
+    fn a_detached_head_still_lists_the_commit_you_are_standing_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(tmp.path());
+        write_file(tmp.path(), "a.txt", "one\n");
+        commit_all(&repo, "one");
+        write_file(tmp.path(), "a.txt", "two\n");
+        let tip = commit_all(&repo, "two");
+
+        // Detach onto the tip and delete the branch, so the commits are reachable
+        // only through HEAD. `push_glob` matching nothing used to short-circuit
+        // `push_head`, which dropped exactly these commits.
+        repo.set_head_detached(tip).unwrap();
+        let branch_name = repo
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .flatten()
+            .next()
+            .map(|(b, _)| b.name().unwrap().unwrap().to_string())
+            .unwrap();
+        repo.find_branch(&branch_name, git2::BranchType::Local)
+            .unwrap()
+            .delete()
+            .unwrap();
+
+        let refs = git_list_refs_impl(tmp.path().to_string_lossy().to_string()).unwrap();
+        assert!(
+            refs.recent_commits.iter().any(|c| c.oid == tip.to_string()),
+            "the commit HEAD points at must be in the recent list"
+        );
+    }
 }

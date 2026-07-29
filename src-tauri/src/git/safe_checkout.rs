@@ -1,4 +1,4 @@
-use git2::{Signature, StashFlags, StatusOptions};
+use git2::{StashFlags, StatusOptions};
 
 use super::repo::open_repo;
 
@@ -30,14 +30,13 @@ pub(crate) fn git_safe_checkout_impl(
         .ok()
         .and_then(|h| h.shorthand().map(|s| s.to_string()));
 
+    super::opstate::ensure_no_operation(&repo, "switch branches")?;
+
     let dirty = is_dirty(&repo)?;
     let auto_stashed = if dirty {
         let from = current_branch.as_deref().unwrap_or("detached");
         let message = format!("voidlink-auto: pre-switch from {} → {}", from, branch);
-        let sig = repo
-            .signature()
-            .or_else(|_| Signature::now("voidlink", "voidlink@local"))
-            .map_err(|e| e.message().to_string())?;
+        let sig = super::staging::housekeeping_signature(&repo)?;
         // INCLUDE_UNTRACKED only — *not* KEEP_INDEX. KEEP_INDEX would leave
         // staged changes in the index, and the imminent checkout would then
         // overwrite the index with the target branch's HEAD, silently losing
@@ -50,32 +49,90 @@ pub(crate) fn git_safe_checkout_impl(
         None
     };
 
+    // Everything from here on can fail, and the user's work is currently inside
+    // a stash. The doc comment above has promised a round-trip since day one and
+    // nothing implemented it: a failure left an empty-looking working tree and a
+    // stash the user did not know about. So the rest runs in a closure whose
+    // error triggers a pop.
+    let local_branch = resolve_target_branch(&repo, &branch, create);
+    let outcome = local_branch.and_then(|name| {
+        super::branch::switch_to_branch(&repo, &repo_path, &name)?;
+        Ok(name)
+    });
+
+    let switched_to = match outcome {
+        Ok(name) => name,
+        Err(e) => {
+            if auto_stashed.is_some() {
+                return Err(match repo.stash_pop(0, None) {
+                    Ok(()) => format!("{e} — your changes were restored from the auto-stash"),
+                    Err(pop) => format!(
+                        "{e} — and the auto-stash could not be restored ({}). Your work is safe in \
+                         `git stash list`; run `git stash pop` to get it back.",
+                        pop.message()
+                    ),
+                });
+            }
+            return Err(e);
+        }
+    };
+
+    Ok(SafeCheckoutResult {
+        branch: switched_to,
+        auto_stashed,
+    })
+}
+
+/// The local branch a checkout should land on.
+///
+/// Clicking a *remote* row used to always fail: `origin/foo` was resolved as
+/// `refs/heads/origin/foo`, which does not exist. What the user means by clicking
+/// it is what `git checkout foo` means — a local branch tracking that remote — so
+/// that is what we create.
+fn resolve_target_branch(
+    repo: &git2::Repository,
+    branch: &str,
+    create: bool,
+) -> Result<String, String> {
     if create {
         let head_commit = repo
             .head()
             .map_err(|e| e.message().to_string())?
             .peel_to_commit()
             .map_err(|e| e.message().to_string())?;
-        repo.branch(&branch, &head_commit, false)
+        repo.branch(branch, &head_commit, false)
             .map_err(|e| e.message().to_string())?;
+        return Ok(branch.to_string());
     }
 
-    let treeish = repo
-        .revparse_single(&format!("refs/heads/{}", branch))
-        .map_err(|e| e.message().to_string())?;
+    if repo.find_branch(branch, git2::BranchType::Local).is_ok() {
+        return Ok(branch.to_string());
+    }
 
-    let mut checkout_builder = git2::build::CheckoutBuilder::new();
-    checkout_builder.safe();
-    repo.checkout_tree(&treeish, Some(&mut checkout_builder))
-        .map_err(|e| e.message().to_string())?;
+    // A remote-tracking name: create the local branch and set the upstream, the
+    // way `git checkout <remote-branch>` does.
+    if let Ok(remote_branch) = repo.find_branch(branch, git2::BranchType::Remote) {
+        let local_name = branch
+            .split_once('/')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_else(|| branch.to_string());
+        if repo.find_branch(&local_name, git2::BranchType::Local).is_ok() {
+            return Ok(local_name);
+        }
+        let target = remote_branch
+            .get()
+            .peel_to_commit()
+            .map_err(|e| e.message().to_string())?;
+        let mut created = repo
+            .branch(&local_name, &target, false)
+            .map_err(|e| format!("could not create local branch {local_name}: {}", e.message()))?;
+        if let Err(e) = created.set_upstream(Some(branch)) {
+            log::warn!("created {local_name} but could not track {branch}: {e}");
+        }
+        return Ok(local_name);
+    }
 
-    repo.set_head(&format!("refs/heads/{}", branch))
-        .map_err(|e| e.message().to_string())?;
-
-    Ok(SafeCheckoutResult {
-        branch,
-        auto_stashed,
-    })
+    Err(format!("no branch named '{branch}'"))
 }
 
 fn is_dirty(repo: &git2::Repository) -> Result<bool, String> {
@@ -92,7 +149,7 @@ fn is_dirty(repo: &git2::Repository) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use git2::{IndexAddOption, Repository};
+    use git2::{IndexAddOption, Repository, Signature};
     use std::fs;
 
     fn init_repo(path: &std::path::Path) -> Repository {

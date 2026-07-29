@@ -95,16 +95,21 @@ export const gitApi = {
     });
   },
 
-  stashApply(repoPath: string, index: number): Promise<void> {
-    return invoke<void>("git_stash_apply", { repoPath, index });
+  /// Apply/pop/drop take the stash's `oid` alongside its position, and Rust
+  /// refuses when the two disagree. The stash is a stack: any new stash — the
+  /// Stash button, an auto-stash on branch switch, a `git stash` typed into the
+  /// app's own terminal — shifts every entry down, so a remembered position
+  /// silently addresses someone else's work. Drop is irreversible.
+  stashApply(repoPath: string, index: number, oid: string): Promise<void> {
+    return invoke<void>("git_stash_apply", { repoPath, index, oid });
   },
 
-  stashPop(repoPath: string, index: number): Promise<void> {
-    return invoke<void>("git_stash_pop", { repoPath, index });
+  stashPop(repoPath: string, index: number, oid: string): Promise<void> {
+    return invoke<void>("git_stash_pop", { repoPath, index, oid });
   },
 
-  stashDrop(repoPath: string, index: number): Promise<void> {
-    return invoke<void>("git_stash_drop", { repoPath, index });
+  stashDrop(repoPath: string, index: number, oid: string): Promise<void> {
+    return invoke<void>("git_stash_drop", { repoPath, index, oid });
   },
 
   stashShow(repoPath: string, index: number): Promise<DiffResult> {
@@ -383,8 +388,12 @@ export const gitApi = {
     });
   },
 
-  removeWorktree(repoPath: string, path: string, force?: boolean): Promise<void> {
-    return invoke<void>("git_remove_worktree", { repoPath, path, force: force ?? false });
+  /// Resolves with a warning string: empty when everything went cleanly,
+  /// non-empty when the worktree was removed but pruning stale admin entries
+  /// afterwards failed. Removal succeeded either way, so this is a warning and
+  /// not a rejection.
+  removeWorktree(repoPath: string, path: string, force?: boolean): Promise<string> {
+    return invoke<string>("git_remove_worktree", { repoPath, path, force: force ?? false });
   },
 
   /// Read-only inspection of what a new worktree would need. `sourcePath`

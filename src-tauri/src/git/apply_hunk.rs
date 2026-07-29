@@ -164,6 +164,62 @@ fn is_eof_marker(line: &super::DiffLine) -> bool {
     line.content.starts_with("\\ ")
 }
 
+fn build_unified_patch_inverted(file: &FileDiff, hunk: &DiffHunk) -> String {
+    // Swap +/- to invert. We also swap old/new line numbers so the hunk header
+    // is still valid in the inverted patch.
+    let old_path = file
+        .old_path
+        .clone()
+        .or_else(|| file.new_path.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let new_path = file
+        .new_path
+        .clone()
+        .or_else(|| file.old_path.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut out = String::new();
+    out.push_str(&format!("diff --git a/{} b/{}\n", new_path, old_path));
+    out.push_str(&format!("--- a/{}\n", new_path));
+    out.push_str(&format!("+++ b/{}\n", old_path));
+
+    let mut old_lines = 0u32;
+    let mut new_lines = 0u32;
+    for line in &hunk.lines {
+        if is_eof_marker(line) {
+            continue;
+        }
+        match line.origin.as_str() {
+            "+" => old_lines += 1,
+            "-" => new_lines += 1,
+            _ => {
+                new_lines += 1;
+                old_lines += 1;
+            }
+        }
+    }
+    out.push_str(&format!(
+        "@@ -{},{} +{},{} @@\n",
+        hunk.new_start, old_lines, hunk.old_start, new_lines
+    ));
+    for line in &hunk.lines {
+        if is_eof_marker(line) {
+            out.push_str(&line.content);
+            out.push('\n');
+            continue;
+        }
+        let prefix = match line.origin.as_str() {
+            "+" => '-',
+            "-" => '+',
+            _ => ' ',
+        };
+        out.push(prefix);
+        out.push_str(&line.content);
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,60 +407,4 @@ mod tests {
         .unwrap();
         out
     }
-}
-
-fn build_unified_patch_inverted(file: &FileDiff, hunk: &DiffHunk) -> String {
-    // Swap +/- to invert. We also swap old/new line numbers so the hunk header
-    // is still valid in the inverted patch.
-    let old_path = file
-        .old_path
-        .clone()
-        .or_else(|| file.new_path.clone())
-        .unwrap_or_else(|| "unknown".to_string());
-    let new_path = file
-        .new_path
-        .clone()
-        .or_else(|| file.old_path.clone())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let mut out = String::new();
-    out.push_str(&format!("diff --git a/{} b/{}\n", new_path, old_path));
-    out.push_str(&format!("--- a/{}\n", new_path));
-    out.push_str(&format!("+++ b/{}\n", old_path));
-
-    let mut old_lines = 0u32;
-    let mut new_lines = 0u32;
-    for line in &hunk.lines {
-        if is_eof_marker(line) {
-            continue;
-        }
-        match line.origin.as_str() {
-            "+" => old_lines += 1,
-            "-" => new_lines += 1,
-            _ => {
-                new_lines += 1;
-                old_lines += 1;
-            }
-        }
-    }
-    out.push_str(&format!(
-        "@@ -{},{} +{},{} @@\n",
-        hunk.new_start, old_lines, hunk.old_start, new_lines
-    ));
-    for line in &hunk.lines {
-        if is_eof_marker(line) {
-            out.push_str(&line.content);
-            out.push('\n');
-            continue;
-        }
-        let prefix = match line.origin.as_str() {
-            "+" => '-',
-            "-" => '+',
-            _ => ' ',
-        };
-        out.push(prefix);
-        out.push_str(&line.content);
-        out.push('\n');
-    }
-    out
 }

@@ -152,9 +152,9 @@ fn restack_branch(repo: &Repository, branch_name: &str) -> Result<RestackResult,
         let cherry = repo
             .find_commit(*oid)
             .map_err(|e| e.message().to_string())?;
-        let mut merge_opts = MergeOptions::new();
+        let merge_opts = MergeOptions::new();
         let mut index = repo
-            .cherrypick_commit(&cherry, &head_for_replay, 0, Some(&mut merge_opts))
+            .cherrypick_commit(&cherry, &head_for_replay, 0, Some(&merge_opts))
             .map_err(|e| e.message().to_string())?;
 
         if index.has_conflicts() {
@@ -263,11 +263,11 @@ fn conflict_paths(index: &git2::Index) -> Vec<String> {
         for conflict in conflicts.flatten() {
             // A conflict has up-to-three entries (ancestor / our / their).
             // Any non-None entry's path identifies the file.
-            for side in [&conflict.ancestor, &conflict.our, &conflict.their] {
-                if let Some(e) = side {
-                    let path = String::from_utf8_lossy(&e.path).to_string();
-                    seen.insert(path);
-                }
+            for e in [&conflict.ancestor, &conflict.our, &conflict.their]
+                .into_iter()
+                .flatten()
+            {
+                seen.insert(String::from_utf8_lossy(&e.path).to_string());
             }
         }
     }

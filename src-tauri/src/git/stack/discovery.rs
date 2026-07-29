@@ -208,10 +208,7 @@ fn assemble_stack(
     for (name, parent) in &chain {
         let (ahead, behind) = ahead_behind(repo, name, parent)?;
         let last_known = read_parentbase(repo, name)?;
-        let parent_tip_now = match revparse_oid(repo, parent) {
-            Ok(oid) => Some(oid),
-            Err(_) => None,
-        };
+        let parent_tip_now = revparse_oid(repo, parent).ok();
         if let (Some(stored), Some(current)) = (last_known.as_deref(), parent_tip_now.as_deref()) {
             if stored != current {
                 any_drift = true;

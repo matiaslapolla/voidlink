@@ -154,8 +154,15 @@ describe("actionForKey", () => {
 
   it("offers discard only where discarding means something", () => {
     expect(actionForKey("Backspace", "unstaged")).toEqual({ kind: "discard" });
-    expect(actionForKey("Delete", "staged")).toEqual({ kind: "discard" });
+    expect(actionForKey("Delete", "unstaged")).toEqual({ kind: "discard" });
     expect(actionForKey("Backspace", "conflicted")).toEqual({ kind: "none" });
+  });
+
+  it("never discards staged work from the keyboard", () => {
+    // The mouse UI puts no discard control on a staged row, so a key that did
+    // would destroy work the visible interface presented as safe.
+    expect(actionForKey("Backspace", "staged")).toEqual({ kind: "none" });
+    expect(actionForKey("Delete", "staged")).toEqual({ kind: "none" });
   });
 
   it("ignores everything else so typing still reaches the filter box", () => {

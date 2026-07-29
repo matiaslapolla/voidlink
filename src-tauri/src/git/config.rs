@@ -203,7 +203,7 @@ pub(crate) fn git_config_list_impl(repo_path: String) -> Result<Vec<ConfigEntry>
             if let Some(name) = entry.name() {
                 out.push(ConfigEntry {
                     key: name.to_string(),
-                    value: entry_value(&entry),
+                    value: entry_value(entry),
                     level: level_name(entry.level()).to_string(),
                 });
             }

@@ -147,7 +147,13 @@ export function actionForKey(key: string, section: ChangeSection): ChangeAction 
     case "Delete":
       // Discard is irreversible, so it stays behind a confirm in the component
       // (§7.5.5) — this only names the intent.
-      return section === "conflicted" ? { kind: "none" } : { kind: "discard" };
+      //
+      // Only the *unstaged* section offers it. The mouse UI never puts a discard
+      // control on a staged row (the secondary action is passed to the unstaged
+      // list alone), so a keyboard binding that discarded staged work destroyed
+      // something the visible interface said was safe — and staged work is
+      // deliberate work, the most expensive kind to lose.
+      return section === "unstaged" ? { kind: "discard" } : { kind: "none" };
     default:
       return { kind: "none" };
   }
