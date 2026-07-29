@@ -26,7 +26,16 @@ import {
   type JSX,
 } from "solid-js";
 import { Portal } from "solid-js/web";
-import { ChevronsRight, Pin, PinOff, X } from "lucide-solid";
+import {
+  ChevronDown,
+  ChevronRight,
+  ChevronsRight,
+  FolderMinus,
+  FolderPlus,
+  Pin,
+  PinOff,
+  X,
+} from "lucide-solid";
 import type { TerminalSession } from "@/types/workspace";
 import {
   LedSlot,
@@ -37,7 +46,11 @@ import {
 } from "@/components/layout/StatusLed";
 import { watchTerminal, type TerminalWatch } from "@/store/terminalWatch";
 import { dropIntentAt, type DropIntent } from "@/components/layout/paneDrop";
-import type { SplitOrientation } from "@/store/layout";
+import type { SplitOrientation, TabGroup, TabGroupColor } from "@/store/layout";
+// Values come straight from the reducer module rather than through the store's
+// barrel: the strip has to keep working in the editor window, which has no
+// store, and `tabGroups.ts` is pure and DOM-free.
+import { TAB_GROUP_COLORS, stripEntries } from "@/store/layout/tabGroups";
 
 /// Every tab kind either window can show. The strip only ever compares these
 /// for equality (grouping, reorder targets) — it attaches no behaviour to any
@@ -121,6 +134,13 @@ export interface TabDragPayload {
   /// (the editor). `null` on both ends means "reorder only", which is exactly
   /// the pre-groups behaviour.
   groupId: string | null;
+  /// Set when the thing being dragged is a whole **tab group** rather than one
+  /// tab; `id` and `kind` then describe its first member, so every existing
+  /// drop target keeps working without knowing about groups.
+  ///
+  /// One payload rather than a second drag mechanism beside it: two module-level
+  /// drags in flight is how a drop target ends up honouring the wrong one.
+  tabGroupId?: string;
 }
 
 const [tabDrag, setTabDrag] = createSignal<TabDragPayload | null>(null);
@@ -173,9 +193,46 @@ export interface TabStripProps {
   /// Clicking anywhere in the strip focuses its group.
   onFocusGroup?: () => void;
   /// A tab from another group landed here. `beforeTabId` is the tab it should
-  /// land in front of, or `null` for the end of the strip.
+  /// land in front of, or `null` for the end of the strip. When the payload
+  /// carries a `tabGroupId` this is a whole group arriving.
   onMoveTab?: (payload: TabDragPayload, beforeTabId: string | null) => void;
+
+  // ── Tab groups ─────────────────────────────────────────────────────────
+  // Also all optional. A strip given none of them renders exactly the row it
+  // rendered before groups existed, which is what the editor window gets.
+
+  /// The labelled groups in this strip, in render order. A tab in none of them
+  /// renders exactly as it does without groups at all.
+  tabGroups?: TabGroup[];
+  /// The aggregate mark for a *collapsed* group's chip (§7.5.3 escalation).
+  /// A collapsed group hides its members' own marks, so this is where they go.
+  tabGroupActivity?: (tabGroupId: string) => ActivitySignal | undefined;
+  onToggleTabGroup?: (tabGroupId: string) => void;
+  onRenameTabGroup?: (tabGroupId: string, label: string) => void;
+  onRecolorTabGroup?: (tabGroupId: string, color: TabGroupColor) => void;
+  onDissolveTabGroup?: (tabGroupId: string) => void;
+  /// Wrap these tabs in a new group. Reached from the tab context menu, so
+  /// grouping has a keyboard-and-pointer path and not only a drag.
+  onCreateTabGroup?: (tabIds: string[]) => void;
+  /// Put a tab in a group, or take it out of whichever holds it (`null`).
+  onAssignTab?: (
+    tabId: string,
+    tabGroupId: string | null,
+    beforeTabId: string | null,
+  ) => void;
+  /// Reorder a group within this strip.
+  onReorderTabGroup?: (tabGroupId: string, beforeTabGroupId: string | null) => void;
 }
+
+/// The colour dot's fill, per token. A static map so Tailwind's scanner sees
+/// every class literal — a computed `bg-${color}` would be purged.
+const GROUP_DOT: Record<TabGroupColor, string> = {
+  "chart-1": "bg-chart-1",
+  "chart-2": "bg-chart-2",
+  "chart-3": "bg-chart-3",
+  "chart-4": "bg-chart-4",
+  "chart-5": "bg-chart-5",
+};
 
 export function TabStrip(props: TabStripProps) {
   /// Group by kind (in the order the caller first mentions each kind), then
@@ -199,6 +256,62 @@ export function TabStrip(props: TabStripProps) {
     }
     return out;
   });
+
+  // ── Tab groups ───────────────────────────────────────────────────────────
+  // The arrangement decision itself is `stripEntries` in `tabGroups.ts`; what
+  // is here is only flattening it into rows the strip can render.
+
+  /// Tab id → the group holding it, for the drop handlers. A drop's *position*
+  /// is what decides membership, so both ends of a drag need this.
+  const groupOfTabId = createMemo(() => {
+    const out = new Map<string, string>();
+    for (const group of props.tabGroups ?? []) {
+      for (const id of group.tabIds) out.set(id, group.id);
+    }
+    return out;
+  });
+
+  type StripRow =
+    | { kind: "chip"; group: TabGroup; count: number }
+    | { kind: "tab"; tab: TabDescriptor };
+
+  /// The flat row list. A collapsed group contributes its chip and nothing
+  /// else; an expanded one contributes its chip followed by its members.
+  const rows = createMemo<StripRow[]>(() => {
+    const tabs = ordered();
+    const groups = props.tabGroups ?? [];
+    if (groups.length === 0) return tabs.map((tab) => ({ kind: "tab" as const, tab }));
+    const byId = new Map(tabs.map((t) => [t.id, t]));
+    const out: StripRow[] = [];
+    for (const entry of stripEntries(
+      tabs.map((t) => t.id),
+      groups,
+    )) {
+      if (entry.kind === "tab") {
+        const tab = byId.get(entry.tabId);
+        if (tab) out.push({ kind: "tab", tab });
+        continue;
+      }
+      out.push({ kind: "chip", group: entry.group, count: entry.tabIds.length });
+      if (entry.group.collapsed) continue;
+      for (const id of entry.tabIds) {
+        const tab = byId.get(id);
+        if (tab) out.push({ kind: "tab", tab });
+      }
+    }
+    return out;
+  });
+
+  /// The last *tab* row, for the append caret. A chip is never the caret's
+  /// anchor: appending lands after the tabs, not after a group header.
+  const lastTabId = () => {
+    const list = rows();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const row = list[i];
+      if (row.kind === "tab") return row.tab.id;
+    }
+    return null;
+  };
 
   // ── Drag state ───────────────────────────────────────────────────────────
   // Two different gestures share one drag. *Within* a strip a drag reorders,
@@ -236,14 +349,41 @@ export function TabStrip(props: TabStripProps) {
     });
   }
 
+  /// Start dragging a whole tab group. Same payload as a tab drag with
+  /// `tabGroupId` set, so every drop target that only knows about tabs keeps
+  /// behaving — it sees the group's first member and moves the lot.
+  function onGroupDragStart(e: DragEvent, group: TabGroup, memberIds: string[]) {
+    if (!e.dataTransfer) return;
+    const first = props.tabs.find((t) => t.id === memberIds[0]);
+    if (!first) return;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/voidlink-item", `tabgroup:${group.id}`);
+    setTabDrag({
+      kind: first.kind,
+      id: first.id,
+      label: group.label,
+      groupId: props.groupId ?? null,
+      tabGroupId: group.id,
+    });
+  }
+
   /// Can the in-flight drag land on `tab`? Either as a move from another group
-  /// (any kind), or as a reorder within this strip (same kind, reorderable,
-  /// not onto itself).
+  /// (any kind), as a reorder within this strip (same kind, reorderable, not
+  /// onto itself), or as a membership change — joining or leaving a tab group,
+  /// which is possible across kinds because it touches no store array.
   function canLandOn(tab: TabDescriptor): boolean {
     const drag = tabDrag();
     if (!drag) return false;
     if (incoming()) return true;
-    return drag.kind === tab.kind && drag.id !== tab.id && isReorderable(tab);
+    if (drag.id === tab.id) return false;
+    // A whole group cannot be dropped onto a tab inside its own strip; it is
+    // reordered against other *groups*, not slotted between tabs.
+    if (drag.tabGroupId) return false;
+    if (drag.kind === tab.kind && isReorderable(tab)) return true;
+    return (
+      !!props.onAssignTab &&
+      groupOfTabId().get(tab.id) !== groupOfTabId().get(drag.id)
+    );
   }
 
   function onDragOver(e: DragEvent, tab: TabDescriptor) {
@@ -263,8 +403,45 @@ export function TabStrip(props: TabStripProps) {
     }
     e.preventDefault();
     e.stopPropagation();
-    if (incoming()) props.onMoveTab?.(drag, tab.id);
-    else props.onReorder(tab.kind, drag.id, tab.id);
+    if (incoming()) {
+      props.onMoveTab?.(drag, tab.id);
+      // A tab dragged into another pane lands wherever it was dropped, which
+      // means joining the group it was dropped into (or none).
+      if (!drag.tabGroupId) {
+        const target = groupOfTabId().get(tab.id) ?? null;
+        if (target) props.onAssignTab?.(drag.id, target, tab.id);
+      }
+    } else {
+      // Two independent outcomes of one drop: position within the kind's own
+      // array, and membership of a tab group. Neither implies the other.
+      if (drag.kind === tab.kind && isReorderable(tab)) {
+        props.onReorder(tab.kind, drag.id, tab.id);
+      }
+      const target = groupOfTabId().get(tab.id) ?? null;
+      const source = groupOfTabId().get(drag.id) ?? null;
+      if (target !== source) props.onAssignTab?.(drag.id, target, tab.id);
+    }
+    resetDrag();
+  }
+
+  /// A drop on a group's chip. A tab joins the group; another group reorders
+  /// in front of it, or moves in from another strip.
+  function onChipDrop(e: DragEvent, group: TabGroup) {
+    const drag = tabDrag();
+    if (!drag) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (drag.tabGroupId) {
+      if (drag.tabGroupId !== group.id) {
+        if (incoming()) props.onMoveTab?.(drag, null);
+        else props.onReorderTabGroup?.(drag.tabGroupId, group.id);
+      }
+    } else if (incoming()) {
+      props.onMoveTab?.(drag, null);
+      props.onAssignTab?.(drag.id, group.id, null);
+    } else {
+      props.onAssignTab?.(drag.id, group.id, null);
+    }
     resetDrag();
   }
 
@@ -273,7 +450,8 @@ export function TabStrip(props: TabStripProps) {
   function onStripDragOver(e: DragEvent) {
     const drag = tabDrag();
     if (!drag) return;
-    if (!incoming() && !isReorderableKindHere(drag)) return;
+    if (!incoming() && !drag.tabGroupId && !canLeaveGroupHere(drag) && !isReorderableKindHere(drag))
+      return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
     setDropRef(null);
@@ -284,10 +462,23 @@ export function TabStrip(props: TabStripProps) {
     const drag = tabDrag();
     if (!drag) return;
     e.preventDefault();
-    if (incoming()) props.onMoveTab?.(drag, null);
-    else if (isReorderableKindHere(drag)) props.onReorder(drag.kind, drag.id, null);
+    if (drag.tabGroupId) {
+      if (incoming()) props.onMoveTab?.(drag, null);
+      else props.onReorderTabGroup?.(drag.tabGroupId, null);
+    } else if (incoming()) {
+      props.onMoveTab?.(drag, null);
+    } else {
+      if (isReorderableKindHere(drag)) props.onReorder(drag.kind, drag.id, null);
+      // The strip's empty space is *outside* every group, so a drop there is
+      // how a tab leaves one. Without this the only way out of a group would
+      // be a menu, and the drag that put it in would have no inverse.
+      if (canLeaveGroupHere(drag)) props.onAssignTab?.(drag.id, null, null);
+    }
     resetDrag();
   }
+
+  const canLeaveGroupHere = (drag: TabDragPayload) =>
+    !!props.onAssignTab && groupOfTabId().has(drag.id);
 
   /// Appending within the same strip only makes sense for a kind this strip
   /// actually holds — otherwise "move to the end" would target another kind's
@@ -309,10 +500,9 @@ export function TabStrip(props: TabStripProps) {
       : "text-muted-foreground hover:text-foreground hover:bg-accent/30";
     const drag = tabDrag();
     const dim = drag && drag.id === tab.id ? "opacity-50" : "";
-    const last = ordered()[ordered().length - 1];
     const indicator = dropRef() === tab.id
       ? CARET_BEFORE
-      : dropAtEnd() && last?.id === tab.id
+      : dropAtEnd() && lastTabId() === tab.id
         ? CARET_AFTER
         : "";
     return `${base} ${tone} ${dim} ${indicator}`;
@@ -352,7 +542,24 @@ export function TabStrip(props: TabStripProps) {
 
   function openCtx(e: MouseEvent, tab: TabDescriptor) {
     e.preventDefault();
+    setGroupCtx(null);
     setCtx({ x: e.clientX, y: e.clientY, tab });
+  }
+
+  /// The group chip's own menu — recolour, collapse, dissolve. Separate from
+  /// the tab menu because it acts on a different object; folding it in would
+  /// give the tab menu four rows that are not about the tab.
+  const [groupCtx, setGroupCtx] = createSignal<{
+    x: number;
+    y: number;
+    group: TabGroup;
+  } | null>(null);
+  const closeGroupCtx = () => setGroupCtx(null);
+
+  function openGroupCtx(e: MouseEvent, group: TabGroup) {
+    e.preventDefault();
+    setCtx(null);
+    setGroupCtx({ x: e.clientX, y: e.clientY, group });
   }
 
   /// Close every unpinned tab of the same kind except `keep`. Derived from the
@@ -402,40 +609,48 @@ export function TabStrip(props: TabStripProps) {
           any unrelated edit. Slot-keyed rows survive that; `TerminalTabItem`
           resets itself when the session at its slot actually changes.
         */}
-        <Index each={ordered()}>
-          {(tab) => (
+        <Index each={rows()}>
+          {(row) => (
             <Show
-              when={tab().terminal}
+              when={row().kind === "chip" ? (row() as { group: TabGroup; count: number }) : null}
               fallback={
-                <PlainTab
-                  tab={tab()}
-                  active={tab().id === props.activeId}
-                  pinned={props.isPinned(tab().id)}
-                  draggable={canDrag(tab())}
-                  class={tabClasses(tab(), tab().id === props.activeId)}
-                  onSelect={() => props.onSelect(tab())}
-                  onClose={() => props.onClose(tab())}
-                  onContextMenu={(e) => openCtx(e, tab())}
-                  onDragStart={(e) => onDragStart(e, tab())}
-                  onDragOver={(e) => onDragOver(e, tab())}
-                  onDrop={(e) => onDrop(e, tab())}
+                <TabRow
+                  tab={(row() as { tab: TabDescriptor }).tab}
+                  activeId={props.activeId}
+                  isPinned={props.isPinned}
+                  canDrag={canDrag}
+                  tabClasses={tabClasses}
+                  onSelect={props.onSelect}
+                  onClose={props.onClose}
+                  onContextMenu={openCtx}
+                  onDragStart={onDragStart}
+                  onDragOver={onDragOver}
+                  onDrop={onDrop}
                   onDragEnd={resetDrag}
                 />
               }
             >
-              {(session) => (
-                <TerminalTab
-                  session={session()}
-                  tab={tab()}
-                  active={tab().id === props.activeId}
-                  draggable={canDrag(tab())}
-                  class={tabClasses(tab(), tab().id === props.activeId)}
-                  onSelect={() => props.onSelect(tab())}
-                  onClose={() => props.onClose(tab())}
-                  onContextMenu={(e) => openCtx(e, tab())}
-                  onDragStart={(e) => onDragStart(e, tab())}
-                  onDragOver={(e) => onDragOver(e, tab())}
-                  onDrop={(e) => onDrop(e, tab())}
+              {(chip) => (
+                <TabGroupChip
+                  group={chip().group}
+                  count={chip().count}
+                  activity={props.tabGroupActivity?.(chip().group.id)}
+                  dragging={tabDrag()?.tabGroupId === chip().group.id}
+                  onToggle={() => props.onToggleTabGroup?.(chip().group.id)}
+                  onRename={(label) => props.onRenameTabGroup?.(chip().group.id, label)}
+                  onContextMenu={(e) => openGroupCtx(e, chip().group)}
+                  onDragStart={(e) =>
+                    onGroupDragStart(e, chip().group, chip().group.tabIds)
+                  }
+                  onDragOver={(e) => {
+                    if (!tabDrag()) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                    setDropRef(null);
+                    setDropAtEnd(false);
+                  }}
+                  onDrop={(e) => onChipDrop(e, chip().group)}
                   onDragEnd={resetDrag}
                 />
               )}
@@ -462,9 +677,36 @@ export function TabStrip(props: TabStripProps) {
         />
       </Show>
 
+      <TabGroupContextMenu
+        ctx={groupCtx()}
+        onClose={closeGroupCtx}
+        onToggle={(id) => {
+          props.onToggleTabGroup?.(id);
+          closeGroupCtx();
+        }}
+        onRecolor={(id, color) => {
+          props.onRecolorTabGroup?.(id, color);
+          closeGroupCtx();
+        }}
+        onDissolve={(id) => {
+          props.onDissolveTabGroup?.(id);
+          closeGroupCtx();
+        }}
+      />
+
       <TabContextMenu
         ctx={ctx()}
         isPinned={props.isPinned}
+        tabGroupId={ctx() ? (groupOfTabId().get(ctx()!.tab.id) ?? null) : null}
+        canGroup={!!props.onCreateTabGroup}
+        onCreateGroup={(tab) => {
+          props.onCreateTabGroup?.([tab.id]);
+          closeCtx();
+        }}
+        onUngroup={(tab) => {
+          props.onAssignTab?.(tab.id, null, null);
+          closeCtx();
+        }}
         onClose={closeCtx}
         onTogglePin={(id) => {
           props.onTogglePin(id);
@@ -484,6 +726,259 @@ export function TabStrip(props: TabStripProps) {
         }}
       />
     </div>
+  );
+}
+
+/// One tab row, terminal or otherwise. Extracted so the strip's row list can
+/// hold two shapes (a tab, a group chip) without duplicating the terminal /
+/// plain fork at each of them.
+function TabRow(props: {
+  tab: TabDescriptor;
+  activeId: string | null;
+  isPinned: (id: string) => boolean;
+  canDrag: (tab: TabDescriptor) => boolean;
+  tabClasses: (tab: TabDescriptor, active: boolean) => string;
+  onSelect: (tab: TabDescriptor) => void;
+  onClose: (tab: TabDescriptor) => void;
+  onContextMenu: (e: MouseEvent, tab: TabDescriptor) => void;
+  onDragStart: (e: DragEvent, tab: TabDescriptor) => void;
+  onDragOver: (e: DragEvent, tab: TabDescriptor) => void;
+  onDrop: (e: DragEvent, tab: TabDescriptor) => void;
+  onDragEnd: () => void;
+}) {
+  const active = () => props.tab.id === props.activeId;
+  return (
+    <Show
+      when={props.tab.terminal}
+      fallback={
+        <PlainTab
+          tab={props.tab}
+          active={active()}
+          pinned={props.isPinned(props.tab.id)}
+          draggable={props.canDrag(props.tab)}
+          class={props.tabClasses(props.tab, active())}
+          onSelect={() => props.onSelect(props.tab)}
+          onClose={() => props.onClose(props.tab)}
+          onContextMenu={(e) => props.onContextMenu(e, props.tab)}
+          onDragStart={(e) => props.onDragStart(e, props.tab)}
+          onDragOver={(e) => props.onDragOver(e, props.tab)}
+          onDrop={(e) => props.onDrop(e, props.tab)}
+          onDragEnd={props.onDragEnd}
+        />
+      }
+    >
+      {(session) => (
+        <TerminalTab
+          session={session()}
+          tab={props.tab}
+          active={active()}
+          draggable={props.canDrag(props.tab)}
+          class={props.tabClasses(props.tab, active())}
+          onSelect={() => props.onSelect(props.tab)}
+          onClose={() => props.onClose(props.tab)}
+          onContextMenu={(e) => props.onContextMenu(e, props.tab)}
+          onDragStart={(e) => props.onDragStart(e, props.tab)}
+          onDragOver={(e) => props.onDragOver(e, props.tab)}
+          onDrop={(e) => props.onDrop(e, props.tab)}
+          onDragEnd={props.onDragEnd}
+        />
+      )}
+    </Show>
+  );
+}
+
+/// A tab group's header chip: colour dot, disclosure triangle, label, and —
+/// only while collapsed — the member count and the group's aggregate activity
+/// mark.
+///
+/// Two properties are load-bearing:
+///   • **The activity slot is only rendered while collapsed.** An expanded
+///     group's members each wear their own mark right there; a chip repeating
+///     it would be two controls saying one thing (§7.6).
+///   • **Nothing animates.** Collapsing is a disclosure the user drives dozens
+///     of times a session, and the strip's rows must not slide (§7.1).
+function TabGroupChip(props: {
+  group: TabGroup;
+  count: number;
+  activity?: ActivitySignal;
+  dragging: boolean;
+  onToggle: () => void;
+  onRename: (label: string) => void;
+  onContextMenu: (e: MouseEvent) => void;
+  onDragStart: (e: DragEvent) => void;
+  onDragOver: (e: DragEvent) => void;
+  onDrop: (e: DragEvent) => void;
+  onDragEnd: () => void;
+}) {
+  const [editing, setEditing] = createSignal(false);
+  let inputRef: HTMLInputElement | undefined;
+
+  function startEditing() {
+    setEditing(true);
+    queueMicrotask(() => {
+      inputRef?.focus();
+      inputRef?.select();
+    });
+  }
+
+  function commit() {
+    if (!editing()) return;
+    const value = inputRef?.value ?? "";
+    setEditing(false);
+    if (value.trim() && value.trim() !== props.group.label) props.onRename(value);
+  }
+
+  return (
+    <div
+      draggable={!editing()}
+      onDragStart={props.onDragStart}
+      onDragOver={props.onDragOver}
+      onDrop={props.onDrop}
+      onDragEnd={props.onDragEnd}
+      onContextMenu={props.onContextMenu}
+      class="flex items-center gap-1.5 pl-2 pr-1.5 h-full border-r border-border shrink-0 text-[12px] select-none cursor-pointer text-muted-foreground hover:text-foreground transition-colors"
+      classList={{ "opacity-50": props.dragging }}
+      title={
+        props.group.collapsed
+          ? `${props.group.label} — ${props.count} tab${props.count === 1 ? "" : "s"}, collapsed`
+          : props.group.label
+      }
+      onClick={() => {
+        if (!editing()) props.onToggle();
+      }}
+      onDblClick={(e) => {
+        e.stopPropagation();
+        startEditing();
+      }}
+    >
+      <span class={`w-2 h-2 rounded-full shrink-0 ${GROUP_DOT[props.group.color]}`} />
+      <Show
+        when={props.group.collapsed}
+        fallback={<ChevronDown class="w-3 h-3 shrink-0 opacity-70" />}
+      >
+        <ChevronRight class="w-3 h-3 shrink-0 opacity-70" />
+      </Show>
+      <Show
+        when={editing()}
+        fallback={<span class="truncate max-w-[120px]">{props.group.label}</span>}
+      >
+        <input
+          ref={inputRef}
+          value={props.group.label}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false);
+            }
+          }}
+          aria-label={`Rename ${props.group.label}`}
+          class="w-[110px] bg-muted/40 border border-border rounded px-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+      </Show>
+      {/* Count and mark exist only while collapsed — see the header comment.
+          The slot is reserved inside that branch so a signal arriving on a
+          collapsed group still costs no layout (§7.5.3 rule 3). */}
+      <Show when={props.group.collapsed}>
+        <span class="text-[10px] font-mono tabular-nums opacity-70">{props.count}</span>
+        <LedSlot signal={props.activity} />
+      </Show>
+    </div>
+  );
+}
+
+/// The group chip's right-click menu.
+function TabGroupContextMenu(props: {
+  ctx: { x: number; y: number; group: TabGroup } | null;
+  onClose: () => void;
+  onToggle: (id: string) => void;
+  onRecolor: (id: string, color: TabGroupColor) => void;
+  onDissolve: (id: string) => void;
+}) {
+  let panelRef: HTMLDivElement | undefined;
+
+  onMount(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (!props.ctx) return;
+      if (panelRef?.contains(e.target as Node)) return;
+      props.onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (props.ctx && e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+
+  const pos = () => {
+    const c = props.ctx;
+    if (!c) return { left: 0, top: 0 };
+    const width = 200;
+    const height = 140;
+    const pad = 6;
+    let left = c.x;
+    let top = c.y;
+    if (left + width + pad > window.innerWidth) left = window.innerWidth - width - pad;
+    if (top + height + pad > window.innerHeight) top = window.innerHeight - height - pad;
+    return { left, top };
+  };
+
+  return (
+    <Show when={props.ctx}>
+      {(c) => (
+        <Portal>
+          <div
+            ref={panelRef}
+            role="menu"
+            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[9999] py-1 text-[13px]"
+            style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
+          >
+            <div class="px-3 py-1 text-[11px] text-muted-foreground truncate border-b border-border/50">
+              {c().group.label}
+            </div>
+            <MenuItem
+              onClick={() => props.onToggle(c().group.id)}
+              icon={
+                c().group.collapsed ? (
+                  <ChevronDown class="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronRight class="w-3.5 h-3.5" />
+                )
+              }
+            >
+              {c().group.collapsed ? "Expand group" : "Collapse group"}
+            </MenuItem>
+            <div class="px-3 py-1.5 flex items-center gap-1.5">
+              <For each={TAB_GROUP_COLORS}>
+                {(color) => (
+                  <button
+                    onClick={() => props.onRecolor(c().group.id, color)}
+                    aria-label={`Colour ${color}`}
+                    aria-pressed={c().group.color === color}
+                    class={`w-4 h-4 rounded-full transition-[box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${GROUP_DOT[color]}`}
+                    classList={{ "ring-2 ring-offset-1 ring-ring": c().group.color === color }}
+                  />
+                )}
+              </For>
+            </div>
+            <MenuItem
+              onClick={() => props.onDissolve(c().group.id)}
+              icon={<FolderMinus class="w-3.5 h-3.5" />}
+            >
+              Dissolve group
+            </MenuItem>
+          </div>
+        </Portal>
+      )}
+    </Show>
   );
 }
 
@@ -830,6 +1325,13 @@ const KIND_LABELS: Record<TabKind, string> = {
 function TabContextMenu(props: {
   ctx: { x: number; y: number; tab: TabDescriptor } | null;
   isPinned: (id: string) => boolean;
+  /// The tab group holding this tab, or `null`. Decides which of the two
+  /// grouping rows is offered — never both, because only one of them does
+  /// anything (§7.6).
+  tabGroupId: string | null;
+  canGroup: boolean;
+  onCreateGroup: (tab: TabDescriptor) => void;
+  onUngroup: (tab: TabDescriptor) => void;
   onClose: () => void;
   onTogglePin: (id: string) => void;
   onCloseTab: (tab: TabDescriptor) => void;
@@ -898,6 +1400,26 @@ function TabContextMenu(props: {
               >
                 {props.isPinned(c().tab.id) ? "Unpin tab" : "Pin tab"}
               </MenuItem>
+            </Show>
+            <Show when={props.canGroup}>
+              <Show
+                when={props.tabGroupId === null}
+                fallback={
+                  <MenuItem
+                    onClick={() => props.onUngroup(c().tab)}
+                    icon={<FolderMinus class="w-3.5 h-3.5" />}
+                  >
+                    Remove from group
+                  </MenuItem>
+                }
+              >
+                <MenuItem
+                  onClick={() => props.onCreateGroup(c().tab)}
+                  icon={<FolderPlus class="w-3.5 h-3.5" />}
+                >
+                  New tab group
+                </MenuItem>
+              </Show>
             </Show>
             <MenuItem onClick={() => props.onCloseTab(c().tab)} icon={<X class="w-3.5 h-3.5" />}>
               Close tab

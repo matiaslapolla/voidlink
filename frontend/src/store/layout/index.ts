@@ -31,6 +31,7 @@ import {
 import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
 import type { GitSectionKey, PanelId } from "./prefs";
 import {
+  findGroup,
   groupList,
   groupOwning,
   mapPaneTabIds,
@@ -47,6 +48,36 @@ import {
   splitGroup,
   type SplitOrientation,
 } from "./panes";
+import {
+  addTabToGroup,
+  createTabGroup,
+  dissolveTabGroup,
+  effectiveTabGroups,
+  emptyTabGroupState,
+  materializeAutoGroups,
+  moveTabGroupToPane,
+  parseTabGroupStates,
+  pruneTabGroups,
+  recolorTabGroup,
+  removeTabFromGroup,
+  renameTabGroup,
+  reorderTabGroups,
+  serializeTabGroupState,
+  setAutoGroupMode,
+  toggleTabGroupCollapsed,
+  type AutoGroupMode,
+  type TabGroup,
+  type TabGroupColor,
+  type TabGroupDerivation,
+  type TabGroupState,
+} from "./tabGroups";
+import {
+  applyLayoutPreset,
+  captureLayoutPreset,
+  presetsFor,
+  upsertPreset,
+  type LayoutPreset,
+} from "./presets";
 import {
   canNavigateBack,
   canNavigateForward,
@@ -66,6 +97,7 @@ import {
 } from "./navigation";
 import {
   TAB_KINDS,
+  TAB_KIND_GROUP_LABELS,
   TAB_SPECS,
   closedTabsEqual,
   deserializeClosedTab,
@@ -132,6 +164,30 @@ export type {
 } from "./prefs";
 export { GIT_SECTION_KEYS, PANEL_BOUNDS } from "./prefs";
 export type { PaneGroup, PaneNode, SplitOrientation } from "./panes";
+export type {
+  AutoGroupMode,
+  StripEntry,
+  TabGroup,
+  TabGroupColor,
+  TabGroupDerivation,
+  TabGroupState,
+} from "./tabGroups";
+export {
+  AUTO_GROUP_MODES,
+  TAB_GROUP_COLORS,
+  emptyTabGroupState,
+  stripEntries,
+  tabGroupOf,
+  visibleStripTabIds,
+} from "./tabGroups";
+export type { LayoutPreset } from "./presets";
+export {
+  PRESET_VERSION,
+  allPresets,
+  presetsFor,
+  removePreset,
+  renamePreset,
+} from "./presets";
 export type { GroupMru, MruList, NavEntry, NavHistory } from "./navigation";
 export {
   NAV_HISTORY_LIMIT,
@@ -299,6 +355,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       readJson(STORAGE_KEYS.paneLayout, null),
       worktreeIds,
     ),
+    tabGroupsByWorktree: parseTabGroupStates(
+      readJson(STORAGE_KEYS.tabGroups, null),
+      worktreeIds,
+    ),
     focusedGroupByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
     tabMruByWorktree: parseGroupMrus(readJson(STORAGE_KEYS.tabMru, null), worktreeIds),
     navHistoryByWorktree: parseNavHistories(
@@ -365,6 +425,15 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       out[wtId] = serializePaneLayout(layout);
     }
     writeJson(STORAGE_KEYS.paneLayout, out);
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    const out: Record<string, unknown> = {};
+    for (const [wtId, groups] of Object.entries(state.tabGroupsByWorktree)) {
+      out[wtId] = serializeTabGroupState(groups);
+    }
+    writeJson(STORAGE_KEYS.tabGroups, out);
   });
 
   createEffect(() => {
@@ -480,6 +549,119 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       setState("paneLayoutByWorktree", wtId, next);
     }
   });
+
+  // ── Tab groups ────────────────────────────────────────────────────────────
+  // A second axis over the pane tree: which *labelled set* a tab is in, inside
+  // whatever strip its pane group resolved to. Everything structural lives in
+  // `tabGroups.ts`; what is here is the reactive plumbing and the rule that a
+  // hand-edit of a derived group materialises the derivation first.
+
+  /// The workbench kinds, in `workbenchTabIds`' order. Read off the registry
+  /// rather than spelled out, so a new workbench kind is grouped without an
+  /// edit here.
+  const WORKBENCH_KINDS: TabKind[] = [
+    "terminal",
+    "compare",
+    "stack",
+    "history",
+    "brain",
+    "browser",
+  ];
+
+  /// Every workbench tab id for an *arbitrary* worktree. `workbenchTabIds` is
+  /// the memoised version for the active one; actions take a worktree id, so
+  /// they need this.
+  function worktreeTabIds(wtId: string): string[] {
+    const out: string[] = [];
+    for (const kind of WORKBENCH_KINDS) {
+      const list = (state[TAB_SPECS[kind].stateKey] as Record<string, { id: string }[]>)[wtId];
+      if (list) for (const tab of list) out.push(tab.id);
+    }
+    return out;
+  }
+
+  function tabKindMap(wtId: string): Map<string, TabKind> {
+    const out = new Map<string, TabKind>();
+    for (const kind of WORKBENCH_KINDS) {
+      const list = (state[TAB_SPECS[kind].stateKey] as Record<string, { id: string }[]>)[wtId];
+      if (list) for (const tab of list) out.set(tab.id, kind);
+    }
+    return out;
+  }
+
+  function tabGroupStateOf(wtId: string): TabGroupState {
+    return state.tabGroupsByWorktree[wtId] ?? emptyTabGroupState();
+  }
+
+  /// Pane group id → the tabs it resolves to, for any worktree.
+  function paneTabIdsOf(wtId: string): Map<string, string[]> {
+    const layout = state.paneLayoutByWorktree[wtId];
+    if (!layout) return new Map();
+    return resolveGroupTabs(layout, worktreeTabIds(wtId));
+  }
+
+  /// How the worktree's auto-grouping mode buckets tabs, or `null` under `off`.
+  ///
+  /// **A note on `worktree` mode.** Every workbench tab collection is keyed by
+  /// worktree id, so every tab in this worktree *is* from this worktree — the
+  /// mode therefore yields a single bucket named after the worktree. It is
+  /// implemented as specified rather than reinterpreted; the axis only earns
+  /// its keep once a pane can show another worktree's tab.
+  function derivationFor(wtId: string): TabGroupDerivation | null {
+    const mode = tabGroupStateOf(wtId).mode;
+    if (mode === "off") return null;
+    if (mode === "kind") {
+      const kinds = tabKindMap(wtId);
+      return {
+        key: (tabId) => kinds.get(tabId) ?? null,
+        label: (key) => TAB_KIND_GROUP_LABELS[key as TabKind] ?? key,
+      };
+    }
+    const names = new Map<string, string>();
+    const found = locateWorktree(wtId);
+    if (found) {
+      names.set(wtId, found.worktree.branch || found.worktree.path.split("/").pop() || "Worktree");
+    }
+    return {
+      key: () => wtId,
+      label: (key) => names.get(key) ?? "Worktree",
+    };
+  }
+
+  /// The active worktree's groups as they should render: the manual ones under
+  /// `off`, the derivation otherwise.
+  const tabGroupsByPane = createMemo<Record<string, TabGroup[]>>(() => {
+    const wtId = state.activeWorktreeId;
+    const groups = state.tabGroupsByWorktree[wtId];
+    if (!groups) return {};
+    const paneTabs = resolveGroupTabs(paneLayout(), workbenchTabIds());
+    return effectiveTabGroups(groups, paneTabs, derivationFor(wtId));
+  });
+
+  /// Forget grouped tabs that closed or moved to another pane, and the groups
+  /// they emptied. Same shape (and same termination guard) as the pane tree's
+  /// prune: the reducer returns its input by reference when nothing changed.
+  createEffect(() => {
+    const wtId = state.activeWorktreeId;
+    const groups = state.tabGroupsByWorktree[wtId];
+    if (!groups || groups.mode !== "off") return;
+    const next = pruneTabGroups(groups, resolveGroupTabs(paneLayout(), workbenchTabIds()));
+    if (next !== groups) setState("tabGroupsByWorktree", wtId, next);
+  });
+
+  /// Every tab-group mutation goes through here.
+  ///
+  /// The materialise step is the whole contract of "derived groups are
+  /// read-only": the edit lands, and the rule that would have undone it stops
+  /// applying. Without it a rename would appear to work and then vanish on the
+  /// next re-derivation, which is the exact frustration Wave 4 exists to avoid.
+  function editTabGroups(wtId: string, fn: (s: TabGroupState) => TabGroupState) {
+    const current = tabGroupStateOf(wtId);
+    const manual = materializeAutoGroups(current, paneTabIdsOf(wtId), derivationFor(wtId));
+    const next = fn(manual);
+    if (next === current) return;
+    setState("tabGroupsByWorktree", wtId, next);
+  }
 
   const activeItem = createMemo(
     () => state.activeItemByWorktree[state.activeWorktreeId] ?? null,
@@ -1073,6 +1255,163 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const current = state.paneLayoutByWorktree[wtId];
       if (!current) return null;
       return groupOwning(current, tabId, workbenchTabIds());
+    },
+
+    // ── Tab groups ───────────────────────────────────────────────────────
+    /// Create a labelled group in `paneGroupId` holding `tabIds`. Returns its
+    /// id, or `null` when the pane group does not exist — a group with nowhere
+    /// to render is worse than no group.
+    createTabGroup(
+      wtId: string,
+      paneGroupId: string,
+      tabIds: string[],
+      label?: string,
+    ): string | null {
+      const layout = state.paneLayoutByWorktree[wtId];
+      if (!layout || !findGroup(layout, paneGroupId)) return null;
+      let created: string | null = null;
+      editTabGroups(wtId, (s) => {
+        const out = createTabGroup(s, paneGroupId, { tabIds, label });
+        created = out.groupId;
+        return out.state;
+      });
+      return created;
+    },
+
+    renameTabGroup(wtId: string, groupId: string, label: string) {
+      editTabGroups(wtId, (s) => renameTabGroup(s, groupId, label));
+    },
+
+    recolorTabGroup(wtId: string, groupId: string, color: TabGroupColor) {
+      editTabGroups(wtId, (s) => recolorTabGroup(s, groupId, color));
+    },
+
+    /// Collapse or expand. A collapsed group occupies one chip and renders
+    /// none of its members — which is why `store/activity.ts` had to learn
+    /// about them: a signal on a hidden member escalates to the chip.
+    toggleTabGroup(wtId: string, groupId: string) {
+      editTabGroups(wtId, (s) => toggleTabGroupCollapsed(s, groupId));
+    },
+
+    /// Put `tabId` in `groupId`, or take it out of whatever group holds it
+    /// when `groupId` is `null`. One action rather than two because the drag
+    /// that does it is one gesture with two landing zones.
+    assignTabToGroup(
+      wtId: string,
+      tabId: string,
+      groupId: string | null,
+      beforeTabId: string | null = null,
+    ) {
+      editTabGroups(wtId, (s) =>
+        groupId === null
+          ? removeTabFromGroup(s, tabId)
+          : addTabToGroup(s, groupId, tabId, beforeTabId),
+      );
+    },
+
+    /// Reorder a group within its own strip.
+    reorderTabGroup(wtId: string, groupId: string, beforeGroupId: string | null) {
+      editTabGroups(wtId, (s) => reorderTabGroups(s, groupId, beforeGroupId));
+    },
+
+    /// Move a whole group to another pane group. The members are re-claimed
+    /// one at a time through the pane reducer, so the two models cannot
+    /// disagree about who owns what.
+    moveTabGroupToPane(wtId: string, groupId: string, toPaneGroupId: string) {
+      const layout = state.paneLayoutByWorktree[wtId];
+      if (!layout) return;
+      const current = tabGroupStateOf(wtId);
+      const manual = materializeAutoGroups(current, paneTabIdsOf(wtId), derivationFor(wtId));
+      const moved = moveTabGroupToPane(manual, layout, groupId, toPaneGroupId);
+      if (moved.state === current && moved.layout === layout) return;
+      setState(
+        produce((s) => {
+          s.tabGroupsByWorktree[wtId] = moved.state;
+          s.paneLayoutByWorktree[wtId] = moved.layout;
+          s.focusedGroupByWorktree[wtId] = toPaneGroupId;
+        }),
+      );
+    },
+
+    /// Drop the group, leaving its tabs in the strip.
+    dissolveTabGroup(wtId: string, groupId: string) {
+      editTabGroups(wtId, (s) => dissolveTabGroup(s, groupId));
+    },
+
+    /// The groups one pane group's strip should render, derivation applied.
+    tabGroupsOfPane(paneGroupId: string): TabGroup[] {
+      return tabGroupsByPane()[paneGroupId] ?? [];
+    },
+
+    /// The group holding `tabId` right now, or `null`.
+    tabGroupHolding(tabId: string): TabGroup | null {
+      for (const list of Object.values(tabGroupsByPane())) {
+        const hit = list.find((g) => g.tabIds.includes(tabId));
+        if (hit) return hit;
+      }
+      return null;
+    },
+
+    /// Look a group up by id across every pane, derivation applied.
+    findTabGroup(groupId: string): TabGroup | null {
+      for (const list of Object.values(tabGroupsByPane())) {
+        const hit = list.find((g) => g.id === groupId);
+        if (hit) return hit;
+      }
+      return null;
+    },
+
+    autoGroupMode(wtId: string): AutoGroupMode {
+      return tabGroupStateOf(wtId).mode;
+    },
+
+    /// Switch the worktree between manual assignment and a derivation.
+    /// Switching *into* a derived mode discards the manual arrangement rather
+    /// than keeping a shadow copy that would reappear unannounced later.
+    setAutoGroupMode(wtId: string, mode: AutoGroupMode) {
+      const current = tabGroupStateOf(wtId);
+      const next = setAutoGroupMode(current, mode);
+      if (next === current) return;
+      setState("tabGroupsByWorktree", wtId, next);
+    },
+
+    // ── Layout presets ───────────────────────────────────────────────────
+    /// Capture the active worktree's arrangement — the pane tree, the
+    /// tab-group structure, each pane group's front tab and the three panel
+    /// widths — under `name`, in the *workspace's* preset list.
+    ///
+    /// Deliberately not `saveWorkspaceSnapshot`: a snapshot is a session and
+    /// restoring one closes and reopens every tab. A preset carries no tab
+    /// contents at all.
+    saveLayoutPreset(wtId: string, name: string): boolean {
+      const layout = state.paneLayoutByWorktree[wtId];
+      if (!layout) return false;
+      const preset = captureLayoutPreset(name, layout, tabGroupStateOf(wtId), state.panels);
+      if (!preset) return false;
+      upsertPreset(state.activeWorkspaceId, preset);
+      return true;
+    },
+
+    layoutPresets(): LayoutPreset[] {
+      return presetsFor(state.activeWorkspaceId);
+    },
+
+    /// Apply a preset to `wtId`. Degrades rather than fails: geometry that
+    /// names tabs this worktree does not have is placed empty, where the
+    /// pane's existing empty state already says what to do about it.
+    applyLayoutPreset(wtId: string, name: string): boolean {
+      const preset = presetsFor(state.activeWorkspaceId).find((p) => p.name === name);
+      if (!preset) return false;
+      const applied = applyLayoutPreset(preset, worktreeTabIds(wtId));
+      setState(
+        produce((s) => {
+          s.paneLayoutByWorktree[wtId] = applied.layout;
+          s.tabGroupsByWorktree[wtId] = applied.tabGroups;
+          s.panels = applied.panels;
+          s.focusedGroupByWorktree[wtId] = null;
+        }),
+      );
+      return true;
     },
 
     // ── Navigation ───────────────────────────────────────────────────────
