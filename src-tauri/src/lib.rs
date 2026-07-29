@@ -130,26 +130,48 @@ impl PtySink {
 
     /// Attach a pane and hand it everything the session has produced so far.
     /// Returns the token the subscriber must present to detach.
-    fn attach(&mut self, channel: Channel) -> u64 {
+    /// Returns the attachment token and the exact byte length of the replay
+    /// that was just pushed down `channel`, which is always a single send.
+    ///
+    /// The length is not bookkeeping — the subscriber needs it to know where
+    /// the replay ends. Replayed bytes are indistinguishable from live output
+    /// once they are in the channel, and a replay re-feeds every *query* the
+    /// session ever emitted (`ESC[6n`, `ESC[c`, `OSC 11 ?`, DECRQM …) back
+    /// through the emulator, which dutifully answers each one down its input
+    /// path. Those answers reach the shell as if they had been typed, which is
+    /// the stray `[57;1R` / `[?62;c` litter that appears on every re-attach.
+    /// The subscriber suppresses its input path for exactly this many bytes.
+    fn attach(&mut self, channel: Channel) -> (u64, usize) {
         self.attach_seq += 1;
+        let mut replayed = 0usize;
         if self.bytes > 0 {
-            let mut replay = Vec::with_capacity(self.bytes + REPLAY_PROLOGUE.len());
-            let mut chunks = self.scrollback.iter();
-            if self.truncated {
-                replay.extend_from_slice(REPLAY_PROLOGUE);
-                if let Some(head) = chunks.next() {
-                    replay.extend_from_slice(resync(head));
-                }
-            }
-            for chunk in chunks {
-                replay.extend_from_slice(chunk);
-            }
+            let replay = self.build_replay();
+            replayed = replay.len();
             if channel.send(InvokeResponseBody::Raw(replay)).is_err() {
-                return self.attach_seq;
+                return (self.attach_seq, 0);
             }
         }
         self.channel = Some(channel);
-        self.attach_seq
+        (self.attach_seq, replayed)
+    }
+
+    /// The bytes a fresh subscriber is sent to reconstruct the session, as one
+    /// contiguous buffer. Split out from `attach` so the replay — and above all
+    /// its length, which the subscriber gates its input path on — is testable
+    /// without a `Channel`.
+    fn build_replay(&self) -> Vec<u8> {
+        let mut replay = Vec::with_capacity(self.bytes + REPLAY_PROLOGUE.len());
+        let mut chunks = self.scrollback.iter();
+        if self.truncated {
+            replay.extend_from_slice(REPLAY_PROLOGUE);
+            if let Some(head) = chunks.next() {
+                replay.extend_from_slice(resync(head));
+            }
+        }
+        for chunk in chunks {
+            replay.extend_from_slice(chunk);
+        }
+        replay
     }
 
     /// Drop the attached channel, keeping the session buffering. Ignored when
@@ -363,22 +385,31 @@ async fn resize_pty(
     .map_err(|e| e.to_string())?
 }
 
+/// What a subscriber gets back: the token it detaches with, and how many bytes
+/// of the stream it is about to receive are replay rather than live output.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PtyAttachment {
+    token: u64,
+    replay_bytes: usize,
+}
+
 #[tauri::command]
 async fn pty_subscribe(
     session_id: String,
     on_output: Channel,
     state: tauri::State<'_, PtyChannels>,
-) -> Result<u64, String> {
+) -> Result<PtyAttachment, String> {
     // Replaying happens under the sink's lock, so live output produced during
     // the replay queues behind it instead of arriving out of order.
     let sink = state
         .entry(session_id)
         .or_insert_with(|| Mutex::new(PtySink::new()));
-    let token = sink
+    let (token, replay_bytes) = sink
         .lock()
         .map_err(|_| "pty sink poisoned".to_string())?
         .attach(on_output);
-    Ok(token)
+    Ok(PtyAttachment { token, replay_bytes })
 }
 
 /// Detach the pane that holds `token`, leaving the session running and its
@@ -984,5 +1015,50 @@ mod tests {
     fn get_home_dir_returns_string() {
         let home = get_home_dir();
         assert!(!home.is_empty());
+    }
+
+    /// A sink holding `chunks`, marked truncated or not.
+    fn sink_with(chunks: &[&[u8]], truncated: bool) -> PtySink {
+        let mut sink = PtySink::new();
+        for chunk in chunks {
+            sink.scrollback.push_back(chunk.to_vec());
+            sink.bytes += chunk.len();
+        }
+        sink.truncated = truncated;
+        sink
+    }
+
+    #[test]
+    fn untruncated_replay_is_the_chunks_verbatim() {
+        let sink = sink_with(&[b"hello ", b"world"], false);
+        assert_eq!(sink.build_replay(), b"hello world");
+    }
+
+    #[test]
+    fn truncated_replay_carries_the_prologue_and_resyncs_the_head() {
+        let sink = sink_with(&[b"\x1b[3junk\nkept", b" tail"], true);
+        let replay = sink.build_replay();
+        // Prologue first, then the head *after* its first newline, then the rest.
+        let mut want = REPLAY_PROLOGUE.to_vec();
+        want.extend_from_slice(b"kept tail");
+        assert_eq!(replay, want);
+    }
+
+    #[test]
+    fn empty_sink_replays_nothing() {
+        assert!(PtySink::new().build_replay().is_empty());
+    }
+
+    /// The length a subscriber gates its input path on has to be the length of
+    /// the buffer that is actually sent — including the prologue, and after the
+    /// head has been resynced. Deriving it from `bytes` instead would be short
+    /// by the prologue and long by the discarded head, and the input path would
+    /// un-gate mid-replay.
+    #[test]
+    fn replay_length_accounts_for_prologue_and_resync() {
+        let sink = sink_with(&[b"\x1b[3junk\nkept", b" tail"], true);
+        let replay = sink.build_replay();
+        assert_eq!(replay.len(), REPLAY_PROLOGUE.len() + b"kept tail".len());
+        assert_ne!(replay.len(), sink.bytes, "must not be the raw retained count");
     }
 }
