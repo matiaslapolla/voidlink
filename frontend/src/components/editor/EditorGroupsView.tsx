@@ -39,6 +39,10 @@ export interface EditorGroupsViewProps {
 /// enough that holding the key gets somewhere.
 const KEY_STEP = 0.02;
 
+/// Hit area of the seam, in px. Wide enough to grab, with a 1px mark inside it
+/// (MASTER §7.6's splitter note).
+const HANDLE_PX = 9;
+
 export function EditorGroupsView(props: EditorGroupsViewProps) {
   let containerRef!: HTMLDivElement;
 
@@ -90,10 +94,14 @@ export function EditorGroupsView(props: EditorGroupsViewProps) {
     }
   }
 
+  /// Flex basis for one group. The seam's 9px comes out of the two panes rather
+  /// than off the end of the container — without the `calc`, two panes at 50%
+  /// plus a 9px handle overflow by exactly the handle, and a pane pinned to
+  /// `flex-shrink: 0` cannot give it back.
   const groupBasis = (index: number): string => {
     if (!isSplit(props.layout())) return "100%";
     const f = clampFraction(props.fraction());
-    return `${(index === 0 ? f : 1 - f) * 100}%`;
+    return `calc(${(index === 0 ? f : 1 - f) * 100}% - ${HANDLE_PX / 2}px)`;
   };
 
   return (
@@ -169,9 +177,12 @@ function SplitHandle(props: {
       onKeyDown={props.onKeyDown}
       onDblClick={props.onReset}
       class="group/seam relative shrink-0 flex items-center justify-center bg-transparent focus-visible:outline-none"
+      style={
+        horizontal() ? { width: `${HANDLE_PX}px` } : { height: `${HANDLE_PX}px` }
+      }
       classList={{
-        "w-[9px] cursor-col-resize": horizontal(),
-        "h-[9px] cursor-row-resize": !horizontal(),
+        "cursor-col-resize": horizontal(),
+        "cursor-row-resize": !horizontal(),
       }}
     >
       <div
