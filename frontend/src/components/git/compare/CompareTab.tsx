@@ -15,6 +15,7 @@ import { ChangedFileTree } from "./ChangedFileTree";
 import { CompareDiffPane } from "./CompareDiffPane";
 import { RefPicker } from "./RefPicker";
 import { branchMruFor } from "@/commands/branchMru";
+import { clearTabActivity, noteRunning } from "@/store/activity";
 
 // Top-level layout for the Compare tab:
 //
@@ -85,6 +86,13 @@ export function CompareTab(props: Props) {
   const [diff, { refetch }] = createResource(refsKey, async (k) => {
     return gitApi.diffRefs(k.repoPath, k.baseRef, k.headRef, k.useMergeBase);
   });
+
+  // §7.5.3: a compare that is re-diffing is a *running* tab, and the badge has
+  // to be readable from the strip of a group the user isn't in. `noteRunning`
+  // is the whole wiring — everything else (precedence, escalation, the group
+  // header, the status bar) is already downstream of it.
+  createEffect(() => noteRunning(props.tab.id, diff.loading));
+  onCleanup(() => clearTabActivity(props.tab.id));
 
   const files = createMemo(() => diff()?.files ?? []);
 

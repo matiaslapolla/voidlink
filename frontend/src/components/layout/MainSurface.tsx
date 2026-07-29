@@ -38,6 +38,18 @@ import { Splitter } from "@/components/layout/Splitter";
 import { ratiosAfterDrag, resolveActiveTabId, type Rect } from "@/components/layout/paneDrop";
 import { isZen, visibleGroupIds } from "@/store/focusMode";
 import {
+  clearTabActivity,
+  escalate,
+  noteBell,
+  publishHiddenActivity,
+  setVisibleTabs,
+  signalsOf,
+  tabMark,
+  tabSignals,
+} from "@/store/activity";
+import { watchTerminal } from "@/store/terminalWatch";
+import type { ActivitySignal } from "@/components/layout/StatusLed";
+import {
   MIN_RATIO,
   canSplit,
   groupList,
@@ -130,6 +142,7 @@ export function MainSurface(props: MainSurfaceProps) {
           ? `${term.label} — new shell in ${term.cwd}; scrollback was not restored`
           : term.label,
         terminal: term,
+        activity: tabMark(term.id),
       });
     }
     for (const tab of activeCompareTabs()) {
@@ -140,6 +153,7 @@ export function MainSurface(props: MainSurfaceProps) {
         prefix: "compare · ",
         icon: <GitBranchPlus class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: `Compare: ${tab.baseRef || "?"}..${tab.headRef || "?"}`,
+        activity: tabMark(tab.id),
         mono: true,
         labelWidth: "max-w-[200px]",
       });
@@ -152,6 +166,7 @@ export function MainSurface(props: MainSurfaceProps) {
         prefix: "stack · ",
         icon: <Layers class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: `Stack: ${tab.topBranch} → ${tab.trunk}`,
+        activity: tabMark(tab.id),
         mono: true,
         labelWidth: "max-w-[200px]",
       });
@@ -163,6 +178,7 @@ export function MainSurface(props: MainSurfaceProps) {
         label: "graph",
         icon: <GitCommitHorizontal class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: "Commit graph",
+        activity: tabMark(tab.id),
         // Repo-wide singletons: one per worktree, so there is nothing to sort
         // them against and nothing a pin would protect them from.
         pinnable: false,
@@ -176,6 +192,7 @@ export function MainSurface(props: MainSurfaceProps) {
         label: "brain",
         icon: <Brain class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: "Brain",
+        activity: tabMark(tab.id),
         pinnable: false,
         draggable: false,
       });
@@ -187,6 +204,7 @@ export function MainSurface(props: MainSurfaceProps) {
         label: browserTabLabel(tab),
         icon: <Globe class="w-3.5 h-3.5 shrink-0 text-info opacity-80" />,
         title: tab.url,
+        activity: tabMark(tab.id),
         labelWidth: "max-w-[160px]",
         // The page is a child webview keyed by tab id; reordering the store
         // list would not move it, so the tab stays put too.
@@ -261,6 +279,51 @@ export function MainSurface(props: MainSurfaceProps) {
     return !!groupId && frontTabIds().get(groupId) === tabId;
   };
   const tabIsVisible = (tabId: string) => tabIsFront(tabId) && tabGroupVisible(tabId);
+
+  // ── Activity and its escalation (§7.5.3) ─────────────────────────────────
+  // This component is the only one that knows both what every tab is
+  // signalling and where every tab is on screen, so the escalation decision
+  // is made here and published outward: group headers get theirs through the
+  // strip's reserved slot, the status bar through `publishHiddenActivity`.
+
+  /// Which tabs the user can actually see. Feeding this back into the activity
+  /// store is what stops a command you watched finish from leaving a badge,
+  /// and what clears `bell` / `finished` when a tab comes to the front. Under
+  /// zen the panes are still on screen — zen hides chrome, not content — so
+  /// the front tab of a visible group still counts as seen.
+  createEffect(() => {
+    const seen: string[] = [];
+    for (const [groupId, tabId] of frontTabIds()) {
+      if (tabId && visibleGroups().has(groupId)) seen.push(tabId);
+    }
+    setVisibleTabs(seen);
+  });
+
+  /// The escalation snapshot. Recomputed on any change to the signals, the
+  /// group membership, what is on screen or which group has focus.
+  const escalation = createMemo(() => {
+    void tabSignals();
+    const live = new Map<string, ActivitySignal[]>();
+    for (const [, ids] of groupTabIds()) {
+      for (const id of ids) {
+        const s = signalsOf(id);
+        if (s.length) live.set(id, s);
+      }
+    }
+    return escalate({
+      tabSignals: live,
+      groupTabs: groupTabIds(),
+      visibleGroupIds: visibleGroups(),
+      focusedGroupId: focusedGroupId(),
+      zen: isZen(),
+    });
+  });
+
+  /// Hand the off-screen half to the status bar. An effect rather than the
+  /// status bar reading `escalation()` directly, because the two components
+  /// are siblings in `AppShell` with no shared ancestor that knows geometry.
+  createEffect(() => publishHiddenActivity(escalation().statusBar));
+  onCleanup(() => publishHiddenActivity(null));
 
   // ── Group geometry ───────────────────────────────────────────────────────
   // Each group's body box, measured relative to this component's root, so the
@@ -397,6 +460,9 @@ export function MainSurface(props: MainSurfaceProps) {
 
   function closeTab(tab: TabDescriptor) {
     const wtId = state.activeWorktreeId;
+    // A badge for a pane that no longer exists would escalate forever with
+    // nowhere to send the user.
+    clearTabActivity(tab.id);
     switch (tab.kind) {
       case "terminal": actions.removeTerminal(wtId, tab.id); break;
       case "compare": actions.closeCompareTab(wtId, tab.id); break;
@@ -603,6 +669,7 @@ export function MainSurface(props: MainSurfaceProps) {
             isPinned={isPinned}
             groupId={groupId}
             groupHeader={header()}
+            groupActivity={escalation().groups.get(groupId)}
             onFocusGroup={focusGroup}
             onMoveTab={(payload, before) => moveTabHere(payload, groupId, before)}
             onSelect={(tab) => selectTab(tab, groupId)}
@@ -715,13 +782,24 @@ export function MainSurface(props: MainSurfaceProps) {
 
       {/* Terminals */}
       <For each={activeTerminals()}>
-        {(term) => (
+        {(term) => {
+          // Subscribe from the pane layer, not only from the tab strip. Zen
+          // renders no strips at all, and a shell whose activity is only
+          // watched while its strip is mounted reports nothing precisely when
+          // the user has the least chance of noticing (§7.5.3 rule 1). The
+          // watcher is refcounted, so this and the strip share one poll.
+          watchTerminal(term.id, term.ptyId);
+          return (
           <div class="absolute" style={paneStyle(term.id)}>
             <TerminalPane
               ptyId={term.ptyId}
               active={tabIsVisible(term.id)}
               class="w-full h-full"
-              onExit={() => actions.removeTerminal(state.activeWorktreeId, term.id)}
+              onBell={() => noteBell(term.id)}
+              onExit={() => {
+                clearTabActivity(term.id);
+                actions.removeTerminal(state.activeWorktreeId, term.id);
+              }}
               onOpenPath={(path, line, column) => {
                 // Resolve relative paths against the workspace root; tools
                 // print both, so accept either.
@@ -741,7 +819,8 @@ export function MainSurface(props: MainSurfaceProps) {
               onOpenBranch={(branch) => void openBranchFromTerminal(branch)}
             />
           </div>
-        )}
+          );
+        }}
       </For>
 
       {/* Compare tabs */}

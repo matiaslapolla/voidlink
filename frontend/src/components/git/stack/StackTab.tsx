@@ -1,6 +1,7 @@
 import {
   For,
   Show,
+  createEffect,
   createMemo,
   createResource,
   createSignal,
@@ -28,6 +29,7 @@ import { textPrompt } from "@/commands/prompt";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import type { StackTab as StackTabState } from "@/store/layout";
 import type { RestackResult, StackBranch, SubmitResult } from "@/types/stack";
+import { clearTabActivity, noteRunning } from "@/store/activity";
 
 // Full stack workspace. Lists every branch in the chain top-down with the
 // same conventions as the sidebar section, plus per-branch actions and a
@@ -71,6 +73,11 @@ export function StackTab(props: Props) {
       );
     },
   );
+
+  // §7.5.3, same as the compare tab: re-reading the stack is in-flight work
+  // that must report itself on the tab, and escalate from there.
+  createEffect(() => noteRunning(props.tab.id, stack.loading));
+  onCleanup(() => clearTabActivity(props.tab.id));
 
   // Refresh on the shared git-refresh signal so a checkout / commit elsewhere
   // immediately reflects in the stack tab.

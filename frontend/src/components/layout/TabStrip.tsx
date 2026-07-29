@@ -18,6 +18,7 @@ import {
   Show,
   createEffect,
   createMemo,
+  createRoot,
   createSignal,
   on,
   onCleanup,
@@ -26,18 +27,17 @@ import {
 } from "solid-js";
 import { Portal } from "solid-js/web";
 import { ChevronsRight, Pin, PinOff, X } from "lucide-solid";
-import { terminalApi } from "@/api/terminal";
 import type { TerminalSession } from "@/types/workspace";
 import {
   LedSlot,
   StatusLed,
+  highestSignal,
   terminalSignal,
   type ActivitySignal,
 } from "@/components/layout/StatusLed";
+import { watchTerminal, type TerminalWatch } from "@/store/terminalWatch";
 import { dropIntentAt, type DropIntent } from "@/components/layout/paneDrop";
 import type { SplitOrientation } from "@/store/layout";
-
-const POLL_MS = 1500;
 
 /// Every tab kind either window can show. The strip only ever compares these
 /// for equality (grouping, reorder targets) — it attaches no behaviour to any
@@ -68,6 +68,11 @@ export interface TabDescriptor {
   title: string;
   /// Unsaved-changes marker. Editor-window state, so only file tabs set it.
   dirty?: boolean;
+  /// The tab's live §7.5.3 signal, already reduced to one mark by the caller
+  /// (`store/activity.ts`). `dirty` is folded in here rather than by the
+  /// caller, so a window that only knows about unsaved buffers — the editor —
+  /// keeps working without setting this at all.
+  activity?: ActivitySignal;
   /// Present on terminal tabs. Swaps the icon for a live LED + process name;
   /// the strip owns that polling because the tab is the only place it shows.
   terminal?: TerminalSession;
@@ -528,51 +533,83 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
         </Show>
         {props.tab.label}
       </span>
-      <Show when={props.tab.dirty}>
-        <span class="w-1.5 h-1.5 rounded-full bg-warning shrink-0" />
-      </Show>
-      <Show when={closable()}>
-        <CloseButton label={`Close ${props.tab.label}`} onClose={props.onClose} />
-      </Show>
+      <TabTrailing
+        tab={props.tab}
+        closable={closable()}
+        closeLabel={`Close ${props.tab.label}`}
+        onClose={props.onClose}
+      />
     </div>
+  );
+}
+
+/// The tab's right-hand slot: its §7.5.3 activity mark at rest, its close
+/// button on hover. One box, one fixed size, both states inside it.
+///
+/// Three things about this are load-bearing and each is easy to lose:
+///   • The mark **replaces** the close affordance rather than sitting beside
+///     it (§7.5.3). A tab wearing both a badge and an × reads as two controls.
+///   • The box is `w-4 h-4` whether or not there is a mark and whether or not
+///     the tab is closable, so a background pane lighting up never nudges the
+///     label (§7.5.3 rule 3, and §7.6's no-layout-shift rule).
+///   • `dirty` is folded in here, so the editor window — which knows about
+///     unsaved buffers and nothing else — gets the right mark from the
+///     `dirty` prop alone.
+function TabTrailing(props: {
+  tab: TabDescriptor;
+  closable: boolean;
+  closeLabel: string;
+  onClose: () => void;
+}) {
+  const mark = () =>
+    highestSignal([props.tab.activity, props.tab.dirty ? ("dirty" as const) : undefined]);
+  return (
+    <span class="relative inline-flex w-4 h-4 shrink-0 items-center justify-center">
+      <Show when={mark()}>
+        {(m) => (
+          <StatusLed
+            signal={m()}
+            /// Hidden while the close button is showing — the two share the
+            /// slot rather than competing for it.
+            class={props.closable ? "group-hover:opacity-0" : ""}
+          />
+        )}
+      </Show>
+      <Show when={props.closable}>
+        <CloseButton label={props.closeLabel} onClose={props.onClose} />
+      </Show>
+    </span>
   );
 }
 
 /// A terminal tab. Polls its PTY so the tab can wear the name of whatever is
 /// running in it, which is what you actually scan for across a row of shells.
 function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
-  const [busy, setBusy] = createSignal(false);
-  const [processName, setProcessName] = createSignal<string | null>(null);
+  const [watch, setWatch] = createSignal<TerminalWatch | null>(null);
 
   // Keyed on `ptyId`, not on mount: the strip renders slot-keyed rows, so
   // closing a tab hands this component a different session at the same slot,
-  // and a mount-only poll would keep reporting the old shell's process.
+  // and a mount-only subscription would keep reporting the old shell.
+  //
+  // The poll itself lives in `store/terminalWatch.ts` now — see its header for
+  // why the strip stopped owning it. Subscribing inside `createRoot` gives the
+  // subscription a lifetime tied to this `ptyId` rather than to the component,
+  // so switching sessions releases the old shell's refcount.
   createEffect(
     on(
-      () => props.session.ptyId,
-      (ptyId) => {
-        setBusy(false);
-        setProcessName(null);
-        let alive = true;
-        const poll = async () => {
-          try {
-            const info = await terminalApi.processInfo(ptyId);
-            if (!alive) return;
-            setBusy(info.busy);
-            setProcessName(info.name);
-          } catch {
-            /* the PTY went away; the tab is about to be removed anyway */
-          }
-        };
-        void poll();
-        const interval = setInterval(poll, POLL_MS);
-        onCleanup(() => {
-          alive = false;
-          clearInterval(interval);
+      () => ({ tabId: props.tab.id, ptyId: props.session.ptyId }),
+      ({ tabId, ptyId }) => {
+        const dispose = createRoot((d) => {
+          setWatch(watchTerminal(tabId, ptyId));
+          return d;
         });
+        onCleanup(dispose);
       },
     ),
   );
+
+  const busy = () => watch()?.busy() ?? false;
+  const processName = () => watch()?.processName() ?? null;
 
   /// While a foreground command runs, the tab wears its name. The static label
   /// ("Terminal 2") stays in the tooltip and comes back when the process exits.
@@ -600,9 +637,20 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
           : `${props.session.label} — ${displayLabel()}`
       }
     >
+      {/* The leading LED is the terminal tab's *icon*: it says whether this
+          shell is busy, which is what you scan a row of shells for. The
+          trailing slot is a different question — "did something happen here
+          while I was elsewhere?" — and §7.5.3 rule 4 wants signals to differ
+          in position as well as fill, so the two never read as one repeated
+          mark. */}
       <LedDot active={props.active} busy={busy()} />
       <span class="max-w-[140px] truncate">{displayLabel()}</span>
-      <CloseButton label={`Kill ${props.session.label}`} onClose={props.onClose} />
+      <TabTrailing
+        tab={props.tab}
+        closable
+        closeLabel={`Kill ${props.session.label}`}
+        onClose={props.onClose}
+      />
     </div>
   );
 }
@@ -614,7 +662,7 @@ function CloseButton(props: { label: string; onClose: () => void }) {
         e.stopPropagation();
         props.onClose();
       }}
-      class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
+      class="absolute inset-0 flex items-center justify-center rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 focus-visible:!opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
       aria-label={props.label}
     >
       <X class="w-3 h-3" />
