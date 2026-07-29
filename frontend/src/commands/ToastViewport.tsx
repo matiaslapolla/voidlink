@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { CheckCircle2, Info, AlertTriangle, XCircle, X } from "lucide-solid";
 import { dismissToast, useToasts, type Toast } from "@/commands/toast";
@@ -33,6 +33,19 @@ function ToastRow(props: { toast: Toast }) {
     <div class="pointer-events-auto min-w-[240px] max-w-[420px] bg-popover border border-border rounded-md shadow-lg px-3 py-2 flex items-start gap-2 text-xs">
       <Icon />
       <span class="flex-1 leading-snug">{props.toast.message}</span>
+      <Show when={props.toast.action}>
+        {(action) => (
+          <button
+            onClick={() => {
+              dismissToast(props.toast.id);
+              action().run();
+            }}
+            class="shrink-0 px-1.5 py-0.5 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            {action().label}
+          </button>
+        )}
+      </Show>
       <button
         onClick={() => dismissToast(props.toast.id)}
         aria-label="Dismiss"

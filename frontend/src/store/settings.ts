@@ -96,6 +96,11 @@ export interface BrainSettings {
 /// This never writes to the repository's git config. It is a voidlink-side
 /// override applied at commit time, so it cannot surprise you the next time
 /// you commit from the command line.
+///
+/// That is a statement about *this* store, not about voidlink: Settings → Git
+/// does write real git config (`gitApi.configSet`), and the two sit adjacent in
+/// the same pane. If you are looking for `user.name` in git config, it is not
+/// here and never will be — `identityByRepo` is deliberately a separate layer.
 export interface GitSettings {
   identityByRepo: Record<string, CommitIdentity>;
 }

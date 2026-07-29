@@ -73,10 +73,16 @@ An override replaces **both** the author and the committer, which is what
 switching between a work and a personal identity rather than committing
 someone else's patch.
 
-voidlink **never writes to your git config.** A repository default is stored
+**This path never writes to your git config.** A repository default is stored
 in voidlink's own settings and applied at commit time, so committing from the
 command line in the same repository is unaffected. Review and remove saved
 defaults under **Settings → Git**.
+
+Editing `user.name` and `user.email` in git config itself *is* possible, but it
+is a separate surface: the **Git configuration** section of
+[Settings → Git](./settings.md#git), which writes real git config at a scope
+you pick. The two sections sit next to each other and do different things —
+one is a voidlink-side override, the other is your actual git config.
 
 With no override and no `user.name` / `user.email` anywhere in the git config
 cascade, the commit fails with a message that says so rather than libgit2's

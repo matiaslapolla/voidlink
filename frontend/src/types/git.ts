@@ -207,3 +207,36 @@ export interface WorktreeSetupReport {
   steps: SetupStep[];
   pendingCommands: string[];
 }
+
+// ─── Git configuration ───────────────────────────────────────────────────────
+
+/// Where a config entry came from. Mirrors `git2::ConfigLevel`, with XDG
+/// folded into `global` and Windows' ProgramData into `system` — a user does
+/// not distinguish those, and the write scopes don't either.
+export type ConfigLevel = "system" | "global" | "local" | "worktree" | "app" | "unknown";
+
+/// The scopes voidlink will write. No `system`: it needs elevation and is not
+/// a per-user concern.
+export type ConfigScope = "local" | "global";
+
+export interface ConfigEntry {
+  key: string;
+  value: string;
+  level: ConfigLevel;
+}
+
+/// The files a write would actually land in, resolved by libgit2. `local` is
+/// null when no repository is open. Never compose these in the frontend — the
+/// whole point is that the path shown is the path written.
+export interface ConfigScopePaths {
+  local: string | null;
+  global: string;
+}
+
+/// The cascade plus the resolved targets. `entries` includes shadowed
+/// duplicates: the same key can appear at more than one level, which is how
+/// "set here" is told apart from "set here, overriding global".
+export interface ConfigSnapshot {
+  entries: ConfigEntry[];
+  scopes: ConfigScopePaths;
+}

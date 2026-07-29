@@ -2,6 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   BlameLine,
   CommitIdentity,
+  ConfigEntry,
+  ConfigScope,
+  ConfigSnapshot,
   ConflictVersions,
   DiffResult,
   FileDiff,
@@ -208,6 +211,30 @@ export const gitApi = {
   /// cascade. `null` when nothing is configured anywhere.
   configIdentity(repoPath: string): Promise<CommitIdentity | null> {
     return invoke<CommitIdentity | null>("git_config_identity", { repoPath });
+  },
+
+  /// The whole effective config cascade plus the files a write would land in.
+  /// `entries` keeps shadowed duplicates — the same key can appear at several
+  /// levels, which is what makes "overrides global" renderable. Pass `""` for
+  /// `repoPath` with no repo open: the global cascade still reads.
+  configList(repoPath: string): Promise<ConfigSnapshot> {
+    return invoke<ConfigSnapshot>("git_config_list", { repoPath });
+  },
+
+  /// The winning value for one key, or null when it is set nowhere.
+  configGet(repoPath: string, key: string): Promise<ConfigEntry | null> {
+    return invoke<ConfigEntry | null>("git_config_get", { repoPath, key });
+  },
+
+  /// Write one key at `local` or `global`. Rejected in Rust when the key is
+  /// outside the writable allowlist; errors name the resolved file.
+  configSet(repoPath: string, key: string, value: string, scope: ConfigScope): Promise<void> {
+    return invoke<void>("git_config_set", { repoPath, key, value, scope });
+  },
+
+  /// Remove the key at that scope so the cascade falls through again.
+  configUnset(repoPath: string, key: string, scope: ConfigScope): Promise<void> {
+    return invoke<void>("git_config_unset", { repoPath, key, scope });
   },
 
   push(repoPath: string, remote?: string, branch?: string): Promise<void> {
