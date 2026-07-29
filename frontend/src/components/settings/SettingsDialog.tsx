@@ -97,7 +97,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
   return (
     <Show when={props.open}>
       <div
-        class="fixed inset-0 z-[70] flex items-center justify-center bg-black/50"
+        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/50"
         onClick={props.onClose}
         onKeyDown={(e) => {
           if (e.key === "Escape") { e.stopPropagation(); props.onClose(); }
@@ -108,7 +108,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           role="dialog"
           aria-modal="true"
           aria-labelledby="settings-dialog-title"
-          class="w-[560px] max-w-[92vw] max-h-[86vh] flex flex-col rounded-md border border-border bg-popover text-popover-foreground shadow-xl"
+          class="w-[560px] max-w-[92vw] max-h-[86vh] flex flex-col rounded-md border border-border bg-elev-3 text-popover-foreground shadow-xl"
           onClick={(e) => e.stopPropagation()}
           onKeyDown={trapFocus}
         >

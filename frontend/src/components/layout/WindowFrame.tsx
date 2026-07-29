@@ -26,7 +26,7 @@ function startResize(direction: Direction) {
   };
 }
 
-const edgeBase = "fixed z-[60] pointer-events-auto";
+const edgeBase = "fixed z-[var(--z-frame)] pointer-events-auto";
 
 export function WindowFrame() {
   return (

@@ -67,8 +67,8 @@ describe("cssColorToHex", () => {
 
 describe("deriveMonacoTheme", () => {
   it("derives the editor colours from the token record, not from constants", () => {
-    const dark = deriveMonacoTheme("dark", tokens({ "--background": "#101010" }));
-    const light = deriveMonacoTheme("light", tokens({ "--background": "#fafafa" }));
+    const dark = deriveMonacoTheme("dark", tokens({ "--elev-1": "#101010" }));
+    const light = deriveMonacoTheme("light", tokens({ "--elev-1": "#fafafa" }));
 
     expect(dark.colors["editor.background"]).toBe("#101010");
     expect(light.colors["editor.background"]).toBe("#fafafa");
@@ -77,8 +77,8 @@ describe("deriveMonacoTheme", () => {
   it("re-derives every dependent colour when the cascade changes", () => {
     // The acceptance case: swap `data-theme`, re-read the tokens, and the
     // theme object that comes out is different. Only the token record changes.
-    const before = deriveMonacoTheme("dark", tokens({ "--background": "#272822" }));
-    const after = deriveMonacoTheme("dark", tokens({ "--background": "#282a36" }));
+    const before = deriveMonacoTheme("dark", tokens({ "--elev-1": "#272822" }));
+    const after = deriveMonacoTheme("dark", tokens({ "--elev-1": "#282a36" }));
 
     expect(before.colors["editor.background"]).not.toBe(after.colors["editor.background"]);
     expect(after.colors["editor.background"]).toBe("#282a36");
@@ -103,6 +103,21 @@ describe("deriveMonacoTheme", () => {
     const theme = deriveMonacoTheme("dark", tokens({ "--warning": "notacolour" }));
     expect(theme.colors["editorWarning.foreground"]).toBeUndefined();
     expect(theme.colors["editorError.foreground"]).toBeDefined();
+  });
+
+  /// Direction D1's whole contrast argument: the editor body renders at the
+  /// *island* surface, never at the recessed canvas. If `--canvas` ever became
+  /// a token this module reads, the editor would look like a hole punched in
+  /// the shell rather than a panel floating on it.
+  it("paints the editor body from the island surface, never from the canvas", () => {
+    expect(THEME_TOKEN_NAMES).toContain("--elev-1");
+    expect(THEME_TOKEN_NAMES).not.toContain("--canvas");
+    expect(THEME_TOKEN_NAMES).not.toContain("--elev-0");
+
+    const theme = deriveMonacoTheme("dark", tokens({ "--elev-1": "#1b1b1f" }));
+    expect(theme.colors["editor.background"]).toBe("#1b1b1f");
+    expect(theme.colors["editorGutter.background"]).toBe("#1b1b1f");
+    expect(theme.colors["peekViewEditor.background"]).toBe("#1b1b1f");
   });
 
   it("names the two themes by app mode", () => {

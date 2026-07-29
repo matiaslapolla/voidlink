@@ -412,7 +412,8 @@ export function GitSidebar(props: GitSidebarProps) {
 
   return (
     <aside
-      class="flex flex-col border-l border-border bg-sidebar overflow-hidden relative"
+      /* Island (D1): no border — the canvas gap around it is the separator. */
+      class="flex flex-col bg-sidebar overflow-hidden relative"
       style={{ width: `${state.panels.gitSidebar}px` }}
     >
       <Splitter
@@ -2004,7 +2005,7 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
   return (
     <Show when={props.open}>
       <Portal>
-        <div class="fixed inset-0 z-[110] flex items-start justify-center bg-black/40 pt-[18vh]" onClick={props.onClose}>
+        <div class="fixed inset-0 z-[var(--z-prompt)] flex items-start justify-center bg-black/40 pt-[18vh]" onClick={props.onClose}>
           <div class="w-[min(520px,92vw)] bg-popover border border-border rounded-lg shadow-xl p-4" onClick={(e) => e.stopPropagation()}>
             <div class="flex items-center mb-3">
               <h2 class="text-sm font-semibold flex-1">Remotes</h2>
@@ -2078,7 +2079,7 @@ function CommitHoverPopover(props: { commit: GitCommitInfo; x: number; y: number
     <Portal>
       <div
         ref={popRef}
-        class="fixed z-[9999] bg-popover border border-border rounded-lg shadow-xl p-3 text-xs max-w-xs pointer-events-none"
+        class="fixed z-[var(--z-menu)] bg-popover border border-border rounded-lg shadow-xl p-3 text-xs max-w-xs pointer-events-none"
         style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
       >
         <div class="font-mono text-muted-foreground mb-1 text-[10px] tracking-wide">{props.commit.oid.slice(0, 12)}</div>
@@ -2170,16 +2171,24 @@ const LANE_X_OFFSET = 8;
 const ROW_HEIGHT = 46;
 const COMMIT_RADIUS = 3;
 
-/// Color palette cycled per lane index. Keeps adjacent branches visually
-/// distinct without needing a per-branch color map.
+/// Colour cycled per lane index. Keeps adjacent branches visually distinct
+/// without needing a per-branch colour map.
+///
+/// These were seven hardcoded hexes, which meant the commit graph looked
+/// identical in `solarized-light` and `dracula` while everything around it
+/// changed — MASTER §2.4, and §11.5's point that identity has to survive a
+/// theme swap. They are now the five chart hues plus `--primary` and `--info`:
+/// seven tokens every theme already defines, ordered so no two neighbours land
+/// on adjacent hues. SVG presentation attributes resolve `var()` like any
+/// other CSS value.
 const LANE_COLORS = [
-  "#60a5fa", // blue
-  "#a78bfa", // violet
-  "#34d399", // emerald
-  "#fbbf24", // amber
-  "#f472b6", // pink
-  "#22d3ee", // cyan
-  "#fb923c", // orange
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+  "var(--primary)",
+  "var(--info)",
 ];
 
 function laneX(i: number): number {
@@ -2713,7 +2722,7 @@ function FileRow(props: {
 /** Collapsed rail */
 export function GitSidebarCollapsed(props: { onExpand: () => void }) {
   return (
-    <div class="flex flex-col items-center w-8 border-l border-border bg-sidebar py-2 gap-2">
+    <div class="flex flex-col items-center w-8 bg-sidebar py-2 gap-2 h-full">
       <button
         onClick={props.onExpand}
         aria-label="Expand git panel"

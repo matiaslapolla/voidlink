@@ -98,6 +98,26 @@ export interface TabDescriptor {
   labelWidth?: string;
 }
 
+/// The active tab's 2px `--primary` rule.
+///
+/// Rendered as a child rather than as a border or a box-shadow for two
+/// reasons. A border would change `border-width` between states, which §7.6
+/// forbids outright; a box-shadow would have to be composed with the drop
+/// caret's inset shadow into one dynamic class string, and Tailwind v4 only
+/// emits classes it can find literally in the source, so a runtime-built one
+/// would silently produce no CSS at all.
+///
+/// Inset from the card's own edges by 6px so its ends clear the card's
+/// `--island-radius-inner` corners instead of poking past them.
+function ActiveRule() {
+  return (
+    <span
+      aria-hidden="true"
+      class="pointer-events-none absolute left-1.5 right-1.5 bottom-0 h-0.5 bg-primary"
+    />
+  );
+}
+
 const isPinnable = (t: TabDescriptor) => t.pinnable !== false && !t.terminal;
 /// Whether a tab can be *reordered within its own strip*. Some kinds can't:
 /// a browser tab's page is a child webview keyed by tab id, so shuffling the
@@ -301,12 +321,34 @@ export function TabStrip(props: TabStripProps) {
   const CARET_BEFORE = "shadow-[inset_2px_0_0_0_var(--color-primary,theme(colors.primary))]";
   const CARET_AFTER = "shadow-[inset_-2px_0_0_0_var(--color-primary,theme(colors.primary))]";
 
+  /// One tab, as a **contained card** (Direction D1, wave 2).
+  ///
+  /// Tabs used to be segments of a strip, divided by a `border-r` hairline.
+  /// They are now cards seated on the strip surface, separated by
+  /// `--space-3xs` and rounded to `--island-radius-inner`. Three rules govern
+  /// this and each one is easy to undo by accident:
+  ///
+  ///   • **The card carries the only edge in the composition.** The island it
+  ///     sits on has none (MASTER's no-card-in-card rule): if both had one,
+  ///     the island's is the one to drop, and it already is.
+  ///   • **`border-width` never changes.** Every card is bordered in every
+  ///     state; inactive cards' borders are simply transparent. State goes to
+  ///     `border-color` and `background-color` only, so nothing reflows when a
+  ///     tab is hovered or activated (§7.6's no-layout-shift rule).
+  ///   • **The card's height is fixed** at `h-7` inside the `h-9` strip, and
+  ///     the breathing room above and below comes from the strip's own
+  ///     `items-center` rather than from a margin. That matters: a grouped
+  ///     strip also carries a 2px group-focus rule on its top edge, which
+  ///     takes 2px out of the content box, and a hardcoded `my-1` would push
+  ///     the cards 1px past it at each end. Centring absorbs it. The strip's
+  ///     height itself is load-bearing — it lines up with the rail and both
+  ///     sidebar headers across all three columns (§5's density audit).
   function tabClasses(tab: TabDescriptor, active: boolean) {
     const base =
-      "group flex items-center gap-1.5 px-3 h-full border-r border-border shrink-0 text-[13px] cursor-pointer select-none transition-colors";
+      "group relative flex items-center gap-1.5 px-2.5 h-7 mx-[var(--space-3xs)] rounded-[var(--island-radius-inner)] border shrink-0 text-[13px] cursor-pointer select-none transition-colors";
     const tone = active
-      ? "bg-background text-foreground"
-      : "text-muted-foreground hover:text-foreground hover:bg-accent/30";
+      ? "bg-background text-foreground border-border"
+      : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60";
     const drag = tabDrag();
     const dim = drag && drag.id === tab.id ? "opacity-50" : "";
     const last = ordered()[ordered().length - 1];
@@ -380,7 +422,10 @@ export function TabStrip(props: TabStripProps) {
 
   return (
     <div
-      class="flex items-center border-b border-border bg-sidebar shrink-0 h-9"
+      // No `border-b`: the strip sits at the top of an island whose body is a
+      // different surface, and that colour step is the separation. A hairline
+      // here would be a second edge competing with the tab cards' (D1).
+      class="flex items-center bg-sidebar shrink-0 h-9"
       classList={{
         // Same 2px in both states — see `groupHeader`. Only the colour moves.
         "border-t-2": !!props.groupHeader,
@@ -554,6 +599,9 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
         closeLabel={`Close ${props.tab.label}`}
         onClose={props.onClose}
       />
+      <Show when={props.active}>
+        <ActiveRule />
+      </Show>
     </div>
   );
 }
@@ -672,6 +720,9 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
         closeLabel={`Kill ${props.session.label}`}
         onClose={props.onClose}
       />
+      <Show when={props.active}>
+        <ActiveRule />
+      </Show>
     </div>
   );
 }
@@ -774,7 +825,7 @@ function TabOverflowMenu(props: {
         <Portal>
           <div
             ref={panelRef}
-            class="fixed w-[280px] max-h-[60vh] overflow-y-auto scrollbar-thin rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[9999] py-1 text-[13px]"
+            class="fixed w-[280px] max-h-[60vh] overflow-y-auto scrollbar-thin rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[13px]"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <For each={groups()}>
@@ -878,7 +929,7 @@ function TabContextMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[9999] py-1 text-[13px]"
+            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[13px]"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <div class="px-3 py-1 text-[11px] text-muted-foreground truncate border-b border-border/50">
@@ -1029,7 +1080,7 @@ export function PaneDropOverlay(props: {
         {(g) => (
           <Portal>
             <div
-              class="fixed z-[10000] pointer-events-none rounded-md border border-destructive/60 bg-popover px-2 py-1 text-[11px] text-destructive shadow-lg"
+              class="fixed z-[var(--z-drag)] pointer-events-none rounded-md border border-destructive/60 bg-popover px-2 py-1 text-[11px] text-destructive shadow-lg"
               style={{ left: `${g().x + 14}px`, top: `${g().y + 14}px` }}
             >
               {g().reason}

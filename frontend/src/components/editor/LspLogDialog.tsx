@@ -54,7 +54,7 @@ export function LspLogDialog(props: LspLogDialogProps) {
             role="dialog"
             aria-modal="true"
             aria-label={`${log().server} output log`}
-            class="w-[min(52rem,90vw)] h-[min(28rem,80vh)] flex flex-col rounded border border-border bg-popover shadow-lg"
+            class="w-[min(52rem,90vw)] h-[min(28rem,80vh)] flex flex-col rounded border border-border bg-elev-3 shadow-lg"
           >
             <div class="flex items-baseline gap-2 px-3 py-2 border-b border-border/60 shrink-0">
               <span class="text-[11px] text-foreground">{log().server}</span>

@@ -19,7 +19,7 @@ export function ToastViewport() {
     toasts().filter((t) => (t.kind === "error") === assertive);
   return (
     <Portal>
-      <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+      <div class="fixed bottom-4 right-4 z-[var(--z-toast)] flex flex-col gap-2 pointer-events-none">
         <div aria-live="polite" aria-atomic="false" class="flex flex-col gap-2">
           <For each={byLevel(false)}>{(t) => <ToastRow toast={t} />}</For>
         </div>

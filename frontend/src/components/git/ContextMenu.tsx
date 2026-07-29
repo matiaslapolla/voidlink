@@ -57,7 +57,7 @@ export function ContextMenu(props: {
     <Portal>
       <div
         ref={ref}
-        class="fixed z-[9999] min-w-[180px] bg-popover border border-border rounded-md shadow-xl py-1 text-xs"
+        class="fixed z-[var(--z-menu)] min-w-[180px] bg-popover border border-border rounded-md shadow-xl py-1 text-xs"
         style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
         onClick={(e) => e.stopPropagation()}
       >

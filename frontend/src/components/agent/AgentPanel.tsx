@@ -68,7 +68,7 @@ export function AgentPanel(props: { onOpenSettings: () => void }) {
   return (
     <Show when={agentPanelOpen()}>
       <Portal>
-        <div class="fixed inset-y-0 right-0 z-40 w-[440px] max-w-[92vw] flex flex-col bg-background border-l border-border shadow-2xl">
+        <div class="fixed inset-y-0 right-0 z-40 w-[440px] max-w-[92vw] flex flex-col bg-background border-l border-border shadow-xl">
           {/* Header */}
           <div class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
             <Bot class="w-4 h-4 text-primary" />

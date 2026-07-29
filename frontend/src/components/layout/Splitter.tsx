@@ -29,12 +29,34 @@
 ///
 /// The only transition here is the rule's `background-color` on hover, which
 /// `index.css` pins to 60ms — pointer-initiated, so §7.1 allows it.
-import { createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup, type JSX } from "solid-js";
 
 /// Arrow-key step, and the `Shift` multiplier. Both in px, both deliberately
 /// coarse enough that a keyboard resize converges in a few presses.
 const STEP = 8;
 const BIG_STEP = 32;
+
+/// The island gap in px, read from the `--island-gap` token.
+///
+/// Under Direction D1 a splitter no longer sits on a seam — it sits in the
+/// canvas gap between two islands, and the ratio arithmetic that positions
+/// panes has to subtract that gap. There is exactly one constant and it lives
+/// with the token; this is the only place JavaScript asks the cascade for it.
+/// Cached because it is read on every splitter drag frame and the token is not
+/// theme-dependent (no theme redefines it — see `index.css`).
+let cachedGap: number | null = null;
+export function islandGapPx(): number {
+  if (cachedGap !== null) return cachedGap;
+  // `node` has no cascade to compute; unit tests that reach here want the
+  // authored value, which the token also carries.
+  if (typeof document === "undefined") return 6;
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue("--island-gap")
+    .trim();
+  const n = Number.parseFloat(raw);
+  cachedGap = Number.isFinite(n) ? n : 6;
+  return cachedGap;
+}
 
 export interface SplitterProps {
   /// Which axis the *pane* is resized along. `"x"` is a vertical rule that
@@ -59,6 +81,19 @@ export interface SplitterProps {
   /// A splitter whose pane is collapsed has nothing to resize. Pass the reason
   /// so the `title` can state it (§7.6 forbids a silent disabled control).
   disabledReason?: string;
+  /// The handle sits in the canvas gap *between* two islands rather than
+  /// inside one of them (Direction D1). Shifts the 8px strip outward by half
+  /// the gap so it straddles the seam the user actually sees, and centres the
+  /// visible rule inside the strip instead of pinning it to a pane edge that
+  /// no longer exists. The hit area is unchanged at 8px — only where it sits
+  /// moves — so §7.6's floor still holds.
+  ///
+  /// Only hosts that are *not* inside a clipping island may pass this: a
+  /// splitter that pokes outside an `overflow: hidden` island would be cut in
+  /// half. The pane-group splitters in `MainSurface` qualify (they are
+  /// siblings of the island, not children); the three sidebar splitters do
+  /// not, and keep the handle inside their own edge.
+  inGap?: boolean;
   /// Extra z-index / positioning classes for the rare host that needs them.
   class?: string;
 }
@@ -125,21 +160,35 @@ export function Splitter(props: SplitterProps) {
     props.onResize(clamp(next));
   }
 
-  const edge = () =>
-    axis() === "x"
-      ? props.side === "end"
-        ? "top-0 right-0 h-full w-2"
-        : "top-0 left-0 h-full w-2"
-      : props.side === "end"
-        ? "left-0 bottom-0 w-full h-2"
-        : "left-0 top-0 w-full h-2";
+  /// The strip's extent along the *cross* axis. Which end of the resize axis
+  /// it hugs is `offset()`'s job below, not a class's, because it is the one
+  /// value that has to become a `calc()` when the handle moves into a gap.
+  const edge = () => (axis() === "x" ? "top-0 h-full w-2" : "left-0 w-full h-2");
 
-  /// The 1px rule, pinned to the outer edge of the 8px strip so it lines up
-  /// with the pane border it replaces.
+  /// Where the 8px strip sits along the resize axis.
+  ///
+  /// Flush (`inGap` unset) it hugs the pane's own edge, as it did when panes
+  /// shared a 1px seam. In a gap it is pushed outward by half the gap so its
+  /// centre lands on the middle of the canvas channel: the strip spans
+  /// `[-gap/2 - 4px, -gap/2 + 4px]` from the pane edge, which is an offset of
+  /// `gap/2 - 4px` — negative for a 6px gap, i.e. outward.
+  const offset = (): JSX.CSSProperties => {
+    const v = props.inGap ? "calc(var(--island-gap) / 2 - 4px)" : "0px";
+    if (axis() === "x") return props.side === "end" ? { right: v } : { left: v };
+    return props.side === "end" ? { bottom: v } : { top: v };
+  };
+
+  /// The 1px rule. Flush, it is pinned to the outer edge of the strip so it
+  /// lines up with the pane border it replaced. In a gap there is no border to
+  /// line up with, so it is centred in the strip — and therefore in the gap.
   const rule = () =>
     axis() === "x"
-      ? `top-0 h-full w-px ${props.side === "end" ? "right-0" : "left-0"}`
-      : `left-0 w-full h-px ${props.side === "end" ? "bottom-0" : "top-0"}`;
+      ? props.inGap
+        ? "top-0 h-full w-px left-1/2 -translate-x-1/2"
+        : `top-0 h-full w-px ${props.side === "end" ? "right-0" : "left-0"}`
+      : props.inGap
+        ? "left-0 w-full h-px top-1/2 -translate-y-1/2"
+        : `left-0 w-full h-px ${props.side === "end" ? "bottom-0" : "top-0"}`;
 
   return (
     <div
@@ -160,6 +209,7 @@ export function Splitter(props: SplitterProps) {
       onDblClick={() => {
         if (!disabled()) props.onResize(clamp(props.defaultValue));
       }}
+      style={offset()}
       class={[
         "group/splitter absolute z-20 select-none focus-visible:outline-none",
         edge(),

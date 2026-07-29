@@ -114,8 +114,16 @@ export function EditorStatusBar(props: EditorStatusBarProps) {
 
   const segment = () => lspSegment(lspStatus());
 
+  // The workbench's status bar is its own island and needs no top rule; this
+  // one sits *inside* the editor island, below the buffer, so it keeps a
+  // hairline to separate it from the code above. One border inside one island
+  // is not card-in-card.
   return (
-    <div class={STATUS_BAR_ROW} role="status" aria-label="Editor status">
+    <div
+      class={`${STATUS_BAR_ROW} border-t border-border/60`}
+      role="status"
+      aria-label="Editor status"
+    >
       {/* Vim's mode. A modal editor whose mode is invisible is unusable, so it
           leads the bar rather than sitting behind an overflow. `--primary`
           tint in normal mode is the app's "this one is active" idiom

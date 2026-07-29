@@ -610,7 +610,7 @@ function SubmitResultsModal(props: { results: SubmitResult[]; onClose: () => voi
   // see in the rest of the UI.
   return (
     <div
-      class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40"
+      class="fixed inset-0 z-[var(--z-menu)] flex items-center justify-center bg-black/40"
       onClick={props.onClose}
     >
       <div

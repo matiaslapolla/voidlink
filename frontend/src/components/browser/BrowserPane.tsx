@@ -226,8 +226,28 @@ export function BrowserPane(props: {
         </button>
       </div>
 
-      {/* Anchor: an empty box whose viewport rect the child webview tracks. */}
-      <div ref={(el) => (anchor = el)} class="flex-1 min-h-0 relative">
+      {/* Anchor: an empty box whose viewport rect the child webview tracks.
+
+          **The one pane a CSS radius cannot reach.** Under Direction D1 every
+          pane is clipped to its island's rounded corners, but this page is an
+          OS-level child webview composited *above* the DOM — `border-radius`
+          on any ancestor does nothing to it, and a square page inside a
+          rounded island is the artifact.
+
+          Of the two options the directions spec allows — a square-cornered
+          island for this tab, or insetting the webview so the radius stays
+          visible around it — this takes the inset, because a radius that
+          changes when you switch tabs draws more attention than 10px of
+          padding does. The inset is bottom-only: the top corners are already
+          covered by the address bar above, so only the island's two bottom
+          corners are ever at risk, and lifting the page clear of them costs
+          nothing horizontally. `rect` is measured from this element, so the
+          webview follows without any second constant. */}
+      <div
+        ref={(el) => (anchor = el)}
+        class="flex-1 min-h-0 relative"
+        style={{ "margin-bottom": "var(--island-radius)" }}
+      >
         <Show when={error()}>
           <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground px-6 text-center">
             <p class="text-[13px]">This page could not be loaded.</p>

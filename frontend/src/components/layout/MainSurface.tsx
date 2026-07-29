@@ -34,7 +34,7 @@ import {
   type TabDescriptor,
   type TabDragPayload,
 } from "@/components/layout/TabStrip";
-import { Splitter } from "@/components/layout/Splitter";
+import { Splitter, islandGapPx } from "@/components/layout/Splitter";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
 import { ratiosAfterDrag, resolveActiveTabId, type Rect } from "@/components/layout/paneDrop";
 import { isZen, visibleGroupIds } from "@/store/focusMode";
@@ -388,6 +388,21 @@ export function MainSurface(props: MainSurfaceProps) {
     queueMicrotask(measure);
   });
 
+  /// How a pane clips itself to its island (D1).
+  ///
+  /// The flat pane layer is a *sibling* of the split tree, not a child of it,
+  /// so a group's `.island` clipping cannot reach the pane drawn over its body
+  /// — each pane has to carry the same radius itself. A pane fills the group's
+  /// body box, so its bottom corners are the island's bottom corners. Its top
+  /// corners are covered by the tab strip, and rounding them would clip the
+  /// first line of a Monaco or xterm buffer for nothing. Under zen there is no
+  /// strip, the body *is* the island, and all four corners are its own.
+  ///
+  /// `BrowserPane` is the one pane this cannot clip: its page is an OS-level
+  /// child webview composited above the DOM, and no CSS radius reaches it. See
+  /// the browser tab's entry in the pane layer below for how that is handled.
+  const paneClass = () => (isZen() ? "absolute island" : "absolute island-bottom");
+
   /// Where one pane draws. `display` rather than unmounting: a hidden terminal
   /// keeps its xterm, and `visibility` would leave it eating pointer events.
   const paneStyle = (tabId: string): JSX.CSSProperties => {
@@ -662,7 +677,10 @@ export function MainSurface(props: MainSurfaceProps) {
     const focusGroup = () => actions.focusPaneGroup(state.activeWorktreeId, groupId);
 
     return (
-      <div class="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+      // One pane group = one island (D1). The radius and the clipping come
+      // from `.island` in `index.css`; this component owns *where* islands sit
+      // (the gaps between them, below) and nothing else owns either.
+      <div class="island flex-1 flex flex-col min-w-0 min-h-0 bg-background">
         <Show when={showTabBar() && !isZen()}>
           <TabStrip
             tabs={tabsOf(groupId)}
@@ -722,6 +740,23 @@ export function MainSurface(props: MainSurfaceProps) {
     if (node.kind === "group") return renderGroup(node.group.id);
     const orientation = node.orientation;
     const extent = () => splitExtent(node.id, orientation);
+    /// Islands inside a split are separated by the same canvas gap the shell
+    /// uses at the window edge, so a split reads as two panels rather than as
+    /// one panel with a rule down it.
+    ///
+    /// The gap is real space, so the ratio arithmetic has to be re-derived
+    /// against it: with `n` children there are `n - 1` gaps, and the space
+    /// ratios divide is `100% - (n - 1) × gap`. Expressing it as one `calc`
+    /// rather than as a per-child subtraction keeps the children summing to
+    /// exactly the container — a rounded-down share would leave a hairline of
+    /// canvas at the far edge that moves as you drag.
+    const basis = (i: number) =>
+      `calc(${ratioAt(node.id, i)} * (100% - ${node.children.length - 1} * var(--island-gap)))`;
+    /// The px extent the *ratios* divide — the split's own extent minus the
+    /// gaps between its children. `<Splitter>` works in px and the tree works
+    /// in ratios; feeding it the raw extent would make a drag drift by the
+    /// gap's width across the pane.
+    const usable = () => Math.max(0, extent() - (node.children.length - 1) * islandGapPx());
     return (
       <div
         ref={(el) => {
@@ -729,6 +764,7 @@ export function MainSurface(props: MainSurfaceProps) {
           onCleanup(() => splitEls.delete(node.id));
         }}
         class="flex-1 flex min-w-0 min-h-0"
+        style={{ gap: "var(--island-gap)" }}
         classList={{
           "flex-row": orientation === "row",
           "flex-col": orientation === "column",
@@ -739,7 +775,7 @@ export function MainSurface(props: MainSurfaceProps) {
             <div
               class="relative flex min-w-0 min-h-0"
               style={{
-                "flex-basis": `${ratioAt(node.id, i) * 100}%`,
+                "flex-basis": basis(i),
                 "flex-grow": "0",
                 "flex-shrink": "0",
               }}
@@ -749,16 +785,17 @@ export function MainSurface(props: MainSurfaceProps) {
                 <Splitter
                   axis={orientation === "row" ? "x" : "y"}
                   side="end"
+                  inGap
                   label={orientation === "row" ? "Pane width" : "Pane height"}
-                  value={ratioAt(node.id, i) * extent()}
-                  min={MIN_RATIO * extent()}
-                  max={(ratioAt(node.id, i) + ratioAt(node.id, i + 1) - MIN_RATIO) * extent()}
-                  defaultValue={((ratioAt(node.id, i) + ratioAt(node.id, i + 1)) / 2) * extent()}
+                  value={ratioAt(node.id, i) * usable()}
+                  min={MIN_RATIO * usable()}
+                  max={(ratioAt(node.id, i) + ratioAt(node.id, i + 1) - MIN_RATIO) * usable()}
+                  defaultValue={((ratioAt(node.id, i) + ratioAt(node.id, i + 1)) / 2) * usable()}
                   onResize={(px) => {
                     actions.setPaneSplitRatios(
                       state.activeWorktreeId,
                       node.id,
-                      ratiosAfterDrag(ratiosBySplit().get(node.id) ?? [], i, px, extent()),
+                      ratiosAfterDrag(ratiosBySplit().get(node.id) ?? [], i, px, usable()),
                     );
                   }}
                 />
@@ -773,7 +810,10 @@ export function MainSurface(props: MainSurfaceProps) {
   return (
     <div
       ref={(el) => (rootRef = el)}
-      class="flex-1 flex flex-col overflow-hidden bg-background relative"
+      /* The canvas the group islands float on (D1). Not `bg-background`: that
+         is the *island* surface, and the gaps between split groups have to
+         show the recessed colour or the split reads as one panel. */
+      class="flex-1 flex flex-col overflow-hidden bg-canvas relative"
     >
       {renderNode(structure())}
 
@@ -791,7 +831,7 @@ export function MainSurface(props: MainSurfaceProps) {
           // watcher is refcounted, so this and the strip share one poll.
           watchTerminal(term.id, term.ptyId);
           return (
-          <div class="absolute" style={paneStyle(term.id)}>
+          <div class={paneClass()} style={paneStyle(term.id)}>
             <TerminalPane
               ptyId={term.ptyId}
               active={tabIsVisible(term.id)}
@@ -829,7 +869,7 @@ export function MainSurface(props: MainSurfaceProps) {
         {(tab) => (
           <Show when={activeRepoPath()}>
             {(repo) => (
-              <div class="absolute" style={paneStyle(tab.id)}>
+              <div class={paneClass()} style={paneStyle(tab.id)}>
                 <CompareTabView
                   repoPath={repo()}
                   tab={tab}
@@ -846,7 +886,7 @@ export function MainSurface(props: MainSurfaceProps) {
         {(tab) => (
           <Show when={activeRepoPath()}>
             {(repo) => (
-              <div class="absolute" style={paneStyle(tab.id)}>
+              <div class={paneClass()} style={paneStyle(tab.id)}>
                 <StackTabView
                   repoPath={repo()}
                   tab={tab}
@@ -861,7 +901,7 @@ export function MainSurface(props: MainSurfaceProps) {
       {/* Brain tabs */}
       <For each={activeBrainTabs()}>
         {(tab) => (
-          <div class="absolute" style={paneStyle(tab.id)}>
+          <div class={paneClass()} style={paneStyle(tab.id)}>
             <BrainSurface vaultPath={settings.brain.vaultPath} />
           </div>
         )}
@@ -873,7 +913,7 @@ export function MainSurface(props: MainSurfaceProps) {
           DOM, so a group that is maximized away hides nothing by itself. */}
       <For each={activeBrowserTabs()}>
         {(tab) => (
-          <div class="absolute" style={paneStyle(tab.id)}>
+          <div class={paneClass()} style={paneStyle(tab.id)}>
             <BrowserPane
               tab={tab}
               active={tabIsFront(tab.id)}
@@ -890,7 +930,7 @@ export function MainSurface(props: MainSurfaceProps) {
         {(tab) => (
           <Show when={activeRepoPath()}>
             {(repo) => (
-              <div class="absolute" style={paneStyle(tab.id)}>
+              <div class={paneClass()} style={paneStyle(tab.id)}>
                 <CommitGraph
                   repoPath={repo()}
                   onOpenCommit={(oid) => {
@@ -924,7 +964,7 @@ export function MainSurface(props: MainSurfaceProps) {
                     have your tabs". Same box, different icon and sentence. */}
                 <Show when={activeRepoPath() && tabsOf(group.id).length === 0}>
                   <div
-                    class="absolute flex items-center justify-center bg-background z-10"
+                    class={`${paneClass()} flex items-center justify-center bg-background z-10`}
                     style={rectStyle(rect())}
                   >
                     <EmptyState
@@ -947,7 +987,10 @@ export function MainSurface(props: MainSurfaceProps) {
                 {/* `pointer-events-none` at rest: the drop target only exists
                     during a drag, and this wrapper must never sit between the
                     user and the pane. */}
-                <div class="absolute pointer-events-none z-20" style={rectStyle(rect())}>
+                <div
+                  class={`${paneClass()} pointer-events-none z-20`}
+                  style={rectStyle(rect())}
+                >
                   <PaneDropOverlay
                     groupId={group.id}
                     canSplit={canSplit(paneLayout())}
@@ -966,7 +1009,7 @@ export function MainSurface(props: MainSurfaceProps) {
       {/* No repository: the whole surface, not a pane — there are no panes to
           speak of yet. */}
       <Show when={!activeRepoPath()}>
-        <div class="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-3 bg-background z-10">
+        <div class="island absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-3 bg-background z-10">
           <TerminalSquare class="w-7 h-7 opacity-60" />
           <p class="text-[13px]">Select a repository in the sidebar to start working.</p>
         </div>
@@ -1084,7 +1127,7 @@ function NewTabMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-56 rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[9999] py-1 text-[13px]"
+            class="fixed w-56 rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[13px]"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <Show

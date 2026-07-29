@@ -190,7 +190,9 @@ export function WorkspaceRail() {
   return (
     <nav
       aria-label="Workspaces"
-      class="flex flex-col border-r border-border bg-sidebar overflow-hidden relative shrink-0"
+      /* Island (D1): no border. The edge is the canvas gap `AppShell` puts
+         around it; the radius and the clipping belong to the slot. */
+      class="flex flex-col bg-sidebar overflow-hidden relative shrink-0"
       style={{ width: `${state.panels.rail}px` }}
       onDragOver={onDragOverEnd}
       onDrop={onDropAtEnd}

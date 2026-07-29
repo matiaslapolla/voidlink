@@ -52,7 +52,8 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
 
   return (
     <aside
-      class="flex flex-col border-r border-border bg-sidebar overflow-hidden relative"
+      /* Island (D1): no border — the canvas gap around it is the separator. */
+      class="flex flex-col bg-sidebar overflow-hidden relative"
       style={{ width: `${state.panels.sidebar}px` }}
     >
       {/* Repo picker — h-9 to match center column tab bar */}

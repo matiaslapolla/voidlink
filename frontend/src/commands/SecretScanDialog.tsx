@@ -12,11 +12,11 @@ export function SecretScanDialog(props: {
     <Show when={props.findings.length > 0}>
       <Portal>
         <div
-          class="fixed inset-0 z-[90] flex items-center justify-center bg-black/60"
+          class="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center bg-black/60"
           onClick={props.onCancel}
         >
           <div
-            class="w-[560px] max-w-[92vw] bg-popover border border-destructive/40 rounded-lg shadow-2xl flex flex-col overflow-hidden"
+            class="w-[560px] max-w-[92vw] bg-elev-3 border border-destructive/40 rounded-lg shadow-xl flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             <div class="flex items-start justify-between gap-3 px-4 py-3 border-b border-border">
