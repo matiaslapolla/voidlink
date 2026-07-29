@@ -77,9 +77,9 @@ import { createInFlight, dedupeConcurrent } from "@/commands/inflight";
 import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import {
-  AI_COMMIT_REQUEST_EVENT,
   aiCommitState,
   draftCommitMessage,
+  onAiCommitRequest,
 } from "@/commands/aiCommit";
 import { recordBranchUse, sortBranchesByMru } from "@/commands/branchMru";
 import type { GitCommitInfo } from "@/types/git";
@@ -302,16 +302,18 @@ export function GitSidebar(props: GitSidebarProps) {
     freshnessOf({ loading: isRefreshing(), readAt: readAt(), now: clock() });
   const freshTitle = () => freshnessTitle(freshness(), readAt(), clock());
 
-  const refreshAll = () => {
-    refetchStatus();
-    refetchInfo();
-  };
+  /// Refetch this pane's two resources, sharing one round-trip between callers
+  /// that ask while a refresh is already in flight — a mutation typically calls
+  /// `props.onRefresh()` *and* emits the shared pulse this same handler answers.
+  const refreshAll = dedupeConcurrent(async () => {
+    await Promise.all([refetchStatus(), refetchInfo()]);
+  });
 
   // Palette action "Refresh git status" / cross-pane refreshes (e.g. after
   // hunk staging) fan out through a window event so callers don't need a
   // direct reference to this component.
   onMount(() => {
-    const handler = () => refreshAll();
+    const handler = () => void refreshAll();
     window.addEventListener("voidlink:refresh-git", handler);
     const fetchHandler = () => void doFetch();
     const pullHandler = () => void doPull();
@@ -422,7 +424,7 @@ export function GitSidebar(props: GitSidebarProps) {
             repoPath={props.repoPath}
             worktreeId={props.worktreeId}
             status={status()}
-            onRefresh={refreshAll}
+            onRefresh={() => void refreshAll()}
             selectedFile={activeFilePath()}
           />
         );
@@ -431,13 +433,20 @@ export function GitSidebar(props: GitSidebarProps) {
           <BranchesPane
             repoPath={props.repoPath}
             worktreeId={props.worktreeId}
-            onCheckout={refreshAll}
+            onCheckout={() => void refreshAll()}
+            operation={info()?.operation ?? null}
           />
         );
       case "worktrees":
         return <WorktreesPane repoPath={props.repoPath} />;
       case "stack":
-        return <StackSidebarSection repoPath={props.repoPath} worktreeId={props.worktreeId} />;
+        return (
+          <StackSidebarSection
+            repoPath={props.repoPath}
+            worktreeId={props.worktreeId}
+            currentBranch={info()?.currentBranch ?? null}
+          />
+        );
       case "stashes":
         return <StashesPane repoPath={props.repoPath} worktreeId={props.worktreeId} />;
       case "history":
@@ -523,7 +532,7 @@ export function GitSidebar(props: GitSidebarProps) {
             the user just stopped trusting is. */}
         <Show when={freshness() === "stale"}>
           <button
-            onClick={refreshAll}
+            onClick={() => void refreshAll()}
             title={freshTitle()}
             aria-label={`Refresh — ${freshTitle()}`}
             class="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -572,7 +581,7 @@ export function GitSidebar(props: GitSidebarProps) {
           >
             <PanelRightOpen class="w-3 h-3" />
           </IconBtn>
-          <IconBtn label="Refresh" onClick={refreshAll}>
+          <IconBtn label="Refresh" onClick={() => void refreshAll()}>
             <RefreshCw class={`w-3 h-3 ${isRefreshing() ? "animate-spin" : ""}`} />
           </IconBtn>
           <IconBtn label="Collapse git panel" onClick={() => actions.toggleGitSidebar()}>
@@ -616,7 +625,7 @@ export function GitSidebar(props: GitSidebarProps) {
             >
               {/* Per-section rather than one boundary around the lot: a repo
                   state that breaks History should not take Changes with it. */}
-              <GitErrorBoundary surface={SECTION_LABELS[key]} onRetry={refreshAll}>
+              <GitErrorBoundary surface={SECTION_LABELS[key]} onRetry={() => void refreshAll()}>
                 {renderSection(key)}
               </GitErrorBoundary>
             </Section>
@@ -1059,11 +1068,10 @@ export function ChangesPane(props: {
   // Listen for global "draft commit" requests (palette / shortcut). The
   // sidebar is the only component that owns the textarea, so it's the
   // natural home for the actual work.
-  onMount(() => {
-    const handler = () => void draftAiCommit();
-    window.addEventListener(AI_COMMIT_REQUEST_EVENT, handler);
-    onCleanup(() => window.removeEventListener(AI_COMMIT_REQUEST_EVENT, handler));
-  });
+  // Single-dispatch: in stacked mode two ChangesPanes are mounted at once and
+  // both used to answer, so the draft landed in the hidden one while the
+  // `drafting()` guard made the visible one bail — "Draft with AI" looked dead.
+  onMount(() => onCleanup(onAiCommitRequest(() => void draftAiCommit())));
   /// Push failures get their own channel. They used to be written into
   /// `commitError`, which labelled a rejected push as a commit problem and
   /// clobbered a real commit error that was still on screen.
@@ -1492,9 +1500,22 @@ export function ChangesPane(props: {
 // Branches
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function BranchesPane(props: { repoPath: string; worktreeId: string; onCheckout: () => void }) {
+export function BranchesPane(props: {
+  repoPath: string;
+  worktreeId: string;
+  onCheckout: () => void;
+  /// The multi-step operation in progress, when there is one. Every mutation here
+  /// moves HEAD or a ref out from under it — Rust refuses them, and refusing in
+  /// the UI first means the user reads the reason on the button instead of in a
+  /// toast after the click.
+  operation?: string | null;
+}) {
   const { actions } = useAppStore();
   const { busy, run } = createInFlight();
+  /// Why every branch mutation is unavailable right now, or null.
+  const blocked = (): string | null =>
+    props.operation ? `Finish or abort the ${props.operation} first` : null;
+  const locked = () => busy() || blocked() !== null;
   const [branches, { refetch }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listBranches(p, true),
@@ -1550,8 +1571,8 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
   }
 
   function branchMenuItems(name: string): ContextMenuItem[] {
-    // `busy()` is read at select time, so a menu left open during an operation
-    // still refuses the second action.
+    const why = blocked();
+    if (why) return [{ label: why, onSelect: () => {}, disabled: true }];
     return [
       { label: `Merge ${name} into current`, onSelect: () => void mergeBranch(name, false) },
       { label: `Merge ${name} (--no-ff)`, onSelect: () => void mergeBranch(name, true) },
@@ -1698,7 +1719,7 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
         />
         <button
           onClick={() => void newBranch()}
-          disabled={busy()}
+          disabled={locked()}
           title="New branch"
           aria-label="New branch"
           class="shrink-0 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
@@ -1724,14 +1745,15 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
           >
             <button
               onClick={() => void checkout(b.name)}
-              disabled={b.isHead || busy()}
+              disabled={b.isHead || locked()}
               aria-label={b.isHead ? `${b.name} (current branch)` : `Checkout ${b.name}`}
               title={
-                b.isHead
+                blocked() ??
+                (b.isHead
                   ? `${b.name} is the current branch`
                   : b.isRemote
                     ? `Check out ${b.name} (creates a local branch tracking it)`
-                    : `Checkout ${b.name}`
+                    : `Checkout ${b.name}`)
               }
               class="flex items-center gap-2 min-w-0 flex-1 text-left hover:text-foreground disabled:cursor-default disabled:hover:text-primary"
             >
@@ -1758,7 +1780,7 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
             <Show when={!b.isRemote}>
               <button
                 onClick={() => void renameBranch(b.name)}
-                disabled={busy()}
+                disabled={locked()}
                 title="Rename branch"
                 aria-label={`Rename ${b.name}`}
                 class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
@@ -1768,7 +1790,7 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
               <Show when={!b.isHead}>
                 <button
                   onClick={() => void deleteBranch(b.name)}
-                  disabled={busy()}
+                  disabled={locked()}
                   title="Delete branch"
                   aria-label={`Delete ${b.name}`}
                   class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
