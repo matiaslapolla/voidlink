@@ -29,7 +29,7 @@ import {
   writeJson,
 } from "./persistence";
 import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
-import type { PanelId } from "./prefs";
+import type { GitSectionKey, PanelId } from "./prefs";
 import {
   groupList,
   groupOwning,
@@ -120,8 +120,17 @@ export type {
   TabKindSpec,
 } from "./tabs";
 export { TAB_KINDS, TAB_SPECS, parseEditorTabs, samePath, serializeEditorTabs } from "./tabs";
-export type { DiffMode, GitTab, PanelId, PanelWidths, SidebarTab, UiPrefs } from "./prefs";
-export { PANEL_BOUNDS } from "./prefs";
+export type {
+  DiffMode,
+  GitSectionKey,
+  GitSections,
+  GitTab,
+  PanelId,
+  PanelWidths,
+  SidebarTab,
+  UiPrefs,
+} from "./prefs";
+export { GIT_SECTION_KEYS, PANEL_BOUNDS } from "./prefs";
 export type { PaneGroup, PaneNode, SplitOrientation } from "./panes";
 export type { GroupMru, MruList, NavEntry, NavHistory } from "./navigation";
 export {
@@ -305,6 +314,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     ignoreWhitespace: prefs.ignoreWhitespace,
     sidebarTab: prefs.sidebarTab,
     gitSections: prefs.gitSections,
+    gitSectionOrder: prefs.gitSectionOrder,
     sidebarSections: prefs.sidebarSections,
   });
 
@@ -384,6 +394,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       ignoreWhitespace: state.ignoreWhitespace,
       sidebarTab: state.sidebarTab,
       gitSections: state.gitSections,
+      gitSectionOrder: [...state.gitSectionOrder],
       sidebarSections: state.sidebarSections,
     });
   });
@@ -1184,6 +1195,33 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     // ── Git collapsible sections ─────────────────────────────────────────
     toggleGitSection(section: keyof AppStoreState["gitSections"]) {
       setState("gitSections", section, (v) => !v);
+    },
+
+    /// Move one git section up (`-1`) or down (`+1`) in the sidebar's order.
+    /// A relative move rather than a drag payload because the same action then
+    /// serves the header's two chevrons *and* a keyboard user, and neither has
+    /// to know the whole list.
+    moveGitSection(section: GitSectionKey, delta: number) {
+      setState(produce((s) => {
+        const from = s.gitSectionOrder.indexOf(section);
+        if (from === -1) return;
+        const to = Math.min(s.gitSectionOrder.length - 1, Math.max(0, from + delta));
+        if (to === from) return;
+        const [moved] = s.gitSectionOrder.splice(from, 1);
+        s.gitSectionOrder.splice(to, 0, moved);
+      }));
+    },
+
+    /// Drop `section` at `index`. The drag-and-drop half of the same reorder.
+    setGitSectionIndex(section: GitSectionKey, index: number) {
+      setState(produce((s) => {
+        const from = s.gitSectionOrder.indexOf(section);
+        if (from === -1) return;
+        const to = Math.min(s.gitSectionOrder.length - 1, Math.max(0, index));
+        if (to === from) return;
+        const [moved] = s.gitSectionOrder.splice(from, 1);
+        s.gitSectionOrder.splice(to, 0, moved);
+      }));
     },
 
     // ── Left sidebar collapsible sections ────────────────────────────────

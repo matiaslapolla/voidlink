@@ -3,7 +3,14 @@
 /// in. A rail persisted at 4000px would leave no workbench and no handle to
 /// drag back — the failure this file exists to prevent.
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PREFS, PANEL_BOUNDS, clampPanelWidth, parsePrefs } from "./prefs";
+import {
+  DEFAULT_PREFS,
+  GIT_SECTION_KEYS,
+  PANEL_BOUNDS,
+  clampPanelWidth,
+  parseGitSectionOrder,
+  parsePrefs,
+} from "./prefs";
 
 describe("panel widths", () => {
   it("defaults to today's layout", () => {
@@ -54,5 +61,46 @@ describe("prefs parsing", () => {
 
   it("falls back wholesale on a null blob", () => {
     expect(parsePrefs(null)).toEqual(DEFAULT_PREFS);
+  });
+});
+
+/// A persisted order is the one preference that can silently *hide* a section:
+/// a key missing from the array would render nowhere, and a key this build
+/// doesn't know would render nothing. Both are repaired rather than rejected,
+/// so a user's arrangement survives a section being added or removed.
+describe("git section order", () => {
+  it("defaults to the shipped order", () => {
+    expect(DEFAULT_PREFS.gitSectionOrder).toEqual(GIT_SECTION_KEYS);
+  });
+
+  it("keeps a saved arrangement", () => {
+    const saved = ["history", "changes", "branches", "worktrees", "stack", "stashes", "openedDiffs"];
+    expect(parseGitSectionOrder(saved)).toEqual(saved);
+  });
+
+  it("appends sections the saved order never heard of", () => {
+    const out = parseGitSectionOrder(["history", "changes"]);
+    expect(out.slice(0, 2)).toEqual(["history", "changes"]);
+    expect(new Set(out)).toEqual(new Set(GIT_SECTION_KEYS));
+    expect(out).toHaveLength(GIT_SECTION_KEYS.length);
+  });
+
+  it("drops keys this build does not know and duplicates", () => {
+    const out = parseGitSectionOrder(["changes", "changes", "submodules", 7, null]);
+    expect(out).toEqual([
+      "changes",
+      "branches",
+      "worktrees",
+      "stack",
+      "stashes",
+      "history",
+      "openedDiffs",
+    ]);
+  });
+
+  it("falls back on anything that is not an array", () => {
+    expect(parseGitSectionOrder(null)).toEqual(GIT_SECTION_KEYS);
+    expect(parseGitSectionOrder("changes")).toEqual(GIT_SECTION_KEYS);
+    expect(parsePrefs({}).gitSectionOrder).toEqual(GIT_SECTION_KEYS);
   });
 });

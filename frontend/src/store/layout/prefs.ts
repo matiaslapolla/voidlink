@@ -20,6 +20,23 @@ export interface GitSections {
   openedDiffs: boolean;
 }
 
+export type GitSectionKey = keyof GitSections;
+
+/// The git sidebar's sections in their shipped order, and the only keys a
+/// persisted order is allowed to contain. Also the fallback: a saved order
+/// written by an older build is repaired against this list rather than
+/// rejected, so adding a section here makes it appear at the bottom of every
+/// existing user's sidebar instead of nowhere.
+export const GIT_SECTION_KEYS: GitSectionKey[] = [
+  "changes",
+  "branches",
+  "worktrees",
+  "stack",
+  "stashes",
+  "history",
+  "openedDiffs",
+];
+
 export interface SidebarSections {
   files: boolean;
   terminals: boolean;
@@ -57,6 +74,10 @@ export interface UiPrefs {
   ignoreWhitespace: boolean;
   sidebarTab: SidebarTab;
   gitSections: GitSections;
+  /// The order the git sidebar's sections render in. A user who never looks at
+  /// worktrees should be able to put them at the bottom rather than scrolling
+  /// past them forever.
+  gitSectionOrder: GitSectionKey[];
   sidebarSections: SidebarSections;
 }
 
@@ -85,8 +106,28 @@ export const DEFAULT_PREFS: UiPrefs = {
     history: true,
     openedDiffs: true,
   },
+  gitSectionOrder: [...GIT_SECTION_KEYS],
   sidebarSections: { files: true, terminals: true },
 };
+
+/// Repair a persisted section order: drop keys this build doesn't know, drop
+/// duplicates, and append anything missing in its shipped position. Never
+/// throws away the user's arrangement over an unknown key — a blob written by
+/// a newer build that added a section must still order the ones it shares.
+export function parseGitSectionOrder(raw: unknown): GitSectionKey[] {
+  const known = new Set<string>(GIT_SECTION_KEYS);
+  const seen = new Set<string>();
+  const out: GitSectionKey[] = [];
+  if (Array.isArray(raw)) {
+    for (const key of raw) {
+      if (typeof key !== "string" || !known.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      out.push(key as GitSectionKey);
+    }
+  }
+  for (const key of GIT_SECTION_KEYS) if (!seen.has(key)) out.push(key);
+  return out;
+}
 
 /// Field-by-field so a blob written by an older (or newer) build cannot
 /// introduce a value the UI has no branch for — `diffMode: "sidebyside"` would
@@ -115,6 +156,7 @@ export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
       history: parsed.gitSections?.history ?? d.gitSections.history,
       openedDiffs: parsed.gitSections?.openedDiffs ?? d.gitSections.openedDiffs,
     },
+    gitSectionOrder: parseGitSectionOrder(parsed.gitSectionOrder),
     sidebarSections: {
       files: parsed.sidebarSections?.files ?? d.sidebarSections.files,
       terminals: parsed.sidebarSections?.terminals ?? d.sidebarSections.terminals,

@@ -1,5 +1,6 @@
-import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js";
+import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack, type Component, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
+import { createVirtualizer } from "@tanstack/solid-virtual";
 import {
   GitBranch,
   GitCommit,
@@ -10,6 +11,8 @@ import {
   ChevronRight,
   ChevronLeft,
   ChevronDown,
+  ChevronUp,
+  Search,
   Upload,
   RefreshCw,
   GitCompare,
@@ -39,10 +42,27 @@ import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
 import { openEditorTab, openGitWindow } from "@/api/windows";
 import { Splitter } from "@/components/layout/Splitter";
+import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
+import {
+  createFreshnessClock,
+  freshnessClass,
+  freshnessOf,
+  freshnessTitle,
+} from "@/components/layout/freshness";
+import {
+  actionForKey,
+  flattenChanges,
+  moveFocus,
+  reconcileFocus,
+  rowsIn,
+  type ChangeRow,
+} from "@/components/git/changesNav";
+import { FuzzyText } from "@/commands/QuickPick";
+import type { MatchRange } from "@/commands/fuzzy";
 import { PANEL_BOUNDS } from "@/store/layout";
 
 import { useAppStore } from "@/store/LayoutContext";
-import { samePath, type AppStore } from "@/store/layout";
+import { samePath, type AppStore, type GitSectionKey } from "@/store/layout";
 
 /// Open a conflicted file in the editor window's merge editor.
 ///
@@ -87,11 +107,48 @@ function IconBtn(props: { label: string; onClick: () => void; children: JSX.Elem
   );
 }
 
+/// Section labels and icons, keyed the way `prefs.gitSectionOrder` keys them.
+/// One list rather than seven inline `<Section label=… icon=…>` props, because
+/// the sections are now rendered from a persisted order rather than written
+/// out in source order.
+const SECTION_LABELS: Record<GitSectionKey, string> = {
+  changes: "Changes",
+  branches: "Branches",
+  worktrees: "Worktrees",
+  stack: "Stack",
+  stashes: "Stashes",
+  history: "History",
+  openedDiffs: "Opened Diffs",
+};
+
+function sectionIcon(key: GitSectionKey): JSX.Element {
+  switch (key) {
+    case "changes": return <GitCommit class="w-3 h-3" />;
+    case "branches": return <GitBranch class="w-3 h-3" />;
+    case "worktrees": return <FolderGit2 class="w-3 h-3" />;
+    case "stack": return <Layers class="w-3 h-3" />;
+    case "stashes": return <Archive class="w-3 h-3" />;
+    case "history": return <History class="w-3 h-3" />;
+    case "openedDiffs": return <GitCompare class="w-3 h-3" />;
+  }
+}
+
 interface GitSidebarProps {
   repoPath: string;
   worktreeId: string;
 }
 
+/// One collapsible section of the git sidebar.
+///
+/// The header carries three things beyond its label: the collapse toggle, the
+/// section's own actions, and — on hover or keyboard focus — the two arrows
+/// that move it in the sidebar's order. Reorder is arrows rather than drag
+/// because the sections are a seven-item list in a 320px column: a drag needs
+/// a pointer, a drop target and a preview, and two buttons need none of them
+/// and work from the keyboard for free.
+///
+/// The whole header is `sticky`, so a long section scrolled halfway still says
+/// what it is.
 function Section(props: {
   label: string;
   icon: JSX.Element;
@@ -102,22 +159,52 @@ function Section(props: {
   children: JSX.Element;
   contentHeight: number;
   onResizeStart: (e: MouseEvent) => void;
+  onMove?: (delta: number) => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
 }) {
   return (
     <div
-      class={`flex flex-col border-b border-border/50 last:border-b-0 ${props.isLast && props.open ? "flex-1 min-h-0" : "shrink-0"}`}
+      class={`group/section flex flex-col border-b border-border/50 last:border-b-0 ${props.isLast && props.open ? "flex-1 min-h-0" : "shrink-0"}`}
     >
+      <div class="flex items-center sticky top-0 z-20 bg-sidebar shrink-0">
       <button
         onClick={props.onToggle}
-        class="flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors w-full text-left shrink-0"
+        aria-expanded={props.open}
+        class="flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors flex-1 min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <span class="w-3 h-3 shrink-0">
           {props.open ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
         </span>
         {props.icon}
-        <span class="flex-1 tracking-wide text-xs">{props.label}</span>
-        <span onClick={(e) => e.stopPropagation()}>{props.actions}</span>
+        <span class="flex-1 tracking-wide text-xs truncate">{props.label}</span>
       </button>
+      {/* Reserved at rest: the arrows fade in but the box they sit in is
+          always there, so a hover never nudges the label (§7.6). */}
+      <span class="flex items-center shrink-0 opacity-0 group-hover/section:opacity-100 focus-within:opacity-100 transition-opacity">
+        <button
+          onClick={() => props.onMove?.(-1)}
+          disabled={!props.canMoveUp}
+          aria-label={`Move ${props.label} section up`}
+          title={props.canMoveUp ? `Move ${props.label} up` : `${props.label} is already first`}
+          aria-disabled={!props.canMoveUp}
+          class="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronUp class="w-3 h-3" />
+        </button>
+        <button
+          onClick={() => props.onMove?.(1)}
+          disabled={!props.canMoveDown}
+          aria-label={`Move ${props.label} section down`}
+          title={props.canMoveDown ? `Move ${props.label} down` : `${props.label} is already last`}
+          aria-disabled={!props.canMoveDown}
+          class="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronDown class="w-3 h-3" />
+        </button>
+      </span>
+      <span class="shrink-0 pr-1">{props.actions}</span>
+      </div>
       <Show when={props.open}>
         <div
           class={`overflow-y-auto scrollbar-thin ${props.isLast ? "flex-1 min-h-0" : "shrink-0"}`}
@@ -182,6 +269,22 @@ export function GitSidebar(props: GitSidebarProps) {
   };
 
   const isRefreshing = () => repoInfo.loading || status.loading;
+
+  // ── The freshness contract (§7.5.4) ──────────────────────────────────────
+  // Ahead/behind, the dirty marker and the branch state are the numbers most
+  // likely to go stale: nothing local has to happen for the remote to move
+  // under them. A stale ahead/behind rendered as if it were live is the exact
+  // failure the contract exists to prevent, so the header states which of the
+  // three it is — live, refreshing (pulse on the value, old value still
+  // underneath), or stale (60% and a reason on hover).
+  const clock = createFreshnessClock();
+  const [readAt, setReadAt] = createSignal<number | null>(null);
+  createEffect(() => {
+    if (!isRefreshing() && repoInfo() !== undefined) setReadAt(Date.now());
+  });
+  const freshness = () =>
+    freshnessOf({ loading: isRefreshing(), readAt: readAt(), now: clock() });
+  const freshTitle = () => freshnessTitle(freshness(), readAt(), clock());
 
   const refreshAll = () => {
     refetchStatus();
@@ -256,12 +359,56 @@ export function GitSidebar(props: GitSidebarProps) {
     }
   }
 
-  // Determine which sections are open (in order) to find the last one
+  // The last *open* section in the user's order is the one that grows to fill
+  // the leftover height; everything above it keeps its own resized height.
   const lastOpenSection = createMemo(() => {
-    const order = ["changes", "branches", "worktrees", "stack", "stashes", "history", "openedDiffs"] as const;
-    const openKeys = order.filter(k => state.gitSections[k]);
+    const openKeys = state.gitSectionOrder.filter((k) => state.gitSections[k]);
     return openKeys[openKeys.length - 1] ?? null;
   });
+
+  /// One section's body. A function rather than a `Record` of elements so each
+  /// body is only built when its section actually renders — `HistoryPane` and
+  /// `CommitGraph` are not cheap to construct.
+  function renderSection(key: GitSectionKey): JSX.Element {
+    switch (key) {
+      case "changes":
+        return (
+          <ChangesPane
+            repoPath={props.repoPath}
+            worktreeId={props.worktreeId}
+            status={status()}
+            onRefresh={refreshAll}
+            selectedFile={activeFilePath()}
+          />
+        );
+      case "branches":
+        return (
+          <BranchesPane
+            repoPath={props.repoPath}
+            worktreeId={props.worktreeId}
+            onCheckout={refreshAll}
+          />
+        );
+      case "worktrees":
+        return <WorktreesPane repoPath={props.repoPath} />;
+      case "stack":
+        return <StackSidebarSection repoPath={props.repoPath} worktreeId={props.worktreeId} />;
+      case "stashes":
+        return <StashesPane repoPath={props.repoPath} worktreeId={props.worktreeId} />;
+      case "history":
+        return <HistoryPane repoPath={props.repoPath} worktreeId={props.worktreeId} />;
+      case "openedDiffs":
+        return (
+          <OpenedDiffsPane
+            worktreeId={props.worktreeId}
+            tabs={activeDiffTabs()}
+            activeDiffId={activeDiffId()}
+            onSelect={(id) => actions.selectDiffTab(props.worktreeId, id)}
+            onClose={(id) => actions.closeDiffTab(props.worktreeId, id)}
+          />
+        );
+    }
+  }
 
   return (
     <aside
@@ -281,7 +428,10 @@ export function GitSidebar(props: GitSidebarProps) {
       {/* Header */}
       <div class="px-3 h-9 border-b border-border flex items-center gap-2 text-xs shrink-0">
         <GitBranch class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        <span class="font-medium truncate">
+        <span
+          class={`font-medium truncate ${freshnessClass(freshness())}`}
+          title={freshTitle() || (repoInfo()?.upstream ?? "no upstream")}
+        >
           {repoInfo()?.currentBranch ?? "—"}
         </span>
         <Show when={(repoInfo()?.ahead ?? 0) > 0 || (repoInfo()?.behind ?? 0) > 0}>
@@ -293,18 +443,38 @@ export function GitSidebar(props: GitSidebarProps) {
                 : "Compare with main"
             }
             aria-label="Compare with upstream"
-            class="flex items-center gap-1 px-1 rounded hover:bg-accent/60 transition-colors tabular-nums"
+            class="flex items-center gap-1 px-1 rounded hover:bg-accent/60 transition-colors tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <Show when={(repoInfo()?.ahead ?? 0) > 0}>
-              <span class="text-success">↑{repoInfo()!.ahead}</span>
-            </Show>
-            <Show when={(repoInfo()?.behind ?? 0) > 0}>
-              <span class="text-destructive">↓{repoInfo()!.behind}</span>
-            </Show>
+            {/* The freshness class goes on the value, never on the container
+                (§7.5.4) — the number is what the reader is trusting. */}
+            <span class={`flex items-center gap-1 ${freshnessClass(freshness())}`}>
+              <Show when={(repoInfo()?.ahead ?? 0) > 0}>
+                <span class="text-success">↑{repoInfo()!.ahead}</span>
+              </Show>
+              <Show when={(repoInfo()?.behind ?? 0) > 0}>
+                <span class="text-destructive">↓{repoInfo()!.behind}</span>
+              </Show>
+            </span>
           </button>
         </Show>
         <Show when={repoInfo()?.isClean === false}>
-          <span class="text-warning text-xs">• changes</span>
+          <span class={`text-warning text-xs ${freshnessClass(freshness())}`} title={freshTitle()}>
+            • changes
+          </span>
+        </Show>
+        {/* The refresh affordance §7.5.4 requires beside a stale value. It is
+            the same `refreshAll` the toolbar button calls; what makes it
+            worth its own control is that it appears exactly where the number
+            the user just stopped trusting is. */}
+        <Show when={freshness() === "stale"}>
+          <button
+            onClick={refreshAll}
+            title={freshTitle()}
+            aria-label={`Refresh — ${freshTitle()}`}
+            class="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <RefreshCw class="w-3 h-3" />
+          </button>
         </Show>
         <div class="ml-auto flex items-center gap-0.5">
           <IconBtn label="Fetch from origin" onClick={() => void doFetch()}>
@@ -364,103 +534,30 @@ export function GitSidebar(props: GitSidebarProps) {
         )}
       </Show>
 
-      {/* Collapsible sections */}
-      <div class="flex-1 flex flex-col overflow-hidden">
-        <Section
-          label="Changes"
-          icon={<GitCommit class="w-3 h-3" />}
-          open={state.gitSections.changes}
-          isLast={lastOpenSection() === "changes"}
-          onToggle={() => actions.toggleGitSection("changes")}
-          contentHeight={sectionHeights().changes}
-          onResizeStart={startSectionResize("changes")}
-        >
-          <ChangesPane
-            repoPath={props.repoPath}
-            worktreeId={props.worktreeId}
-            status={status()}
-            onRefresh={refreshAll}
-            selectedFile={activeFilePath()}
-          />
-        </Section>
-
-        <Section
-          label="Branches"
-          icon={<GitBranch class="w-3 h-3" />}
-          open={state.gitSections.branches}
-          isLast={lastOpenSection() === "branches"}
-          onToggle={() => actions.toggleGitSection("branches")}
-          contentHeight={sectionHeights().branches}
-          onResizeStart={startSectionResize("branches")}
-        >
-          <BranchesPane repoPath={props.repoPath} worktreeId={props.worktreeId} onCheckout={refreshAll} />
-        </Section>
-
-        <Section
-          label="Worktrees"
-          icon={<FolderGit2 class="w-3 h-3" />}
-          open={state.gitSections.worktrees}
-          isLast={lastOpenSection() === "worktrees"}
-          onToggle={() => actions.toggleGitSection("worktrees")}
-          contentHeight={sectionHeights().worktrees}
-          onResizeStart={startSectionResize("worktrees")}
-        >
-          <WorktreesPane repoPath={props.repoPath} />
-        </Section>
-
-        <Section
-          label="Stack"
-          icon={<Layers class="w-3 h-3" />}
-          open={state.gitSections.stack}
-          isLast={lastOpenSection() === "stack"}
-          onToggle={() => actions.toggleGitSection("stack")}
-          contentHeight={sectionHeights().stack}
-          onResizeStart={startSectionResize("stack")}
-        >
-          <StackSidebarSection repoPath={props.repoPath} worktreeId={props.worktreeId} />
-        </Section>
-
-        <Section
-          label="Stashes"
-          icon={<Archive class="w-3 h-3" />}
-          open={state.gitSections.stashes}
-          isLast={lastOpenSection() === "stashes"}
-          onToggle={() => actions.toggleGitSection("stashes")}
-          contentHeight={sectionHeights().stashes}
-          onResizeStart={startSectionResize("stashes")}
-        >
-          <StashesPane repoPath={props.repoPath} worktreeId={props.worktreeId} />
-        </Section>
-
-        <Section
-          label="History"
-          icon={<History class="w-3 h-3" />}
-          open={state.gitSections.history}
-          isLast={lastOpenSection() === "history"}
-          onToggle={() => actions.toggleGitSection("history")}
-          contentHeight={sectionHeights().history}
-          onResizeStart={startSectionResize("history")}
-        >
-          <HistoryPane repoPath={props.repoPath} worktreeId={props.worktreeId} />
-        </Section>
-
-        <Section
-          label="Opened Diffs"
-          icon={<GitCompare class="w-3 h-3" />}
-          open={state.gitSections.openedDiffs}
-          isLast={lastOpenSection() === "openedDiffs"}
-          onToggle={() => actions.toggleGitSection("openedDiffs")}
-          contentHeight={sectionHeights().openedDiffs}
-          onResizeStart={startSectionResize("openedDiffs")}
-        >
-          <OpenedDiffsPane
-            worktreeId={props.worktreeId}
-            tabs={activeDiffTabs()}
-            activeDiffId={activeDiffId()}
-            onSelect={(id) => actions.selectDiffTab(props.worktreeId, id)}
-            onClose={(id) => actions.closeDiffTab(props.worktreeId, id)}
-          />
-        </Section>
+      {/* Collapsible sections, in the user's own order.
+          The order is a preference (`prefs.gitSectionOrder`) rather than a
+          constant because the sidebar is seven sections tall in a 320px
+          column: whichever two you actually use should be reachable without
+          scrolling past the five you don't. */}
+      <div class="flex-1 flex flex-col overflow-y-auto scrollbar-thin">
+        <For each={state.gitSectionOrder}>
+          {(key, i) => (
+            <Section
+              label={SECTION_LABELS[key]}
+              icon={sectionIcon(key)}
+              open={state.gitSections[key]}
+              isLast={lastOpenSection() === key}
+              onToggle={() => actions.toggleGitSection(key)}
+              contentHeight={sectionHeights()[key]}
+              onResizeStart={startSectionResize(key)}
+              onMove={(delta) => actions.moveGitSection(key, delta)}
+              canMoveUp={i() > 0}
+              canMoveDown={i() < state.gitSectionOrder.length - 1}
+            >
+              {renderSection(key)}
+            </Section>
+          )}
+        </For>
       </div>
 
       {/* Pinned footer. Compare is a destination rather than a view of repo
@@ -562,6 +659,72 @@ export function ChangesPane(props: {
   const staged = () => (props.status ?? []).filter((f) => f.staged && f.status !== "conflicted");
   const unstaged = () => (props.status ?? []).filter((f) => !f.staged && f.status !== "conflicted");
   const conflicted = () => (props.status ?? []).filter((f) => f.status === "conflicted");
+
+  // ── Filter and keyboard cursor ───────────────────────────────────────────
+  // The three lists behave as one keyboard surface: arrows walk from the last
+  // staged file into the first unstaged one, and Space acts on whichever row
+  // has the cursor. The ordering, the fuzzy filter and the movement all live
+  // in `changesNav.ts` — see its header for why they are not inline here.
+  let filterRef: HTMLInputElement | undefined;
+  let listRef: HTMLDivElement | undefined;
+  const [filter, setFilter] = createSignal("");
+  const [focusPath, setFocusPath] = createSignal<string | null>(null);
+
+  const rows = createMemo(() => flattenChanges(props.status ?? [], filter()));
+  const conflictRows = () => rowsIn(rows(), "conflicted");
+  const stagedRows = () => rowsIn(rows(), "staged");
+  const unstagedRows = () => rowsIn(rows(), "unstaged");
+
+  const rowDomId = (path: string) => `change-row-${path.replace(/[^\w-]/g, "_")}`;
+
+  /// Keep the cursor on something real. Staging a file moves it between
+  /// sections and typing into the filter can remove it entirely; in both cases
+  /// the cursor lands near where it was so the user can keep pressing the same
+  /// key rather than reaching for the mouse to find it again.
+  createEffect(() => {
+    const list = rows();
+    const current = untrack(focusPath);
+    if (!current) return;
+    const previousIndex = untrack(() => lastIndex);
+    const next = reconcileFocus(list, current, previousIndex);
+    if (next !== current) setFocusPath(next);
+  });
+  let lastIndex = 0;
+  createEffect(() => {
+    const idx = rows().findIndex((r) => r.entry.path === focusPath());
+    if (idx !== -1) lastIndex = idx;
+  });
+
+  function onListKeyDown(e: KeyboardEvent) {
+    const list = rows();
+    const current = focusPath();
+    const row = list.find((r) => r.entry.path === current);
+    const action = actionForKey(e.key, row?.section ?? "unstaged");
+    if (action.kind === "none") return;
+    e.preventDefault();
+    switch (action.kind) {
+      case "move":
+        setFocusPath(moveFocus(list, current, action.delta));
+        break;
+      case "open":
+        if (row) selectFile(row.entry.path);
+        break;
+      case "resolve":
+        if (row) openConflict(`${props.repoPath}/${row.entry.path}`);
+        break;
+      case "stage":
+        if (row) void stageFile(row.entry.path);
+        break;
+      case "unstage":
+        if (row) void unstageFile(row.entry.path);
+        break;
+      case "discard":
+        // Irreversible, so it keeps its confirm (§7.5.5) even from the
+        // keyboard — this is the one action here that cannot be undone.
+        if (row) void discardFile(row.entry.path, row.entry.status);
+        break;
+    }
+  }
 
   function openConflict(path: string) {
     openMerge(actions, props.worktreeId, path);
@@ -986,81 +1149,151 @@ export function ChangesPane(props: {
         </div>
       </div>
 
-      <Show when={conflicted().length > 0}>
-        <div class="border-b border-border/50">
-          <div class="px-2.5 density-section ui-section-label text-warning/90 flex items-center gap-1.5">
-            <GitCompare class="w-3 h-3" />
-            Conflicts (<span class="tabular-nums">{conflicted().length}</span>)
-          </div>
-          <For each={conflicted()}>
-            {(f) => (
-              <button
-                onClick={() => openConflict(`${props.repoPath}/${f.path}`)}
-                title={`Resolve conflict in ${f.path}`}
-                class="w-full flex items-center gap-2 px-2.5 density-row text-[13px] text-left text-warning hover:bg-warning/10 transition-colors"
-              >
-                <StatusBadge status={f.status} />
-                <span class="flex-1 truncate font-mono">{f.path}</span>
-                <span class="text-[10px] tracking-wide opacity-70">Resolve</span>
-              </button>
-            )}
-          </For>
+      {/* ── The change list ────────────────────────────────────────────────
+          Three sections, one keyboard surface. `changesNav.ts` owns the
+          ordering, the filter and the cursor movement; this only renders what
+          it returns and performs the action it names. */}
+      <div class="px-2 pt-2 pb-1 border-b border-border/50">
+        <div class="relative">
+          <Search class="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            ref={filterRef}
+            type="text"
+            value={filter()}
+            onInput={(e) => setFilter(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              // Down out of the box moves into the list — the box and the list
+              // are one surface, and reaching for the mouse to cross between
+              // them would defeat the point of having a filter.
+              if (e.key === "ArrowDown" || e.key === "Enter") {
+                e.preventDefault();
+                setFocusPath(moveFocus(rows(), null, 1));
+                listRef?.focus();
+              } else if (e.key === "Escape" && filter()) {
+                e.preventDefault();
+                setFilter("");
+              }
+            }}
+            placeholder="Filter changed files"
+            aria-label="Filter changed files"
+            class="w-full rounded-md bg-muted/40 border border-border/60 pl-7 pr-2 py-1 text-[12px] outline-2 outline-transparent focus:outline-none focus:ring-1 focus:ring-ring"
+          />
         </div>
-      </Show>
+      </div>
 
-      <Show when={staged().length > 0}>
-        <div class="border-b border-border/50">
-          <div class="px-2.5 density-section ui-section-label text-success/80">
-            Staged (<span class="tabular-nums">{staged().length}</span>)
+      <div
+        ref={(el) => (listRef = el)}
+        tabIndex={0}
+        role="listbox"
+        aria-label="Changed files"
+        aria-activedescendant={focusPath() ? rowDomId(focusPath()!) : undefined}
+        onKeyDown={onListKeyDown}
+        class="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <Show when={conflicted().length > 0}>
+          <div class="border-b border-border/50">
+            <SectionLabel class="text-warning/90">
+              <GitCompare class="w-3 h-3" />
+              Conflicts (<span class="tabular-nums">{conflictRows().length}</span>)
+            </SectionLabel>
+            <For each={conflictRows()}>
+              {(row) => (
+                <button
+                  id={rowDomId(row.entry.path)}
+                  role="option"
+                  aria-selected={focusPath() === row.entry.path}
+                  onClick={() => {
+                    setFocusPath(row.entry.path);
+                    openConflict(`${props.repoPath}/${row.entry.path}`);
+                  }}
+                  title={`Resolve conflict in ${row.entry.path}`}
+                  class={`w-full flex items-center gap-2 px-2.5 h-6 text-[13px] text-left text-warning hover:bg-warning/10 transition-colors ${
+                    focusPath() === row.entry.path ? "bg-warning/15" : ""
+                  }`}
+                >
+                  <StatusBadge status={row.entry.status} />
+                  <span class="flex-1 truncate font-mono">
+                    <FuzzyText text={row.entry.path} ranges={row.ranges} />
+                  </span>
+                  <span class="text-[10px] tracking-wide opacity-70">Resolve</span>
+                </button>
+              )}
+            </For>
           </div>
-          <For each={staged()}>
-            {(f) => (
-              <FileRow
-                file={f.path}
-                status={f.status}
-                selected={props.selectedFile === f.path}
-                onSelect={() => selectFile(f.path)}
-                actionIcon={Minus}
-                onAction={() => void unstageFile(f.path)}
-                actionTitle="Unstage"
+        </Show>
+
+        <Show when={stagedRows().length > 0}>
+          <div class="border-b border-border/50">
+            <SectionLabel class="text-success/80">
+              Staged (<span class="tabular-nums">{stagedRows().length}</span>)
+            </SectionLabel>
+            <VirtualFileList
+              rows={stagedRows()}
+              focusPath={focusPath()}
+              selectedFile={props.selectedFile}
+              rowId={rowDomId}
+              onFocusRow={setFocusPath}
+              onSelect={(path) => selectFile(path)}
+              actionIcon={Minus}
+              actionTitle="Unstage"
+              onAction={(path) => void unstageFile(path)}
+            />
+          </div>
+        </Show>
+
+        <SectionLabel>
+          <span class="flex-1">
+            Changes (<span class="tabular-nums">{unstagedRows().length}</span>)
+          </span>
+          <Show when={unstaged().length > 0}>
+            <button
+              onClick={() => void discardAllChanges()}
+              title="Discard all changes"
+              aria-label="Discard all changes"
+              class="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Trash2 class="w-3 h-3" />
+            </button>
+          </Show>
+        </SectionLabel>
+
+        <Show
+          when={rows().length > 0}
+          fallback={
+            // Two different emptinesses, and telling them apart is the whole
+            // point of §9.7's no-shared-sentence rule: a clean tree is good
+            // news, a filter that matched nothing is a typo.
+            <Show
+              when={(props.status ?? []).length > 0}
+              fallback={<EmptyState id="changesClean" />}
+            >
+              <EmptyState
+                id="changesNoMatch"
+                action={
+                  <EmptyStateAction onClick={() => { setFilter(""); filterRef?.focus(); }}>
+                    Clear the filter
+                  </EmptyStateAction>
+                }
               />
-            )}
-          </For>
-        </div>
-      </Show>
-
-      <div class="px-2.5 density-section ui-section-label flex items-center">
-        <span class="flex-1">Changes (<span class="tabular-nums">{unstaged().length}</span>)</span>
-        <Show when={unstaged().length > 0}>
-          <button
-            onClick={() => void discardAllChanges()}
-            title="Discard all changes"
-            aria-label="Discard all changes"
-            class="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-          >
-            <Trash2 class="w-3 h-3" />
-          </button>
+            </Show>
+          }
+        >
+          <VirtualFileList
+            rows={unstagedRows()}
+            focusPath={focusPath()}
+            selectedFile={props.selectedFile}
+            rowId={rowDomId}
+            onFocusRow={setFocusPath}
+            onSelect={(path) => selectFile(path)}
+            actionIcon={Plus}
+            actionTitle="Stage"
+            onAction={(path) => void stageFile(path)}
+            secondaryFor={(row) => (row.entry.status === "untracked" ? "delete" : "discard")}
+            onSecondary={(path, status) => void discardFile(path, status)}
+          />
         </Show>
       </div>
-      <Show when={unstaged().length === 0 && staged().length === 0}>
-        <p class="px-2.5 py-2 text-[13px] text-muted-foreground">Working tree clean</p>
-      </Show>
-      <For each={unstaged()}>
-        {(f) => (
-          <FileRow
-            file={f.path}
-            status={f.status}
-            selected={props.selectedFile === f.path}
-            onSelect={() => selectFile(f.path)}
-            actionIcon={Plus}
-            onAction={() => void stageFile(f.path)}
-            actionTitle="Stage"
-            secondaryIcon={f.status === "untracked" ? Trash2 : Undo2}
-            onSecondary={() => void discardFile(f.path, f.status)}
-            secondaryTitle={f.status === "untracked" ? "Delete untracked file" : "Discard changes"}
-          />
-        )}
-      </For>
+
 
       <SecretScanDialog
         findings={pendingFindings()}
@@ -1411,8 +1644,18 @@ export function WorktreesPane(props: { repoPath: string }) {
       >
         <Plus class="w-3 h-3" /> New worktree
       </button>
-      <Show when={(worktrees()?.length ?? 0) === 0}>
-        <p class="px-2 py-1.5 text-[12px] text-muted-foreground/70">No worktrees yet.</p>
+      {/* "Only the main worktree" rather than "no worktrees": a repository
+          always has one, so a list showing a single entry — or, before the
+          first list lands, none — means the user has not branched out yet. */}
+      <Show when={(worktrees()?.length ?? 0) <= 1}>
+        <EmptyState
+          id="worktreesSingle"
+          action={
+            <EmptyStateAction onClick={() => void addWorktree()}>
+              Create a worktree
+            </EmptyStateAction>
+          }
+        />
       </Show>
       <For each={worktrees() ?? []}>
         {(wt) => {
@@ -1572,7 +1815,7 @@ export function TagsPane(props: { repoPath: string }) {
         </button>
       </div>
       <Show when={(refs()?.tags.length ?? 0) === 0}>
-        <p class="px-2 py-1 text-[11px] text-muted-foreground/70">No tags.</p>
+        <EmptyState id="tagsEmpty" />
       </Show>
       <For each={refs()?.tags ?? []}>
         {(t) => (
@@ -1652,7 +1895,7 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
     <div class="p-1">
       <Show
         when={(stashes()?.length ?? 0) > 0}
-        fallback={<p class="px-2.5 py-2 text-[13px] text-muted-foreground">No stashes.</p>}
+        fallback={<EmptyState id="stashesEmpty" />}
       >
         <For each={stashes() ?? []}>
           {(s: StashEntry) => (
@@ -2265,10 +2508,144 @@ function OpenedDiffsPane(props: {
 // File row
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// A sub-heading inside a section's scroll area — "Staged (3)", "Changes (12)".
+///
+/// `sticky` because these live *inside* the scrolling list, unlike the section
+/// headers above them: scroll a hundred changed files and the heading telling
+/// you whether you are looking at staged or unstaged is the first thing to go.
+function SectionLabel(props: { children: JSX.Element; class?: string }) {
+  return (
+    <div
+      class={`sticky top-0 z-10 bg-sidebar px-2.5 density-section ui-section-label flex items-center gap-1.5 ${props.class ?? ""}`}
+    >
+      {props.children}
+    </div>
+  );
+}
+
+/// A windowed file list.
+///
+/// The changed-file count is unbounded — a rebase or a generated-code commit
+/// produces thousands — so the rows are virtualized with
+/// `@tanstack/solid-virtual`, the same pattern `FileTree` uses.
+///
+/// **The row height is fixed at 24px and does *not* respond to the density
+/// preference.** That is deliberate and it is the one thing here that must not
+/// be "fixed": the virtualizer's `estimateSize` is what decides which rows
+/// exist at a given scroll offset, and a height that changes with a setting
+/// desyncs the estimate from reality. `index.css` documents the same exclusion
+/// for `FileTree`. Density still reaches everything around the list.
+function VirtualFileList(props: {
+  rows: ChangeRow[];
+  focusPath: string | null;
+  selectedFile: string | null;
+  rowId: (path: string) => string;
+  onFocusRow: (path: string) => void;
+  onSelect: (path: string) => void;
+  actionIcon: LucideIcon;
+  actionTitle: string;
+  onAction: (path: string) => void;
+  secondaryFor?: (row: ChangeRow) => "discard" | "delete";
+  onSecondary?: (path: string, status: string) => void;
+}) {
+  const ROW_HEIGHT = 24;
+  /// Below this the list is shorter than its own viewport and windowing costs
+  /// more than it saves — an absolutely-positioned row layer for eleven files
+  /// is pure overhead.
+  const VIRTUALIZE_ABOVE = 40;
+  let scrollRef: HTMLDivElement | undefined;
+
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    get count() {
+      return props.rows.length;
+    },
+    getScrollElement: () => scrollRef ?? null,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
+  });
+
+  /// Keep the keyboard cursor on screen. The whole point of arrow-key
+  /// navigation through a windowed list is that the row you moved to exists;
+  /// without this the cursor walks off the bottom into unrendered rows.
+  createEffect(() => {
+    const path = props.focusPath;
+    if (!path) return;
+    const idx = props.rows.findIndex((r) => r.entry.path === path);
+    if (idx === -1) return;
+    if (props.rows.length > VIRTUALIZE_ABOVE) virtualizer.scrollToIndex(idx);
+    else scrollRef?.querySelector(`#${CSS.escape(props.rowId(path))}`)?.scrollIntoView({ block: "nearest" });
+  });
+
+  const row = (r: ChangeRow) => (
+    <FileRow
+      id={props.rowId(r.entry.path)}
+      file={r.entry.path}
+      ranges={r.ranges}
+      status={r.entry.status}
+      selected={props.selectedFile === r.entry.path}
+      cursor={props.focusPath === r.entry.path}
+      onSelect={() => {
+        props.onFocusRow(r.entry.path);
+        props.onSelect(r.entry.path);
+      }}
+      actionIcon={props.actionIcon}
+      onAction={() => props.onAction(r.entry.path)}
+      actionTitle={props.actionTitle}
+      secondaryIcon={
+        props.secondaryFor
+          ? props.secondaryFor(r) === "delete"
+            ? Trash2
+            : Undo2
+          : undefined
+      }
+      onSecondary={() => props.onSecondary?.(r.entry.path, r.entry.status)}
+      secondaryTitle={
+        props.secondaryFor
+          ? props.secondaryFor(r) === "delete"
+            ? "Delete untracked file"
+            : "Discard changes"
+          : undefined
+      }
+    />
+  );
+
+  return (
+    <div
+      ref={(el) => (scrollRef = el)}
+      class="overflow-y-auto scrollbar-thin"
+      style={{ "max-height": `${ROW_HEIGHT * 16}px` }}
+    >
+      <Show when={props.rows.length > VIRTUALIZE_ABOVE} fallback={<For each={props.rows}>{row}</For>}>
+        <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+          <For each={virtualizer.getVirtualItems()}>
+            {(item) => (
+              <div
+                class="absolute top-0 left-0 w-full"
+                style={{ height: `${item.size}px`, transform: `translateY(${item.start}px)` }}
+              >
+                {row(props.rows[item.index])}
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 function FileRow(props: {
+  id?: string;
   file: string;
   status: string;
+  /// Which characters the changes filter matched, for the one highlight
+  /// treatment the palette and file finder already use.
+  ranges?: MatchRange[];
   selected: boolean;
+  /// The keyboard cursor is on this row. Distinct from `selected`, which means
+  /// "this file's diff is the one open in the editor window" — the two move
+  /// independently, and conflating them would make arrowing through the list
+  /// open a diff per keypress.
+  cursor?: boolean;
   onSelect: () => void;
   actionIcon: LucideIcon;
   onAction: () => void;
@@ -2280,18 +2657,25 @@ function FileRow(props: {
   const Icon = props.actionIcon;
   return (
     <div
-      class={`group flex items-center text-xs transition-colors focus-within:bg-accent/40 ${
+      id={props.id}
+      role="option"
+      aria-selected={!!props.cursor}
+      // `h-6` rather than `density-row`: this row is the virtualizer's
+      // `estimateSize`, and a height that moves with a setting desyncs it.
+      class={`group flex items-center h-6 text-xs transition-colors focus-within:bg-accent/40 ${
         props.selected ? "bg-accent/70 text-foreground" : "hover:bg-accent/40"
-      }`}
+      } ${props.cursor ? "ring-1 ring-inset ring-ring" : ""}`}
     >
       <button
         onClick={props.onSelect}
         aria-label={`Open diff for ${props.file}`}
         aria-pressed={props.selected}
-        class="flex-1 flex items-center gap-1.5 pl-2.5 density-row min-w-0 text-left cursor-pointer focus-visible:outline-none"
+        class="flex-1 flex items-center gap-1.5 pl-2.5 h-full min-w-0 text-left cursor-pointer focus-visible:outline-none"
       >
         <StatusBadge status={props.status} />
-        <span class="flex-1 truncate">{props.file}</span>
+        <span class="flex-1 truncate">
+          <FuzzyText text={props.file} ranges={props.ranges ?? []} />
+        </span>
       </button>
       <Show when={props.secondaryIcon}>
         {(SecondaryIcon) => (

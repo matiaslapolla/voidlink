@@ -24,6 +24,7 @@ import type {
   TabCollectionKey,
 } from "./tabs";
 import type {
+  GitSectionKey,
   GitSections,
   SidebarSections,
   DiffMode,
@@ -91,6 +92,7 @@ export interface AppStoreState {
   ignoreWhitespace: boolean;
   sidebarTab: SidebarTab;
   gitSections: GitSections;
+  gitSectionOrder: GitSectionKey[];
   sidebarSections: SidebarSections;
 }
 
