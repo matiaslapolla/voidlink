@@ -38,6 +38,42 @@ const [signals, setSignals] = createStore<Record<string, SignalSet>>({});
 /// a pane you are already looking at never becomes a badge you have to dismiss.
 let visible: ReadonlySet<string> = new Set();
 
+/// Whether this OS window has focus.
+///
+/// "On screen" is not the same as "being looked at". A bell in the front tab of
+/// a window the user has alt-tabbed away from used to be *dropped* — the tab was
+/// in `visible`, so `noteBell` returned early and nothing was ever badged. Which
+/// is the one case §7.5.3 rule 1 exists for: you cannot be told about something
+/// you were not there to see.
+///
+/// Defaults to focused, and to focused outside a browser (vitest), so a missing
+/// listener errs toward the old behaviour rather than badging everything.
+let windowFocused = true;
+
+/// Publish OS window focus. Called once per window root; the DOM events are the
+/// authority, so this takes a value rather than reading `document.hasFocus()` on
+/// every check.
+export function setWindowFocused(focused: boolean): void {
+  windowFocused = focused;
+  if (!focused) return;
+  // Coming back to the window is the same act of "seeing" as bringing a tab to
+  // the front, so it clears the same signals on whatever is already in front.
+  setVisibleTabs(visible);
+}
+
+/// Install the OS-focus listeners. Returns a disposer. Call once per window.
+export function trackWindowFocus(): () => void {
+  const onFocus = () => setWindowFocused(true);
+  const onBlur = () => setWindowFocused(false);
+  window.addEventListener("focus", onFocus);
+  window.addEventListener("blur", onBlur);
+  setWindowFocused(document.hasFocus());
+  return () => {
+    window.removeEventListener("focus", onFocus);
+    window.removeEventListener("blur", onBlur);
+  };
+}
+
 /// The whole activity map, for consumers that need to react to any change.
 export function tabSignals(): Record<string, SignalSet> {
   return signals;
@@ -87,18 +123,23 @@ export function clearTabActivity(tabId: string): void {
 /// not the same as having read the error in it.
 export function setVisibleTabs(tabIds: Iterable<string>): void {
   visible = new Set(tabIds);
+  // A tab in a window the user has switched away from is on screen but is not
+  // being *seen*, so it clears nothing.
+  if (!windowFocused) return;
   setSignals(produce((s) => {
     for (const id of Object.keys(s)) {
       if (!visible.has(id)) continue;
-      delete s[id].bell;
+      delete s[id].notify;
       delete s[id].finished;
       if (Object.keys(s[id]).length === 0) delete s[id];
     }
   }));
 }
 
+/// Is the user actually looking at this tab right now? On screen **and** in the
+/// focused OS window. Every "was this news?" decision below goes through it.
 export function isTabVisible(tabId: string): boolean {
-  return visible.has(tabId);
+  return windowFocused && visible.has(tabId);
 }
 
 /// Acknowledge a failure. The only way `failed` clears.
@@ -106,34 +147,51 @@ export function acknowledgeTab(tabId: string): void {
   clearSignal(tabId, "failed");
 }
 
-// ── The three terminal events ───────────────────────────────────────────────
-// MASTER §7.5.3 and the workbench prompt both insist these are *three*
-// signals, not one, so they get three named entry points rather than a generic
-// `raiseSignal` sprinkled through the terminal code.
+// ── The terminal events ─────────────────────────────────────────────────────
+// Named entry points rather than a generic `raiseSignal` sprinkled through the
+// terminal code, so the "was this news?" rule lives in one place per event.
 
-/// The shell rang the bell (BEL / `\a`). Ambient, never steals focus.
+/// A program asked for attention: BEL, OSC 9, or OSC 777. Ambient, never steals
+/// focus.
+///
+/// Cyan `notify`, not the old blue `bell`, and — crucially — above `working` in
+/// the precedence chain. A notification from inside a live TUI used to be
+/// unrenderable: the TUI kept the shell `busy`, `running` outranked `bell`, and
+/// the mark the user actually wanted never appeared.
 export function noteBell(tabId: string): void {
   if (isTabVisible(tabId)) return;
-  raiseSignal(tabId, "bell");
+  raiseSignal(tabId, "notify");
 }
 
-/// A foreground command is running in this shell. Pulses while it runs.
+/// A foreground process in this shell is actively working — busy *and* producing
+/// output. Pulses while it is. See `store/terminalWatch.ts` for why `busy` alone
+/// is not enough.
+export function noteWorking(tabId: string, working: boolean): void {
+  if (working) raiseSignal(tabId, "working");
+  else clearSignal(tabId, "working");
+}
+
+/// VoidLink is fetching something for this tab (a diff, a stack). Distinct from
+/// `noteWorking`: that is the user's shell, this is our own chrome.
 export function noteRunning(tabId: string, running: boolean): void {
   if (running) raiseSignal(tabId, "running");
   else clearSignal(tabId, "running");
 }
 
 /// A foreground command ended. `ok === false` is a failure and outranks
-/// everything else; `ok === true` is only news if the user was looking
-/// somewhere else when it happened.
+/// everything else; `ok === true` is only news if the user was looking somewhere
+/// else when it happened — in which case it is a `notify`, the same mark a
+/// program's own completion notification raises, because to the user they are
+/// the same event.
 export function noteFinished(tabId: string, ok: boolean): void {
+  clearSignal(tabId, "working");
   clearSignal(tabId, "running");
   if (!ok) {
     raiseSignal(tabId, "failed");
     return;
   }
   if (isTabVisible(tabId)) return;
-  raiseSignal(tabId, "finished");
+  raiseSignal(tabId, "notify");
 }
 
 /// Reset everything. Tests, and the "reset layout" escape hatch.
@@ -142,6 +200,7 @@ export function resetActivity(): void {
     for (const id of Object.keys(s)) delete s[id];
   }));
   visible = new Set();
+  windowFocused = true;
 }
 
 // ── Escalation ──────────────────────────────────────────────────────────────

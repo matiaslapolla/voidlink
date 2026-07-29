@@ -159,6 +159,90 @@ whole rows against the measured row height, applies
 application cursor keys. One gesture is capped at 20 rows so a trackpad flick
 can't flood the PTY.
 
+## The activity dot
+
+**One** dot per terminal tab, in the tab's trailing slot. There used to be two —
+a leading LED and a trailing mark, two lines apart in the same component, with a
+comment claiming they answered different questions. They did not: both read the
+same `busy` bit off the same poll, both rendered orange, and both pulsed. The
+leading one is gone.
+
+| What the shell is doing | Dot | Colour | Motion |
+|---|---|---|---|
+| Idle, and you are not looking at this tab | *(nothing)* | — | — |
+| Idle shell, or a TUI open but not working, in the tab you are looking at | `idle` | green, no glow | still |
+| A foreground process actively working — busy **and** producing output | `working` | green, glowing | pulsing |
+| Something finished, or a program sent a notification, while you were elsewhere | `notify` | **cyan** | still |
+| The shell exited non-zero | `failed` | red | still |
+
+`notify` outranks `working`, and that ordering is the point of the whole design.
+A TUI keeps its shell in the foreground for its entire life, so the busy signal
+is live the whole time Claude Code is open — with the notification below it (where
+the old blue `bell` sat, under `running`) a "I'm done, look at me" from inside a
+live TUI could never be rendered. Which was exactly the event worth showing.
+
+`failed` clears only on acknowledgement — closing the tab. Everything else clears
+when you look at the tab. The same mark, from the same two sources, is what the
+**sidebar row** shows: it used to run its own poll, its own notification flag, its
+own orange bell icon and its own copy of the LED mapping, so the row and the tab
+could disagree about the same shell for up to 1500 ms.
+
+The full colour vocabulary, including the marks non-terminal tabs use (`dirty`,
+`running`, `finished`, `stale`), lives in
+`frontend/src/components/layout/StatusLed.tsx`. It is a closed set: adding one
+means adding a `--<name>` token to `index.css` **and** to all eight blocks in
+`themes.css`.
+
+### Why output rate, and what it gets wrong
+
+`busy` is `tcgetpgrp(master_fd) != shell_pid` — "is anything other than the shell
+in the foreground". For `claude`, `vim`, or `lazygit` that is true from launch to
+quit, so it cannot distinguish a build that is churning from a TUI merely sitting
+open. Nothing about the alternate screen, the bell, or the title told us either.
+
+So VoidLink windows the **bytes the PTY produces**: more than **256 bytes in a
+500 ms window** turns output-active on, and **1500 ms of silence** turns it off.
+`working = busy && outputActive`. `busy && !outputActive` is an idle TUI.
+
+The tradeoff, stated rather than hidden: **a silent long-running command reads as
+idle.** `sleep 60`, or a `curl` with no progress meter, produces no output, so it
+gets the quiet focused-green dot rather than the pulsing one. Output is a proxy,
+and this is the case it gets wrong. It was chosen over sampling the foreground
+pid's CPU state because it needs no new IPC and no per-platform `/proc` reading,
+and because the failure mode is "quiet dot" rather than "permanently wrong dot".
+
+The 1500 ms silence threshold matches the process poll interval on purpose, so
+the two clocks cannot disagree for longer than one tick.
+
+### What counts as "finished"
+
+The process poll samples every 1500 ms, which is coarse enough to invent events.
+Two rules filter it:
+
+- **Two samples minimum.** A command must be seen busy on two consecutive polls,
+  with the same pid, before its exit counts. A 20 ms command that happens to
+  straddle a tick used to be badged for a full interval. The flip side is
+  unfixable from here and is the right answer anyway: a command that starts and
+  ends between two ticks is invisible, and nobody wants a badge for `ls`.
+- **Not a full-screen app.** If the terminal entered the alternate screen buffer
+  at any point during the busy span, its exit raises nothing. Quitting `vim`
+  while unfocused used to raise a green "finished" — you closed an editor, nothing
+  completed.
+
+### Notifications from inside the terminal
+
+VoidLink registers OSC 9 (`ESC ] 9 ; body BEL`, iTerm2's convention) and OSC 777
+(`ESC ] 777 ; notify ; title ; body BEL`, the urxvt/GNOME one). Either raises
+`notify` and, if the tab is not being watched, one OS notification. A bell (BEL)
+does the same, minus the message. This is what makes the cyan dot reachable from a
+notification-capable TUI at all — a bell is easy to miss and many tools do not
+send one.
+
+The OS notification fires from one place, driven off the same signal the in-app
+mark is, so the two cannot disagree. It used to fire from inside a sidebar row's
+own poll, which meant no notification at all whenever the Terminals section was
+collapsed.
+
 ## Gotchas and limits
 
 - **Terminals always open at the workspace's repo root.** There is no per-cwd
@@ -193,8 +277,59 @@ can't flood the PTY.
   in output become clickable.
 - **Clicking a root commit's SHA link produces an error** — the compare tab asks
   for `<oid>^`, which doesn't resolve.
-- **Two pollers run per terminal** at 1500 ms when both the sidebar row and the
-  tab are mounted.
+- **One process poll per shell**, at 1500 ms, refcounted and shared by the tab
+  strip, the pane layer and the sidebar row. The sidebar row does make one extra
+  `pty_process_info` call on the same cadence for the cwd line, which is the one
+  fact the shared watcher does not carry.
+- **A silent long-running command reads as idle,** not working. See "Why output
+  rate, and what it gets wrong" above.
+- **A shell that exits non-zero keeps its tab.** A clean exit closes it as before;
+  a failure has to be acknowledged, and closing the tab is the acknowledgement.
+  Without that the red `failed` mark had nowhere it could ever be seen.
+- **`exitCode` is `null` when the platform gives us no status** — a signal death,
+  or a session already reaped. A `null` is treated as a clean exit.
 - **System notifications only fire if permission was already granted.**
   VoidLink deliberately never calls `requestPermission()`.
+- **A marked tab hides its close button until you hover it.** The trailing slot
+  holds both, by design (a badge *and* an × reads as two controls) — but it means
+  a permanently-`working` tab needs a hover before it can be closed by mouse.
+
+## Manual QA
+
+- [ ] **Exactly one dot per terminal tab.** Count them. There used to be two.
+- [ ] Idle shell, tab **not** focused: the slot is **blank** — no grey dot.
+- [ ] Idle shell, tab focused: a still green dot.
+- [ ] `yes | head -c 1000000`: green and **pulsing** while it runs, then back to
+      still green within ~1.5s of the last byte.
+- [ ] `claude` (or `vim`, or `lazygit`) sitting at its prompt: **green, still** —
+      not orange, not pulsing. This is the reported bug.
+- [ ] Type into `claude` so it starts thinking: it goes to pulsing green, and
+      back to still when it stops.
+- [ ] `sleep 30`: reads as idle. Expected — see the gotcha.
+- [ ] `ls`: no badge at all afterwards. Run it repeatedly; a tick-straddling run
+      must not leave a mark.
+- [ ] Switch to another tab, run `sleep 5 && echo done` in the first, wait: the
+      first tab goes **cyan**. Switch to it: the cyan clears.
+- [ ] Same, but alt-tab out of VoidLink entirely with the terminal tab in front.
+      The badge still appears — it used to be dropped, because the tab counted as
+      "visible".
+- [ ] Open `vim`, switch to another tab, quit `vim`: **no** badge. Closing an
+      editor is not a completion.
+- [ ] `exit 1`: the tab stays and its dot goes **red**. `exit` (or `exit 0`)
+      closes the tab as before.
+- [ ] `printf '\033]9;build done\007'`: cyan dot, and an OS notification saying
+      "build done" if you have granted permission.
+- [ ] `printf '\033]777;notify;deploy;prod is live\007'`: same, body reads
+      "deploy — prod is live".
+- [ ] `printf '\a'` from an unfocused tab: cyan dot.
+- [ ] Raise a notification from **inside** a running TUI (Claude Code finishing a
+      turn while you are in another tab). The cyan dot appears even though the
+      TUI still holds the foreground — this could not render before.
+- [ ] Open the Terminals sidebar section. **The row and the tab show the same
+      mark, at the same time.** They used to sample independently and could
+      disagree by up to 1500ms.
+- [ ] Collapse the Terminals section and repeat the "finished while unfocused"
+      test: the OS notification still fires.
+- [ ] Switch through all ten themes with a cyan dot on screen. It stays clearly
+      distinct from the green `working` dot in each.
 - **All PTYs are killed** on window close and on app exit.

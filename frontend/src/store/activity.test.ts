@@ -7,8 +7,10 @@ import {
   noteBell,
   noteFinished,
   noteRunning,
+  noteWorking,
   resetActivity,
   setVisibleTabs,
+  setWindowFocused,
   signalsOf,
   tabMark,
 } from "./activity";
@@ -21,16 +23,22 @@ const groups = (m: Record<string, string[]>) =>
 beforeEach(() => resetActivity());
 
 describe("the signal registry", () => {
-  it("raises and clears the three terminal events independently", () => {
+  it("raises and clears the terminal events independently", () => {
     setVisibleTabs([]);
+    // A bell is a `notify` — cyan, and above `working` in precedence. That
+    // ordering is the point: it used to be `bell`, below `running`, so a
+    // notification from inside a live TUI could never render.
     noteBell("t1");
-    expect(signalsOf("t1")).toEqual(["bell"]);
+    expect(signalsOf("t1")).toEqual(["notify"]);
 
-    noteRunning("t1", true);
-    expect(new Set(signalsOf("t1"))).toEqual(new Set(["bell", "running"]));
+    noteWorking("t1", true);
+    expect(new Set(signalsOf("t1"))).toEqual(new Set(["notify", "working"]));
+    expect(tabMark("t1")).toBe("notify");
 
+    // A completion the user missed is the same news as a bell, so it lands on
+    // the same mark rather than a second, differently-coloured one.
     noteFinished("t1", true);
-    expect(new Set(signalsOf("t1"))).toEqual(new Set(["bell", "finished"]));
+    expect(signalsOf("t1")).toEqual(["notify"]);
   });
 
   /// MASTER §7.5.3 rule 2 applied through the store rather than through
@@ -39,7 +47,7 @@ describe("the signal registry", () => {
   it("shows one mark, the highest, when a tab carries several", () => {
     setVisibleTabs([]);
     noteBell("t1");
-    noteRunning("t1", true);
+    noteWorking("t1", true);
     noteFinished("t1", false);
     expect(signalsOf("t1")).toContain("failed");
     expect(tabMark("t1")).toBe("failed");
@@ -48,9 +56,9 @@ describe("the signal registry", () => {
     expect(tabMark("t1", "dirty")).toBe("failed");
   });
 
-  it("does not raise finished for work the user watched happen", () => {
+  it("does not raise notify for work the user watched happen", () => {
     setVisibleTabs(["t1"]);
-    noteRunning("t1", true);
+    noteWorking("t1", true);
     noteFinished("t1", true);
     expect(signalsOf("t1")).toEqual([]);
   });
@@ -67,9 +75,9 @@ describe("the signal registry", () => {
     expect(signalsOf("t1")).toEqual([]);
   });
 
-  /// §7.5.3: bell and finished clear on focus; failed never does. Glancing at
+  /// §7.5.3: notify and finished clear on focus; failed never does. Glancing at
   /// a pane is not the same as having read the error in it.
-  it("clears bell and finished on focus but never failed", () => {
+  it("clears notify and finished on focus but never failed", () => {
     setVisibleTabs([]);
     noteBell("t1");
     noteFinished("t1", true);
@@ -106,7 +114,7 @@ describe("escalate", () => {
   });
 
   it("does not mark the focused group's own header", () => {
-    const out = escalate({ ...base, tabSignals: sig({ a1: ["bell"] }) });
+    const out = escalate({ ...base, tabSignals: sig({ a1: ["notify"] }) });
     expect(out.groups.has("A")).toBe(false);
     expect(out.statusBar).toBeNull();
   });
@@ -114,9 +122,9 @@ describe("escalate", () => {
   it("aggregates a group's tabs to one mark, the highest", () => {
     const out = escalate({
       ...base,
-      tabSignals: sig({ b1: ["finished"], b2: ["running", "dirty"] }),
+      tabSignals: sig({ b1: ["finished"], b2: ["working", "dirty"] }),
     });
-    expect(out.groups.get("B")).toBe("running");
+    expect(out.groups.get("B")).toBe("working");
   });
 
   /// The acceptance test spelled out in the prompt: with B maximized away, a
@@ -136,11 +144,11 @@ describe("escalate", () => {
   it("escalates every group to the status bar under zen", () => {
     const out = escalate({
       ...base,
-      tabSignals: sig({ a1: ["bell"], b1: ["finished"] }),
+      tabSignals: sig({ a1: ["notify"], b1: ["finished"] }),
       zen: true,
     });
     expect(out.groups.size).toBe(0);
-    expect(out.statusBar?.signal).toBe("bell");
+    expect(out.statusBar?.signal).toBe("notify");
     expect(out.statusBar?.tabIds.sort()).toEqual(["a1", "b1"]);
   });
 
@@ -180,10 +188,10 @@ describe("escalate", () => {
     const out = escalate({
       ...base,
       focusedGroupId: "B",
-      tabSignals: sig({ b1: ["finished"], b2: ["running"] }),
+      tabSignals: sig({ b1: ["finished"], b2: ["working"] }),
       collapsedTabGroups: new Map([["tg1", { paneGroupId: "B", tabIds: ["b1", "b2"] }]]),
     });
-    expect(out.tabGroups.get("tg1")).toBe("running");
+    expect(out.tabGroups.get("tg1")).toBe("working");
   });
 
   it("reports nothing when nothing is signalling", () => {
@@ -201,5 +209,58 @@ describe("escalate", () => {
     });
     expect(out.statusBar?.signal).toBe("failed");
     expect(out.statusBar?.tabIds.sort()).toEqual(["b1", "c1"]);
+  });
+});
+
+/// A tab can be on screen and still not be *seen*: the OS window it lives in may
+/// be behind something else. `visible` alone conflated the two, so a bell in the
+/// front tab of a backgrounded window was dropped rather than badged — the one
+/// case §7.5.3 rule 1 exists for.
+describe("OS window focus", () => {
+  it("badges a bell in the front tab of an unfocused window", () => {
+    setVisibleTabs(["t1"]);
+    setWindowFocused(false);
+    noteBell("t1");
+    expect(signalsOf("t1")).toEqual(["notify"]);
+  });
+
+  it("still suppresses a bell in the front tab of the focused window", () => {
+    setVisibleTabs(["t1"]);
+    setWindowFocused(true);
+    noteBell("t1");
+    expect(signalsOf("t1")).toEqual([]);
+  });
+
+  it("clears on the window coming back, not only on a tab switch", () => {
+    setVisibleTabs(["t1"]);
+    setWindowFocused(false);
+    noteBell("t1");
+    expect(signalsOf("t1")).toEqual(["notify"]);
+
+    // Alt-tabbing back is the same act of seeing as bringing the tab forward.
+    setWindowFocused(true);
+    expect(signalsOf("t1")).toEqual([]);
+  });
+
+  it("does not clear a failure when the window comes back", () => {
+    setVisibleTabs(["t1"]);
+    setWindowFocused(false);
+    noteFinished("t1", false);
+    setWindowFocused(true);
+    expect(signalsOf("t1")).toEqual(["failed"]);
+  });
+});
+
+/// `noteRunning` (VoidLink fetching something for a tab) and `noteWorking` (the
+/// user's own shell) are separate signals in separate hues. Clearing one must not
+/// clear the other.
+describe("running versus working", () => {
+  it("keeps them independent", () => {
+    setVisibleTabs([]);
+    noteRunning("t1", true);
+    noteWorking("t1", true);
+    expect(new Set(signalsOf("t1"))).toEqual(new Set(["running", "working"]));
+    noteWorking("t1", false);
+    expect(signalsOf("t1")).toEqual(["running"]);
   });
 });

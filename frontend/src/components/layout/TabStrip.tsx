@@ -1124,6 +1124,11 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
 ///     know it is there. It only hides behind hover when a mark owns the slot.
 function TabTrailing(props: {
   tab: TabDescriptor;
+  /// A signal the *render site* knows and the activity store deliberately does
+  /// not — today only the terminal tab's `idle`, which depends on local focus and
+  /// must never escalate to a group header. Folded in through `highestSignal`
+  /// like every other input, so precedence still decides.
+  signal?: ActivitySignal;
   closable: boolean;
   closeLabel: string;
   onClose: () => void;
@@ -1131,6 +1136,7 @@ function TabTrailing(props: {
   const mark = () =>
     highestSignal([
       props.tab.activity,
+      props.signal,
       props.tab.reloaded ? ("finished" as const) : undefined,
       props.tab.dirty ? ("dirty" as const) : undefined,
     ]);
@@ -1179,6 +1185,9 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
   );
 
   const busy = () => watch()?.busy() ?? false;
+  /// Busy *and* producing output. `busy` alone is true for the whole life of a
+  /// TUI, so it is the label's business (below) and not the LED's.
+  const working = () => watch()?.working() ?? false;
   const processName = () => watch()?.processName() ?? null;
 
   /// While a foreground command runs, the tab wears its name. The static label
@@ -1207,16 +1216,25 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
           : `${props.session.label} — ${displayLabel()}`
       }
     >
-      {/* The leading LED is the terminal tab's *icon*: it says whether this
-          shell is busy, which is what you scan a row of shells for. The
-          trailing slot is a different question — "did something happen here
-          while I was elsewhere?" — and §7.5.3 rule 4 wants signals to differ
-          in position as well as fill, so the two never read as one repeated
-          mark. */}
-      <LedDot active={props.active} busy={busy()} />
+      {/* ONE dot per terminal tab, in the trailing slot.
+
+          There used to be a second, leading LED here. The comment defending it
+          claimed the two answered different questions ("is this shell busy?" vs
+          "did something happen while I was elsewhere?"); they did not. Both read
+          the same `busy` bit off the same poll, both rendered orange, both
+          pulsed, and they sat two lines apart. The trailing slot is the one that
+          survives because it is the sanctioned path — it escalates to group
+          headers, collapsed chips and the status bar, while the leading LED
+          escalated nowhere, abused `finished` to mean "idle", and could never be
+          off.
+
+          The tradeoff inherited from that choice: the trailing slot is
+          hover-shared with the close button, so a marked tab hides its × until
+          you hover it. */}
       <span class="max-w-[140px] truncate">{displayLabel()}</span>
       <TabTrailing
         tab={props.tab}
+        signal={terminalSignal({ working: working(), focused: props.active })}
         closable
         closeLabel={`Kill ${props.session.label}`}
         onClose={props.onClose}
@@ -1242,15 +1260,6 @@ function CloseButton(props: { label: string; onClose: () => void }) {
     >
       <X class="w-3 h-3" />
     </button>
-  );
-}
-
-/// Thin wrapper over the shared `<StatusLed>` (MASTER.md §7.5.3) so the two
-/// call sites keep their `(active, busy)` shape. The glyph itself lives in
-/// `StatusLed.tsx`; do not re-derive its colours here.
-function LedDot(props: { active: boolean; busy: boolean }) {
-  return (
-    <StatusLed signal={terminalSignal(props.busy, props.active)} dim={!props.active && props.busy} />
   );
 }
 

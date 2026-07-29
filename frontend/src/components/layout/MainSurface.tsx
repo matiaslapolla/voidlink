@@ -42,12 +42,15 @@ import {
   clearTabActivity,
   escalate,
   noteBell,
+  noteFinished,
   publishHiddenActivity,
   setVisibleTabs,
   signalsOf,
   tabMark,
   tabSignals,
+  trackWindowFocus,
 } from "@/store/activity";
+import { notifyTerminal } from "@/commands/terminalNotify";
 import { watchTerminal } from "@/store/terminalWatch";
 import type { ActivitySignal } from "@/components/layout/StatusLed";
 import {
@@ -298,6 +301,39 @@ export function MainSurface(props: MainSurfaceProps) {
       if (tabId && visibleGroups().has(groupId)) seen.push(tabId);
     }
     setVisibleTabs(seen);
+  });
+
+  /// Whether this OS window has focus, which `setVisibleTabs` needs in order to
+  /// mean "being looked at" rather than "on screen". A bell in the front tab of a
+  /// backgrounded window used to be dropped — the tab counted as visible, so
+  /// nothing was badged, in exactly the case a badge is for. Installed here
+  /// because this component is always mounted in the workbench and already owns
+  /// the visibility feed.
+  onMount(() => onCleanup(trackWindowFocus()));
+
+  /// Why a tab's `notify` was raised, for the OS notification's body. Written by
+  /// the OSC handler; absent for a plain "the command ended" completion, which
+  /// has no message of its own.
+  const notifyReason = new Map<string, string>();
+
+  /// Escalate `notify` to the operating system, once per transition.
+  ///
+  /// Driven off the activity store rather than off the event, so there is exactly
+  /// one place an OS notification can come from and it cannot disagree with the
+  /// in-app mark. `notified` is the edge detector: the effect re-runs on every
+  /// signal change, and without it a second tab lighting up would re-notify the
+  /// first.
+  let notified: ReadonlySet<string> = new Set();
+  createEffect(() => {
+    const live = new Set<string>();
+    for (const term of activeTerminals()) {
+      if (!signalsOf(term.id).includes("notify")) continue;
+      live.add(term.id);
+      if (notified.has(term.id)) continue;
+      notifyTerminal(term.label, notifyReason.get(term.id));
+    }
+    for (const id of [...notifyReason.keys()]) if (!live.has(id)) notifyReason.delete(id);
+    notified = live;
   });
 
   /// Every collapsed tab group, with the pane its chip renders in. A collapsed
@@ -880,7 +916,24 @@ export function MainSurface(props: MainSurfaceProps) {
               active={tabIsVisible(term.id)}
               class="w-full h-full"
               onBell={() => noteBell(term.id)}
-              onExit={() => {
+              // A program inside the shell said it was done (OSC 9 / OSC 777).
+              // Same mark as a bell, because to the user they are the same
+              // event, and the body is what the OS notification says.
+              onNotify={(body) => {
+                if (body) notifyReason.set(term.id, body);
+                noteBell(term.id);
+              }}
+              onExit={(exitCode) => {
+                // A shell that exited cleanly is done and its tab goes with it.
+                // A non-zero exit is a *result*, and §7.5.3 says a failure is
+                // acknowledged rather than dismissed — so the tab stays, wearing
+                // the red mark, and closing it is the acknowledgement. Without
+                // this the `failed` signal had nowhere it could ever be seen:
+                // the tab was always removed in the same breath.
+                if (exitCode !== null && exitCode !== 0) {
+                  noteFinished(term.id, false);
+                  return;
+                }
                 clearTabActivity(term.id);
                 actions.removeTerminal(state.activeWorktreeId, term.id);
               }}

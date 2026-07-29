@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useSettings } from "@/store/settings";
 import { useTheme } from "@/store/theme";
 import { markActive, recordKeystroke } from "@/commands/terminalHistory";
+import { noteTerminalAltScreen, noteTerminalOutput } from "@/store/terminalWatch";
 import { lastGridSize, rememberGridSize, sizeForPty } from "@/commands/terminalSize";
 
 // Prior perf learning (commit 0b9bfe7): in Tauri's WebKitGTK webview, xterm
@@ -28,6 +29,30 @@ import { lastGridSize, rememberGridSize, sizeForPty } from "@/commands/terminalS
 // visually noisy during drag. We debounce so fit runs once, after drag ends.
 const RESIZE_DEBOUNCE_MS = 150;
 
+/// Payload of `pty-exit:<sessionId>`. Must match the Rust side in
+/// `src-tauri/src/lib.rs`.
+interface PtyExitPayload {
+  /// The shell's exit status. `null` when the platform did not give us one (a
+  /// signal death, or a `wait` that failed).
+  exitCode: number | null;
+}
+
+/// The human-readable half of an OSC notification.
+///
+/// The two conventions disagree on field layout, and neither is negotiable:
+///   • **OSC 9** — `ESC ] 9 ; <body> BEL`. The whole payload is the message.
+///   • **OSC 777** — `ESC ] 777 ; notify ; <title> ; <body> BEL`. Leading
+///     `notify` keyword, then up to two fields.
+/// `null` means "not a notification" — 777 is a shared namespace and only its
+/// `notify` sub-command is one. An empty string means "a notification with no
+/// text", which still earns a mark.
+function oscNotificationBody(ident: number, payload: string): string | null {
+  if (ident !== 777) return payload.trim();
+  const parts = payload.split(";");
+  if (parts[0] !== "notify") return null;
+  return parts.slice(1).filter(Boolean).join(" — ").trim();
+}
+
 interface TerminalPaneProps {
   ptyId: string;
   class?: string;
@@ -36,12 +61,17 @@ interface TerminalPaneProps {
   // otherwise stale grid dimensions or window resizes missed while hidden
   // cause TUIs to redraw at the wrong width ("compressed, repeated" output).
   active?: boolean;
-  onExit?: () => void;
-  /// The shell rang the bell (BEL). One of the three distinct terminal events
-  /// MASTER §7.5.3 names — the other two (a command running, a command
-  /// finishing) come from the process poll in `store/terminalWatch.ts`, not
-  /// from the emulator. Ambient only: it must never steal focus.
+  /// The shell exited. `exitCode` is its status, or `null` when the platform
+  /// could not report one. Non-zero is what makes the `failed` mark reachable —
+  /// the event used to carry a unit payload, so the status never crossed.
+  onExit?: (exitCode: number | null) => void;
+  /// The shell rang the bell (BEL). Ambient only: it must never steal focus.
   onBell?: () => void;
+  /// A program inside the shell sent a desktop notification (OSC 9 or OSC 777).
+  /// The one signal a TUI can raise about *itself* — a bell says "look at me",
+  /// this says what happened. `body` is whatever the program supplied, already
+  /// unwrapped from the sequence's field layout; empty when it sent none.
+  onNotify?: (body: string) => void;
   /// Click handler for `path[:line[:column]]` matches in scrollback. The
   /// path is whatever the regex captured — may be relative; the caller
   /// is responsible for resolving against the workspace root.
@@ -707,9 +737,16 @@ export function TerminalPane(props: TerminalPaneProps) {
       if (disposed) return;
       const bytes = new Uint8Array(data);
       if (!replaying) {
+        // Feed the output-rate window that decides `working` vs "TUI merely
+        // open". This is PTY *output*; `term.onData` below is the user's
+        // keystrokes going the other way and would answer the wrong question.
+        // The store owns the window and the timers — this only forwards a length.
+        noteTerminalOutput(ptyId, bytes.byteLength);
         term.write(bytes);
         return;
       }
+      // Scrollback replay is not activity: it is us repainting what already
+      // happened, and counting it would light every restored pane up as working.
       // The replay is a single send, but its length only arrives with the
       // subscribe result, which can resolve *after* the chunk itself. Counting
       // covers both orders: whichever of the two learns that the span is
@@ -744,7 +781,38 @@ export function TerminalPane(props: TerminalPaneProps) {
     const bellSub = term.onBell(() => props.onBell?.());
     ownedCleanup(() => bellSub.dispose());
 
-    const unlistenExit = await listen(`pty-exit:${ptyId}`, () => props.onExit?.());
+    // Which buffer we are in tells us whether a full-screen app is on screen.
+    // The only consumer is the completion rule in `store/terminalWatch.ts`:
+    // quitting `vim` while unfocused must not raise "something finished".
+    noteTerminalAltScreen(ptyId, term.buffer.active.type === "alternate");
+    const bufferSub = term.buffer.onBufferChange((buf) => {
+      noteTerminalAltScreen(ptyId, buf.type === "alternate");
+    });
+    ownedCleanup(() => bufferSub.dispose());
+
+    // ── Desktop notifications from inside the terminal ────────────────────
+    //
+    // OSC 9 (iTerm2's `ESC ] 9 ; body BEL`) and OSC 777 (`notify;title;body`,
+    // the urxvt/GNOME convention) are how a long-running tool says "I'm done"
+    // without a bell. Claude Code, `gh`, and most notify-send wrappers emit one
+    // of the two. Registering them is what makes the `notify` mark reachable
+    // from a TUI at all — a bell is easy to miss and many tools do not send one.
+    //
+    // Returning `false` lets xterm's default handling (none, for these) run as
+    // well, which is the polite answer for a sequence we are only observing.
+    for (const ident of [9, 777]) {
+      const sub = term.parser.registerOscHandler(ident, (payload) => {
+        const body = oscNotificationBody(ident, payload);
+        if (body !== null) props.onNotify?.(body);
+        return false;
+      });
+      ownedCleanup(() => sub.dispose());
+    }
+
+    const unlistenExit = await listen<PtyExitPayload>(
+      `pty-exit:${ptyId}`,
+      (event) => props.onExit?.(event.payload?.exitCode ?? null),
+    );
 
     // OS file drops (Finder/Explorer). Tauri intercepts these before the
     // webview's HTML5 drop fires (dragDropEnabled defaults on), so we go
