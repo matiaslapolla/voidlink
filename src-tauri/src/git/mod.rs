@@ -764,13 +764,15 @@ pub async fn git_remove_remote(
     blocking_git!(state, repo_path, git_remove_remote_impl(repo_path, name))
 }
 
+/// Rename a remote. Resolves with the refspecs libgit2 could not rewrite — they
+/// still name the old remote and need editing by hand.
 #[tauri::command]
 pub async fn git_rename_remote(
     repo_path: String,
     old_name: String,
     new_name: String,
     state: tauri::State<'_, GitState>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     blocking_git!(state, repo_path, git_rename_remote_impl(repo_path, old_name, new_name))
 }
 

@@ -128,8 +128,11 @@ export const gitApi = {
     return invoke<void>("git_remove_remote", { repoPath, name });
   },
 
-  renameRemote(repoPath: string, oldName: string, newName: string): Promise<void> {
-    return invoke<void>("git_rename_remote", { repoPath, oldName, newName });
+  /// Resolves with the refspecs libgit2 could not rewrite: they still reference
+  /// the old remote name, so the caller must say so rather than report a clean
+  /// rename.
+  renameRemote(repoPath: string, oldName: string, newName: string): Promise<string[]> {
+    return invoke<string[]>("git_rename_remote", { repoPath, oldName, newName });
   },
 
   setRemoteUrl(repoPath: string, name: string, url: string): Promise<void> {

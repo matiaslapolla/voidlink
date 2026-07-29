@@ -41,6 +41,7 @@ import { StatusBadge } from "@/components/git/shared/StatusBadge";
 import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
 import { openEditorTab, openGitWindow } from "@/api/windows";
+import { openMerge } from "@/components/git/openMerge";
 import { Splitter } from "@/components/layout/Splitter";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
 import {
@@ -64,17 +65,6 @@ import { PANEL_BOUNDS } from "@/store/layout";
 import { useAppStore } from "@/store/LayoutContext";
 import { samePath, type AppStore, type GitSectionKey } from "@/store/layout";
 
-/// Open a conflicted file in the editor window's merge editor.
-///
-/// Free function rather than a per-component closure because three separate
-/// panes here route a conflicted operation the same way, and the workbench /
-/// satellite split (see `openEditorTab`) is exactly the kind of detail that
-/// rots when it is written out three times.
-function openMerge(actions: AppStore["actions"], worktreeId: string, filePath: string) {
-  void openEditorTab({ kind: "open-conflict", filePath }, () =>
-    actions.openConflictTab(worktreeId, filePath),
-  );
-}
 import { requestNewWorktree } from "@/commands/worktree";
 import { useSettings } from "@/store/settings";
 import { scanStagedDiff, type SecretFinding } from "@/commands/secretScan";
@@ -397,7 +387,9 @@ export function GitSidebar(props: GitSidebarProps) {
       const res = await gitApi.pull(props.repoPath, mode);
       if (res.conflicted) {
         const conflicts = await gitApi.listConflicts(props.repoPath);
-        for (const c of conflicts) openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`);
+        await Promise.all(
+          conflicts.map((c) => openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`)),
+        );
         pushToast("Pull stopped on conflicts — resolve them, then continue.", "warning", 6000);
       } else if (res.ok) {
         pushToast("Pulled from origin", "success", 2000);
@@ -684,9 +676,23 @@ export function ChangesPane(props: {
 
   /// What git config would use, fetched lazily so the fields can show the real
   /// default instead of an empty form. Refetches when the repo changes.
+  /// A failed read is not the same fact as "no identity configured", and the old
+  /// `.catch(() => null)` collapsed the two — so a transient failure told the user
+  /// their commits would fail until they set an author.
+  const [identityError, setIdentityError] = createSignal("");
   const [configIdentity] = createResource(
     () => props.repoPath,
-    (path) => gitApi.configIdentity(path).catch(() => null),
+    (path) =>
+      gitApi
+        .configIdentity(path)
+        .then((id) => {
+          setIdentityError("");
+          return id;
+        })
+        .catch((e: unknown) => {
+          setIdentityError(e instanceof Error ? e.message : String(e));
+          return null;
+        }),
   );
 
   /// The identity the next commit will carry, as displayed.
@@ -712,6 +718,7 @@ export function ChangesPane(props: {
     setOverrideOnce(true);
   }
   const [pushOk, setPushOk] = createSignal(false);
+  const [pushError, setPushError] = createSignal("");
   const [pendingFindings, setPendingFindings] = createSignal<SecretFinding[]>([]);
   const [amendMode, setAmendMode] = createSignal(false);
 
@@ -801,20 +808,39 @@ export function ChangesPane(props: {
   }
 
   function openConflict(path: string) {
-    openMerge(actions, props.worktreeId, path);
+    void openMerge(actions, props.worktreeId, path).catch((e: unknown) =>
+      pushToast(
+        `Could not open the merge editor: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+        6000,
+      ),
+    );
+  }
+
+  /// Staging is the most-clicked mutation here and had no error handling at all:
+  /// an `index.lock` collision or a vanished file made the row silently not move
+  /// *and* produced an unhandled promise rejection. It also refreshed only this
+  /// pane, so the detached git window and every other pane kept showing the old
+  /// index until something else happened to broadcast.
+  async function withStaging(what: string, action: () => Promise<void>) {
+    try {
+      await action();
+    } catch (e) {
+      pushToast(`${what} failed: ${e instanceof Error ? e.message : String(e)}`, "error", 6000);
+    } finally {
+      emitGitRefsChanged();
+      props.onRefresh();
+    }
   }
 
   async function stageFile(path: string) {
-    await gitApi.stageFiles(props.repoPath, [path]);
-    props.onRefresh();
+    await withStaging(`Staging ${path}`, () => gitApi.stageFiles(props.repoPath, [path]));
   }
   async function unstageFile(path: string) {
-    await gitApi.unstageFiles(props.repoPath, [path]);
-    props.onRefresh();
+    await withStaging(`Unstaging ${path}`, () => gitApi.unstageFiles(props.repoPath, [path]));
   }
   async function stageAll() {
-    await gitApi.stageAll(props.repoPath);
-    props.onRefresh();
+    await withStaging("Staging all changes", () => gitApi.stageAll(props.repoPath));
   }
   async function discardFile(path: string, status: string) {
     const verb = status === "untracked" ? "Delete untracked file" : "Discard changes to";
@@ -899,19 +925,22 @@ export function ChangesPane(props: {
     // Empty input resolves null (treated as cancel) — the default "WIP" keeps a
     // one-click confirm working while still letting the user type a message.
     if (res === null) return;
-    try {
-      await gitApi.stashSave(
-        props.repoPath,
-        res.value || undefined,
-        res.toggles.keepIndex,
-        res.toggles.includeUntracked,
-      );
-      pushToast("Stashed changes", "success", 2500);
-      emitGitRefsChanged();
-      props.onRefresh();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.stashSave(
+          props.repoPath,
+          res.value || undefined,
+          res.toggles.keepIndex,
+          res.toggles.includeUntracked,
+        );
+        pushToast("Stashed changes", "success", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+        props.onRefresh();
+      }
+    });
   }
   async function performCommit(msg: string) {
     setCommitting(true);
@@ -945,13 +974,23 @@ export function ChangesPane(props: {
   async function toggleAmend() {
     const next = !amendMode();
     setAmendMode(next);
-    if (next && !commitMsg().trim()) {
-      try {
-        const recent = await gitApi.log(props.repoPath, undefined, 1);
-        if (recent[0]) setCommitMsg(recent[0].summary);
-      } catch {
-        // Non-fatal: amend can proceed with an empty (kept) message.
-      }
+    if (!next || commitMsg().trim()) return;
+    try {
+      const recent = await gitApi.log(props.repoPath, undefined, 1);
+      // Toggling off and on again while this was in flight would otherwise land
+      // the old HEAD's summary in a box the user has since changed their mind
+      // about — check we are still the pending prefill before writing.
+      if (!amendMode() || commitMsg().trim()) return;
+      if (recent[0]) setCommitMsg(recent[0].summary);
+      else pushToast("Nothing to amend — this branch has no commits yet.", "warning", 4000);
+    } catch (e) {
+      // Not fatal (an amend can keep the existing message), but silence made it
+      // look like the prefill simply did not work.
+      pushToast(
+        `Could not read the last commit message: ${e instanceof Error ? e.message : String(e)}`,
+        "warning",
+        5000,
+      );
     }
   }
 
@@ -961,16 +1000,24 @@ export function ChangesPane(props: {
       { title: "Undo last commit", kind: "warning" },
     );
     if (!ok) return;
-    try {
-      await gitApi.undoLastCommit(props.repoPath);
-      pushToast("Undid last commit — changes re-staged", "info", 3000);
-      emitGitRefsChanged();
-      props.onRefresh();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    // Guarded in the handler, not just on the button: a second click landing
+     // before the first returned soft-reset to HEAD~2.
+    await run(async () => {
+      try {
+        await gitApi.undoLastCommit(props.repoPath);
+        pushToast("Undid last commit — changes re-staged", "info", 3000);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+        props.onRefresh();
+      }
+    });
   }
   async function commit() {
+    // The guard lives here rather than only in the button's `disabled`, because
+    // ⌘/Ctrl+Enter calls this directly: two fast presses made two commits.
+    if (committing()) return;
     const msg = commitMsg().trim();
     // Amend can proceed with no staged files (message-only) and no message
     // (keeps the original); a normal commit needs both.
@@ -1017,17 +1064,24 @@ export function ChangesPane(props: {
     window.addEventListener(AI_COMMIT_REQUEST_EVENT, handler);
     onCleanup(() => window.removeEventListener(AI_COMMIT_REQUEST_EVENT, handler));
   });
+  /// Push failures get their own channel. They used to be written into
+  /// `commitError`, which labelled a rejected push as a commit problem and
+  /// clobbered a real commit error that was still on screen.
   async function push() {
+    if (pushing()) return;
     setPushing(true);
     setPushOk(false);
+    setPushError("");
     try {
       await gitApi.push(props.repoPath);
       setPushOk(true);
       setTimeout(() => setPushOk(false), 2000);
     } catch (e) {
-      setCommitError(e instanceof Error ? e.message : String(e));
+      setPushError(e instanceof Error ? e.message : String(e));
     } finally {
       setPushing(false);
+      // A push moves the upstream, so ahead/behind everywhere is now stale.
+      emitGitRefsChanged();
     }
   }
 
@@ -1102,17 +1156,19 @@ export function ChangesPane(props: {
           </button>
           <button
             onClick={() => void stageAll()}
+            disabled={busy()}
             aria-label="Stage all changes"
             title="Stage all"
-            class="px-2 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+            class="px-2 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Plus class="w-3 h-3" />
           </button>
           <button
             onClick={() => void stashChanges()}
+            disabled={busy()}
             aria-label="Stash changes"
             title="Stash changes"
-            class="px-2 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+            class="px-2 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Archive class="w-3 h-3" />
           </button>
@@ -1135,6 +1191,11 @@ export function ChangesPane(props: {
         <Show when={commitError()}>
           <p class="text-xs text-destructive truncate" title={commitError()}>{commitError()}</p>
         </Show>
+        <Show when={pushError()}>
+          <p class="text-xs text-destructive truncate" title={pushError()}>
+            Push failed: {pushError()}
+          </p>
+        </Show>
         <div class="flex items-center gap-2 text-[11px]">
           <label class="flex items-center gap-1 cursor-pointer select-none text-muted-foreground hover:text-foreground transition-colors">
             <input
@@ -1147,8 +1208,9 @@ export function ChangesPane(props: {
           </label>
           <button
             onClick={() => void undoLastCommit()}
+            disabled={busy()}
             title="Undo last commit (soft reset HEAD~1)"
-            class="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+            class="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Undo2 class="w-3 h-3" /> Undo commit
           </button>
@@ -1190,7 +1252,9 @@ export function ChangesPane(props: {
                         ? "Saved for this repository."
                         : configIdentity()
                           ? "From this repository's git config."
-                          : "No user.name / user.email is set. Commits will fail until you set one here or with git config."}
+                          : identityError()
+                            ? `Could not read git config: ${identityError()}`
+                            : "No user.name / user.email is set. Commits will fail until you set one here or with git config."}
                     </p>
                     <Show when={shownIdentity()}>
                       <p class="font-mono text-muted-foreground truncate">
@@ -1430,6 +1494,7 @@ export function ChangesPane(props: {
 
 export function BranchesPane(props: { repoPath: string; worktreeId: string; onCheckout: () => void }) {
   const { actions } = useAppStore();
+  const { busy, run } = createInFlight();
   const [branches, { refetch }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listBranches(p, true),
@@ -1439,37 +1504,54 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
   const [menu, setMenu] = createSignal<{ x: number; y: number; branch: string } | null>(null);
 
   async function routeOpResult(res: { ok: boolean; conflicted: boolean; message: string }, label: string) {
-    if (res.conflicted) {
-      const conflicts = await gitApi.listConflicts(props.repoPath);
-      for (const c of conflicts) openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`);
-      pushToast(`${label} stopped on conflicts — resolve them, then continue.`, "warning", 6000);
-    } else if (res.ok) {
-      pushToast(`${label} complete`, "success", 2500);
-    } else {
-      pushToast(res.message || `${label} failed`, "error", 7000);
+    try {
+      if (res.conflicted) {
+        const conflicts = await gitApi.listConflicts(props.repoPath);
+        await Promise.all(
+          conflicts.map((c) => openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`)),
+        );
+        pushToast(`${label} stopped on conflicts — resolve them, then continue.`, "warning", 6000);
+      } else if (res.ok) {
+        pushToast(`${label} complete`, "success", 2500);
+      } else {
+        pushToast(res.message || `${label} failed`, "error", 7000);
+      }
+    } finally {
+      // In a `finally`, because listing the conflicts is the step most likely to
+      // throw and the refresh is what makes the operation banner appear. Losing
+      // the refresh meant a conflicted merge showed no banner at all — the exact
+      // state where the user most needs one.
+      emitGitRefsChanged();
     }
-    emitGitRefsChanged();
   }
 
   async function mergeBranch(name: string, noFf: boolean) {
-    try {
-      const res = await gitApi.merge(props.repoPath, name, noFf);
-      await routeOpResult(res, `Merge ${name}`);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
-    }
+    await run(async () => {
+      try {
+        const res = await gitApi.merge(props.repoPath, name, noFf);
+        await routeOpResult(res, `Merge ${name}`);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function rebaseOnto(name: string) {
-    try {
-      const res = await gitApi.rebase(props.repoPath, name);
-      await routeOpResult(res, `Rebase onto ${name}`);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
-    }
+    await run(async () => {
+      try {
+        const res = await gitApi.rebase(props.repoPath, name);
+        await routeOpResult(res, `Rebase onto ${name}`);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
+        emitGitRefsChanged();
+      }
+    });
   }
 
   function branchMenuItems(name: string): ContextMenuItem[] {
+    // `busy()` is read at select time, so a menu left open during an operation
+    // still refuses the second action.
     return [
       { label: `Merge ${name} into current`, onSelect: () => void mergeBranch(name, false) },
       { label: `Merge ${name} (--no-ff)`, onSelect: () => void mergeBranch(name, true) },
@@ -1483,21 +1565,28 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
 
   async function checkout(name: string) {
     setError("");
-    try {
-      const result = await gitApi.safeCheckout(props.repoPath, name);
-      recordBranchUse(props.repoPath, name);
-      if (result.autoStashed) {
-        pushToast(
-          `Switched to ${name}. Auto-stashed your changes — restore with \`git stash pop\`.`,
-          "info",
-          5000,
-        );
+    await run(async () => {
+      try {
+        const result = await gitApi.safeCheckout(props.repoPath, name);
+        recordBranchUse(props.repoPath, result.branch);
+        if (result.branch !== name) {
+          pushToast(`Created local branch ${result.branch} tracking ${name}`, "success", 4000);
+        }
+        if (result.autoStashed) {
+          pushToast(
+            `Switched to ${result.branch}. Auto-stashed your changes — restore with \`git stash pop\`.`,
+            "info",
+            5000,
+          );
+        }
+        props.onCheckout();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        // HEAD moved: every other pane and the detached git window are stale.
+        emitGitRefsChanged();
       }
-      refetch();
-      props.onCheckout();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    });
   }
 
   async function newBranch() {
@@ -1508,13 +1597,16 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
       confirmLabel: "Create",
     });
     if (!name) return;
-    try {
-      await gitApi.createBranch(props.repoPath, name);
-      pushToast(`Created branch ${name}`, "success", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.createBranch(props.repoPath, name);
+        pushToast(`Created branch ${name}`, "success", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function renameBranch(name: string) {
@@ -1525,13 +1617,16 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
       confirmLabel: "Rename",
     });
     if (!next || next === name) return;
-    try {
-      await gitApi.renameBranch(props.repoPath, name, next);
-      pushToast(`Renamed to ${next}`, "success", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.renameBranch(props.repoPath, name, next);
+        pushToast(`Renamed to ${next}`, "success", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function deleteBranch(name: string) {
@@ -1543,8 +1638,11 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
       emitGitRefsChanged();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // Backend flags the unmerged case explicitly — offer the force path.
-      if (msg.includes("not fully merged")) {
+      // The backend flags the unmerged case with a stable marker rather than a
+      // sentence: matching on English prose broke the moment libgit2 or the
+      // user's locale reworded it, and every other failure then fell through to
+      // "force-delete anyway?".
+      if (msg.includes("[not-fully-merged]")) {
         const force = await dialogConfirm(`${msg}\n\nForce-delete anyway?`, {
           title: "Force-delete branch",
           kind: "warning",
@@ -1600,6 +1698,7 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
         />
         <button
           onClick={() => void newBranch()}
+          disabled={busy()}
           title="New branch"
           aria-label="New branch"
           class="shrink-0 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
@@ -1625,8 +1724,15 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
           >
             <button
               onClick={() => void checkout(b.name)}
-              disabled={b.isHead}
+              disabled={b.isHead || busy()}
               aria-label={b.isHead ? `${b.name} (current branch)` : `Checkout ${b.name}`}
+              title={
+                b.isHead
+                  ? `${b.name} is the current branch`
+                  : b.isRemote
+                    ? `Check out ${b.name} (creates a local branch tracking it)`
+                    : `Checkout ${b.name}`
+              }
               class="flex items-center gap-2 min-w-0 flex-1 text-left hover:text-foreground disabled:cursor-default disabled:hover:text-primary"
             >
               <GitBranch class="w-3 h-3 shrink-0" />
@@ -1638,12 +1744,21 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
             <Show when={b.behind > 0}>
               <span class="text-destructive tabular-nums">↓{b.behind}</span>
             </Show>
+            <Show when={b.aheadBehindUnknown}>
+              <span
+                class="text-muted-foreground/70"
+                title="Ahead/behind could not be computed for this branch (shallow clone?)"
+              >
+                ?
+              </span>
+            </Show>
             <Show when={b.isHead}>
               <span class="text-xs tracking-wide text-primary/80">HEAD</span>
             </Show>
             <Show when={!b.isRemote}>
               <button
                 onClick={() => void renameBranch(b.name)}
+                disabled={busy()}
                 title="Rename branch"
                 aria-label={`Rename ${b.name}`}
                 class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
@@ -1653,6 +1768,7 @@ export function BranchesPane(props: { repoPath: string; worktreeId: string; onCh
               <Show when={!b.isHead}>
                 <button
                   onClick={() => void deleteBranch(b.name)}
+                  disabled={busy()}
                   title="Delete branch"
                   aria-label={`Delete ${b.name}`}
                   class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
@@ -1897,6 +2013,7 @@ export function WorktreesPane(props: { repoPath: string }) {
 /// Tags sub-section, rendered under the branch list. Create (lightweight or
 /// annotated), delete, and push individual tags. Listing reuses git_list_refs.
 export function TagsPane(props: { repoPath: string }) {
+  const { busy, run } = createInFlight();
   const [refs, { refetch }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listRefs(p),
@@ -1942,12 +2059,17 @@ export function TagsPane(props: { repoPath: string }) {
   }
 
   async function pushTag(name: string) {
-    try {
-      await gitApi.pushTag(props.repoPath, name);
-      pushToast(`Pushed tag ${name}`, "success", 2500);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.pushTag(props.repoPath, name);
+        pushToast(`Pushed tag ${name}`, "success", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        // The remote now has a ref it did not have; other panes should know.
+        emitGitRefsChanged();
+      }
+    });
   }
 
   return (
@@ -1959,6 +2081,7 @@ export function TagsPane(props: { repoPath: string }) {
         </span>
         <button
           onClick={() => void createTag()}
+          disabled={busy()}
           title="Create tag"
           aria-label="Create tag"
           class="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
@@ -1976,6 +2099,7 @@ export function TagsPane(props: { repoPath: string }) {
             <span class="truncate flex-1" title={t}>{t}</span>
             <button
               onClick={() => void pushTag(t)}
+              disabled={busy()}
               title="Push tag to origin"
               aria-label={`Push tag ${t}`}
               class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
@@ -1984,6 +2108,7 @@ export function TagsPane(props: { repoPath: string }) {
             </button>
             <button
               onClick={() => void deleteTag(t)}
+              disabled={busy()}
               title="Delete tag"
               aria-label={`Delete tag ${t}`}
               class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
@@ -2113,6 +2238,7 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => void }) {
+  const { busy, run } = createInFlight();
   const [remotes, { refetch }] = createResource(
     () => (props.open ? props.repoPath : null),
     (p) => gitApi.listRemotes(p),
@@ -2123,49 +2249,83 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
     if (!name) return;
     const url = await textPrompt({ title: "Add remote", label: `URL for ${name}`, placeholder: "git@github.com:user/repo.git", confirmLabel: "Add" });
     if (!url) return;
-    try {
-      await gitApi.addRemote(props.repoPath, name, url);
-      pushToast(`Added remote ${name}`, "success", 2500);
-      refetch();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.addRemote(props.repoPath, name, url);
+        pushToast(`Added remote ${name}`, "success", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        refetch();
+        // Remote-tracking refs feed ahead/behind and the branch list.
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function editUrl(r: RemoteInfo) {
     const url = await textPrompt({ title: "Set remote URL", label: r.name, initialValue: r.url ?? "", confirmLabel: "Save" });
     if (!url) return;
-    try {
-      await gitApi.setRemoteUrl(props.repoPath, r.name, url);
-      pushToast(`Updated ${r.name}`, "success", 2500);
-      refetch();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.setRemoteUrl(props.repoPath, r.name, url);
+        pushToast(`Updated ${r.name}`, "success", 2500);
+        if (r.pushUrl) {
+          pushToast(
+            `${r.name} also had a separate push URL — it now points at the new URL too.`,
+            "info",
+            5000,
+          );
+        }
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        refetch();
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function renameRemote(r: RemoteInfo) {
     const next = await textPrompt({ title: "Rename remote", label: `New name for ${r.name}`, initialValue: r.name, confirmLabel: "Rename" });
     if (!next || next === r.name) return;
-    try {
-      await gitApi.renameRemote(props.repoPath, r.name, next);
-      pushToast(`Renamed to ${next}`, "success", 2500);
-      refetch();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        const stranded = await gitApi.renameRemote(props.repoPath, r.name, next);
+        pushToast(`Renamed to ${next}`, "success", 2500);
+        // libgit2 rewrites the default refspecs and hands back the ones it could
+        // not: those still name the old remote, which is a silent
+        // fetch-from-nowhere until someone says so.
+        if (stranded.length > 0) {
+          pushToast(
+            `These refspecs still reference "${r.name}" and need editing by hand: ${stranded.join(", ")}`,
+            "warning",
+            9000,
+          );
+        }
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        refetch();
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function removeRemote(r: RemoteInfo) {
     const ok = await dialogConfirm(`Remove remote "${r.name}"?`, { title: "Remove remote", kind: "warning" });
     if (!ok) return;
-    try {
-      await gitApi.removeRemote(props.repoPath, r.name);
-      pushToast(`Removed ${r.name}`, "info", 2500);
-      refetch();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.removeRemote(props.repoPath, r.name);
+        pushToast(`Removed ${r.name}`, "info", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        refetch();
+        emitGitRefsChanged();
+      }
+    });
   }
 
   return (
@@ -2175,7 +2335,7 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
           <div class="w-[min(520px,92vw)] bg-popover border border-border rounded-lg shadow-xl p-4" onClick={(e) => e.stopPropagation()}>
             <div class="flex items-center mb-3">
               <h2 class="text-sm font-semibold flex-1">Remotes</h2>
-              <button onClick={() => void addRemote()} class="flex items-center gap-1 px-2 py-1 rounded text-xs bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
+              <button onClick={() => void addRemote()} disabled={busy()} class="flex items-center gap-1 px-2 py-1 rounded text-xs bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                 <Plus class="w-3 h-3" /> Add
               </button>
             </div>
@@ -2188,13 +2348,13 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
                         <div class="font-medium text-foreground">{r.name}</div>
                         <div class="truncate text-muted-foreground font-mono text-[11px]" title={r.url ?? ""}>{r.url ?? "—"}</div>
                       </div>
-                      <button onClick={() => void editUrl(r)} title="Set URL" aria-label={`Set URL for ${r.name}`} class="p-1 rounded hover:bg-accent/60 hover:text-foreground text-muted-foreground transition-colors">
+                      <button onClick={() => void editUrl(r)} disabled={busy()} title="Set URL" aria-label={`Set URL for ${r.name}`} class="p-1 rounded hover:bg-accent/60 hover:text-foreground text-muted-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                         <Pencil class="w-3 h-3" />
                       </button>
-                      <button onClick={() => void renameRemote(r)} title="Rename" aria-label={`Rename ${r.name}`} class="p-1 rounded hover:bg-accent/60 hover:text-foreground text-muted-foreground transition-colors">
+                      <button onClick={() => void renameRemote(r)} disabled={busy()} title="Rename" aria-label={`Rename ${r.name}`} class="p-1 rounded hover:bg-accent/60 hover:text-foreground text-muted-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                         <Tag class="w-3 h-3" />
                       </button>
-                      <button onClick={() => void removeRemote(r)} title="Remove" aria-label={`Remove ${r.name}`} class="p-1 rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                      <button onClick={() => void removeRemote(r)} disabled={busy()} title="Remove" aria-label={`Remove ${r.name}`} class="p-1 rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                         <X class="w-3 h-3" />
                       </button>
                     </div>
@@ -2367,20 +2527,34 @@ function laneColor(i: number): string {
 
 export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
   const { actions } = useAppStore();
+  const { busy, run } = createInFlight();
   const [log, { refetch: refetchLog }] = createResource(
     () => props.repoPath,
     (p) => gitApi.log(p, undefined, 80),
   );
   onMount(() => onCleanup(onGitRefsChanged(() => refetchLog())));
 
-  const layout = createMemo(() => layoutDag(log() ?? []));
+  /// `log()` rethrows when the resource errored and this memo is read straight
+  /// into JSX. The section's ErrorBoundary would catch it, but an empty graph plus
+  /// the pane's own one-line message keeps the rest of the pane usable.
+  const layout = createMemo(() => layoutDag(log.error ? [] : (log() ?? [])));
+  const logError = () => {
+    const e: unknown = log.error;
+    if (!e) return "";
+    return e instanceof Error ? e.message : String(e);
+  };
+
+  /// The empty tree. A root commit has no parent to diff against, and using the
+  /// commit itself as the base produced an empty diff — "this commit changed
+  /// nothing", the opposite of true for the commit that created the repository.
+  const EMPTY_TREE_OID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
   const [hoveredCommit, setHoveredCommit] = createSignal<GitCommitInfo | null>(null);
   const [hoverPos, setHoverPos] = createSignal({ x: 0, y: 0 });
   const [menu, setMenu] = createSignal<{ x: number; y: number; commit: GitCommitInfo } | null>(null);
 
   function openCommitCompare(c: GitCommitInfo) {
-    const base = c.parentOids[0] ?? c.oid;
+    const base = c.parentOids[0] ?? EMPTY_TREE_OID;
     actions.openCompareTab(props.worktreeId, {
       baseRef: base,
       headRef: c.oid,
@@ -2389,32 +2563,44 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
   }
 
   async function routeOpResult(res: { ok: boolean; conflicted: boolean; message: string }, label: string) {
-    if (res.conflicted) {
-      const conflicts = await gitApi.listConflicts(props.repoPath);
-      for (const c of conflicts) openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`);
-      pushToast(`${label} stopped on conflicts — resolve them, then continue.`, "warning", 6000);
-    } else if (res.ok) {
-      pushToast(`${label} complete`, "success", 2500);
-    } else {
-      pushToast(res.message || `${label} failed`, "error", 7000);
+    try {
+      if (res.conflicted) {
+        const conflicts = await gitApi.listConflicts(props.repoPath);
+        await Promise.all(
+          conflicts.map((c) => openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`)),
+        );
+        pushToast(`${label} stopped on conflicts — resolve them, then continue.`, "warning", 6000);
+      } else if (res.ok) {
+        pushToast(`${label} complete`, "success", 2500);
+      } else {
+        pushToast(res.message || `${label} failed`, "error", 7000);
+      }
+    } finally {
+      // See BranchesPane.routeOpResult: the refresh is what raises the banner.
+      emitGitRefsChanged();
     }
-    emitGitRefsChanged();
   }
 
   async function cherryPick(c: GitCommitInfo) {
-    try {
-      await routeOpResult(await gitApi.cherryPick(props.repoPath, c.oid), `Cherry-pick ${c.oid.slice(0, 7)}`);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
-    }
+    await run(async () => {
+      try {
+        await routeOpResult(await gitApi.cherryPick(props.repoPath, c.oid), `Cherry-pick ${c.oid.slice(0, 7)}`);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function revert(c: GitCommitInfo) {
-    try {
-      await routeOpResult(await gitApi.revert(props.repoPath, c.oid), `Revert ${c.oid.slice(0, 7)}`);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
-    }
+    await run(async () => {
+      try {
+        await routeOpResult(await gitApi.revert(props.repoPath, c.oid), `Revert ${c.oid.slice(0, 7)}`);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function resetTo(c: GitCommitInfo, mode: "soft" | "mixed" | "hard") {
@@ -2433,25 +2619,31 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
       });
       if (!sure) return;
     }
-    try {
-      await gitApi.reset(props.repoPath, c.oid, mode);
-      pushToast(`Reset (${mode}) to ${short}`, "info", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.reset(props.repoPath, c.oid, mode);
+        pushToast(`Reset (${mode}) to ${short}`, "info", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
+      } finally {
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function tagHere(c: GitCommitInfo) {
     const name = await textPrompt({ title: "Create tag", label: `Tag at ${c.oid.slice(0, 7)}`, placeholder: "v1.2.0", confirmLabel: "Create" });
     if (!name) return;
-    try {
-      await gitApi.createTag(props.repoPath, name, c.oid);
-      pushToast(`Created tag ${name}`, "success", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.createTag(props.repoPath, name, c.oid);
+        pushToast(`Created tag ${name}`, "success", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+      }
+    });
   }
 
   function commitMenuItems(c: GitCommitInfo): ContextMenuItem[] {
@@ -2467,7 +2659,12 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
 
   return (
     <div class="h-full relative">
-      <div class="p-1">
+      <Show when={logError()}>
+        <p class="px-2 py-1.5 text-[11px] text-destructive" title={logError()}>
+          History unavailable: {logError()}
+        </p>
+      </Show>
+      <div class="p-1" aria-busy={busy()}>
         <For each={layout().rows}>
           {(row) => (
             <div

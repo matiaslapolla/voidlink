@@ -50,6 +50,7 @@ import { CompareTab } from "@/components/git/compare/CompareTab";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { PromptHost } from "@/commands/PromptHost";
 import { ToastViewport } from "@/commands/ToastViewport";
+import { pushToast } from "@/commands/toast";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { AppStoreContext } from "@/store/LayoutContext";
 import { createAppStore } from "@/store/layout";
@@ -178,11 +179,16 @@ export function GitSurface(props: {
       ]);
       setStatus(s);
       setRepoInfo({ currentBranch: info.currentBranch, isClean: info.isClean });
-    } catch {
-      // A repo that vanished under us is not an error worth a toast here —
-      // the panes render their own empty states.
+    } catch (e) {
+      // A repository that vanished under us needs no toast — but an index.lock
+      // collision or a corrupt ref does, and the old bare `catch {}` made every
+      // failure look like "this pane has nothing to show".
       setStatus(undefined);
       setRepoInfo(null);
+      const message = e instanceof Error ? e.message : String(e);
+      if (!/does not exist|not found|no such file/i.test(message)) {
+        pushToast(`Could not read git state: ${message}`, "error", 6000);
+      }
     }
   }
 
