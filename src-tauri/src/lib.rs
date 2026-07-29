@@ -924,6 +924,7 @@ pub fn run() {
             git::git_rename_branch,
             git::git_create_tag,
             git::git_delete_tag,
+            git::git_delete_remote_tag,
             git::git_push_tag,
             git::git_stash_list,
             git::git_stash_save,

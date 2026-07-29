@@ -1,8 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::cmd::run_git;
+use super::cmd::{run_git, run_git_timeout};
+
+/// Per-worktree enrichment shells out twice for every worktree in the list, so
+/// none of those calls may hang the whole listing on an unresponsive filesystem
+/// (a network mount, a stale automount). Short and deliberate.
+const ENRICH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// One entry from `git worktree list`. `branch` is the short name (the
 /// `refs/heads/` prefix stripped) or `None` when the worktree has a detached
@@ -29,6 +34,10 @@ pub struct WorktreeInfo {
     /// Commits on the upstream not on this worktree's branch. 0 when there is no
     /// upstream or the HEAD is detached.
     pub behind: u32,
+    /// True when this worktree's dirty flag could not be read (its directory is
+    /// gone, the `git status` there failed or timed out). `is_dirty` is false in
+    /// that case, and false must not be read as "clean".
+    pub status_unknown: bool,
 }
 
 /// Parse `git worktree list --porcelain`. Records are blank-line separated;
@@ -65,6 +74,7 @@ pub(crate) fn git_list_worktrees_impl(repo_path: String) -> Result<Vec<WorktreeI
                 is_dirty: false,
                 ahead: 0,
                 behind: 0,
+                status_unknown: false,
             });
             first = false;
         } else if let Some(wt) = cur.as_mut() {
@@ -95,18 +105,25 @@ pub(crate) fn git_list_worktrees_impl(repo_path: String) -> Result<Vec<WorktreeI
             _ => Path::new(&wt.path) == Path::new(&repo_path),
         };
 
-        // Dirty = any porcelain output (staged, unstaged, or untracked).
-        if let Ok(status) = run_git(&wt.path, &["status", "--porcelain"]) {
-            wt.is_dirty = !status.trim().is_empty();
+        // Dirty = any porcelain output (staged, unstaged, or untracked). A
+        // failure here used to degrade silently to "clean", so a stale worktree
+        // whose directory had been deleted confidently reported no changes.
+        match run_git_timeout(&wt.path, &["status", "--porcelain"], ENRICH_TIMEOUT) {
+            Ok(status) => wt.is_dirty = !status.trim().is_empty(),
+            Err(e) => {
+                log::warn!("status for worktree {} unavailable: {e}", wt.path);
+                wt.status_unknown = true;
+            }
         }
 
         // Ahead/behind vs upstream. `<upstream>...HEAD` with `--left-right
         // --count` prints "<behind>\t<ahead>" (left = commits only on upstream,
         // right = commits only on HEAD). Fails with no upstream / detached HEAD,
         // which we let fall through to the 0/0 default.
-        if let Ok(counts) = run_git(
+        if let Ok(counts) = run_git_timeout(
             &wt.path,
             &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+            ENRICH_TIMEOUT,
         ) {
             let mut parts = counts.split_whitespace();
             if let (Some(behind), Some(ahead)) = (parts.next(), parts.next()) {
@@ -151,30 +168,48 @@ pub(crate) fn git_add_worktree_impl(
     }
     run_git(&repo_path, &args)?;
 
-    // git canonicalizes the path it stores (symlinks, trailing slashes), so we
-    // match on the basename rather than the raw string we passed in.
-    let target = Path::new(&path);
+    // git canonicalizes the path it stores (symlinks, trailing slashes), so match
+    // on the canonicalized path — matching on the basename alone returned the
+    // *wrong* worktree whenever two of them shared a directory name, which is
+    // routine (`~/code/app/feature-x` and `~/worktrees/app/feature-x`).
+    let target = std::fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(&path));
     let list = git_list_worktrees_impl(repo_path)?;
     list.into_iter()
-        .find(|wt| Path::new(&wt.path).file_name() == target.file_name())
-        .ok_or_else(|| "worktree created but not found in list".to_string())
+        .find(|wt| {
+            let candidate =
+                std::fs::canonicalize(&wt.path).unwrap_or_else(|_| PathBuf::from(&wt.path));
+            candidate == target
+        })
+        .ok_or_else(|| format!("worktree created at {path} but not found in `git worktree list`"))
 }
 
 /// Remove the worktree at `path` and prune stale admin entries. `force`
 /// passes `--force` (drops a worktree with uncommitted changes). The main
 /// worktree can't be removed — git rejects that and we surface its error.
+///
+/// Returns a warning string (empty when there is nothing to say). The prune step
+/// runs after a removal that already succeeded, so a prune failure must not be
+/// reported as "removal failed" — but it used to be dropped on the floor
+/// entirely, leaving stale admin entries nobody was told about.
 pub(crate) fn git_remove_worktree_impl(
     repo_path: String,
     path: String,
     force: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut args: Vec<&str> = vec!["worktree", "remove"];
     if force {
         args.push("--force");
     }
     args.push(&path);
     run_git(&repo_path, &args)?;
-    // Best-effort cleanup of any now-stale entries; ignore failures.
-    let _ = run_git(&repo_path, &["worktree", "prune"]);
-    Ok(())
+
+    match run_git(&repo_path, &["worktree", "prune"]) {
+        Ok(_) => Ok(String::new()),
+        Err(e) => {
+            log::warn!("worktree removed but prune failed: {e}");
+            Ok(format!(
+                "Worktree removed, but pruning stale entries failed: {e}"
+            ))
+        }
+    }
 }

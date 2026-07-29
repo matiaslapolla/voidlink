@@ -117,7 +117,7 @@ pub(crate) fn git_commit_graph_impl(
             author_name: author.name().unwrap_or("").to_string(),
             author_time: commit.time().seconds(),
             parent_oids: commit.parent_ids().map(|o| o.to_string()).collect(),
-            is_head: head_oid.map_or(false, |h| h == oid),
+            is_head: head_oid == Some(oid),
             refs,
             oid: oid_str,
         });

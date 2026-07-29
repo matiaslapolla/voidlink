@@ -8,6 +8,9 @@ export interface GitRepoInfo {
   upstream: string | null;
   ahead: number;
   behind: number;
+  /** ahead/behind could not be computed (shallow clone, missing objects). When
+   * true, the 0/0 above means "unknown", not "in sync". */
+  aheadBehindUnknown: boolean;
   operation: "merge" | "rebase" | "cherry-pick" | "revert" | null;
   hasConflicts: boolean;
 }
@@ -45,6 +48,9 @@ export interface WorktreeInfo {
   ahead: number;
   /** Commits behind upstream (0 when no upstream / detached). */
   behind: number;
+  /** The dirty flag could not be read (directory gone, status failed/timed out).
+   * `isDirty: false` must not be read as "clean" when this is true. */
+  statusUnknown: boolean;
 }
 
 export interface GitBranchInfo {
@@ -54,6 +60,8 @@ export interface GitBranchInfo {
   upstream: string | null;
   ahead: number;
   behind: number;
+  /** See `GitRepoInfo.aheadBehindUnknown`. */
+  aheadBehindUnknown: boolean;
   lastCommitSummary: string | null;
   lastCommitTime: number | null;
 }

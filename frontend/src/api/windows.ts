@@ -32,7 +32,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { emitGitRefsChanged } from "@/commands/gitEvents";
+import { emitRemoteGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import type {
   ActiveItem,
   ConflictTab,
@@ -326,33 +326,28 @@ export function bridgeGitRefsAcrossWindows(): () => void {
   let disposed = false;
   let unlisten: UnlistenFn | null = null;
 
-  // Remote → local. `emitGitRefsChanged` dispatches a DOM event, which our own
-  // `bridgeLocalRefsChanges` listener below would re-publish; the `echoing`
-  // latch suppresses exactly that one hop.
-  let echoing = false;
+  // Remote → local. The local pulse is *marked* remote rather than guarded by a
+  // latch: pulses are coalesced now, so the DOM event fires after any latch we
+  // could hold here has been released — and a re-published remote pulse
+  // ping-pongs between the windows forever.
   void listenLoudly<RefsPayload>(REFS_EVENT, (payload) => {
     if (payload?.source === self) return;
-    echoing = true;
-    try {
-      emitGitRefsChanged();
-    } finally {
-      echoing = false;
-    }
+    emitRemoteGitRefsChanged();
   }).then((fn) => {
     if (disposed) void fn();
     else unlisten = fn;
   });
 
-  // Local → remote.
-  const onLocal = () => {
-    if (echoing) return;
+  // Local → remote. Anything that originated here is published; anything that
+  // arrived from another window is not.
+  const offLocal = onGitRefsChanged((pulse) => {
+    if (pulse.remote) return;
     void publishGitRefsChanged();
-  };
-  window.addEventListener("voidlink:refresh-git", onLocal);
+  });
 
   return () => {
     disposed = true;
-    window.removeEventListener("voidlink:refresh-git", onLocal);
+    offLocal();
     if (unlisten) void unlisten();
   };
 }

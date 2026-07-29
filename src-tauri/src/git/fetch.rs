@@ -48,7 +48,9 @@ pub(crate) fn git_pull_impl(repo_path: String, mode: String) -> Result<PullResul
     };
     let (ok, stdout, stderr) = run_git_allow_fail(&repo_path, &["pull", mode_arg])?;
     let combined = format!("{stdout}\n{stderr}").trim().to_string();
-    let conflicted = !ok && combined.contains("CONFLICT");
+    // Same reasoning as `run_git_op`: ask the index whether there are unmerged
+    // paths rather than grepping git's prose for "CONFLICT".
+    let conflicted = !ok && super::cmd::has_unmerged_paths(&repo_path);
     Ok(PullResult {
         ok,
         conflicted,

@@ -95,3 +95,34 @@ export const AI_COMMIT_REQUEST_EVENT = "voidlink:ai-draft-commit";
 export function requestAiCommitDraft() {
   window.dispatchEvent(new CustomEvent(AI_COMMIT_REQUEST_EVENT));
 }
+
+/// Handlers, newest last. Only the newest runs.
+const draftHandlers: (() => void)[] = [];
+
+/// Register the commit-textarea owner as the single recipient of draft requests.
+///
+/// In stacked mode two ChangesPanes exist at once — the workbench sidebar and the
+/// git view — and both used to listen. The request then ran twice, the global
+/// `drafting()` guard made the second bail, and the message landed in whichever
+/// pane the user was *not* looking at: "Draft with AI" appeared to do nothing.
+///
+/// Newest-wins rather than first-wins, because the pane that mounted most
+/// recently is the one that just came on screen; when it unmounts the previous
+/// owner takes over again.
+export function onAiCommitRequest(handler: () => void): () => void {
+  draftHandlers.push(handler);
+  // One window listener for the whole app, not one per registration — two
+  // listeners each dispatching to the newest handler would still run it twice.
+  if (draftHandlers.length === 1) window.addEventListener(AI_COMMIT_REQUEST_EVENT, dispatchDraft);
+  return () => {
+    const at = draftHandlers.indexOf(handler);
+    if (at !== -1) draftHandlers.splice(at, 1);
+    if (draftHandlers.length === 0) {
+      window.removeEventListener(AI_COMMIT_REQUEST_EVENT, dispatchDraft);
+    }
+  };
+}
+
+function dispatchDraft() {
+  draftHandlers[draftHandlers.length - 1]?.();
+}

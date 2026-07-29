@@ -2,7 +2,7 @@
 //!
 //! voidlink is three apps sharing one binary, in the same way Cursor splits its
 //! agent surface from its editor: the `main` window is the terminal + workspace
-//! + agents workbench, the `git` window is a standalone git client, and the
+//! and agents workbench, the `git` window is a standalone git client, and the
 //! `editor` window is the code editor. They are separate OS windows so you can
 //! put them on separate displays or spaces and Cmd-Tab between them, rather
 //! than one hiding the other behind a toggle.

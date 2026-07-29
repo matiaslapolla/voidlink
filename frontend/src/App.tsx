@@ -1447,11 +1447,18 @@ function AppInner(props: {
                 />
               </Suspense>,
             )}
+            {/* The git view is mounted only while it is on screen. Unlike the
+                editor (Monaco) and the workbench (xterm), nothing here holds
+                measured layout or a PTY — and leaving it mounted meant every git
+                pane existed twice, doubling the command fan-out of every
+                refresh pulse and registering a second commit-draft listener. */}
             {view(
               "git",
-              <Suspense>
-                <GitView embedded store={store} context={satelliteContext} />
-              </Suspense>,
+              <Show when={currentView() === "git"}>
+                <Suspense>
+                  <GitView embedded store={store} context={satelliteContext} />
+                </Suspense>
+              </Show>,
             )}
           </Show>
         </div>

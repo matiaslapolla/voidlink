@@ -28,8 +28,19 @@ export interface PromptRequest {
 }
 
 const [request, setRequest] = createSignal<PromptRequest | null>(null);
+/// Requests waiting for the host, oldest first.
+const queue: PromptRequest[] = [];
 let nextId = 1;
 
+/// Ask for a value, queueing behind any prompt already on screen.
+///
+/// This used to *cancel* the open prompt and replace it. One prompt at a time is
+/// right — two dialogs over one host is not a thing — but cancelling the existing
+/// one silently aborted whatever multi-step flow it belonged to: "Add remote"
+/// asks for a name and then a URL, an annotated tag asks for a name and then a
+/// message, and any prompt raised from another pane in between killed the flow
+/// mid-way with no error and no explanation. Queueing keeps every caller's
+/// promise honest; the user answers them in order.
 function openPrompt(opts: {
   title: string;
   label?: string;
@@ -38,11 +49,8 @@ function openPrompt(opts: {
   confirmLabel?: string;
   toggles?: PromptToggle[];
 }): Promise<PromptResult | null> {
-  // Only one prompt at a time; if one is already open, cancel it first.
-  const existing = request();
-  if (existing) existing.resolve(null);
   return new Promise((resolve) => {
-    setRequest({
+    const entry: PromptRequest = {
       id: nextId++,
       title: opts.title,
       label: opts.label,
@@ -51,8 +59,15 @@ function openPrompt(opts: {
       confirmLabel: opts.confirmLabel ?? "OK",
       toggles: opts.toggles ?? [],
       resolve,
-    });
+    };
+    if (request()) queue.push(entry);
+    else setRequest(entry);
   });
+}
+
+/// Show the next queued prompt, if any.
+function advance() {
+  setRequest(queue.shift() ?? null);
 }
 
 /// Ask the user for a string. Resolves with the trimmed value, or `null` if
@@ -90,11 +105,21 @@ export function usePrompt() {
 export function resolvePrompt(value: string | null, toggles?: Record<string, boolean>) {
   const r = request();
   if (!r) return;
-  setRequest(null);
+  advance();
   const trimmed = value?.trim();
   if (!trimmed) {
     r.resolve(null);
     return;
   }
   r.resolve({ value: trimmed, toggles: toggles ?? {} });
+}
+
+/// Cancel everything, including anything queued. For a window teardown — a
+/// pending promise whose host is gone would never settle.
+export function cancelAllPrompts() {
+  const active = request();
+  setRequest(null);
+  const pending = queue.splice(0, queue.length);
+  active?.resolve(null);
+  for (const p of pending) p.resolve(null);
 }

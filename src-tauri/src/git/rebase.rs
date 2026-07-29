@@ -3,8 +3,13 @@ use super::cmd::{run_git, run_git_op, OpResult};
 /// Rebase the current branch onto `onto`. Shells out: git2's rebase API is
 /// fiddly around conflict mid-states, while the porcelain writes the
 /// rebase-merge/ state our operation banner reads.
+/// `-c core.editor=true` for the same reason `--continue` has it: a rebase that
+/// decides it needs an editor (a `squash`/`reword` step reached through a config
+/// default, an `exec` failure) would otherwise sit forever waiting on a terminal
+/// this app does not have. `cmd.rs` sets `GIT_EDITOR` too; both are cheap and the
+/// config form survives an env-stripping git wrapper.
 pub(crate) fn git_rebase_impl(repo_path: String, onto: String) -> Result<OpResult, String> {
-    run_git_op(&repo_path, &["rebase", &onto])
+    run_git_op(&repo_path, &["-c", "core.editor=true", "rebase", &onto])
 }
 
 /// Continue an in-progress rebase after conflicts were resolved and staged.

@@ -5,35 +5,47 @@ import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
 import { pushToast } from "@/commands/toast";
 import { textPrompt } from "@/commands/prompt";
+import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
+import { createInFlight } from "@/commands/inflight";
 import type { Stack, StackBranch } from "@/types/stack";
 
 interface StackSidebarSectionProps {
   repoPath: string;
   worktreeId: string;
+  /// The branch HEAD is on, when the parent already knows it. The sidebar reads
+  /// repo info for its own header, so asking Rust again from here was a second
+  /// round-trip for a fact already on screen.
+  currentBranch?: string | null;
 }
 
 /// Read-only Wave-A view. Wave B adds the [+ Branch on top] / [Open tab]
 /// buttons; Wave C wires per-branch [Restack]. For now this just *shows*
 /// the chain so users can confirm voidlink picked it up correctly.
+/// A Tauri command rejects with a plain string, an Error, or a serialized object
+/// depending on where it failed; `String(e)` renders the last of those as
+/// "[object Object]", which is what the user was being shown.
+function errorText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return "unknown error";
+  }
+}
+
 export function StackSidebarSection(props: StackSidebarSectionProps) {
   const { actions } = useAppStore();
+  const { busy, run } = createInFlight();
   const [stack, { refetch }] = createResource(
     () => props.repoPath,
     (p) => stackApi.current(p),
   );
 
-  // Refresh on the shared "voidlink:refresh-git" event so that branch
-  // operations elsewhere keep the stack view in sync without us having to
-  // thread a callback through every caller.
-  onMount(() => {
-    const handler = () => refetch();
-    window.addEventListener("voidlink:refresh-git", handler);
-    onCleanup(() => window.removeEventListener("voidlink:refresh-git", handler));
-  });
-
-  function broadcastRefresh() {
-    window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
-  }
+  // Refresh on the shared pulse. Through `onGitRefsChanged` rather than a raw
+  // `window.addEventListener`, so this pane inherits the coalescing every other
+  // subscriber gets instead of hand-rolling the event name twice.
+  onMount(() => onCleanup(onGitRefsChanged(() => void refetch())));
 
   async function branchOnTop(parent: string) {
     const name = await textPrompt({
@@ -43,13 +55,17 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
       confirmLabel: "Create",
     });
     if (!name) return;
-    try {
-      await stackApi.createBranch(props.repoPath, name, parent);
-      pushToast(`Created ${name} on top of ${parent}`, "success");
-      broadcastRefresh();
-    } catch (e) {
-      pushToast(String(e), "error");
-    }
+    await run(async () => {
+      try {
+        await stackApi.createBranch(props.repoPath, name, parent);
+        pushToast(`Created ${name} on top of ${parent}`, "success");
+      } catch (e) {
+        // `String(e)` on a Tauri rejection yields "[object Object]".
+        pushToast(errorText(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
+      }
+    });
   }
 
   function openStackTab(s: Stack) {
@@ -64,13 +80,16 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
     // it and start a stack), since making the current branch a child of
     // some other branch is the rarer intent and easier to do via the
     // tracked-branch workflow once one exists.
-    let head: string | null = null;
-    try {
-      const info = await gitApi.repoInfo(props.repoPath);
-      head = info.currentBranch;
-    } catch (e) {
-      pushToast(String(e), "error");
-      return;
+    let head = props.currentBranch ?? null;
+    if (head === null && props.currentBranch === undefined) {
+      // Only when the parent did not tell us — the sidebar always does.
+      try {
+        const info = await gitApi.repoInfo(props.repoPath);
+        head = info.currentBranch;
+      } catch (e) {
+        pushToast(errorText(e), "error", 6000);
+        return;
+      }
     }
     if (!head) {
       pushToast("HEAD is detached — check out a branch first", "warning");
@@ -79,15 +98,21 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
     await branchOnTop(head);
   }
 
+  /// Solid sets `loading` true on *every* refetch, so gating the whole section on
+  /// it made the stack blank out and remount on any git operation anywhere in the
+  /// app. "Loading" is only true before the first result; after that the previous
+  /// chain stays on screen while the new one arrives.
+  const firstLoad = () => stack.loading && stack.latest === undefined;
+
   return (
     <Show
-      when={!stack.loading}
+      when={!firstLoad()}
       fallback={
         <div class="px-2.5 py-2 text-[12px] text-muted-foreground">Loading stack…</div>
       }
     >
       <Show
-        when={stack()}
+        when={stack.error ? undefined : stack.latest}
         fallback={
           <div class="px-2.5 py-2.5 text-[12px] text-muted-foreground leading-snug space-y-2">
             <div>
@@ -96,7 +121,8 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
             </div>
             <button
               onClick={() => void startStackFromHead()}
-              class="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+              disabled={busy()}
+              class="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Create a child branch off the current branch and start a stack"
             >
               <Plus class="w-3 h-3" />
@@ -108,6 +134,7 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
         {(s) => (
           <StackChain
             stack={s()}
+            busy={busy()}
             onBranchOnTop={(parent) => void branchOnTop(parent)}
             onOpenTab={() => openStackTab(s())}
           />
@@ -119,6 +146,7 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
 
 function StackChain(props: {
   stack: NonNullable<Awaited<ReturnType<typeof stackApi.current>>>;
+  busy: boolean;
   onBranchOnTop: (parent: string) => void;
   onOpenTab: () => void;
 }) {
@@ -149,7 +177,8 @@ function StackChain(props: {
       <div class="mt-1.5 px-1 flex items-center gap-1.5">
         <button
           onClick={() => props.onBranchOnTop(topBranch())}
-          class="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+          disabled={props.busy}
+          class="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           title={`Create a new branch on top of ${topBranch()}`}
         >
           <Plus class="w-3 h-3" />
