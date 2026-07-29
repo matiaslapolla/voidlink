@@ -26,6 +26,7 @@ export const ACTION_IDS = [
   "help.shortcuts",
   // File
   "file.open",
+  "file.new",
   "file.save",
   // Editor
   "editor.format-document",

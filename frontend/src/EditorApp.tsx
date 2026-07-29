@@ -69,7 +69,8 @@ import {
 } from "@/components/editor/editorGroups";
 import { editorController } from "@/components/editor/editorController";
 import { editorPaletteActions } from "@/components/editor/editorActions";
-import { vimInNormalMode, vimStatusLabel } from "@/components/editor/vimMode";
+import { EditorEmptyState } from "@/components/editor/EditorEmptyState";
+import { EditorStatusBar } from "@/components/editor/EditorStatusBar";
 import { useOpenFiles } from "@/components/editor/useOpenFiles";
 import {
   blameEnabled,
@@ -86,6 +87,8 @@ import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import { TabStrip, type TabDescriptor, type TabKind } from "@/components/layout/TabStrip";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { PromptHost } from "@/commands/PromptHost";
+import { textPrompt } from "@/commands/prompt";
+import { fsApi } from "@/api/fs";
 import { ToastViewport } from "@/commands/ToastViewport";
 import { keymapBindings, useKeybindings } from "@/commands/keybindings";
 import { registerActions, type Action } from "@/commands/registry";
@@ -316,6 +319,38 @@ export function EditorSurface(props: {
     });
   }
 
+  /// Create a file and open it. Repo-relative, so the prompt is a path and not
+  /// a name — `src/foo/bar.ts` is what people actually type, and the Rust side
+  /// creates the parents.
+  ///
+  /// The file tree already grows a file inline from its context menu; this is
+  /// the keyboard route to the same `fs_create_file`, which is what lets the
+  /// empty state advertise a chord rather than "right-click a folder".
+  async function newFile() {
+    const root = repoPath();
+    if (!root) return;
+    const rel = await textPrompt({
+      title: "New file",
+      label: "Path, relative to the repository root",
+      placeholder: "src/example.ts",
+      confirmLabel: "Create",
+    });
+    if (!rel) return;
+    const path = `${root}/${rel.replace(/^\/+/, "")}`;
+    try {
+      await fsApi.createFile(path);
+    } catch (e) {
+      pushToast(
+        `Could not create ${rel}: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+      return;
+    }
+    // The workbench owns the tab list; opening is a request, same as every
+    // other tab mutation in this window.
+    send({ kind: "open-file", path });
+  }
+
   /// Session restore is filed per workspace, so the repo has to be known before
   /// the first file opens. This effect runs on the same `repoPath()` the tab
   /// snapshot arrives with, which is ahead of any `reconcile`.
@@ -427,6 +462,14 @@ export function EditorSurface(props: {
           const path = editorController.getActivePath();
           if (path) void saveWithRetry(path);
         },
+      },
+      {
+        id: "file.new",
+        label: "New file",
+        description: "Create a file in this repository and open it",
+        group: "File",
+        enabled: () => !!repoPath(),
+        run: () => void newFile(),
       },
       ...editorPaletteActions(() => editorController.getEditor()),
       {
@@ -587,6 +630,9 @@ export function EditorSurface(props: {
         icon: <Eye class="w-3.5 h-3.5 shrink-0 text-info opacity-80" />,
         title: `Previewing ${p.filePath}`,
         labelWidth: "max-w-[200px]",
+        // A rendered view of a file you are editing elsewhere, not a buffer of
+        // its own. Italic is the affordance every editor uses for that.
+        preview: true,
       });
     }
     return out;
@@ -629,23 +675,9 @@ export function EditorSurface(props: {
         <Show when={repoInfo()?.isClean === false}>
           <span class="text-warning">• changes</span>
         </Show>
-        {/* Vim's current mode. A modal editor whose mode is invisible is
-            unusable, so this ships with the setting rather than waiting for the
-            editor status segment. Absent entirely when Vim mode is off. */}
-        <Show when={vimStatusLabel()}>
-          {(label) => (
-            <span
-              aria-live="polite"
-              class={`shrink-0 font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${
-                vimInNormalMode()
-                  ? "bg-primary/15 border-primary/40 text-primary"
-                  : "bg-transparent border-border text-muted-foreground"
-              }`}
-            >
-              {label()}
-            </span>
-          )}
-        </Show>
+        {/* Vim's mode used to live here, because there was no editor status
+            bar to put it in. There is one now, and a mode indicator belongs
+            beside line:col rather than beside the branch name. */}
 
         <span class="ml-auto text-muted-foreground truncate max-w-[40%]">
           {context()
@@ -927,12 +959,20 @@ export function EditorSurface(props: {
                 </For>
 
                 <Show when={tabs().length === 0}>
-                  <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground bg-background z-10">
-                    <FileCode class="w-7 h-7 opacity-60" />
-                    <p class="text-[13px]">Nothing open. Pick a file from the tree.</p>
-                  </div>
+                  <EditorEmptyState />
                 </Show>
               </div>
+
+              {/* What the buffer in front actually is. Below the surfaces, not
+                  inside the editor group: it reports on whichever group has
+                  focus, and one bar per pane would be two bars saying the same
+                  thing about the same file half the time. */}
+              <EditorStatusBar
+                path={activeFilePath}
+                onGoToLine={() => {
+                  void editorController.getEditor()?.getAction("editor.action.gotoLine")?.run();
+                }}
+              />
             </main>
 
             {/* Git panel */}

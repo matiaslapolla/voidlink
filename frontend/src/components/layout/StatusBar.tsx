@@ -1,10 +1,69 @@
-import { Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import { Show, createResource, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { Eye, EyeOff, GitBranch, GitCommit, Layers, Loader2, Sparkles, FileWarning } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { stackApi } from "@/api/stack";
 import { useAppStore } from "@/store/LayoutContext";
 import { aiCommitState } from "@/commands/aiCommit";
 import { blameEnabled, toggleBlame } from "@/components/editor/blameOverlay";
+
+/// The row this bar is: `h-6`, `text-[11px]`, muted, one hairline on top.
+/// Exported so a second status bar in another window (the editor window's) is
+/// the *same* row rather than a lookalike — MASTER §11.5 counts the bar's
+/// proportions as part of the identity, and two bars that drift apart by 1px
+/// of padding is exactly how that erodes.
+export const STATUS_BAR_ROW =
+  "flex items-center h-6 px-2 gap-3 text-[11px] text-muted-foreground border-t border-border bg-sidebar shrink-0 select-none";
+
+/// One segment of a status bar: an optional icon, some text, a tooltip, and —
+/// when the segment does something — a click handler that turns it into a real
+/// `<button>` with the nine states (§7.6) rather than a clickable `<div>`.
+///
+/// This is the chip idiom the bar above already uses, lifted out so the editor
+/// window's status segments consume it instead of forking a second one. The
+/// bar's own segments are left as they are: this branch contributes a segment
+/// vocabulary, it does not restructure the bar.
+export function StatusChip(props: {
+  children: JSX.Element;
+  title?: string;
+  /// Present ⇒ the chip is a button. Absent ⇒ it is inert text, and gets no
+  /// hover tint, because a hover tint on something you cannot click is a lie.
+  onClick?: () => void;
+  /// Accessible name, required when `onClick` is set and the visible text is
+  /// a bare value like `12:4` that means nothing out of context.
+  label?: string;
+  tone?: "muted" | "primary" | "warning" | "destructive";
+}) {
+  const tone = () =>
+    props.tone === "primary"
+      ? "text-primary"
+      : props.tone === "warning"
+        ? "text-warning"
+        : props.tone === "destructive"
+          ? "text-destructive"
+          : "";
+  return (
+    <Show
+      when={props.onClick}
+      fallback={
+        <span class={`flex items-center gap-1 px-1 ${tone()}`} title={props.title}>
+          {props.children}
+        </span>
+      }
+    >
+      {(onClick) => (
+        <button
+          type="button"
+          onClick={() => onClick()()}
+          title={props.title}
+          aria-label={props.label}
+          class={`flex items-center gap-1 px-1 rounded hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tone()}`}
+        >
+          {props.children}
+        </button>
+      )}
+    </Show>
+  );
+}
 
 /// Thin always-visible bottom bar that consolidates "what's the state of
 /// my repo *right now*" into one row: branch, ahead/behind, in-flight AI

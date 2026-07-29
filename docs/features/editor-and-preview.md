@@ -66,6 +66,21 @@ path and nothing after it. The parser is deliberately approximate — a symbol's
 range ends where the next same-or-shallower one begins — and is replaced, not
 extended, once a real provider is registered.
 
+### The status bar
+
+Along the bottom of the editor window: the Vim mode when Vim mode is on, then
+the language, the cursor position (click it for go-to-line), the indentation,
+the line endings and the encoding — all describing whichever editor group has
+focus. `UTF-8` is a statement of fact rather than a detected value; VoidLink
+reads and writes UTF-8 and nothing else.
+
+The right edge is reserved for the language server. It has five states — absent,
+starting, ready, degraded, stopped — and *absent means absent*: with no server
+installed, there is no segment, not a permanent grey warning. A stopped server
+shows a `--destructive` LED that persists until you click it to restart, because
+a crash is not something a focus change should clear. The feed behind it lands
+with the LSP bridge; the states are wired now.
+
 ### Session restore
 
 Cursor position, scroll offset and folded regions are remembered per file and
@@ -137,6 +152,8 @@ twice re-activates the existing tab.
 
 | Shortcut | Action |
 |---|---|
+| `Mod+P` | Open a file |
+| `Mod+Alt+N` | New file (not `Mod+N` — that makes a workspace) |
 | `Mod+S` | Save the active file |
 | `Mod+W` | Close the active tab |
 | `Mod+Alt+→` / `Mod+Alt+←` | Cycle tabs |

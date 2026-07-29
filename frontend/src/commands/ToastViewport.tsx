@@ -5,12 +5,27 @@ import { dismissToast, useToasts, type Toast } from "@/commands/toast";
 
 export function ToastViewport() {
   const { toasts } = useToasts();
+  /// MASTER §10.10: everything the app surfaces unprompted needs a live region,
+  /// or "proactive" only works for sighted users.
+  ///
+  /// Two regions, not one, because the level is a property of the *toast* and
+  /// `aria-live` is a property of the *container*: flipping one region's
+  /// politeness as toasts arrive is unreliable in every screen reader, so
+  /// failures land in the assertive region and everything else in the polite
+  /// one. Both stay mounted and empty at rest — a live region announced only
+  /// from the moment it appears is a live region that never announces its first
+  /// message.
+  const byLevel = (assertive: boolean) =>
+    toasts().filter((t) => (t.kind === "error") === assertive);
   return (
     <Portal>
       <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
-        <For each={toasts()}>
-          {(t) => <ToastRow toast={t} />}
-        </For>
+        <div aria-live="polite" aria-atomic="false" class="flex flex-col gap-2">
+          <For each={byLevel(false)}>{(t) => <ToastRow toast={t} />}</For>
+        </div>
+        <div aria-live="assertive" aria-atomic="false" class="flex flex-col gap-2">
+          <For each={byLevel(true)}>{(t) => <ToastRow toast={t} />}</For>
+        </div>
       </div>
     </Portal>
   );

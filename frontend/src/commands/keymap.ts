@@ -112,6 +112,13 @@ export const KEYMAP: readonly KeymapEntry[] = [
   // ── File ──────────────────────────────────────────────────────────────
   { actionId: "file.open", group: "File", binding: { meta: true, key: "p" } },
   {
+    actionId: "file.new",
+    group: "File",
+    window: "editor",
+    binding: { meta: true, alt: true, key: "n" },
+    note: "Not ⌘N: that is the workbench's new-workspace chord, and validateKeymapShape forbids a second claim on it regardless of which window each entry belongs to.",
+  },
+  {
     actionId: "file.save",
     group: "File",
     window: "editor",
