@@ -34,6 +34,9 @@ function base(overrides: Partial<EditorSettings> = {}): EditorSettings {
     insertFinalNewlineOnSave: false,
     autoSave: "off",
     autoSaveDelayMs: 1000,
+    vimMode: false,
+    lspEnabled: false,
+    lspServerPaths: {},
     ...overrides,
   };
 }

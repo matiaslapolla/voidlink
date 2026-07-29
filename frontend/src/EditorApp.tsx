@@ -103,6 +103,7 @@ import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { pushToast } from "@/commands/toast";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
 import { createAppStore } from "@/store/layout";
+import { useSettings } from "@/store/settings";
 import type { EditorReorderableKind, EditorTabKind } from "@/api/windows";
 
 const EMPTY_SNAPSHOT: EditorTabsSnapshot = {

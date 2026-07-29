@@ -59,11 +59,11 @@ export interface LspClientHandlers {
 }
 
 export class LspRequestError extends Error {
-  constructor(
-    message: string,
-    readonly code: number,
-  ) {
+  readonly code: number;
+
+  constructor(message: string, code: number) {
     super(message);
+    this.code = code;
     this.name = "LspRequestError";
   }
 }
@@ -85,10 +85,13 @@ export class LspClient {
   private pending = new Map<JsonRpcId, Pending>();
   private disposed = false;
 
-  constructor(
-    private readonly transport: LspTransport,
-    private readonly handlers: LspClientHandlers,
-  ) {}
+  private readonly transport: LspTransport;
+  private readonly handlers: LspClientHandlers;
+
+  constructor(transport: LspTransport, handlers: LspClientHandlers) {
+    this.transport = transport;
+    this.handlers = handlers;
+  }
 
   /// Send a request and wait for its response.
   ///

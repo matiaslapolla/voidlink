@@ -417,7 +417,7 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
     }
   }
 
-  function onServerRequest(session: Session, method: string, params: unknown): unknown {
+  function onServerRequest(_session: Session, method: string, params: unknown): unknown {
     switch (method) {
       // Answered, not ignored: rust-analyzer blocks its own startup waiting for
       // these two.
