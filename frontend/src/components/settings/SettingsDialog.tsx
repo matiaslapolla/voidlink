@@ -6,9 +6,10 @@ import {
   createResource,
   createSignal,
   createEffect,
+  on,
   type JSX,
 } from "solid-js";
-import { Check, Layers, Loader2, RefreshCw, Trash2, X } from "lucide-solid";
+import { Check, Layers, Loader2, RefreshCw, RotateCcw, Search, Trash2, X } from "lucide-solid";
 import { open } from "@tauri-apps/plugin-dialog";
 import { gitApi } from "@/api/git";
 import type { ConfigEntry, ConfigScope, ConfigSnapshot } from "@/types/git";
@@ -26,16 +27,32 @@ import {
   useSettings,
   type AiKeyBinding,
   type CursorStyle,
-  type EditorAutoSave,
-  type EditorCursorBlinking,
-  type EditorCursorStyle,
-  type EditorLineNumbers,
-  type EditorRenderWhitespace,
-  type EditorWordWrap,
+  type EditorCoreSettings,
+  type EditorSettings,
   type EnvironmentMode,
   type UiDensity,
   type UiTextSize,
 } from "@/store/settings";
+import {
+  EDITOR_SETTING_LIST,
+  asEnumSetting,
+  asNumberSetting,
+  asStringSetting,
+  defaultFor,
+  settingById,
+  settingByKey,
+  type EditorSetting,
+} from "@/store/settingsSchema";
+import {
+  groupHits,
+  modifiedCount,
+  searchSettings,
+  type SettingHit,
+} from "@/store/settingsSearch";
+import { withLanguageOverride, withoutLanguageOverride } from "@/store/settingsJson";
+import { SettingsJsonPane } from "./SettingsJsonPane";
+import { FuzzyText } from "@/commands/QuickPick";
+import { MONACO_LANGUAGE_IDS } from "@/components/editor/monaco";
 import { LSP_SERVERS } from "@/components/editor/lspServers";
 import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
@@ -55,6 +72,11 @@ import {
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
+  /// Deep link from the palette's "Go to setting…": open on the Editor tab
+  /// with the filter box pre-filled and focused. A new value re-links even
+  /// while the dialog is already open, which is why it is a prop rather than
+  /// something read once on mount.
+  gotoSetting?: string;
 }
 
 type Tab = "ui" | "theme" | "editor" | "terminal" | "keyboard" | "ai" | "git" | "stack" | "brain";
@@ -63,6 +85,17 @@ export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
   const { reset } = useSettings();
   let dialogRef: HTMLDivElement | undefined;
+
+  // A deep link always lands on the Editor pane — that is the only pane whose
+  // rows have searchable ids.
+  createEffect(
+    on(
+      () => props.gotoSetting,
+      (query) => {
+        if (query !== undefined) setTab("editor");
+      },
+    ),
+  );
 
   createEffect(() => {
     if (props.open) {
@@ -139,7 +172,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs">
             <Show when={tab() === "ui"}><UiPane /></Show>
             <Show when={tab() === "theme"}><ThemePane /></Show>
-            <Show when={tab() === "editor"}><EditorPane /></Show>
+            <Show when={tab() === "editor"}><EditorPane initialQuery={props.gotoSetting} /></Show>
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
             <Show when={tab() === "keyboard"}><KeyboardPane /></Show>
             <Show when={tab() === "ai"}><AiPane /></Show>
@@ -453,199 +486,544 @@ const FONT_PRESETS: { label: string; stack: string }[] = [
 
 // ─── Editor Pane ─────────────────────────────────────────────────────────────
 
-const EDITOR_WORD_WRAP: { id: EditorWordWrap; label: string }[] = [
-  { id: "off", label: "Off" },
-  { id: "on", label: "Viewport" },
-  { id: "bounded", label: "Column" },
-];
+/// Rendered from `store/settingsSchema.ts`, not hand-placed.
+///
+/// Every control below is one schema entry: its label, its description, its
+/// constraints and its default all come from the table, which is also what the
+/// filter box searches, what the modified dot compares against and what the
+/// JSON view validates. Adding a setting is an entry there and nothing here.
+///
+/// Every setting applies to the running editor through `updateOptions` — there
+/// is no "restart to apply" row, by design (see `monaco.ts`).
+function EditorPane(props: { initialQuery?: string }) {
+  const { settings } = useSettings();
+  const [query, setQuery] = createSignal(props.initialQuery ?? "");
+  const [modifiedOnly, setModifiedOnly] = createSignal(false);
+  const [view, setView] = createSignal<"gui" | "json">("gui");
+  let filterRef: HTMLInputElement | undefined;
 
-const EDITOR_WHITESPACE: { id: EditorRenderWhitespace; label: string }[] = [
-  { id: "none", label: "None" },
-  { id: "selection", label: "Selection" },
-  { id: "boundary", label: "Boundary" },
-  { id: "all", label: "All" },
-];
+  // A deep link from the palette lands here: fill the filter, make sure the
+  // GUI (not the JSON pane) is showing, and put the caret in the box so the
+  // query can be refined without a second click.
+  createEffect(
+    on(
+      () => props.initialQuery,
+      (initial) => {
+        if (initial === undefined) return;
+        setQuery(initial);
+        setModifiedOnly(false);
+        setView("gui");
+        queueMicrotask(() => {
+          filterRef?.focus();
+          filterRef?.select();
+        });
+      },
+    ),
+  );
 
-const EDITOR_LINE_NUMBERS: { id: EditorLineNumbers; label: string }[] = [
-  { id: "on", label: "On" },
-  { id: "off", label: "Off" },
-  { id: "relative", label: "Relative" },
-];
+  const hits = () => searchSettings({ query: query(), modifiedOnly: modifiedOnly() }, settings.editor);
+  const groups = () => groupHits(hits());
+  const modified = () => modifiedCount(settings.editor);
+  const filtering = () => query().trim().length > 0 || modifiedOnly();
 
-const EDITOR_CURSOR_STYLES: { id: EditorCursorStyle; label: string }[] = [
-  { id: "line", label: "Line" },
-  { id: "block", label: "Block" },
-  { id: "underline", label: "Underline" },
-];
+  return (
+    <div class="space-y-4">
+      <div class="flex items-center gap-2">
+        <div class="relative flex-1">
+          <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+          <input
+            ref={filterRef}
+            type="text"
+            value={query()}
+            onInput={(e) => setQuery(e.currentTarget.value)}
+            placeholder="Search settings by name, id or value…"
+            aria-label="Search editor settings"
+            class="w-full rounded border border-border bg-muted/40 py-1 pl-7 pr-2 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        {/* Disabled rather than hidden when nothing is modified: the count is
+            the answer to "did I change anything?", and a control that vanishes
+            cannot answer it. */}
+        <button
+          onClick={() => setModifiedOnly((v) => !v)}
+          disabled={modified() === 0}
+          aria-pressed={modifiedOnly()}
+          title={
+            modified() === 0
+              ? "Nothing differs from the defaults"
+              : `Show only the ${modified()} setting${modified() === 1 ? "" : "s"} you changed`
+          }
+          class={`shrink-0 rounded border px-2 py-1 text-[11px] transition-colors disabled:cursor-default disabled:opacity-50 ${
+            modifiedOnly()
+              ? "border-primary/40 bg-primary/15 text-primary"
+              : "border-border text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+          }`}
+        >
+          Modified {modified() > 0 ? `(${modified()})` : ""}
+        </button>
+        <SegmentedButtons
+          value={view()}
+          options={[
+            { id: "gui" as const, label: "Controls" },
+            { id: "json" as const, label: "JSON" },
+          ]}
+          onChange={setView}
+        />
+      </div>
 
-const EDITOR_CURSOR_BLINKING: { id: EditorCursorBlinking; label: string }[] = [
-  { id: "blink", label: "Blink" },
-  { id: "smooth", label: "Smooth" },
-  { id: "phase", label: "Phase" },
-  { id: "expand", label: "Expand" },
-  { id: "solid", label: "Solid" },
-];
+      <Show when={view() === "json"}>
+        <SettingsJsonPane />
+      </Show>
 
-const EDITOR_AUTO_SAVE: { id: EditorAutoSave; label: string }[] = [
-  { id: "off", label: "Off" },
-  { id: "afterDelay", label: "After delay" },
-  { id: "onFocusChange", label: "On blur" },
-];
+      <Show when={view() === "gui"}>
+        <Show
+          when={hits().length > 0}
+          fallback={
+            <p class="py-6 text-center text-[11px] text-muted-foreground">
+              {modifiedOnly() && query().trim()
+                ? "No setting you changed matches that."
+                : modifiedOnly()
+                  ? "Nothing differs from the defaults."
+                  : `No setting matches “${query().trim()}”.`}
+            </p>
+          }
+        >
+          <div class="space-y-6">
+            <For each={groups()}>
+              {(group) => (
+                <Section title={group.section}>
+                  <For each={group.hits}>{(hit) => <SettingRow hit={hit} />}</For>
+                </Section>
+              )}
+            </For>
+          </div>
+        </Show>
 
-/// Every setting here applies to the running editor through `updateOptions` —
-/// there is no "restart to apply" row, by design (see `monaco.ts`).
-function EditorPane() {
+        {/* Hidden while filtering: the override editor is a different kind of
+            thing from a list of matches, and leaving it under a one-hit result
+            reads as if it were part of the result. */}
+        <Show when={!filtering()}>
+          <LanguageOverridesSection />
+        </Show>
+      </Show>
+    </div>
+  );
+}
+
+/// One schema entry, as the control its `kind` calls for.
+///
+/// The primitives are the same `SliderRow` / `ToggleRow` / `SegmentedRow` /
+/// `TextRow` the other panes use; only the label cell is replaced, so the
+/// modified dot, the highlighted match and the per-setting reset ride along
+/// without a second set of controls existing.
+function SettingRow(props: { hit: SettingHit }) {
+  const { settings, updateEditor } = useSettings();
+  const setting = () => props.hit.setting;
+  const raw = () => (settings.editor as unknown as Record<string, unknown>)[setting().key];
+  const write = (value: unknown) =>
+    updateEditor({ [setting().key]: value } as Partial<EditorSettings>);
+  const label = () => (
+    <SettingLabelCell hit={props.hit} onReset={() => write(defaultFor(setting()))} />
+  );
+
+  return (
+    <Switch>
+      <Match when={setting().kind === "boolean"}>
+        <ToggleRow
+          label=""
+          labelCell={label()}
+          value={raw() === true}
+          onChange={(v) => write(v)}
+        />
+      </Match>
+      <Match when={asNumberSetting(setting())}>
+        {(s) => (
+          <SliderRow
+            label=""
+            labelCell={label()}
+            value={Number(raw())}
+            min={s().min}
+            max={s().max}
+            step={s().step}
+            format={(v) => formatNumber(s(), v)}
+            onInput={(v) => write(v)}
+          />
+        )}
+      </Match>
+      <Match when={asEnumSetting(setting())}>
+        {(s) => (
+          <SegmentedRow
+            label=""
+            labelCell={label()}
+            value={String(raw())}
+            options={s().members.map((m) => ({ id: m.value, label: m.label }))}
+            onChange={(v) => write(v)}
+          />
+        )}
+      </Match>
+      <Match when={setting().kind === "numberList"}>
+        <TextRow
+          label=""
+          labelCell={label()}
+          value={Array.isArray(raw()) ? (raw() as number[]).join(", ") : ""}
+          placeholder="80, 120"
+          onInput={(v) => write(parseNumberList(v))}
+        />
+      </Match>
+      <Match when={setting().kind === "pathMap"}>
+        <LspServerPaths />
+      </Match>
+      <Match when={asStringSetting(setting())}>
+        {(s) => (
+        <div class="space-y-1">
+          <TextRow
+            label=""
+            labelCell={label()}
+            value={String(raw() ?? "")}
+            placeholder={s().placeholder}
+            onInput={(v) => write(v)}
+          />
+          {/* The font stack is the one string worth offering presets for: the
+              value that works is a Nerd-Font package name almost nobody can
+              spell from memory. */}
+          <Show when={setting().key === "fontFamily"}>
+            <div class="flex flex-wrap gap-1 pl-28">
+              <For each={FONT_PRESETS}>
+                {(p) => (
+                  <button
+                    onClick={() => write(p.stack)}
+                    class="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    title={p.stack}
+                  >
+                    {p.label}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+        </div>
+        )}
+      </Match>
+    </Switch>
+  );
+}
+
+/// The label column: the match highlight, the modified dot, the reset, and the
+/// entry's description or dotted id underneath.
+function SettingLabelCell(props: { hit: SettingHit; onReset: () => void }) {
+  const hit = () => props.hit;
+  const isLabelMatch = () => hit().field === "label";
+  /// What the second line says. A hit on the description or an enum member is
+  /// the reason this row is on screen, so it wins over the dotted id — which is
+  /// what the line falls back to the rest of the time.
+  const subtitle = () => {
+    if (hit().field === "description") return { text: hit().setting.description, ranges: hit().ranges };
+    if (hit().field === "member") return { text: hit().member ?? "", ranges: hit().ranges };
+    if (hit().field === "id") return { text: hit().setting.id, ranges: hit().ranges };
+    return { text: hit().setting.id, ranges: [] };
+  };
+
+  return (
+    <div class="w-28 shrink-0">
+      <div class="flex items-center gap-1">
+        <FuzzyText
+          text={hit().setting.label}
+          ranges={isLabelMatch() ? hit().ranges : []}
+          class="text-muted-foreground"
+        />
+        <Show when={hit().modified}>
+          <button
+            onClick={props.onReset}
+            aria-label={`Reset ${hit().setting.label} to its default`}
+            title={`Modified — click to reset to the default (${describeDefault(hit().setting)})`}
+            class="rounded p-0.5 text-primary transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <RotateCcw class="h-2.5 w-2.5" />
+          </button>
+        </Show>
+      </div>
+      <FuzzyText
+        text={subtitle().text}
+        ranges={subtitle().ranges}
+        class="block text-[10px] leading-tight text-muted-foreground/70"
+      />
+    </div>
+  );
+}
+
+/// The language-servers rows, which are one schema entry (`lspServerPaths`)
+/// rendering as one field per known server. Kept as a special case rather than
+/// generalised into the table: the *keys* come from `lspServers.ts`, not from
+/// the settings schema, and pretending otherwise would put a second source of
+/// truth in the table.
+function LspServerPaths() {
   const { settings, updateEditor } = useSettings();
   return (
-    <div class="space-y-6">
-      <Section title="Font">
-        <TextRow
-          label="Font family"
-          value={settings.editor.fontFamily}
-          placeholder="'Geist Mono Variable', monospace"
-          onInput={(v) => updateEditor({ fontFamily: v })}
-        />
-        <div class="flex flex-wrap gap-1 pl-28">
-          <For each={FONT_PRESETS}>
-            {(p) => (
-              <button
-                onClick={() => updateEditor({ fontFamily: p.stack })}
-                class="px-2 py-0.5 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                title={p.stack}
-              >
-                {p.label}
-              </button>
+    <div class="space-y-3">
+      <For each={LSP_SERVERS}>
+        {(spec) => (
+          <TextRow
+            label={spec.id}
+            value={settings.editor.lspServerPaths[spec.id] ?? ""}
+            placeholder={`found on PATH (${spec.monacoLanguages.join(", ")})`}
+            onInput={(v) =>
+              updateEditor({
+                lspServerPaths: { ...settings.editor.lspServerPaths, [spec.id]: v },
+              })
+            }
+          />
+        )}
+      </For>
+      <p class="text-[10px] leading-relaxed text-muted-foreground/70">
+        Leave a path blank to search PATH. A server that is not installed is not
+        an error — the editor works exactly as it does now and the status bar
+        shows nothing at all.
+      </p>
+    </div>
+  );
+}
+
+/// Per-language overrides, so they are not JSON-only.
+///
+/// Keyed by Monaco language id, the same keys the JSON view's `"[rust]"`
+/// sections use and the same ones `effectiveEditorSettings` resolves — there is
+/// one override map and two ways to edit it.
+function LanguageOverridesSection() {
+  const { settings, updateEditor } = useSettings();
+  const [language, setLanguage] = createSignal("rust");
+  const [adding, setAdding] = createSignal("");
+
+  const patch = () => settings.editor.languageOverrides[language()] ?? {};
+  const overridden = () =>
+    Object.keys(patch())
+      .map((key) => settingByKey(key))
+      .filter((s): s is EditorSetting => !!s);
+  const available = () =>
+    EDITOR_SETTING_LIST.filter((s) => !(s.key in patch()) && s.kind !== "pathMap");
+  /// Languages worth listing: everything a buffer can be, plus any language
+  /// already carrying an override (which a JSON edit can have introduced).
+  const languages = () =>
+    [...new Set([...MONACO_LANGUAGE_IDS, ...Object.keys(settings.editor.languageOverrides)])].sort();
+
+  const setOverride = (key: keyof EditorCoreSettings, value: unknown) =>
+    updateEditor({
+      languageOverrides: withLanguageOverride(settings.editor, language(), {
+        [key]: value,
+      } as Partial<EditorCoreSettings>),
+    });
+  const clearOverride = (key: keyof EditorCoreSettings) =>
+    updateEditor({
+      languageOverrides: withoutLanguageOverride(settings.editor, language(), key),
+    });
+
+  return (
+    <Section title="Per-language overrides">
+      <p class="text-[11px] leading-relaxed text-muted-foreground">
+        Settings that apply only to one language — four-space tabs in Rust, two
+        in TypeScript. Anything not overridden here inherits the value above.
+      </p>
+      <div class="flex items-center gap-3">
+        <span class="w-28 shrink-0 text-muted-foreground">Language</span>
+        <select
+          value={language()}
+          onChange={(e) => setLanguage(e.currentTarget.value)}
+          aria-label="Language to override settings for"
+          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          <For each={languages()}>
+            {(id) => (
+              <option value={id}>
+                {id}
+                {settings.editor.languageOverrides[id]
+                  ? ` (${Object.keys(settings.editor.languageOverrides[id]).length})`
+                  : ""}
+              </option>
             )}
           </For>
-        </div>
-        <SliderRow label="Font size" value={settings.editor.fontSize} min={8} max={28} step={1}
-          format={(v) => `${v}px`} onInput={(v) => updateEditor({ fontSize: v })} />
-        {/* Monaco's own convention: 0 derives the height from the font size,
-            and anything up to 8 is a multiplier. Surfacing that as "Auto"
-            rather than hiding it behind a second toggle. */}
-        <SliderRow label="Line height" value={settings.editor.lineHeight} min={0} max={3} step={0.05}
-          format={(v) => (v === 0 ? "Auto" : `${v.toFixed(2)}×`)}
-          onInput={(v) => updateEditor({ lineHeight: v })} />
-        <ToggleRow
-          label="Ligatures"
-          hint="Render =>, !== and friends as single glyphs, if the font has them."
-          value={settings.editor.fontLigatures}
-          onChange={(v) => updateEditor({ fontLigatures: v })}
-        />
-      </Section>
+        </select>
+      </div>
 
-      <Section title="Indentation">
-        <SliderRow label="Tab size" value={settings.editor.tabSize} min={1} max={8} step={1}
-          format={(v) => `${v} spaces`} onInput={(v) => updateEditor({ tabSize: v })} />
-        <ToggleRow label="Insert spaces" value={settings.editor.insertSpaces}
-          onChange={(v) => updateEditor({ insertSpaces: v })} />
-        <ToggleRow label="Indent guides" value={settings.editor.indentGuides}
-          onChange={(v) => updateEditor({ indentGuides: v })} />
-      </Section>
-
-      <Section title="Wrapping">
-        <SegmentedRow label="Word wrap" value={settings.editor.wordWrap} options={EDITOR_WORD_WRAP}
-          onChange={(v) => updateEditor({ wordWrap: v })} />
-        <Show when={settings.editor.wordWrap === "bounded"}>
-          <SliderRow label="Wrap column" value={settings.editor.wordWrapColumn} min={40} max={200} step={1}
-            format={(v) => `${v} cols`} onInput={(v) => updateEditor({ wordWrapColumn: v })} />
-        </Show>
-      </Section>
-
-      <Section title="Display">
-        <SegmentedRow label="Line numbers" value={settings.editor.lineNumbers} options={EDITOR_LINE_NUMBERS}
-          onChange={(v) => updateEditor({ lineNumbers: v })} />
-        <SegmentedRow label="Whitespace" value={settings.editor.renderWhitespace} options={EDITOR_WHITESPACE}
-          onChange={(v) => updateEditor({ renderWhitespace: v })} />
-        <ToggleRow label="Minimap" value={settings.editor.minimap}
-          onChange={(v) => updateEditor({ minimap: v })} />
-        <ToggleRow
-          label="Sticky scroll"
-          hint="Pin the enclosing scopes to the top of the viewport."
-          value={settings.editor.stickyScroll}
-          onChange={(v) => updateEditor({ stickyScroll: v })}
-        />
-        <ToggleRow label="Bracket colors" value={settings.editor.bracketPairColorization}
-          onChange={(v) => updateEditor({ bracketPairColorization: v })} />
-        <ToggleRow label="Scroll past end" value={settings.editor.scrollBeyondLastLine}
-          onChange={(v) => updateEditor({ scrollBeyondLastLine: v })} />
-        <ToggleRow label="Smooth scrolling" value={settings.editor.smoothScrolling}
-          onChange={(v) => updateEditor({ smoothScrolling: v })} />
-      </Section>
-
-      <Section title="Keybindings">
-        <ToggleRow
-          label="Vim mode"
-          hint="Loads monaco-vim on demand. A mode indicator appears in the title bar."
-          value={settings.editor.vimMode}
-          onChange={(v) => updateEditor({ vimMode: v })}
-        />
-      </Section>
-
-      <Section title="Cursor">
-        <SegmentedRow label="Style" value={settings.editor.cursorStyle} options={EDITOR_CURSOR_STYLES}
-          onChange={(v) => updateEditor({ cursorStyle: v })} />
-        <SegmentedRow label="Blinking" value={settings.editor.cursorBlinking} options={EDITOR_CURSOR_BLINKING}
-          onChange={(v) => updateEditor({ cursorBlinking: v })} />
-      </Section>
-
-      <Section title="Save">
-        <ToggleRow
-          label="Format on save"
-          hint="Uses whatever formatter the language provides. No provider means no change."
-          value={settings.editor.formatOnSave}
-          onChange={(v) => updateEditor({ formatOnSave: v })}
-        />
-        <ToggleRow label="Trim whitespace" value={settings.editor.trimTrailingWhitespaceOnSave}
-          onChange={(v) => updateEditor({ trimTrailingWhitespaceOnSave: v })} />
-        <ToggleRow label="Final newline" value={settings.editor.insertFinalNewlineOnSave}
-          onChange={(v) => updateEditor({ insertFinalNewlineOnSave: v })} />
-        <SegmentedRow label="Auto save" value={settings.editor.autoSave} options={EDITOR_AUTO_SAVE}
-          onChange={(v) => updateEditor({ autoSave: v })} />
-        <Show when={settings.editor.autoSave === "afterDelay"}>
-          <SliderRow label="Delay" value={settings.editor.autoSaveDelayMs} min={200} max={10000} step={100}
-            format={(v) => `${(v / 1000).toFixed(1)}s`}
-            onInput={(v) => updateEditor({ autoSaveDelayMs: v })} />
-        </Show>
-        <p class="text-[10px] text-muted-foreground/70 leading-relaxed">
-          Auto save never hides the dirty dot — it appears on the first edit and
-          clears on the write, so a pending save is always visible.
-        </p>
-      </Section>
-
-      {/* Language servers. The paths are blank by default and stay blank for
-          almost everyone: a server installed normally is found on PATH, and an
-          empty field reads as "nothing to do here" rather than as a setting
-          somebody forgot to fill in. */}
-      <Section title="Language servers">
-        <ToggleRow
-          label="Enabled"
-          hint="Completions, hover, diagnostics and formatting from a server you already have installed. Nothing is downloaded."
-          value={settings.editor.lspEnabled}
-          onChange={(v) => updateEditor({ lspEnabled: v })}
-        />
-        <Show when={settings.editor.lspEnabled}>
-          <For each={LSP_SERVERS}>
-            {(spec) => (
-              <TextRow
-                label={spec.id}
-                value={settings.editor.lspServerPaths[spec.id] ?? ""}
-                placeholder={`found on PATH (${spec.monacoLanguages.join(", ")})`}
-                onInput={(v) =>
-                  updateEditor({
-                    lspServerPaths: { ...settings.editor.lspServerPaths, [spec.id]: v },
-                  })
-                }
-              />
-            )}
-          </For>
-          <p class="text-[10px] text-muted-foreground/70 leading-relaxed">
-            Leave a path blank to search PATH. A server that is not installed is
-            not an error — the editor works exactly as it does now and the
-            status bar shows nothing at all.
+      <Show
+        when={overridden().length > 0}
+        fallback={
+          <p class="text-[11px] text-muted-foreground/70">
+            No overrides for <span class="font-mono">{language()}</span>.
           </p>
-        </Show>
-      </Section>
+        }
+      >
+        <For each={overridden()}>
+          {(setting) => (
+            <LanguageOverrideRow
+              setting={setting}
+              value={(patch() as Record<string, unknown>)[setting.key]}
+              onChange={(v) => setOverride(setting.key, v)}
+              onClear={() => clearOverride(setting.key)}
+            />
+          )}
+        </For>
+      </Show>
+
+      <div class="flex items-center gap-3">
+        <span class="w-28 shrink-0 text-muted-foreground">Add override</span>
+        <select
+          value={adding()}
+          onChange={(e) => {
+            const setting = settingById(e.currentTarget.value);
+            if (setting) setOverride(setting.key, defaultFor(setting));
+            setAdding("");
+          }}
+          aria-label={`Add a setting override for ${language()}`}
+          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          <option value="">Choose a setting…</option>
+          <For each={available()}>
+            {(s) => <option value={s.id}>{`${s.label} — ${s.id}`}</option>}
+          </For>
+        </select>
+      </div>
+    </Section>
+  );
+}
+
+/// One overridden field. The same primitives again, with the reset replaced by
+/// a remove — for an override, "reset" means "stop overriding", which is a
+/// different act from "return to the default value".
+function LanguageOverrideRow(props: {
+  setting: EditorSetting;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  onClear: () => void;
+}) {
+  const labelCell = () => (
+    <div class="w-28 shrink-0">
+      <div class="flex items-center gap-1">
+        <span class="text-muted-foreground">{props.setting.label}</span>
+        <button
+          onClick={props.onClear}
+          aria-label={`Stop overriding ${props.setting.label}`}
+          title="Remove this override — the language inherits the global value again"
+          class="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent/40 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <X class="h-2.5 w-2.5" />
+        </button>
+      </div>
+      <span class="block text-[10px] leading-tight text-muted-foreground/70">
+        {props.setting.id}
+      </span>
+    </div>
+  );
+
+  return (
+    <Switch>
+      <Match when={props.setting.kind === "boolean"}>
+        <ToggleRow
+          label=""
+          labelCell={labelCell()}
+          value={props.value === true}
+          onChange={(v) => props.onChange(v)}
+        />
+      </Match>
+      <Match when={asNumberSetting(props.setting)}>
+        {(s) => (
+          <SliderRow
+            label=""
+            labelCell={labelCell()}
+            value={Number(props.value)}
+            min={s().min}
+            max={s().max}
+            step={s().step}
+            format={(v) => formatNumber(s(), v)}
+            onInput={(v) => props.onChange(v)}
+          />
+        )}
+      </Match>
+      <Match when={asEnumSetting(props.setting)}>
+        {(s) => (
+          <SegmentedRow
+            label=""
+            labelCell={labelCell()}
+            value={String(props.value)}
+            options={s().members.map((m) => ({ id: m.value, label: m.label }))}
+            onChange={(v) => props.onChange(v)}
+          />
+        )}
+      </Match>
+      <Match when={props.setting.kind === "numberList"}>
+        <TextRow
+          label=""
+          labelCell={labelCell()}
+          value={Array.isArray(props.value) ? (props.value as number[]).join(", ") : ""}
+          placeholder="80, 120"
+          onInput={(v) => props.onChange(parseNumberList(v))}
+        />
+      </Match>
+      <Match when={props.setting.kind === "string"}>
+        <TextRow
+          label=""
+          labelCell={labelCell()}
+          value={String(props.value ?? "")}
+          onInput={(v) => props.onChange(v)}
+        />
+      </Match>
+    </Switch>
+  );
+}
+
+/// `13px`, `4 spaces`, `1.0s`. `lineHeight`'s 0 means "derive from the font
+/// size", which is Monaco's convention and is surfaced as a word rather than
+/// hidden behind a second toggle.
+function formatNumber(setting: EditorSetting, value: number): string {
+  if (setting.key === "lineHeight") return value === 0 ? "Auto" : `${value.toFixed(2)}×`;
+  if (setting.key === "autoSaveDelayMs") return `${(value / 1000).toFixed(1)}s`;
+  const unit = setting.kind === "number" ? (setting.unit ?? "") : "";
+  return `${value}${unit}`;
+}
+
+/// A default, in the words the reset tooltip needs.
+function describeDefault(setting: EditorSetting): string {
+  if (setting.kind === "numberList") return setting.default.length ? setting.default.join(", ") : "none";
+  if (setting.kind === "pathMap") return "PATH";
+  if (setting.kind === "string") return setting.default || "empty";
+  if (setting.kind === "enum") {
+    return setting.members.find((m) => m.value === setting.default)?.label ?? setting.default;
+  }
+  return String(setting.default);
+}
+
+/// `"80, 120"` → `[80, 120]`. Anything that is not a number is dropped rather
+/// than rejected, so a half-typed list never blocks the keystroke that would
+/// have finished it.
+function parseNumberList(text: string): number[] {
+  return text
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/// The segmented control without a label column — the view switch at the top of
+/// the pane, which is chrome rather than a setting.
+function SegmentedButtons<T extends string>(props: {
+  value: T;
+  options: { id: T; label: string }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div class="flex shrink-0 gap-1">
+      <For each={props.options}>
+        {(opt) => (
+          <button
+            onClick={() => props.onChange(opt.id)}
+            aria-pressed={props.value === opt.id}
+            class={`rounded border px-2 py-1 text-[11px] transition-colors ${
+              props.value === opt.id
+                ? "border-primary/40 bg-primary/15 text-primary"
+                : "border-border text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+            }`}
+          >
+            {opt.label}
+          </button>
+        )}
+      </For>
     </div>
   );
 }
@@ -815,8 +1193,14 @@ function Section(props: { title: string; tone?: "warning"; children: JSX.Element
   );
 }
 
+/// `labelCell` replaces the whole label column rather than its text.
+///
+/// The schema-driven editor pane needs a modified dot, a highlighted match and
+/// a per-setting reset in that column; every other pane passes a plain string
+/// and gets exactly what it always got. One set of controls, two callers.
 function SliderRow(props: {
   label: string;
+  labelCell?: JSX.Element;
   value: number;
   min: number;
   max: number;
@@ -826,7 +1210,7 @@ function SliderRow(props: {
 }) {
   return (
     <div class="flex items-center gap-3">
-      <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>
+      {props.labelCell ?? <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>}
       <input
         type="range"
         min={props.min}
@@ -845,18 +1229,21 @@ function SliderRow(props: {
 
 function ToggleRow(props: {
   label: string;
+  labelCell?: JSX.Element;
   value: boolean;
   hint?: string;
   onChange: (v: boolean) => void;
 }) {
   return (
     <div class="flex items-center gap-3">
-      <div class="w-28 shrink-0">
-        <div class="text-muted-foreground">{props.label}</div>
-        <Show when={props.hint}>
-          <div class="text-[10px] text-muted-foreground/70 leading-tight">{props.hint}</div>
-        </Show>
-      </div>
+      {props.labelCell ?? (
+        <div class="w-28 shrink-0">
+          <div class="text-muted-foreground">{props.label}</div>
+          <Show when={props.hint}>
+            <div class="text-[10px] text-muted-foreground/70 leading-tight">{props.hint}</div>
+          </Show>
+        </div>
+      )}
       <button
         onClick={() => props.onChange(!props.value)}
         class={`px-3 py-1 rounded-full border text-[11px] transition-colors ${
@@ -873,13 +1260,14 @@ function ToggleRow(props: {
 
 function TextRow(props: {
   label: string;
+  labelCell?: JSX.Element;
   value: string;
   placeholder?: string;
   onInput: (v: string) => void;
 }) {
   return (
     <div class="flex items-center gap-3">
-      <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>
+      {props.labelCell ?? <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>}
       <input
         type="text"
         value={props.value}
@@ -893,13 +1281,14 @@ function TextRow(props: {
 
 function SegmentedRow<T extends string>(props: {
   label: string;
+  labelCell?: JSX.Element;
   value: T;
   options: { id: T; label: string }[];
   onChange: (v: T) => void;
 }) {
   return (
     <div class="flex items-center gap-3">
-      <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>
+      {props.labelCell ?? <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>}
       <div class="flex-1 flex gap-1">
         <For each={props.options}>
           {(opt) => (

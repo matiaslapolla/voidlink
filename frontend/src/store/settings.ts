@@ -1,6 +1,7 @@
 import { createStore } from "solid-js/store";
 import { createEffect } from "solid-js";
 import type { CommitIdentity } from "@/types/git";
+import { defaultEditorSettings, parseEditorSettings } from "./settingsSchema";
 
 export type CursorStyle = "block" | "underline" | "bar";
 export type UiTextSize = "sm" | "base" | "xl";
@@ -31,12 +32,27 @@ export interface TerminalSettings {
   scrollOnUserInput: boolean;
 }
 
-/// Word wrap. `bounded` wraps at the smaller of the viewport and
-/// `wordWrapColumn`, which is the only mode that behaves the same in a split
-/// pane as in a full-width one.
-export type EditorWordWrap = "off" | "on" | "bounded";
-export type EditorRenderWhitespace = "none" | "selection" | "boundary" | "all";
+/// Word wrap. `wordWrapColumn` wraps at `wordWrapColumn` regardless of the
+/// viewport; `bounded` wraps at the smaller of the two, which is the only mode
+/// that behaves the same in a split pane as in a full-width one.
+export type EditorWordWrap = "off" | "on" | "wordWrapColumn" | "bounded";
+export type EditorRenderWhitespace = "none" | "selection" | "boundary" | "trailing" | "all";
 export type EditorLineNumbers = "on" | "off" | "relative";
+export type EditorWrappingIndent = "none" | "same" | "indent" | "deepIndent";
+export type EditorRenderFinalNewline = "on" | "off" | "dimmed";
+export type EditorFoldingStrategy = "auto" | "indentation";
+export type EditorShowFoldingControls = "always" | "never" | "mouseover";
+export type EditorRenderLineHighlight = "none" | "gutter" | "line" | "all";
+export type EditorMultiCursorModifier = "ctrlCmd" | "alt";
+export type EditorAcceptSuggestionOnEnter = "on" | "smart" | "off";
+export type EditorSnippetSuggestions = "top" | "bottom" | "inline" | "none";
+export type EditorOccurrencesHighlight = "off" | "singleFile" | "multiFile";
+export type EditorAutoClosingBrackets =
+  | "always"
+  | "languageDefined"
+  | "beforeWhitespace"
+  | "never";
+export type EditorAutoSurround = "languageDefined" | "quotes" | "brackets" | "never";
 /// Monaco's cursor vocabulary, not xterm's — `line` where the terminal says
 /// `bar`. Kept separate from `CursorStyle` rather than mapped, because the two
 /// surfaces genuinely have different option sets and a shared type would have
@@ -56,7 +72,17 @@ export type EditorAutoSave = "off" | "afterDelay" | "onFocusChange";
 /// only takes effect after a reload is a bug, not a limitation, so a new field
 /// that Monaco can only consume at construction time does not belong in this
 /// interface without a note saying why.
-export interface EditorSettings {
+///
+/// **Every field here needs an entry in `settingsSchema.ts`,** and the compiler
+/// enforces it: the schema is declared `satisfies` a mapped type over these
+/// keys, so adding a field without a schema entry fails to build. The entry is
+/// where the default, the constraints and the description live — this interface
+/// is only the shape.
+///
+/// `EditorCoreSettings` is the per-setting half; `EditorSettings` adds the
+/// override map, which is not itself a setting. Splitting them is what keeps
+/// `Partial<EditorCoreSettings>` from being recursive.
+export interface EditorCoreSettings {
   fontFamily: string;
   fontSize: number;
   /// Monaco's own convention: `0` computes the height from the font size, and
@@ -65,18 +91,51 @@ export interface EditorSettings {
   fontLigatures: boolean;
   tabSize: number;
   insertSpaces: boolean;
+  /// Guess `tabSize` / `insertSpaces` from the file's contents. Applied live by
+  /// calling `model.detectIndentation`, not only at model creation — see
+  /// `applyModelSettings` in `monaco.ts`.
+  detectIndentation: boolean;
+  trimAutoWhitespace: boolean;
   wordWrap: EditorWordWrap;
   wordWrapColumn: number;
+  wrappingIndent: EditorWrappingIndent;
   minimap: boolean;
   stickyScroll: boolean;
   bracketPairColorization: boolean;
   renderWhitespace: EditorRenderWhitespace;
+  renderFinalNewline: EditorRenderFinalNewline;
+  /// Columns to draw a vertical rule at. Empty means none.
+  rulers: number[];
   indentGuides: boolean;
+  bracketPairGuides: boolean;
   lineNumbers: EditorLineNumbers;
+  renderLineHighlight: EditorRenderLineHighlight;
+  folding: boolean;
+  foldingStrategy: EditorFoldingStrategy;
+  showFoldingControls: EditorShowFoldingControls;
   cursorStyle: EditorCursorStyle;
   cursorBlinking: EditorCursorBlinking;
+  cursorSurroundingLines: number;
+  multiCursorModifier: EditorMultiCursorModifier;
   smoothScrolling: boolean;
   scrollBeyondLastLine: boolean;
+  mouseWheelZoom: boolean;
+  scrollbarVerticalSize: number;
+  scrollbarHorizontalSize: number;
+  suggestOnTriggerCharacters: boolean;
+  /// Suggest as you type. Maps to Monaco's `{ other, comments, strings }`
+  /// object with comments and strings left off, which is its default.
+  quickSuggestions: boolean;
+  acceptSuggestionOnEnter: EditorAcceptSuggestionOnEnter;
+  snippetSuggestions: EditorSnippetSuggestions;
+  inlayHints: boolean;
+  parameterHints: boolean;
+  occurrencesHighlight: EditorOccurrencesHighlight;
+  selectionHighlight: boolean;
+  unicodeHighlight: boolean;
+  autoClosingBrackets: EditorAutoClosingBrackets;
+  autoSurround: EditorAutoSurround;
+  linkedEditing: boolean;
   formatOnSave: boolean;
   trimTrailingWhitespaceOnSave: boolean;
   insertFinalNewlineOnSave: boolean;
@@ -101,6 +160,17 @@ export interface EditorSettings {
   /// it on `PATH`", which is the case for everyone who installed it normally.
   lspServerPaths: Record<string, string>;
 }
+
+/// The editor settings plus the per-language override map.
+///
+/// Overrides are keyed by **Monaco language id** (`typescript`, `rust`), not by
+/// file extension — the same idiom `lspServerPaths` uses for server ids, and
+/// the only key a model can actually be asked for. A patch holds just the
+/// fields it overrides; everything absent inherits. `effectiveEditorSettings`
+/// in `settingsSchema.ts` is the one place they are resolved.
+export type EditorSettings = EditorCoreSettings & {
+  languageOverrides: Record<string, Partial<EditorCoreSettings>>;
+};
 
 export interface UiSettings {
   textSize: UiTextSize;
@@ -228,39 +298,15 @@ const DEFAULTS: AppSettings = {
     scrollSensitivity: 1,
     scrollOnUserInput: true,
   },
-  /// Chosen to reproduce exactly what the editor did before it was
-  /// configurable: the old hardcoded `SHARED_EDITOR_OPTIONS` for the keys it
-  /// set, and Monaco's own defaults for the keys it left alone. An existing
-  /// install therefore sees no visual change on upgrade — the pane starts
-  /// where the editor already was.
-  editor: {
-    fontFamily: "'Geist Mono Variable', 'Geist Mono', monospace",
-    fontSize: 13,
-    lineHeight: 0, // 0 = derive from font size, which is what Monaco was doing
-    fontLigatures: false,
-    tabSize: 4,
-    insertSpaces: true,
-    wordWrap: "off",
-    wordWrapColumn: 80,
-    minimap: false,
-    stickyScroll: false,
-    bracketPairColorization: false,
-    renderWhitespace: "selection",
-    indentGuides: true,
-    lineNumbers: "on",
-    cursorStyle: "line",
-    cursorBlinking: "blink",
-    smoothScrolling: false,
-    scrollBeyondLastLine: false,
-    formatOnSave: false,
-    trimTrailingWhitespaceOnSave: false,
-    insertFinalNewlineOnSave: false,
-    autoSave: "off",
-    autoSaveDelayMs: 1000,
-    vimMode: false,
-    lspEnabled: true,
-    lspServerPaths: {},
-  },
+  /// Derived from `settingsSchema.ts` rather than written out here, so the
+  /// defaults, the parse and the dialog cannot drift apart.
+  ///
+  /// The schema's values were chosen to reproduce exactly what the editor did
+  /// before it was configurable: the old hardcoded `SHARED_EDITOR_OPTIONS` for
+  /// the keys it set, and Monaco's own defaults for the keys it left alone. An
+  /// existing install therefore sees no visual change on upgrade — only new
+  /// controls.
+  editor: defaultEditorSettings(),
   ai: {
     commitCommand: "",
     agentCommand: "",
@@ -285,6 +331,12 @@ function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | unde
 /// payload saved before a section existed loads with that section's defaults
 /// filled in — is testable without a browser. Every new top-level section needs
 /// a line here or it silently stays `undefined` for every existing install.
+///
+/// The editor section is the one that does not use `mergeDefaults`: it goes
+/// through `parseEditorSettings`, which fills from the schema *and* validates,
+/// so a stale enum member or an out-of-range number cannot reach Monaco. Keys
+/// the schema has never heard of still survive the round-trip, which is what
+/// stops an older build from eating a newer one's config.
 export function parseSettings(raw: string | null): AppSettings {
   try {
     if (!raw) return JSON.parse(JSON.stringify(DEFAULTS));
@@ -294,7 +346,7 @@ export function parseSettings(raw: string | null): AppSettings {
       terminal: mergeDefaults(DEFAULTS.terminal, parsed.terminal),
       // Absent in every payload saved before the editor became configurable,
       // which is every payload on disk today.
-      editor: mergeDefaults(DEFAULTS.editor, parsed.editor),
+      editor: parseEditorSettings(parsed.editor),
       ai: mergeDefaults(DEFAULTS.ai, parsed.ai),
       brain: mergeDefaults(DEFAULTS.brain, parsed.brain),
       git: mergeDefaults(DEFAULTS.git, parsed.git),

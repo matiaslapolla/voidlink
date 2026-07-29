@@ -13,8 +13,9 @@
 
 import { createEffect, on, onCleanup, onMount } from "solid-js";
 import type * as Monaco from "monaco-editor";
-import { editorOptions, inferLanguage, loadMonaco, modelOptions } from "./monaco";
+import { applyModelSettings, editorOptions, inferLanguage, loadMonaco } from "./monaco";
 import { useSettings } from "@/store/settings";
+import { effectiveEditorSettings } from "@/store/settingsSchema";
 import { applyVoidlinkTheme, monacoThemeName } from "./monacoTheme";
 import { useTheme } from "@/store/theme";
 
@@ -57,19 +58,25 @@ function useMonacoThemeSync(getMonaco: () => typeof Monaco | null) {
 /// created once and then live for the lifetime of a diff or merge tab — so the
 /// same derivation that seeds `create` also feeds `updateOptions`. `tabSize` and
 /// `insertSpaces` go to the models rather than the editor; see `monaco.ts`.
+///
+/// Per-language overrides are resolved here rather than by the caller, which is
+/// what keeps this and `editorController.applyEditorSettings` the only two
+/// paths by which a setting reaches Monaco. `languageId` is the pane's — a diff
+/// pane shows one file, so both of its models are in the same language.
 function useEditorOptionsSync(
   getEditor: () => {
     updateOptions(o: Monaco.editor.IEditorOptions & Monaco.editor.IGlobalEditorOptions): void;
   } | null,
   getModels: () => (Monaco.editor.ITextModel | null)[],
+  getLanguageId: () => string | null,
 ) {
   const { settings } = useSettings();
   createEffect(
     on(
-      () => [editorOptions(settings.editor), modelOptions(settings.editor)] as const,
-      ([opts, mOpts]) => {
-        getEditor()?.updateOptions(opts);
-        for (const m of getModels()) m?.updateOptions(mOpts);
+      () => effectiveEditorSettings(settings.editor, getLanguageId()),
+      (resolved) => {
+        getEditor()?.updateOptions(editorOptions(resolved));
+        for (const m of getModels()) if (m) applyModelSettings(m, resolved);
       },
       { defer: true },
     ),
@@ -100,9 +107,11 @@ export function MonacoPane(props: MonacoPaneProps) {
   /// Set while we push `props.text` into the model, so the resulting change
   /// event isn't mistaken for the user typing and echoed back to the parent.
   let applyingExternal = false;
+  const language = () => inferLanguage(props.path);
+  const resolved = () => effectiveEditorSettings(settings.editor, language());
 
   useMonacoThemeSync(() => monacoRef);
-  useEditorOptionsSync(() => editor, () => [model]);
+  useEditorOptionsSync(() => editor, () => [model], language);
 
   onMount(async () => {
     const monaco = await loadMonaco();
@@ -110,12 +119,12 @@ export function MonacoPane(props: MonacoPaneProps) {
     applyVoidlinkTheme(monaco, mode());
     model = monaco.editor.createModel(
       props.text,
-      inferLanguage(props.path),
+      language(),
       scratchUri(monaco, props.path, props.readOnly ? "ro" : "rw"),
     );
-    model.updateOptions(modelOptions(settings.editor));
+    applyModelSettings(model, resolved());
     editor = monaco.editor.create(container, {
-      ...editorOptions(settings.editor),
+      ...editorOptions(resolved()),
       model,
       theme: monacoThemeName(mode()),
       readOnly: props.readOnly ?? false,
@@ -186,29 +195,31 @@ export function MonacoDiffPane(props: MonacoDiffPaneProps) {
   let originalModel: Monaco.editor.ITextModel | null = null;
   let modifiedModel: Monaco.editor.ITextModel | null = null;
   let applyingExternal = false;
+  const language = () => inferLanguage(props.path);
+  const resolved = () => effectiveEditorSettings(settings.editor, language());
 
   useMonacoThemeSync(() => monacoRef);
-  useEditorOptionsSync(() => editor, () => [originalModel, modifiedModel]);
+  useEditorOptionsSync(() => editor, () => [originalModel, modifiedModel], language);
 
   onMount(async () => {
     const monaco = await loadMonaco();
     monacoRef = monaco;
     applyVoidlinkTheme(monaco, mode());
-    const language = inferLanguage(props.path);
+    const languageId = language();
     originalModel = monaco.editor.createModel(
       props.original,
-      language,
+      languageId,
       scratchUri(monaco, props.path, "original"),
     );
     modifiedModel = monaco.editor.createModel(
       props.modified,
-      language,
+      languageId,
       scratchUri(monaco, props.path, "modified"),
     );
-    originalModel.updateOptions(modelOptions(settings.editor));
-    modifiedModel.updateOptions(modelOptions(settings.editor));
+    applyModelSettings(originalModel, resolved());
+    applyModelSettings(modifiedModel, resolved());
     editor = monaco.editor.createDiffEditor(container, {
-      ...editorOptions(settings.editor),
+      ...editorOptions(resolved()),
       theme: monacoThemeName(mode()),
       renderSideBySide: props.sideBySide,
       ignoreTrimWhitespace: props.ignoreWhitespace ?? false,

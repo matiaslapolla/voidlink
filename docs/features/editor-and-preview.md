@@ -133,14 +133,28 @@ checkout touching 200 files produces 200 silent reloads and no interruptions.
 
 ### Settings
 
-`Settings → Editor` configures the editor surface: font family/size/line
-height/ligatures, indentation (tab size, spaces, guides), wrapping, line
-numbers, whitespace rendering, minimap, sticky scroll, bracket colours, cursor
-style and blinking, scrolling, the save pipeline, and Vim mode.
+`Settings → Editor` configures the editor surface across thirteen sections:
+font, indentation, wrapping, display, scrolling, folding, cursor, suggestions,
+highlighting, editing, save, keybindings and language servers. It has a search
+box, a `Modified (n)` filter, a per-setting reset, per-language overrides and a
+JSON view — see [settings](./settings.md#editor) for all of it.
 
 Every setting applies to the running editor — there is no "restart to apply"
 row. The diff and merge panes read the same settings, so all three surfaces
 share one typeface and rhythm.
+
+**Per-language overrides** are keyed by Monaco language id: `[rust]
+editor.tabSize = 4` makes Rust buffers use four-space tabs while a TypeScript
+buffer beside them keeps two. They resolve in exactly two places —
+`editorController.applyEditorSettings` for the file tabs and
+`useEditorOptionsSync` for the diff and merge panes — which is what keeps the
+"applies live" rule enforceable. A buffer whose language changes re-resolves
+without being closed.
+
+**Indentation detection** (`editor.detectIndentation`, on by default) guesses
+tab size and spaces-vs-tabs from the file's own contents when it opens, and is
+re-run on every open buffer when the setting changes — Monaco only applies it at
+model creation, so VoidLink calls `model.detectIndentation` itself.
 
 **Vim mode** is off by default and loads `monaco-vim` on demand, so leaving it
 off costs nothing. With it on, the current mode (`NORMAL`, `INSERT`,

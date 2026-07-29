@@ -120,6 +120,8 @@ export const ACTION_IDS = [
   "tab.select.8",
   "tab.select.9",
   "tab.select.last",
+  // Settings
+  "settings.goto",
 ] as const;
 
 export type ActionId = (typeof ACTION_IDS)[number];
