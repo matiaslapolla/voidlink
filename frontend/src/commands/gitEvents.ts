@@ -17,29 +17,66 @@ const REFRESH_EVENT = "voidlink:refresh-git";
 /// delayed and comfortably wider than a burst of synchronous emits.
 export const GIT_REFRESH_COALESCE_MS = 40;
 
+/// What a pulse carries: whether it originated in *another* window.
+///
+/// The cross-window bridge (`api/windows.ts`) re-broadcasts local pulses to the
+/// other windows and converts remote ones back into local pulses. It used to tell
+/// the two apart with a latch held across a synchronous dispatch — which the
+/// coalescing here breaks, since the dispatch now happens after the latch is
+/// released. Marking the pulse instead is the version that cannot ping-pong: a
+/// remote-originated pulse is never re-published.
+export interface GitRefsPulse {
+  remote: boolean;
+}
+
 let pending: ReturnType<typeof setTimeout> | null = null;
+/// True while every emit in the current burst came from another window.
+let pendingRemoteOnly = true;
+
+function schedule(remote: boolean): void {
+  if (!remote) pendingRemoteOnly = false;
+  if (pending !== null) return;
+  pending = setTimeout(dispatchPulse, GIT_REFRESH_COALESCE_MS);
+}
+
+function dispatchPulse(): void {
+  if (pending !== null) clearTimeout(pending);
+  pending = null;
+  const remote = pendingRemoteOnly;
+  pendingRemoteOnly = true;
+  window.dispatchEvent(
+    new CustomEvent<GitRefsPulse>(REFRESH_EVENT, { detail: { remote } }),
+  );
+}
 
 /// Ask every git surface to refresh. Bursts collapse into one pulse.
 export function emitGitRefsChanged(): void {
-  if (pending !== null) return;
-  pending = setTimeout(() => {
-    pending = null;
-    window.dispatchEvent(new CustomEvent(REFRESH_EVENT));
-  }, GIT_REFRESH_COALESCE_MS);
+  schedule(false);
+}
+
+/// A pulse that came from another window. Identical for subscribers; the bridge
+/// uses the flag to avoid publishing it straight back.
+export function emitRemoteGitRefsChanged(): void {
+  schedule(true);
 }
 
 /// Send any pending pulse immediately. For tests, and for a caller that is about
 /// to tear the window down and still wants the other windows to hear it.
 export function flushGitRefsChanged(): void {
   if (pending === null) return;
-  clearTimeout(pending);
-  pending = null;
-  window.dispatchEvent(new CustomEvent(REFRESH_EVENT));
+  dispatchPulse();
 }
 
 /// Subscribe to ref-change pulses. Returns an unsubscribe fn; pass it to
 /// SolidJS `onCleanup`. Use in any pane that owns a git-derived resource.
-export function onGitRefsChanged(handler: () => void): () => void {
-  window.addEventListener(REFRESH_EVENT, handler);
-  return () => window.removeEventListener(REFRESH_EVENT, handler);
+///
+/// The handler receives the pulse: panes ignore it (a refresh is a refresh), the
+/// cross-window bridge reads `remote` to decide whether to re-publish.
+export function onGitRefsChanged(handler: (pulse: GitRefsPulse) => void): () => void {
+  const listener = (e: Event) => {
+    const detail = (e as CustomEvent<GitRefsPulse>).detail;
+    handler(detail ?? { remote: false });
+  };
+  window.addEventListener(REFRESH_EVENT, listener);
+  return () => window.removeEventListener(REFRESH_EVENT, listener);
 }

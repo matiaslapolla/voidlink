@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 class FakeWindow extends EventTarget {}
 
 let emitGitRefsChanged: typeof import("./gitEvents").emitGitRefsChanged;
+let emitRemoteGitRefsChanged: typeof import("./gitEvents").emitRemoteGitRefsChanged;
 let onGitRefsChanged: typeof import("./gitEvents").onGitRefsChanged;
 let flushGitRefsChanged: typeof import("./gitEvents").flushGitRefsChanged;
 let COALESCE_MS: number;
@@ -16,6 +17,7 @@ beforeEach(async () => {
   vi.resetModules();
   const mod = await import("./gitEvents");
   emitGitRefsChanged = mod.emitGitRefsChanged;
+  emitRemoteGitRefsChanged = mod.emitRemoteGitRefsChanged;
   onGitRefsChanged = mod.onGitRefsChanged;
   flushGitRefsChanged = mod.flushGitRefsChanged;
   COALESCE_MS = mod.GIT_REFRESH_COALESCE_MS;
@@ -68,6 +70,37 @@ describe("emitGitRefsChanged", () => {
     // The cancelled timer must not fire a second time.
     vi.advanceTimersByTime(COALESCE_MS * 2);
     expect(pulses).toBe(1);
+
+    off();
+  });
+
+  it("marks a pulse that came from another window", () => {
+    // The cross-window bridge re-publishes local pulses and must never
+    // re-publish remote ones — that is an infinite ping-pong between windows.
+    // It used to tell them apart with a latch held across a synchronous
+    // dispatch, which coalescing breaks.
+    const seen: boolean[] = [];
+    const off = onGitRefsChanged((pulse) => seen.push(pulse.remote));
+
+    emitRemoteGitRefsChanged();
+    vi.advanceTimersByTime(COALESCE_MS);
+    emitGitRefsChanged();
+    vi.advanceTimersByTime(COALESCE_MS);
+    expect(seen).toEqual([true, false]);
+
+    off();
+  });
+
+  it("treats a burst containing any local emit as local", () => {
+    // A remote pulse arriving mid-burst must not stop our own mutation from
+    // reaching the other windows.
+    const seen: boolean[] = [];
+    const off = onGitRefsChanged((pulse) => seen.push(pulse.remote));
+
+    emitRemoteGitRefsChanged();
+    emitGitRefsChanged();
+    vi.advanceTimersByTime(COALESCE_MS);
+    expect(seen).toEqual([false]);
 
     off();
   });
