@@ -13,6 +13,7 @@ import {
 } from "@/store/settings";
 import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
+import { resetLayoutStorage } from "@/store/layout";
 import { stackApi } from "@/api/stack";
 import { secretsApi, type SecretStatus } from "@/api/secrets";
 import { pushToast } from "@/commands/toast";
@@ -213,6 +214,67 @@ function UiPane() {
           Stacked keeps all three in this window, switched from the title bar —
           switching to it closes any satellite window already open.
         </p>
+      </div>
+      <ResetLayoutRow />
+    </div>
+  );
+}
+
+/// The `--reset-layout` escape hatch: clear every layout key and reload.
+///
+/// Layout state is the one thing in this app that can render the shell
+/// unusable — a pane tree that claims tabs that do not exist, a panel dragged
+/// to zero, a blob half-written by a crash. `resetLayoutStorage()` clears
+/// exactly the layout keys: settings, provider keys, themes and *saved
+/// snapshots* are all untouched, which is why this can sit next to the
+/// ordinary UI preferences instead of behind a support ticket.
+function ResetLayoutRow() {
+  const [confirming, setConfirming] = createSignal(false);
+  return (
+    <div class="flex items-center gap-3">
+      <div class="w-28 shrink-0">
+        <div class="text-muted-foreground">Layout</div>
+        <div class="text-[10px] text-muted-foreground/70 leading-tight">
+          Tabs, panes, panel widths
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button
+          onClick={() => {
+            if (!confirming()) {
+              setConfirming(true);
+              return;
+            }
+            resetLayoutStorage();
+            window.location.reload();
+          }}
+          aria-label={
+            confirming()
+              ? "Confirm resetting the layout and reload"
+              : "Reset the layout to defaults"
+          }
+          title={
+            confirming()
+              ? "Click again to clear tabs, panes and panel widths, then reload"
+              : "Clears tabs, panes and panel widths. Settings, provider keys and saved snapshots are kept."
+          }
+          class={`px-3 py-1 rounded border text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+            confirming()
+              ? "border-destructive/50 bg-destructive/10 text-destructive"
+              : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+          }`}
+        >
+          {confirming() ? "Confirm reset & reload" : "Reset layout"}
+        </button>
+        <Show when={confirming()}>
+          <button
+            onClick={() => setConfirming(false)}
+            aria-label="Cancel the layout reset"
+            class="px-2 py-1 rounded text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Cancel
+          </button>
+        </Show>
       </div>
     </div>
   );

@@ -18,8 +18,13 @@ import { MainSurface } from "@/components/layout/MainSurface";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { GitSidebar, GitSidebarCollapsed } from "@/components/git/GitSidebar";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
+import { SnapshotManager } from "@/components/layout/SnapshotManager";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
-import { createAppStore } from "@/store/layout";
+import {
+  createAppStore,
+  setCorruptKeyHandler,
+  setPersistenceErrorHandler,
+} from "@/store/layout";
 import { isMac } from "@/api/platform";
 import { isZen, toggleMaximizedGroup, toggleZen } from "@/store/focusMode";
 import { CommandPalette } from "@/commands/CommandPalette";
@@ -66,7 +71,7 @@ import { pushToast } from "@/commands/toast";
 import { requestAiCommitDraft } from "@/commands/aiCommit";
 import { toggleAgentPanel } from "@/commands/agent";
 import { AgentPanel } from "@/components/agent/AgentPanel";
-import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
+import { snapshotsFor, snapshotTabCount } from "@/commands/snapshots";
 import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
 import { setOverlayOpen } from "@/commands/overlay";
 import { agentPanelOpen } from "@/commands/agent";
@@ -108,7 +113,11 @@ const EditorView = lazy(() =>
 );
 const GitView = lazy(() => import("@/GitApp").then((m) => ({ default: m.GitSurface })));
 
-function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) {
+function AppInner(props: {
+  onOpenSettings: () => void;
+  settingsOpen: boolean;
+  onOpenSnapshots: () => void;
+}) {
   const {
     state,
     activeWorkspace,
@@ -860,30 +869,28 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
           pushToast(`Snapshot "${name}" saved`, "success");
         },
       },
-      // Dynamic entries — one restore + one delete per saved snapshot for
-      // the active workspace. Re-registers each effect run.
-      ...snapshotsFor(state.activeWorktreeId).flatMap<Action>((snap) => [
-        {
-          id: `snapshot.restore.${snap.name}`,
-          label: `Snapshot: restore "${snap.name}"`,
-          description: `${snap.files.length} files · ${snap.terminals.length} terminals · ${snap.compares.length} compares`,
-          group: "Workspace",
-          run: async () => {
-            const ok = await actions.restoreWorkspaceSnapshot(state.activeWorktreeId, snap.name);
-            if (!ok) pushToast(`Snapshot "${snap.name}" not found`, "error");
-            else pushToast(`Restored "${snap.name}"`, "success");
-          },
+      {
+        id: "snapshot.manage",
+        label: "Snapshot: manage saved snapshots…",
+        description: "Restore, rename or delete a saved session",
+        group: "Workspace",
+        run: () => props.onOpenSnapshots(),
+      },
+      // Dynamic entries — one restore per saved snapshot for the active
+      // worktree, re-registered on each effect run. Delete and rename live in
+      // the snapshot manager: they are destructive and need to be seen next to
+      // what they act on, which a palette row cannot show.
+      ...snapshotsFor(state.activeWorktreeId).map<Action>((snap) => ({
+        id: `snapshot.restore.${snap.name}`,
+        label: `Snapshot: restore "${snap.name}"`,
+        description: `${snapshotTabCount(snap)} tabs`,
+        group: "Workspace",
+        run: async () => {
+          const ok = await actions.restoreWorkspaceSnapshot(state.activeWorktreeId, snap.name);
+          if (!ok) pushToast(`Snapshot "${snap.name}" not found`, "error");
+          else pushToast(`Restored "${snap.name}"`, "success");
         },
-        {
-          id: `snapshot.delete.${snap.name}`,
-          label: `Snapshot: delete "${snap.name}"`,
-          group: "Workspace",
-          run: () => {
-            removeSnapshot(state.activeWorktreeId, snap.name);
-            pushToast(`Deleted "${snap.name}"`, "info");
-          },
-        },
-      ]),
+      })),
     ];
     const dispose = registerActions(list);
 
@@ -1375,13 +1382,41 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   );
 }
 
+/// The two things the layout store cannot fix by itself, wired before the
+/// store is created so the very first read can report.
+///
+/// A quarantined blob is a *failure* the user did not ask for and cannot see
+/// otherwise — their panes are back to defaults and nothing on screen says
+/// why — so it is `assertive` (MASTER §10.10). A failed write is a warning:
+/// the session in front of them is still correct, only its durability is lost.
+setCorruptKeyHandler((key) =>
+  pushToast(
+    `Saved layout state in "${key}" was unreadable and has been reset to defaults. Everything else was kept.`,
+    "error",
+    8000,
+  ),
+);
+setPersistenceErrorHandler((key) =>
+  pushToast(
+    `Couldn't save layout state ("${key}") — storage is full or unavailable. This session still works; it may not come back after a reload.`,
+    "warning",
+    8000,
+  ),
+);
+
 export default function App() {
   const store = createAppStore();
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [snapshotsOpen, setSnapshotsOpen] = createSignal(false);
   return (
     <AppStoreContext.Provider value={store}>
-      <AppInner onOpenSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen()} />
+      <AppInner
+        onOpenSettings={() => setSettingsOpen(true)}
+        settingsOpen={settingsOpen()}
+        onOpenSnapshots={() => setSnapshotsOpen(true)}
+      />
       <SettingsDialog open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+      <SnapshotManager open={snapshotsOpen()} onClose={() => setSnapshotsOpen(false)} />
     </AppStoreContext.Provider>
   );
 }

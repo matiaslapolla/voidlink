@@ -333,6 +333,42 @@ export function serializePaneLayout(node: PaneNode): unknown {
   return node;
 }
 
+/// Rewrite every tab reference in the tree through `map`, dropping the ones it
+/// cannot translate (`null`).
+///
+/// This is what lets a snapshot carry pane geometry at all. A snapshot is
+/// addressed by *content* — `file:/repo/main.ts`, not a uuid — so saving one
+/// maps claims from tab ids to content keys and restoring one maps them back
+/// to the freshly minted ids. Group ids and ratios are untouched: they name
+/// panes, not tabs.
+export function mapPaneTabIds(
+  node: PaneNode,
+  map: (tabId: string) => string | null,
+): PaneNode {
+  if (node.kind === "group") {
+    const tabIds = node.group.tabIds
+      .map(map)
+      .filter((id): id is string => id !== null && id.length > 0);
+    const active = node.group.activeTabId === null ? null : map(node.group.activeTabId);
+    return {
+      kind: "group",
+      id: node.id,
+      group: {
+        id: node.group.id,
+        tabIds,
+        activeTabId: active && tabIds.includes(active) ? active : null,
+      },
+    };
+  }
+  return {
+    kind: "split",
+    id: node.id,
+    orientation: node.orientation,
+    ratios: [...node.ratios],
+    children: node.children.map((child) => mapPaneTabIds(child, map)),
+  };
+}
+
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 

@@ -29,8 +29,17 @@ function ToastRow(props: { toast: Toast }) {
         return <Info class="w-3.5 h-3.5 text-info shrink-0" />;
     }
   };
+  // §10.10: anything the app surfaces unprompted needs a live region, and a
+  // failure is the one case that may interrupt — `assertive` for errors,
+  // `polite` for everything else. A toast that only exists visually is not a
+  // notification for a screen-reader user.
+  const isFailure = () => props.toast.kind === "error";
   return (
-    <div class="pointer-events-auto min-w-[240px] max-w-[420px] bg-popover border border-border rounded-md shadow-lg px-3 py-2 flex items-start gap-2 text-xs">
+    <div
+      role={isFailure() ? "alert" : "status"}
+      aria-live={isFailure() ? "assertive" : "polite"}
+      class="pointer-events-auto min-w-[240px] max-w-[420px] bg-popover border border-border rounded-md shadow-lg px-3 py-2 flex items-start gap-2 text-xs"
+    >
       <Icon />
       <span class="flex-1 leading-snug">{props.toast.message}</span>
       <button

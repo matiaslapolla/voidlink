@@ -111,9 +111,16 @@ export type ActiveItem =
 /// Snapshot of a closed tab kept so `reopenLastClosedTab` can recreate
 /// it. We capture *enough state* to reconstruct, not the original id —
 /// reopening always produces a fresh id so we don't collide with any
-/// future tab. Terminals aren't snapshot-able (the PTY is gone).
+/// future tab.
+///
+/// All ten kinds are here, not the four this union started with. A terminal's
+/// PTY really is gone, but its cwd and label are exactly what a *new* terminal
+/// in the same place needs — the same trade session restore already makes —
+/// and "close a terminal by accident, lose the pane" was the single most
+/// common thing the four-kind union could not undo.
 export type ClosedTab =
   | { type: "file"; path: string }
+  | { type: "terminal"; label: string; cwd: string }
   | { type: "diff"; filePath: string }
   | {
       type: "compare";
@@ -124,7 +131,12 @@ export type ClosedTab =
       treeMode: CompareTreeMode;
       treeFilter: string;
     }
-  | { type: "stack"; trunk: string; topBranch: string };
+  | { type: "stack"; trunk: string; topBranch: string }
+  | { type: "conflict"; filePath: string }
+  | { type: "history" }
+  | { type: "preview"; filePath: string }
+  | { type: "brain" }
+  | { type: "browser"; url: string; title?: string };
 
 // ── The registry ──────────────────────────────────────────────────────────
 
@@ -180,6 +192,20 @@ export interface TabStorage {
   field?: "files" | "diffs" | "conflicts" | "previews";
 }
 
+/// What a `restore()` is allowed to reach for. Deliberately tiny: restoring a
+/// tab is a pure projection of its payload for nine of the ten kinds, and the
+/// tenth needs one process spawned.
+export interface TabRestoreContext {
+  /// The restoring worktree's directory. A terminal's fresh PTY is rooted here
+  /// and not at the persisted `cwd`: the saved path may not exist any more,
+  /// and a worktree's shells belong in that worktree.
+  worktreePath: string;
+  /// Spawn a PTY and return its id, or throw. Absent in a window that hydrates
+  /// the same state but owns none of the processes (the git window), in which
+  /// case terminal tabs simply do not restore there.
+  spawnPty?: (cwd: string) => Promise<string>;
+}
+
 export interface TabKindSpec<K extends TabKind = TabKind> {
   kind: K;
   /// The `AppStoreState` field holding `Record<worktreeId, T[]>`.
@@ -195,6 +221,15 @@ export interface TabKindSpec<K extends TabKind = TabKind> {
   /// validation — this is user-editable JSON on disk, and a malformed entry
   /// should cost one tab, not the boot.
   deserialize(raw: unknown): TabTypes[K] | null;
+  /// Bring a persisted tab back on boot. Nine kinds are `deserialize` with a
+  /// promise around it; the terminal is why the promise is there at all.
+  ///
+  /// A restored tab keeps its **persisted id**. Pins, pane-tree claims, the
+  /// MRU, the nav history and the saved active-tab pointer are all id-keyed,
+  /// so minting a fresh id here would restore the tabs and lose everything
+  /// that pointed at them. `null` means "this one could not come back" and
+  /// costs exactly that tab.
+  restore(raw: unknown, ctx: TabRestoreContext): Promise<TabTypes[K] | null>;
   /// "Is this the same tab?" for dedupe on open. Deliberately *not* id
   /// equality: opening the same file twice must find the existing tab.
   equals(a: TabTypes[K], b: TabTypes[K]): boolean;
@@ -230,6 +265,73 @@ function idOnlyTab<T extends { id: string }>(raw: unknown): T | null {
   return { id: raw.id } as T;
 }
 
+/// The three deserializers that are more than a field check, named so
+/// `deserialize` and `restore` can share one definition apiece rather than
+/// drifting into two readings of the same blob.
+function deserializeTerminal(raw: unknown): TerminalSession | null {
+  if (!isRecord(raw)) return null;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.label !== "string" ||
+    typeof raw.cwd !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: raw.id,
+    // A persisted PTY id names a process that died with the app. It is kept
+    // in the blob for shape stability and defaulted when absent; nothing
+    // downstream may use it without spawning first.
+    ptyId: typeof raw.ptyId === "string" ? raw.ptyId : "",
+    label: raw.label,
+    cwd: raw.cwd,
+  };
+}
+
+function deserializeCompare(raw: unknown): CompareTab | null {
+  if (!isRecord(raw)) return null;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.baseRef !== "string" ||
+    typeof raw.headRef !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: raw.id,
+    baseRef: raw.baseRef,
+    headRef: raw.headRef,
+    useMergeBase: typeof raw.useMergeBase === "boolean" ? raw.useMergeBase : true,
+    selectedFilePath: typeof raw.selectedFilePath === "string" ? raw.selectedFilePath : null,
+    treeMode: raw.treeMode === "flat" ? "flat" : "tree",
+    treeFilter: typeof raw.treeFilter === "string" ? raw.treeFilter : "",
+  };
+}
+
+function deserializeStack(raw: unknown): StackTab | null {
+  if (!isRecord(raw)) return null;
+  if (
+    typeof raw.id !== "string" ||
+    typeof raw.trunk !== "string" ||
+    typeof raw.topBranch !== "string"
+  ) {
+    return null;
+  }
+  return { id: raw.id, trunk: raw.trunk, topBranch: raw.topBranch };
+}
+
+function deserializeBrowser(raw: unknown): BrowserTab | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.id !== "string" || typeof raw.url !== "string") return null;
+  return {
+    id: raw.id,
+    url: raw.url,
+    // Absent in state persisted before titles were tracked; the tab label
+    // falls back to the host until the page reports one.
+    title: typeof raw.title === "string" ? raw.title : undefined,
+  };
+}
+
 export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
   file: {
     kind: "file",
@@ -237,6 +339,7 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     storage: { key: STORAGE_KEYS.editorTabs, field: "files" },
     serialize: (t) => ({ id: t.id, path: t.path }),
     deserialize: (raw) => pathTab<OpenFileTab>(raw),
+    restore: async (raw) => pathTab<OpenFileTab>(raw),
     equals: (a, b) => a.path === b.path,
     label: (t) => basename(t.path),
     closedSnapshot: (t) => ({ type: "file", path: t.path }),
@@ -245,26 +348,24 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
   terminal: {
     kind: "terminal",
     stateKey: "terminalsByWorktree",
-    // Memory-only today: a persisted PTY id names a process that died with the
-    // app. Wave 4 restores the *session* (cwd + label) against a fresh PTY,
-    // which is what `deserialize` below is already shaped for.
-    storage: null,
-    serialize: (t) => ({ id: t.id, ptyId: t.ptyId, label: t.label, cwd: t.cwd }),
-    deserialize: (raw) => {
-      if (!isRecord(raw)) return null;
-      if (
-        typeof raw.id !== "string" ||
-        typeof raw.ptyId !== "string" ||
-        typeof raw.label !== "string" ||
-        typeof raw.cwd !== "string"
-      ) {
-        return null;
-      }
-      return { id: raw.id, ptyId: raw.ptyId, label: raw.label, cwd: raw.cwd };
+    /// The session, not the process. What comes back on boot is a tab with the
+    /// same id, label and cwd, in front of a PTY spawned seconds ago.
+    storage: { key: STORAGE_KEYS.terminalTabs },
+    serialize: (t) => ({ id: t.id, label: t.label, cwd: t.cwd }),
+    deserialize: (raw) => deserializeTerminal(raw),
+    restore: async (raw, ctx) => {
+      const saved = deserializeTerminal(raw);
+      if (!saved) return null;
+      // No spawner (a non-owning window) means no terminal. Restoring the row
+      // without a process behind it would render a pane wired to nothing.
+      if (!ctx.spawnPty) return null;
+      const cwd = ctx.worktreePath || saved.cwd;
+      const ptyId = await ctx.spawnPty(cwd);
+      return { id: saved.id, ptyId, label: saved.label, cwd, restored: true };
     },
     equals: (a, b) => a.id === b.id,
     label: (t) => t.label,
-    closedSnapshot: () => null,
+    closedSnapshot: (t) => ({ type: "terminal", label: t.label, cwd: t.cwd }),
   },
 
   diff: {
@@ -273,6 +374,7 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     storage: { key: STORAGE_KEYS.editorTabs, field: "diffs" },
     serialize: (t) => ({ id: t.id, filePath: t.filePath }),
     deserialize: (raw) => filePathTab<DiffTab>(raw),
+    restore: async (raw) => filePathTab<DiffTab>(raw),
     equals: (a, b) => a.filePath === b.filePath,
     label: (t) => basename(t.filePath),
     closedSnapshot: (t) => ({ type: "diff", filePath: t.filePath }),
@@ -283,26 +385,8 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     stateKey: "compareTabsByWorktree",
     storage: { key: STORAGE_KEYS.compareTabs },
     serialize: (t) => ({ ...t }),
-    deserialize: (raw) => {
-      if (!isRecord(raw)) return null;
-      if (
-        typeof raw.id !== "string" ||
-        typeof raw.baseRef !== "string" ||
-        typeof raw.headRef !== "string"
-      ) {
-        return null;
-      }
-      return {
-        id: raw.id,
-        baseRef: raw.baseRef,
-        headRef: raw.headRef,
-        useMergeBase: typeof raw.useMergeBase === "boolean" ? raw.useMergeBase : true,
-        selectedFilePath:
-          typeof raw.selectedFilePath === "string" ? raw.selectedFilePath : null,
-        treeMode: raw.treeMode === "flat" ? "flat" : "tree",
-        treeFilter: typeof raw.treeFilter === "string" ? raw.treeFilter : "",
-      };
-    },
+    deserialize: (raw) => deserializeCompare(raw),
+    restore: async (raw) => deserializeCompare(raw),
     // Refs identify a comparison; the tree filter and selection are view state.
     equals: (a, b) => a.baseRef === b.baseRef && a.headRef === b.headRef,
     label: (t) => `${t.baseRef || "?"}..${t.headRef || "?"}`,
@@ -322,17 +406,8 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     stateKey: "stackTabsByWorktree",
     storage: { key: STORAGE_KEYS.stackTabs },
     serialize: (t) => ({ id: t.id, trunk: t.trunk, topBranch: t.topBranch }),
-    deserialize: (raw) => {
-      if (!isRecord(raw)) return null;
-      if (
-        typeof raw.id !== "string" ||
-        typeof raw.trunk !== "string" ||
-        typeof raw.topBranch !== "string"
-      ) {
-        return null;
-      }
-      return { id: raw.id, trunk: raw.trunk, topBranch: raw.topBranch };
-    },
+    deserialize: (raw) => deserializeStack(raw),
+    restore: async (raw) => deserializeStack(raw),
     equals: (a, b) => a.trunk === b.trunk && a.topBranch === b.topBranch,
     label: (t) => t.topBranch,
     closedSnapshot: (t) => ({ type: "stack", trunk: t.trunk, topBranch: t.topBranch }),
@@ -344,23 +419,28 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     storage: { key: STORAGE_KEYS.editorTabs, field: "conflicts" },
     serialize: (t) => ({ id: t.id, filePath: t.filePath }),
     deserialize: (raw) => filePathTab<ConflictTab>(raw),
+    restore: async (raw) => filePathTab<ConflictTab>(raw),
     equals: (a, b) => a.filePath === b.filePath,
     label: (t) => basename(t.filePath),
-    // A conflict tab is opened *by* the conflicted state of the repo, not by
-    // the user; reopening one whose conflict is resolved would be a lie.
-    closedSnapshot: () => null,
+    // A conflict tab is opened *by* the conflicted state of the repo, so
+    // reopening one whose conflict is resolved shows a merge view with nothing
+    // to merge. That is a worse tab than the one the user asked for and a
+    // better outcome than "reopen-closed silently does nothing for this kind",
+    // which is what the four-kind union gave them.
+    closedSnapshot: (t) => ({ type: "conflict", filePath: t.filePath }),
   },
 
   history: {
     kind: "history",
     stateKey: "historyTabsByWorktree",
-    storage: null,
+    storage: { key: STORAGE_KEYS.historyTabs },
     serialize: (t) => ({ id: t.id }),
     deserialize: (raw) => idOnlyTab<HistoryTab>(raw),
+    restore: async (raw) => idOnlyTab<HistoryTab>(raw),
     // Repo-wide, one per worktree: any two history tabs are the same tab.
     equals: () => true,
     label: () => "History",
-    closedSnapshot: () => null,
+    closedSnapshot: () => ({ type: "history" }),
   },
 
   preview: {
@@ -369,20 +449,22 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     storage: { key: STORAGE_KEYS.editorTabs, field: "previews" },
     serialize: (t) => ({ id: t.id, filePath: t.filePath }),
     deserialize: (raw) => filePathTab<PreviewTab>(raw),
+    restore: async (raw) => filePathTab<PreviewTab>(raw),
     equals: (a, b) => a.filePath === b.filePath,
     label: (t) => basename(t.filePath),
-    closedSnapshot: () => null,
+    closedSnapshot: (t) => ({ type: "preview", filePath: t.filePath }),
   },
 
   brain: {
     kind: "brain",
     stateKey: "brainTabsByWorktree",
-    storage: null,
+    storage: { key: STORAGE_KEYS.brainTabs },
     serialize: (t) => ({ id: t.id }),
     deserialize: (raw) => idOnlyTab<BrainTab>(raw),
+    restore: async (raw) => idOnlyTab<BrainTab>(raw),
     equals: () => true,
     label: () => "Brain",
-    closedSnapshot: () => null,
+    closedSnapshot: () => ({ type: "brain" }),
   },
 
   browser: {
@@ -390,17 +472,8 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     stateKey: "browserTabsByWorktree",
     storage: { key: STORAGE_KEYS.browserTabs },
     serialize: (t) => (t.title === undefined ? { id: t.id, url: t.url } : { ...t }),
-    deserialize: (raw) => {
-      if (!isRecord(raw)) return null;
-      if (typeof raw.id !== "string" || typeof raw.url !== "string") return null;
-      return {
-        id: raw.id,
-        url: raw.url,
-        // Absent in state persisted before titles were tracked; the tab
-        // label falls back to the host until the page reports one.
-        title: typeof raw.title === "string" ? raw.title : undefined,
-      };
-    },
+    deserialize: (raw) => deserializeBrowser(raw),
+    restore: async (raw) => deserializeBrowser(raw),
     // Two tabs on the same site is a normal thing to want, and each owns its
     // own webview — so browser tabs are never deduped by address.
     equals: (a, b) => a.id === b.id,
@@ -412,7 +485,7 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
         return t.url;
       }
     },
-    closedSnapshot: () => null,
+    closedSnapshot: (t) => ({ type: "browser", url: t.url, title: t.title }),
   },
 };
 
@@ -475,6 +548,8 @@ export function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
   switch (a.type) {
     case "file":
       return b.type === "file" && a.path === b.path;
+    case "terminal":
+      return b.type === "terminal" && a.label === b.label && a.cwd === b.cwd;
     case "diff":
       return b.type === "diff" && a.filePath === b.filePath;
     case "compare":
@@ -483,6 +558,78 @@ export function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
       );
     case "stack":
       return b.type === "stack" && a.trunk === b.trunk && a.topBranch === b.topBranch;
+    case "conflict":
+      return b.type === "conflict" && a.filePath === b.filePath;
+    case "preview":
+      return b.type === "preview" && a.filePath === b.filePath;
+    case "browser":
+      return b.type === "browser" && a.url === b.url;
+    // Singletons: same type is same tab.
+    case "history":
+    case "brain":
+      return true;
+  }
+}
+
+/// Validate one persisted closed-tab entry. The reopen history survives
+/// reloads now, which means it is user-editable JSON on disk like everything
+/// else and gets the same treatment: a malformed entry costs that entry.
+export function deserializeClosedTab(raw: unknown): ClosedTab | null {
+  if (!isRecord(raw)) return null;
+  const str = (v: unknown) => (typeof v === "string" ? v : null);
+  switch (raw.type) {
+    case "file": {
+      const path = str(raw.path);
+      return path === null ? null : { type: "file", path };
+    }
+    case "terminal": {
+      const label = str(raw.label);
+      const cwd = str(raw.cwd);
+      return label === null || cwd === null ? null : { type: "terminal", label, cwd };
+    }
+    case "diff": {
+      const filePath = str(raw.filePath);
+      return filePath === null ? null : { type: "diff", filePath };
+    }
+    case "conflict": {
+      const filePath = str(raw.filePath);
+      return filePath === null ? null : { type: "conflict", filePath };
+    }
+    case "preview": {
+      const filePath = str(raw.filePath);
+      return filePath === null ? null : { type: "preview", filePath };
+    }
+    case "compare": {
+      const baseRef = str(raw.baseRef);
+      const headRef = str(raw.headRef);
+      if (baseRef === null || headRef === null) return null;
+      return {
+        type: "compare",
+        baseRef,
+        headRef,
+        useMergeBase: typeof raw.useMergeBase === "boolean" ? raw.useMergeBase : true,
+        selectedFilePath: str(raw.selectedFilePath),
+        treeMode: raw.treeMode === "flat" ? "flat" : "tree",
+        treeFilter: str(raw.treeFilter) ?? "",
+      };
+    }
+    case "stack": {
+      const trunk = str(raw.trunk);
+      const topBranch = str(raw.topBranch);
+      return trunk === null || topBranch === null
+        ? null
+        : { type: "stack", trunk, topBranch };
+    }
+    case "browser": {
+      const url = str(raw.url);
+      return url === null ? null : { type: "browser", url, title: str(raw.title) ?? undefined };
+    }
+    case "history":
+      return { type: "history" };
+    case "brain":
+      return { type: "brain" };
+    default:
+      return null;
   }
 }
 

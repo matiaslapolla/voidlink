@@ -51,8 +51,9 @@ export interface AppStoreState {
   brainTabsByWorktree: Record<string, BrainTab[]>;
   browserTabsByWorktree: Record<string, BrowserTab[]>;
   /// LIFO stack of recently closed tabs, capped at CLOSED_TAB_HISTORY_LIMIT.
-  /// Lives in memory only — closing the app drops the history (matches
-  /// what most editors do with reopen-last-closed).
+  /// Persisted since Wave 4 (`voidlink-closed-tabs`): the tab you closed by
+  /// accident five minutes before a reload is the same mistake on either side
+  /// of it, and every kind can be reopened now rather than four of them.
   closedTabsByWorktree: Record<string, ClosedTab[]>;
   /// Pinned tab IDs per worktree; pins survive close-all-others actions
   /// and render leftmost in the tab strip.
@@ -100,7 +101,7 @@ type _AssertTabKeysExist = TabCollectionKey extends keyof AppStoreState ? true :
 const _assertTabKeysExist: _AssertTabKeysExist = true;
 void _assertTabKeysExist;
 
-export const CLOSED_TAB_HISTORY_LIMIT = 20;
+export const CLOSED_TAB_HISTORY_LIMIT = 50;
 
 /// Create the (empty) tab collections a worktree needs. Called from every
 /// path that introduces a worktree id — workspace creation, wizard, and

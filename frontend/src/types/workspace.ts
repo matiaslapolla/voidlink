@@ -142,4 +142,9 @@ export interface TerminalSession {
   ptyId: string;
   label: string;
   cwd: string;
+  /// True for a session session-restore recreated on boot: the tab id, label
+  /// and cwd are the ones you left, the PTY behind them is brand new and the
+  /// scrollback is gone. Surfaced in the tab's tooltip so the empty terminal
+  /// is never mistaken for a shell that lost its output.
+  restored?: boolean;
 }

@@ -17,6 +17,7 @@ import { terminalApi } from "@/api/terminal";
 import { lastGridSize } from "@/commands/terminalSize";
 import type { TerminalSession } from "@/types/workspace";
 import {
+  SNAPSHOT_VERSION,
   type WorkspaceSnapshot,
   snapshotsFor,
   upsertSnapshot,
@@ -24,7 +25,7 @@ import {
 import {
   STORAGE_KEYS,
   readJson,
-  readRaw,
+  readRawChecked,
   writeJson,
 } from "./persistence";
 import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
@@ -32,7 +33,9 @@ import type { PanelId } from "./prefs";
 import {
   groupList,
   groupOwning,
+  mapPaneTabIds,
   moveTabToGroup,
+  parsePaneLayout,
   parsePaneLayouts,
   pruneClosedTabs,
   removeGroup,
@@ -65,6 +68,7 @@ import {
   TAB_KINDS,
   TAB_SPECS,
   closedTabsEqual,
+  deserializeClosedTab,
   deserializeTabRecord,
   isEditorKind,
   parseEditorTabs,
@@ -72,6 +76,7 @@ import {
 } from "./tabs";
 import type {
   ActiveItem,
+  TabRestoreContext,
   BrainTab,
   BrowserTab,
   ClosedTab,
@@ -84,6 +89,7 @@ import type {
   PreviewTab,
   StackTab,
   TabKind,
+  TabTypes,
 } from "./tabs";
 import { type AppStoreState, CLOSED_TAB_HISTORY_LIMIT } from "./state";
 import {
@@ -135,7 +141,14 @@ export {
   resolveGroupTabs,
 } from "./panes";
 export type { AppStoreState } from "./state";
-export { LAYOUT_STORAGE_KEYS, STORAGE_KEYS, flushWrites, resetLayoutStorage } from "./persistence";
+export {
+  LAYOUT_STORAGE_KEYS,
+  STORAGE_KEYS,
+  flushWrites,
+  resetLayoutStorage,
+  setCorruptKeyHandler,
+  setPersistenceErrorHandler,
+} from "./persistence";
 
 export interface CreateAppStoreOptions {
   /// Whether this store writes its state back to localStorage.
@@ -152,15 +165,66 @@ export interface CreateAppStoreOptions {
 /// Load one kind's persisted collection through the registry. Kinds that share
 /// the editor blob are loaded by `parseEditorTabs` instead, and memory-only
 /// kinds come back empty.
+///
+/// Terminals are excluded on purpose even though they now have a key: their
+/// `restore()` has to spawn a PTY, which cannot happen inside a synchronous
+/// store initialiser. They arrive through `restoreTerminalSessions()` below,
+/// which is the only path that may put a `TerminalSession` in state.
 function loadKindRecord<K extends TabKind>(
   kind: K,
   worktreeIds: string[],
 ): Record<string, unknown[]> {
   const spec = TAB_SPECS[kind];
-  if (!spec.storage || spec.storage.field) {
+  if (!spec.storage || spec.storage.field || kind === "terminal") {
     return Object.fromEntries(worktreeIds.map((id) => [id, [] as unknown[]]));
   }
   return deserializeTabRecord(kind, readJson(spec.storage.key, null), worktreeIds);
+}
+
+/// The workbench's saved front tab, per worktree.
+///
+/// This pointer had never been persisted before Wave 4 — only the editor
+/// window's, which rides inside `voidlink-editor-tabs`. Session restore made
+/// keeping it the obvious call: a reload that brings back nine tabs and then
+/// picks one of them arbitrarily is not a restored session. Editor kinds are
+/// rejected on the way in, because this pointer names a tab the workbench
+/// itself renders and an editor kind here would leave the surface blank.
+function loadActiveItems(worktreeIds: string[]): Record<string, ActiveItem | null> {
+  const out: Record<string, ActiveItem | null> = Object.fromEntries(
+    worktreeIds.map((id) => [id, null]),
+  );
+  const parsed = readJson<Record<string, unknown> | null>(STORAGE_KEYS.activeItem, null);
+  if (!parsed || typeof parsed !== "object") return out;
+  for (const wtId of worktreeIds) {
+    const item = parsed[wtId];
+    if (!item || typeof item !== "object") continue;
+    const candidate = item as { type?: unknown; id?: unknown; path?: unknown };
+    if (typeof candidate.type !== "string" || typeof candidate.id !== "string") continue;
+    if (isEditorKind(candidate.type)) continue;
+    if (!TAB_KINDS.includes(candidate.type as TabKind)) continue;
+    out[wtId] = candidate as ActiveItem;
+  }
+  return out;
+}
+
+/// The reopen-last-closed LIFO, per worktree. Persisted since Wave 4: closing
+/// a tab you wanted five minutes before a reload is the same mistake either
+/// side of that reload.
+function loadClosedTabs(worktreeIds: string[]): Record<string, ClosedTab[]> {
+  const out: Record<string, ClosedTab[]> = Object.fromEntries(
+    worktreeIds.map((id) => [id, [] as ClosedTab[]]),
+  );
+  const parsed = readJson<Record<string, unknown> | null>(STORAGE_KEYS.closedTabs, null);
+  if (!parsed || typeof parsed !== "object") return out;
+  for (const wtId of worktreeIds) {
+    const list = parsed[wtId];
+    if (!Array.isArray(list)) continue;
+    out[wtId] = list
+      .map((entry) => deserializeClosedTab(entry))
+      .filter((t): t is ClosedTab => t !== null)
+      .slice(-CLOSED_TAB_HISTORY_LIMIT);
+  }
+  return out;
 }
 
 function loadPinnedTabs(worktreeIds: string[]): Record<string, string[]> {
@@ -187,7 +251,14 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const emptyPerWorktree = <T,>() =>
     Object.fromEntries(worktreeIds.map((id) => [id, [] as T[]]));
   const activeWorkspaceOnLoad = workspaces.find((w) => w.id === activeId) ?? workspaces[0];
-  const editorTabs = parseEditorTabs(readRaw(STORAGE_KEYS.editorTabs), worktreeIds);
+  const editorTabs = parseEditorTabs(readRawChecked(STORAGE_KEYS.editorTabs), worktreeIds);
+  /// Read before any persist effect can run: the terminal restore below is
+  /// async, and the effect that writes `terminalsByWorktree` fires on the
+  /// store's first tick with the collection still empty.
+  const persistedTerminals = readJson<Record<string, unknown> | null>(
+    STORAGE_KEYS.terminalTabs,
+    null,
+  );
   const [state, setState] = createStore<AppStoreState>({
     workspaces,
     activeWorkspaceId: activeId,
@@ -201,16 +272,19 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     >,
     stackTabsByWorktree: loadKindRecord("stack", worktreeIds) as Record<string, StackTab[]>,
     conflictTabsByWorktree: editorTabs.conflicts,
-    historyTabsByWorktree: emptyPerWorktree<HistoryTab>(),
+    historyTabsByWorktree: loadKindRecord("history", worktreeIds) as Record<
+      string,
+      HistoryTab[]
+    >,
     previewTabsByWorktree: editorTabs.previews,
-    brainTabsByWorktree: emptyPerWorktree<BrainTab>(),
+    brainTabsByWorktree: loadKindRecord("brain", worktreeIds) as Record<string, BrainTab[]>,
     browserTabsByWorktree: loadKindRecord("browser", worktreeIds) as Record<
       string,
       BrowserTab[]
     >,
-    closedTabsByWorktree: emptyPerWorktree<ClosedTab>(),
+    closedTabsByWorktree: loadClosedTabs(worktreeIds),
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
-    activeItemByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
+    activeItemByWorktree: loadActiveItems(worktreeIds),
     editorActiveItemByWorktree: editorTabs.active,
     paneLayoutByWorktree: parsePaneLayouts(
       readJson(STORAGE_KEYS.paneLayout, null),
@@ -262,6 +336,16 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   createEffect(() => {
     if (!persist) return;
     writeJson(STORAGE_KEYS.pinnedTabs, state.pinnedTabsByWorktree);
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    writeJson(STORAGE_KEYS.activeItem, state.activeItemByWorktree);
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    writeJson(STORAGE_KEYS.closedTabs, state.closedTabsByWorktree);
   });
 
   createEffect(() => {
@@ -481,6 +565,48 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     return null;
   }
 
+  /// Bring every persisted terminal session back, in saved order, each against
+  /// a PTY spawned now. The tab keeps its saved id — pins, pane claims, the
+  /// MRU and the restored active-tab pointer are all id-keyed — and is marked
+  /// `restored` so the tab tooltip can say the scrollback is gone rather than
+  /// let an empty pane imply it survived.
+  ///
+  /// Only the window that persists does this. The git window hydrates the same
+  /// state and must not spawn a second set of shells for it.
+  async function restoreTerminalSessions() {
+    if (!persistedTerminals || typeof persistedTerminals !== "object") return;
+    for (const [wtId, rawList] of Object.entries(persistedTerminals)) {
+      if (!Array.isArray(rawList)) continue;
+      const worktreePath = locateWorktree(wtId)?.worktree.path ?? "";
+      // A worktree that has been removed since the last run takes its
+      // terminals with it; there is nowhere to root the shell.
+      if (!worktreePath) continue;
+      const ctx: TabRestoreContext = {
+        worktreePath,
+        spawnPty: (cwd) => terminalApi.createPty(cwd, lastGridSize() ?? undefined),
+      };
+      for (const raw of rawList) {
+        let session: TerminalSession | null = null;
+        try {
+          session = await TAB_SPECS.terminal.restore(raw, ctx);
+        } catch {
+          // A failed spawn costs one terminal, not the rest of the session.
+          session = null;
+        }
+        const restored = session;
+        if (!restored) continue;
+        setState(
+          produce((s) => {
+            const list = s.terminalsByWorktree[wtId];
+            if (!list) return;
+            if (list.some((t) => t.id === restored.id)) return;
+            list.push(restored);
+          }),
+        );
+      }
+    }
+  }
+
   /// Push `tab` to the workspace's closed-tab LIFO. Same snapshot present
   /// multiple times back-to-back collapses to a single entry so closing
   /// the same diff twice doesn't bury other recent closes.
@@ -495,23 +621,47 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     s.closedTabsByWorktree[wtId] = list;
   }
 
+  /// Record a close through the registry, so what a kind keeps in order to be
+  /// reopened is stated once — in its spec — rather than at each close action.
+  function recordClose<K extends TabKind>(
+    s: AppStoreState,
+    wtId: string,
+    kind: K,
+    tab: TabTypes[K],
+  ) {
+    const snapshot = (TAB_SPECS[kind].closedSnapshot as (t: TabTypes[K]) => ClosedTab | null)(
+      tab,
+    );
+    if (snapshot) pushClosed(s, wtId, snapshot);
+  }
+
   /// Reconstruct an ActiveItem from a kind string + id (post-snapshot
   /// restore). For files we need the path too; we look it up by id in
   /// the freshly-restored file list.
   function buildActiveItem(
     kind: string,
     id: string,
-    files: OpenFileTab[],
+    lookup: { files: OpenFileTab[]; previews: PreviewTab[] },
   ): ActiveItem | null {
     switch (kind) {
+      // The two pointers that carry a path alongside the id have to find it
+      // again; the rest are the id and the kind.
       case "file": {
-        const f = files.find((f) => f.id === id);
+        const f = lookup.files.find((f) => f.id === id);
         return f ? { type: "file", id, path: f.path } : null;
+      }
+      case "preview": {
+        const p = lookup.previews.find((p) => p.id === id);
+        return p ? { type: "preview", id, path: p.filePath } : null;
       }
       case "terminal": return { type: "terminal", id };
       case "diff": return { type: "diff", id };
       case "compare": return { type: "compare", id };
       case "stack": return { type: "stack", id };
+      case "conflict": return { type: "conflict", id };
+      case "history": return { type: "history", id };
+      case "brain": return { type: "brain", id };
+      case "browser": return { type: "browser", id };
       default: return null;
     }
   }
@@ -559,6 +709,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const arr = s.terminalsByWorktree[wtId] ?? [];
         const idx = arr.findIndex((t) => t.id === termId);
         if (idx === -1) return;
+        recordClose(s, wtId, "terminal", arr[idx]);
         arr.splice(idx, 1);
         const active = s.activeItemByWorktree[wtId];
         if (active?.type === "terminal" && active.id === termId) {
@@ -1041,13 +1192,18 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
 
     // ── Reopen recently closed ───────────────────────────────────────────
-    /// Pop the workspace's most-recent closed tab and recreate it. Returns
-    /// `true` if anything was reopened. Terminals can't be reopened (the
-    /// PTY is gone), so the LIFO never contains them. We reconstruct the
-    /// tab inline rather than reusing `openXxxTab` actions because those
-    /// trigger focus + dedupe behaviors we want here too (so just call
-    /// them) — but we capture the popped value first to avoid losing it
-    /// inside the produce.
+    /// Pop the worktree's most-recent closed tab and recreate it, returning
+    /// what was reopened (or `null` when the history is empty).
+    ///
+    /// Every one of the ten kinds is here now, driven by the registry's
+    /// `closedSnapshot`. A reopened terminal is a *new shell* in the closed
+    /// one's cwd under its old label — the same trade session restore makes,
+    /// and the reason `spawnTerminal` is not simply called (it would invent a
+    /// `Terminal N` label and lose the one the user renamed).
+    ///
+    /// We reuse the `openXxxTab` actions rather than reconstructing inline
+    /// because their focus + dedupe behaviour is wanted here too, but the
+    /// popped value is captured first so it is not lost inside the produce.
     reopenLastClosedTab(wtId: string): ClosedTab | null {
       const list = state.closedTabsByWorktree[wtId] ?? [];
       if (list.length === 0) return null;
@@ -1080,8 +1236,61 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         case "stack":
           actions.openStackTab(wtId, { trunk: popped.trunk, topBranch: popped.topBranch });
           break;
+        case "terminal":
+          // Async, and deliberately not awaited: the caller reports what came
+          // back synchronously, and the pane appears when the PTY does.
+          void actions.reopenTerminal(wtId, popped.label, popped.cwd);
+          break;
+        case "conflict":
+          actions.openConflictTab(wtId, popped.filePath);
+          break;
+        case "preview":
+          actions.openPreviewTab(wtId, popped.filePath);
+          break;
+        case "history":
+          actions.openHistoryTab(wtId);
+          break;
+        case "brain":
+          actions.openBrainTab(wtId);
+          break;
+        case "browser": {
+          const id = actions.openBrowserTab(wtId, popped.url);
+          if (popped.title) actions.setBrowserTitle(wtId, id, popped.title);
+          break;
+        }
       }
       return popped;
+    },
+
+    /// Spawn a terminal that keeps a closed one's label. `spawnTerminal`
+    /// numbers its own (`Terminal 3`), which would quietly discard a rename on
+    /// every reopen.
+    async reopenTerminal(wtId: string, label: string, cwd: string): Promise<string | null> {
+      const found = locateWorktree(wtId);
+      const root = found?.worktree.path;
+      if (!root) return null;
+      let ptyId: string;
+      try {
+        ptyId = await terminalApi.createPty(root, lastGridSize() ?? undefined);
+      } catch {
+        return null;
+      }
+      const term: TerminalSession = {
+        id: crypto.randomUUID(),
+        ptyId,
+        label,
+        // The recorded cwd is kept for context; the shell itself is rooted in
+        // the worktree, as every other spawn path is.
+        cwd,
+        restored: true,
+      };
+      setState(
+        produce((s) => {
+          s.terminalsByWorktree[wtId] = [...(s.terminalsByWorktree[wtId] ?? []), term];
+          s.activeItemByWorktree[wtId] = { type: "terminal", id: term.id };
+        }),
+      );
+      return term.id;
     },
 
     // ── Conflict tabs ────────────────────────────────────────────────────
@@ -1106,6 +1315,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const arr = s.conflictTabsByWorktree[wtId] ?? [];
         const idx = arr.findIndex((t) => t.id === tabId);
         if (idx === -1) return;
+        recordClose(s, wtId, "conflict", arr[idx]);
         arr.splice(idx, 1);
         const active = s.editorActiveItemByWorktree[wtId];
         if (active?.type === "conflict" && active.id === tabId) {
@@ -1147,6 +1357,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const arr = s.historyTabsByWorktree[wtId] ?? [];
         const idx = arr.findIndex((t) => t.id === tabId);
         if (idx === -1) return;
+        recordClose(s, wtId, "history", arr[idx]);
         arr.splice(idx, 1);
         const active = s.activeItemByWorktree[wtId];
         if (active?.type === "history" && active.id === tabId) {
@@ -1185,6 +1396,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const arr = s.brainTabsByWorktree[wtId] ?? [];
         const idx = arr.findIndex((t) => t.id === tabId);
         if (idx === -1) return;
+        recordClose(s, wtId, "brain", arr[idx]);
         arr.splice(idx, 1);
         const active = s.activeItemByWorktree[wtId];
         if (active?.type === "brain" && active.id === tabId) {
@@ -1218,6 +1430,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const arr = s.browserTabsByWorktree[wtId] ?? [];
         const idx = arr.findIndex((t) => t.id === tabId);
         if (idx === -1) return;
+        recordClose(s, wtId, "browser", arr[idx]);
         unpin(s, wtId, tabId);
         arr.splice(idx, 1);
         const active = s.activeItemByWorktree[wtId];
@@ -1284,6 +1497,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         const arr = s.previewTabsByWorktree[wtId] ?? [];
         const idx = arr.findIndex((t) => t.id === tabId);
         if (idx === -1) return;
+        recordClose(s, wtId, "preview", arr[idx]);
         unpin(s, wtId, tabId);
         arr.splice(idx, 1);
         const active = s.editorActiveItemByWorktree[wtId];
@@ -1311,76 +1525,87 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
     // ── Workspace snapshots ──────────────────────────────────────────────
     /// Capture the current open-state of `wtId` into a named snapshot.
-    /// Re-saving with the same name overwrites. Pinned/active are stored
-    /// by content key so a future restore lands on the right tab even
-    /// after IDs regenerate.
+    /// Re-saving with the same name overwrites.
+    ///
+    /// Everything — the tabs, the pins, the active pointer and now the pane
+    /// geometry — is written as a content key (`"kind:identifier"`), never as
+    /// a tab id. A restore mints new ids, so ids captured here would name
+    /// nothing by the time anyone restored them.
     saveWorkspaceSnapshot(wtId: string, name: string) {
       const trimmed = name.trim();
       if (!trimmed) return;
-      const pinnedIds = new Set(state.pinnedTabsByWorktree[wtId] ?? []);
-      // A snapshot spans both windows, so it records whichever pointer is set.
-      // The workbench's wins when both are: it is the window you were looking
-      // at when you typed the snapshot's name.
-      const active =
-        state.activeItemByWorktree[wtId] ?? state.editorActiveItemByWorktree[wtId];
+
       const files = state.openFilesByWorktree[wtId] ?? [];
       const terminals = state.terminalsByWorktree[wtId] ?? [];
       const diffs = state.diffTabsByWorktree[wtId] ?? [];
       const compares = state.compareTabsByWorktree[wtId] ?? [];
       const stacks = state.stackTabsByWorktree[wtId] ?? [];
+      const conflicts = state.conflictTabsByWorktree[wtId] ?? [];
+      const previews = state.previewTabsByWorktree[wtId] ?? [];
+      const browsers = state.browserTabsByWorktree[wtId] ?? [];
+      const histories = state.historyTabsByWorktree[wtId] ?? [];
+      const brains = state.brainTabsByWorktree[wtId] ?? [];
 
-      const keyFor = (kind: string, ident: string) => `${kind}:${ident}`;
-      const fileKey = (f: { path: string }) => keyFor("file", f.path);
-      const termKey = (_t: TerminalSession, i: number) => keyFor("terminal", String(i));
-      const diffKey = (d: DiffTab) => keyFor("diff", d.filePath);
-      const compareKey = (c: CompareTab) => keyFor("compare", `${c.baseRef}..${c.headRef}`);
-      const stackKey = (s: StackTab) => keyFor("stack", s.topBranch);
+      /// tab id → content key, for every open tab. Built once and used three
+      /// times: for the active pointer, for the pins, and for rewriting the
+      /// pane tree's claims.
+      ///
+      /// Terminals and browser tabs are keyed by *index* because neither has a
+      /// stable identity of its own — two shells in the same directory, or two
+      /// tabs on the same URL, are a normal thing to have open.
+      const keyByTabId = new Map<string, string>();
+      for (const f of files) keyByTabId.set(f.id, `file:${f.path}`);
+      terminals.forEach((t, i) => keyByTabId.set(t.id, `terminal:${i}`));
+      for (const d of diffs) keyByTabId.set(d.id, `diff:${d.filePath}`);
+      for (const c of compares) keyByTabId.set(c.id, `compare:${c.baseRef}..${c.headRef}`);
+      for (const s of stacks) keyByTabId.set(s.id, `stack:${s.topBranch}`);
+      for (const c of conflicts) keyByTabId.set(c.id, `conflict:${c.filePath}`);
+      for (const p of previews) keyByTabId.set(p.id, `preview:${p.filePath}`);
+      browsers.forEach((b, i) => keyByTabId.set(b.id, `browser:${i}`));
+      for (const h of histories) keyByTabId.set(h.id, "history:");
+      for (const b of brains) keyByTabId.set(b.id, "brain:");
 
-      const activeKey: string | null = active
-        ? active.type === "file"
-          ? fileKey({ path: active.path })
-          : active.type === "terminal"
-            ? (() => {
-                const idx = terminals.findIndex((t) => t.id === active.id);
-                return idx === -1 ? null : termKey(terminals[idx], idx);
-              })()
-            : active.type === "diff"
-              ? (() => {
-                  const d = diffs.find((d) => d.id === active.id);
-                  return d ? diffKey(d) : null;
-                })()
-              : active.type === "compare"
-                ? (() => {
-                    const c = compares.find((c) => c.id === active.id);
-                    return c ? compareKey(c) : null;
-                  })()
-                : (() => {
-                    const s = stacks.find((s) => s.id === active.id);
-                    return s ? stackKey(s) : null;
-                  })()
+      // A snapshot spans both windows, so it records whichever pointer is set.
+      // The workbench's wins when both are: it is the window you were looking
+      // at when you typed the snapshot's name.
+      const active =
+        state.activeItemByWorktree[wtId] ?? state.editorActiveItemByWorktree[wtId];
+      const activeKey = active ? (keyByTabId.get(active.id) ?? null) : null;
+
+      const pinnedIds = new Set(state.pinnedTabsByWorktree[wtId] ?? []);
+      const pinned = [...keyByTabId]
+        .filter(([id]) => pinnedIds.has(id))
+        .map(([, key]) => key);
+
+      const layout = state.paneLayoutByWorktree[wtId];
+      const panes = layout
+        ? serializePaneLayout(mapPaneTabIds(layout, (id) => keyByTabId.get(id) ?? null))
         : null;
 
-      const pinned: string[] = [];
-      for (const f of files) if (pinnedIds.has(f.id)) pinned.push(fileKey(f));
-      for (const d of diffs) if (pinnedIds.has(d.id)) pinned.push(diffKey(d));
-      for (const c of compares) if (pinnedIds.has(c.id)) pinned.push(compareKey(c));
-      for (const s of stacks) if (pinnedIds.has(s.id)) pinned.push(stackKey(s));
-
       const snap: WorkspaceSnapshot = {
+        version: SNAPSHOT_VERSION,
         name: trimmed,
         savedAt: Date.now(),
-        files: files.map((f) => f.path),
-        terminals: terminals.map((t) => ({ label: t.label, cwd: t.cwd })),
-        diffs: diffs.map((d) => d.filePath),
-        compares: compares.map((c) => ({
-          baseRef: c.baseRef,
-          headRef: c.headRef,
-          useMergeBase: c.useMergeBase,
-          selectedFilePath: c.selectedFilePath,
-          treeMode: c.treeMode,
-          treeFilter: c.treeFilter,
-        })),
-        stacks: stacks.map((s) => ({ trunk: s.trunk, topBranch: s.topBranch })),
+        tabs: {
+          files: files.map((f) => f.path),
+          terminals: terminals.map((t) => ({ label: t.label, cwd: t.cwd })),
+          diffs: diffs.map((d) => d.filePath),
+          compares: compares.map((c) => ({
+            baseRef: c.baseRef,
+            headRef: c.headRef,
+            useMergeBase: c.useMergeBase,
+            selectedFilePath: c.selectedFilePath,
+            treeMode: c.treeMode,
+            treeFilter: c.treeFilter,
+          })),
+          stacks: stacks.map((s) => ({ trunk: s.trunk, topBranch: s.topBranch })),
+          conflicts: conflicts.map((c) => c.filePath),
+          previews: previews.map((p) => p.filePath),
+          browsers: browsers.map((b) => ({ url: b.url, title: b.title })),
+          history: histories.length > 0,
+          brain: brains.length > 0,
+        },
+        panes,
         active: activeKey,
         pinned,
         ui: {
@@ -1396,7 +1621,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       upsertSnapshot(wtId, snap);
     },
 
-    /// Replace the workspace's open-state with the snapshot named `name`.
+    /// Replace the worktree's open-state with the snapshot named `name`.
     /// Closes existing tabs *without* pushing them to the reopen-LIFO so
     /// restores don't pollute Cmd+Shift+T history. Returns true on hit.
     async restoreWorkspaceSnapshot(wtId: string, name: string): Promise<boolean> {
@@ -1410,13 +1635,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         void terminalApi.closePty(t.ptyId).catch(() => {});
       }
       setState(produce((s) => {
-        s.openFilesByWorktree[wtId] = [];
-        s.terminalsByWorktree[wtId] = [];
-        s.diffTabsByWorktree[wtId] = [];
-        s.compareTabsByWorktree[wtId] = [];
-        s.stackTabsByWorktree[wtId] = [];
-        s.conflictTabsByWorktree[wtId] = [];
-        s.previewTabsByWorktree[wtId] = [];
+        for (const kind of TAB_KINDS) {
+          (s[TAB_SPECS[kind].stateKey] as Record<string, unknown[]>)[wtId] = [];
+        }
         s.pinnedTabsByWorktree[wtId] = [];
         s.activeItemByWorktree[wtId] = null;
         s.editorActiveItemByWorktree[wtId] = null;
@@ -1435,31 +1656,32 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         sidebarTab: snap.ui.sidebarTab,
       });
 
-      // Track new IDs by content key so we can re-pin and re-activate.
+      // Track new IDs by content key so we can re-pin, re-activate and
+      // rebuild the pane geometry.
       const idByKey = new Map<string, string>();
 
-      const fileIds: string[] = [];
       setState(produce((s) => {
-        for (const path of snap.files) {
+        for (const path of snap.tabs.files) {
           const tab: OpenFileTab = { id: crypto.randomUUID(), path };
           s.openFilesByWorktree[wtId].push(tab);
-          fileIds.push(tab.id);
           idByKey.set(`file:${path}`, tab.id);
         }
-      }));
-
-      const diffIds: string[] = [];
-      setState(produce((s) => {
-        for (const filePath of snap.diffs) {
+        for (const filePath of snap.tabs.diffs) {
           const tab: DiffTab = { id: crypto.randomUUID(), filePath };
           s.diffTabsByWorktree[wtId].push(tab);
-          diffIds.push(tab.id);
           idByKey.set(`diff:${filePath}`, tab.id);
         }
-      }));
-
-      setState(produce((s) => {
-        for (const c of snap.compares) {
+        for (const filePath of snap.tabs.conflicts) {
+          const tab: ConflictTab = { id: crypto.randomUUID(), filePath };
+          s.conflictTabsByWorktree[wtId].push(tab);
+          idByKey.set(`conflict:${filePath}`, tab.id);
+        }
+        for (const filePath of snap.tabs.previews) {
+          const tab: PreviewTab = { id: crypto.randomUUID(), filePath };
+          s.previewTabsByWorktree[wtId].push(tab);
+          idByKey.set(`preview:${filePath}`, tab.id);
+        }
+        for (const c of snap.tabs.compares) {
           const tab: CompareTab = {
             id: crypto.randomUUID(),
             baseRef: c.baseRef,
@@ -1472,10 +1694,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           s.compareTabsByWorktree[wtId].push(tab);
           idByKey.set(`compare:${c.baseRef}..${c.headRef}`, tab.id);
         }
-      }));
-
-      setState(produce((s) => {
-        for (const st of snap.stacks) {
+        for (const st of snap.tabs.stacks) {
           const tab: StackTab = {
             id: crypto.randomUUID(),
             trunk: st.trunk,
@@ -1483,6 +1702,21 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           };
           s.stackTabsByWorktree[wtId].push(tab);
           idByKey.set(`stack:${st.topBranch}`, tab.id);
+        }
+        snap.tabs.browsers.forEach((b, i) => {
+          const tab: BrowserTab = { id: crypto.randomUUID(), url: b.url, title: b.title };
+          s.browserTabsByWorktree[wtId].push(tab);
+          idByKey.set(`browser:${i}`, tab.id);
+        });
+        if (snap.tabs.history) {
+          const tab: HistoryTab = { id: crypto.randomUUID() };
+          s.historyTabsByWorktree[wtId].push(tab);
+          idByKey.set("history:", tab.id);
+        }
+        if (snap.tabs.brain) {
+          const tab: BrainTab = { id: crypto.randomUUID() };
+          s.brainTabsByWorktree[wtId].push(tab);
+          idByKey.set("brain:", tab.id);
         }
       }));
 
@@ -1492,8 +1726,8 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       // unrestored terminal slot.
       const cwd = locateWorktree(wtId)?.worktree.path;
       if (cwd) {
-        for (let i = 0; i < snap.terminals.length; i++) {
-          const t = snap.terminals[i];
+        for (let i = 0; i < snap.tabs.terminals.length; i++) {
+          const t = snap.tabs.terminals[i];
           try {
             // The snapshot records each terminal's original cwd, but we spawn
             // in the worktree's directory: restoring a snapshot into a
@@ -1506,6 +1740,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
                 ptyId,
                 label: t.label,
                 cwd: t.cwd,
+                // A restored terminal is a fresh shell, whether it came back
+                // from a snapshot or from a reload.
+                restored: true,
               };
               s.terminalsByWorktree[wtId].push(term);
               idByKey.set(`terminal:${i}`, term.id);
@@ -1522,18 +1759,31 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         .filter((id): id is string => !!id);
       setState("pinnedTabsByWorktree", wtId, newPinned);
 
+      // Rebuild the pane geometry, translating claims back from content keys
+      // to the ids just minted. A snapshot from before pane groups (v1) has no
+      // geometry and lands in the single-group default, which is the layout it
+      // was taken in.
+      const savedPanes = snap.panes ? parsePaneLayout(snap.panes) : null;
+      setState(
+        "paneLayoutByWorktree",
+        wtId,
+        savedPanes
+          ? mapPaneTabIds(savedPanes, (key) => idByKey.get(key) ?? null)
+          : singleGroupLayout(),
+      );
+      setState("focusedGroupByWorktree", wtId, null);
+
       // Re-activate by content key. If the original active tab didn't
       // round-trip (deleted file / removed branch), default to the
       // first restored tab in render order.
       const activeId = snap.active ? idByKey.get(snap.active) : null;
-      const restored: ActiveItem | null = activeId
-        ? buildActiveItem(
-            // Determine kind from the key prefix.
-            snap.active!.split(":")[0],
-            activeId,
-            state.openFilesByWorktree[wtId] ?? [],
-          )
-        : null;
+      const restored: ActiveItem | null =
+        activeId && snap.active
+          ? buildActiveItem(snap.active.split(":")[0], activeId, {
+              files: state.openFilesByWorktree[wtId] ?? [],
+              previews: state.previewTabsByWorktree[wtId] ?? [],
+            })
+          : null;
 
       // Each window gets the first tab it can actually show, and the restored
       // item overrides whichever of the two owns its kind. Setting both is what
@@ -1542,13 +1792,19 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const firstTerm = state.terminalsByWorktree[wtId]?.[0];
       const firstCompare = state.compareTabsByWorktree[wtId]?.[0];
       const firstStack = state.stackTabsByWorktree[wtId]?.[0];
+      const firstBrowser = state.browserTabsByWorktree[wtId]?.[0];
+      const firstHistory = state.historyTabsByWorktree[wtId]?.[0];
       const mainFallback: ActiveItem | null = firstTerm
         ? { type: "terminal", id: firstTerm.id }
         : firstCompare
           ? { type: "compare", id: firstCompare.id }
           : firstStack
             ? { type: "stack", id: firstStack.id }
-            : null;
+            : firstBrowser
+              ? { type: "browser", id: firstBrowser.id }
+              : firstHistory
+                ? { type: "history", id: firstHistory.id }
+                : null;
 
       const firstFile = state.openFilesByWorktree[wtId]?.[0];
       const firstDiff = state.diffTabsByWorktree[wtId]?.[0];
@@ -1573,6 +1829,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
       return true;
     },
+
 
     // ── Tab pinning ──────────────────────────────────────────────────────
     togglePinTab(wtId: string, tabId: string) {
@@ -1620,6 +1877,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       }));
     },
   };
+
+  // Session restore's one asynchronous step, kicked off after the store is
+  // fully composed. Fire-and-forget: the shell renders now and the terminal
+  // panes appear as their PTYs come up.
+  if (persist) void restoreTerminalSessions();
 
   return {
     state,

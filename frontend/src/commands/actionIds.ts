@@ -8,8 +8,8 @@
 /// inside a component, closed over the layout store).
 ///
 /// Dynamic ids are deliberately *not* here: the per-snapshot
-/// `snapshot.restore.<name>` / `snapshot.delete.<name>` entries are generated
-/// at runtime from user data and are never bound to a key.
+/// `snapshot.restore.<name>` entries are generated at runtime from user data
+/// and are never bound to a key.
 
 export const WORKSPACE_SELECT_COUNT = 9;
 
@@ -85,6 +85,7 @@ export const ACTION_IDS = [
   "workspace.select.9",
   "workspace.switch",
   "snapshot.save",
+  "snapshot.manage",
   // Tabs
   "tab.close",
   "tab.next",

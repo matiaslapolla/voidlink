@@ -12,10 +12,12 @@ import {
   TAB_KINDS,
   TAB_SPECS,
   closedTabsEqual,
+  deserializeClosedTab,
   deserializeTabRecord,
   parseEditorTabs,
   samePath,
   serializeEditorTabs,
+  type ClosedTab,
   type TabKind,
   type TabTypes,
 } from "./tabs";
@@ -43,6 +45,15 @@ const FIXTURES: { [K in TabKind]: TabTypes[K] } = {
   browser: { id: "w1", url: "https://example.com/docs", title: "Docs" },
 };
 
+/// What a round trip is *expected* to produce, where that differs from the
+/// fixture. Only the terminal does: a persisted session deliberately does not
+/// carry its PTY id, because that id names a process that died with the app.
+const ROUND_TRIPPED: Partial<{ [K in TabKind]: TabTypes[K] }> = {
+  terminal: { id: "t1", ptyId: "", label: "Terminal 2", cwd: "/repo" },
+};
+
+const expectedRoundTrip = (kind: TabKind): unknown => ROUND_TRIPPED[kind] ?? FIXTURES[kind];
+
 describe("tab registry", () => {
   it("declares a spec for every kind, and no orphans", () => {
     expect(TAB_KINDS.slice().sort()).toEqual(Object.keys(TAB_SPECS).sort());
@@ -57,7 +68,7 @@ describe("tab registry", () => {
         JSON.stringify((spec.serialize as (t: unknown) => unknown)(original)),
       );
       const back = (spec.deserialize as (raw: unknown) => unknown)(wire);
-      expect(back, `${kind} failed to deserialize`).toEqual(original);
+      expect(back, `${kind} failed to deserialize`).toEqual(expectedRoundTrip(kind));
     }
   });
 
@@ -96,14 +107,28 @@ describe("tab registry", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("only reopens the kinds that can be reconstructed", () => {
+  it("can reopen every one of the ten kinds", () => {
     const reopenable = TAB_KINDS.filter((kind) => {
       const spec = TAB_SPECS[kind] as (typeof TAB_SPECS)[TabKind];
       return (spec.closedSnapshot as (t: unknown) => unknown)(FIXTURES[kind]) !== null;
     });
-    // Terminals lose their PTY, conflicts lose their conflict, and previews,
-    // history, brain and browser tabs have nothing worth restoring yet.
-    expect(reopenable.slice().sort()).toEqual(["compare", "diff", "file", "stack"]);
+    // Wave 4: reopen-last-closed is driven by the registry, so a kind that
+    // declines to be reopened has to *say so* in its spec rather than fall
+    // through a switch statement in the store.
+    expect(reopenable.slice().sort()).toEqual(TAB_KINDS.slice().sort());
+  });
+
+  it("survives a closed-tab snapshot through JSON and back", () => {
+    for (const kind of TAB_KINDS) {
+      const spec = TAB_SPECS[kind] as (typeof TAB_SPECS)[TabKind];
+      const snapshot = (spec.closedSnapshot as (t: unknown) => ClosedTab | null)(
+        FIXTURES[kind],
+      );
+      expect(snapshot, `${kind} has no closed snapshot`).not.toBeNull();
+      const back = deserializeClosedTab(JSON.parse(JSON.stringify(snapshot)));
+      expect(back, `${kind} lost its closed snapshot`).toEqual(snapshot);
+      expect(closedTabsEqual(snapshot!, back!)).toBe(true);
+    }
   });
 
   it("labels a browser tab by host when the page never reported a title", () => {
@@ -184,5 +209,66 @@ describe("closedTabsEqual", () => {
     expect(closedTabsEqual({ type: "file", path: "/a" }, { type: "diff", filePath: "/a" })).toBe(
       false,
     );
+  });
+});
+
+describe("session restore", () => {
+  /// The boot path, kind by kind: what was persisted goes back in through
+  /// `restore()` and has to come out as the same tab — *with the same id*,
+  /// because pins, pane claims, the MRU and the saved active-tab pointer all
+  /// name tabs by id and a restore that reassigned them would bring the tabs
+  /// back and lose everything that pointed at them.
+  const ctx = { worktreePath: "/repo" };
+
+  it("restores every non-terminal kind from its serialized payload", async () => {
+    for (const kind of TAB_KINDS) {
+      if (kind === "terminal") continue;
+      const spec = TAB_SPECS[kind] as (typeof TAB_SPECS)[TabKind];
+      const wire = JSON.parse(
+        JSON.stringify((spec.serialize as (t: unknown) => unknown)(FIXTURES[kind])),
+      );
+      const back = await (
+        spec.restore as (raw: unknown, c: typeof ctx) => Promise<unknown>
+      )(wire, ctx);
+      expect(back, `${kind} did not restore`).toEqual(expectedRoundTrip(kind));
+    }
+  });
+
+  it("restores a terminal against a fresh PTY, keeping the tab id and label", async () => {
+    const wire = JSON.parse(
+      JSON.stringify(TAB_SPECS.terminal.serialize(FIXTURES.terminal)),
+    );
+    const spawned: string[] = [];
+    const session = await TAB_SPECS.terminal.restore(wire, {
+      worktreePath: "/repo/worktrees/feature",
+      spawnPty: async (cwd) => {
+        spawned.push(cwd);
+        return "pty-fresh";
+      },
+    });
+    expect(session).toEqual({
+      id: "t1",
+      ptyId: "pty-fresh",
+      label: "Terminal 2",
+      // The shell is rooted in the worktree being restored into, not in the
+      // path the session was saved with.
+      cwd: "/repo/worktrees/feature",
+      restored: true,
+    });
+    expect(spawned).toEqual(["/repo/worktrees/feature"]);
+  });
+
+  it("does not restore a terminal in a window that cannot spawn one", async () => {
+    const wire = TAB_SPECS.terminal.serialize(FIXTURES.terminal);
+    expect(await TAB_SPECS.terminal.restore(wire, { worktreePath: "/repo" })).toBeNull();
+  });
+
+  it("returns null for a malformed payload rather than a half-built tab", async () => {
+    for (const kind of TAB_KINDS) {
+      const spec = TAB_SPECS[kind] as (typeof TAB_SPECS)[TabKind];
+      const restore = spec.restore as (raw: unknown, c: typeof ctx) => Promise<unknown>;
+      expect(await restore({ nonsense: true }, ctx), `${kind} accepted junk`).toBeNull();
+      expect(await restore(null, ctx), `${kind} accepted null`).toBeNull();
+    }
   });
 });

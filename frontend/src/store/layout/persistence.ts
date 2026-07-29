@@ -40,14 +40,36 @@ export const STORAGE_KEYS = {
   /// `Record<worktreeId, NavHistory>` — back/forward. Per worktree, like the
   /// geometry it navigates.
   navHistory: "voidlink-nav-history",
+  /// `Record<worktreeId, TerminalSession[]>` — the terminal *sessions*, not
+  /// their PTYs. A persisted `ptyId` names a process that died with the app;
+  /// what survives a reload is the cwd and the label, and boot spawns a fresh
+  /// PTY under the same tab id (see `TAB_SPECS.terminal.restore`).
+  terminalTabs: "voidlink-terminal-tabs",
+  /// The two repo-wide singleton kinds. One id each, per worktree — tiny, but
+  /// without them a reload silently closes the commit graph you left open.
+  historyTabs: "voidlink-history-tabs",
+  brainTabs: "voidlink-brain-tabs",
+  /// `Record<worktreeId, ActiveItem | null>` — the *workbench's* front tab.
+  /// The editor window's pointer rides inside `voidlink-editor-tabs`; this one
+  /// had no key at all until session restore needed it.
+  activeItem: "voidlink-active-item",
+  /// `Record<worktreeId, ClosedTab[]>` — reopen-last-closed, across reloads.
+  closedTabs: "voidlink-closed-tabs",
+  /// `Record<worktreeId, WorkspaceSnapshot[]>`. Read and written by
+  /// `commands/snapshots.ts` *through this module* — it is layout state, and
+  /// the no-other-module-touches-localStorage rule has no exceptions.
+  snapshots: "voidlink-snapshots",
 } as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
 
-/// Every key the layout store owns. `resetLayoutStorage` clears exactly these
-/// and nothing else — settings and AI keys live under their own names and must
-/// survive a layout reset.
-export const LAYOUT_STORAGE_KEYS: string[] = Object.values(STORAGE_KEYS);
+/// Every key a layout reset clears — which is every key above *except*
+/// snapshots. A snapshot is a document the user named and saved; "my panes are
+/// broken, start over" must not also throw those away. Settings and AI keys
+/// live under their own names and are likewise untouched.
+export const LAYOUT_STORAGE_KEYS: string[] = Object.values(STORAGE_KEYS).filter(
+  (key) => key !== STORAGE_KEYS.snapshots,
+);
 
 /// `localStorage` is absent in the test runner and in any non-browser host, and
 /// throws rather than returning `undefined` when it is disabled. One guard,
@@ -68,18 +90,82 @@ export function readRaw(key: string): string | null {
   }
 }
 
+// ── Corruption policy ─────────────────────────────────────────────────────
+
+/// Suffix of the shadow key a write lands on before it is committed. See
+/// `commit()` — this is the half of the crash-safe write that the read side
+/// has to know about.
+const PENDING_SUFFIX = "~pending";
+
+/// Set once per key, so a blob that fails to parse reports itself on the boot
+/// that found it and not again on every subsequent read of the same key.
+const reported = new Set<string>();
+let onCorruptKey: ((key: string) => void) | null = null;
+
+/// Install the handler that tells the user a key was quarantined. Called once
+/// from the store; kept as a hook so this module stays free of UI imports.
+export function setCorruptKeyHandler(fn: (key: string) => void) {
+  onCorruptKey = fn;
+}
+
+/// Test seam: forget which keys have already been reported.
+export function resetCorruptionReports() {
+  reported.clear();
+}
+
+function reportCorrupt(key: string) {
+  if (reported.has(key)) return;
+  reported.add(key);
+  onCorruptKey?.(key);
+}
+
+function tryParse(raw: string | null): { ok: boolean; value: unknown } {
+  if (raw === null) return { ok: false, value: undefined };
+  try {
+    return { ok: true, value: JSON.parse(raw) as unknown };
+  } catch {
+    return { ok: false, value: undefined };
+  }
+}
+
+/// Read one key, healing what can be healed.
+///
+/// Three outcomes, in order: the committed value parses and is used; it does
+/// not, but the shadow key from an interrupted write does, and *that* is used
+/// (the crash landed between the two `setItem`s); neither parses, the key is
+/// quarantined — reported once, defaulted for this boot, and overwritten by
+/// the first legitimate write. A partially-written blob therefore costs at
+/// most the last change to one key, and never the boot.
+function readChecked(key: string): { present: boolean; parsed: unknown } {
+  const direct = tryParse(readRaw(key));
+  if (direct.ok) return { present: true, parsed: direct.value };
+  const pending = tryParse(readRaw(key + PENDING_SUFFIX));
+  if (pending.ok) return { present: true, parsed: pending.value };
+  if (readRaw(key) === null) return { present: false, parsed: undefined };
+  reportCorrupt(key);
+  return { present: false, parsed: undefined };
+}
+
+/// The raw text of a key, or `null` when it is absent or corrupt. For the one
+/// caller that parses the blob itself (`parseEditorTabs`) and so cannot go
+/// through `readJson`.
+export function readRawChecked(key: string): string | null {
+  const { present, parsed } = readChecked(key);
+  if (!present) return null;
+  try {
+    return JSON.stringify(parsed);
+  } catch {
+    return null;
+  }
+}
+
 /// Parse a key as JSON, falling back to `fallback` on absence *or* corruption.
 /// The whole quarantine policy in one line: a bad blob costs that one key, and
 /// never the boot.
 export function readJson<T>(key: string, fallback: T): T {
-  const raw = readRaw(key);
-  if (raw === null) return fallback;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return parsed === null || parsed === undefined ? fallback : (parsed as T);
-  } catch {
-    return fallback;
-  }
+  const { present, parsed } = readChecked(key);
+  if (!present) return fallback;
+  return parsed === null || parsed === undefined ? fallback : (parsed as T);
 }
 
 // ── The single write path ─────────────────────────────────────────────────
@@ -111,7 +197,16 @@ function commit() {
   }
   for (const [key, value] of pending) {
     try {
+      // Write-to-shadow, then commit, then drop the shadow. `setItem` is
+      // atomic per key, so the only state a crash can leave behind is "shadow
+      // present, committed value stale or half-written" — which `readChecked`
+      // resolves in the shadow's favour. Without this, a process killed
+      // mid-write leaves a truncated blob and the key defaults on next boot.
+      store.setItem(key + PENDING_SUFFIX, value);
       store.setItem(key, value);
+      store.removeItem(key + PENDING_SUFFIX);
+      // The key is legible again; a future corruption should be reported.
+      reported.delete(key);
     } catch {
       // Quota, private mode, or a disabled store. The in-memory state is still
       // correct; only durability is lost, and telling the user once is the
@@ -195,9 +290,13 @@ export function resetLayoutStorage(): void {
   }
   const store = storage();
   if (!store) return;
+  reported.clear();
   for (const key of LAYOUT_STORAGE_KEYS) {
     try {
       store.removeItem(key);
+      // A shadow left by an interrupted write would otherwise resurrect the
+      // exact state the user is resetting away from.
+      store.removeItem(key + PENDING_SUFFIX);
     } catch {
       // Nothing useful to do; the caller is about to reload anyway.
     }

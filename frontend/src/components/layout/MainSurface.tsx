@@ -123,7 +123,12 @@ export function MainSurface(props: MainSurfaceProps) {
         id: term.id,
         label: term.label,
         icon: <TerminalSquare class="w-3.5 h-3.5 shrink-0" />,
-        title: term.label,
+        // A session restore recreates the tab against a *fresh* PTY. The pane
+        // is empty because the shell is new, not because output was lost, and
+        // the tooltip is where that is said rather than left to be inferred.
+        title: term.restored
+          ? `${term.label} — new shell in ${term.cwd}; scrollback was not restored`
+          : term.label,
         terminal: term,
       });
     }
