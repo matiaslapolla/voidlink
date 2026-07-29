@@ -12,6 +12,7 @@
 /// state from its neighbours (see `lspStatus.ts`).
 
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
+import { GitCommitHorizontal } from "lucide-solid";
 import type * as Monaco from "monaco-editor";
 import { STATUS_BAR_ROW, StatusChip } from "@/components/layout/StatusBar";
 import { StatusLed } from "@/components/layout/StatusLed";
@@ -28,12 +29,24 @@ import {
 } from "./editorStatus";
 import { lspSegment, lspStatus } from "./lspStatus";
 import { vimInNormalMode, vimStatusLabel } from "./vimMode";
+import {
+  blameAuthor,
+  blameEnabled,
+  blameErrorFor,
+  blameLineFor,
+  blameRevision,
+  blameStatusFor,
+  relTime,
+} from "./blameOverlay";
 
 export interface EditorStatusBarProps {
   /// Absolute path of the file in front, or `null` when nothing is.
   path: () => string | null;
   /// Open the go-to-line prompt. What the line:column chip does.
   onGoToLine?: () => void;
+  /// Show a commit. The blame chip's click target — the caret line's commit.
+  /// Absent means the chip reads but does not link.
+  onRevealCommit?: (oid: string) => void;
   /// Open the language server's output log. Wave 5 supplies it; until then the
   /// segment is absent anyway, so `undefined` is the normal state.
   onShowLspLog?: () => void;
@@ -114,6 +127,61 @@ export function EditorStatusBar(props: EditorStatusBarProps) {
 
   const segment = () => lspSegment(lspStatus());
 
+  /// What the caret line is blamed on.
+  ///
+  /// This is the blame surface. It used to be a chip in the *workbench's* status
+  /// bar which received no blame data at all — and in the default detached mode
+  /// the workbench hosts no Monaco, so it could not have. Here it sits next to
+  /// the buffer it is about, and it rides the cursor subscription `sync()`
+  /// already installed for the line:column chip rather than adding a second
+  /// listener.
+  ///
+  /// `blameRevision()` is what makes a fetch landing visible: the cache is a
+  /// plain map, so without tracking it the chip would only catch up on the next
+  /// cursor move.
+  const blame = () => {
+    if (!blameEnabled()) return null;
+    blameRevision();
+    const path = props.path();
+    if (!path) return null;
+    const status = blameStatusFor(path);
+    if (status === "off" || status === "unknown") return null;
+    if (status === "loading") {
+      return { text: "Blame…", title: "Reading git blame", oid: null, tone: "muted" as const };
+    }
+    if (status === "unavailable") {
+      // Named, not blank. "No blame for this file" and "blame is switched off"
+      // were previously the same empty space.
+      const why = blameErrorFor(path);
+      return {
+        text: "No blame",
+        title: why
+          ? `git could not blame this file: ${why}`
+          : "No blame for this file — not committed, ignored, or outside the repo",
+        oid: null,
+        tone: "muted" as const,
+      };
+    }
+    const line = blameLineFor(path, cursor().line);
+    if (!line) return null;
+    if (line.uncommitted) {
+      return {
+        text: `${blameAuthor(line)} · Uncommitted`,
+        title: "This line is not committed yet",
+        oid: null,
+        tone: "muted" as const,
+      };
+    }
+    return {
+      text: `${blameAuthor(line)} · ${relTime(line.time)} · ${line.shortOid}`,
+      title: `${line.summary}\n${blameAuthor(line)} <${line.authorEmail}>\n${line.commitOid}\nClick to open this commit`,
+      // `commitOid` was fetched and typed and read by nothing. This is what
+      // makes it worth carrying.
+      oid: line.commitOid,
+      tone: "muted" as const,
+    };
+  };
+
   // The workbench's status bar is its own island and needs no top rule; this
   // one sits *inside* the editor island, below the buffer, so it keeps a
   // hairline to separate it from the code above. One border inside one island
@@ -170,6 +238,27 @@ export function EditorStatusBar(props: EditorStatusBarProps) {
         </Show>
 
         <StatusChip title="VoidLink reads and writes UTF-8">{ENCODING_LABEL}</StatusChip>
+
+        {/* Blame for the caret line. Absent — not greyed — when blame is off,
+            which is what makes "off" and "unavailable" distinguishable: off has
+            no chip, unavailable says so. Clicking opens the commit. */}
+        <Show when={blame()}>
+          {(b) => (
+            <StatusChip
+              title={b().title}
+              label={`Blame: ${b().text}`}
+              tone={b().tone}
+              onClick={
+                b().oid && props.onRevealCommit
+                  ? () => props.onRevealCommit?.(b().oid!)
+                  : undefined
+              }
+            >
+              <GitCommitHorizontal class="w-3 h-3 shrink-0 opacity-70" />
+              <span class="truncate max-w-[220px]">{b().text}</span>
+            </StatusChip>
+          )}
+        </Show>
       </Show>
 
       <span class="flex-1" />

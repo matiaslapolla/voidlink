@@ -69,7 +69,6 @@ export const STATUS_PRIORITY = {
   aheadBehind: 60,
   dirty: 50,
   stack: 40,
-  blame: 30,
   workspaces: 10,
 } as const;
 

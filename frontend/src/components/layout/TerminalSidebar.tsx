@@ -1,5 +1,5 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import { Plus, X, FolderOpen, TerminalSquare, Files, ChevronRight, ChevronDown, GitBranchPlus, Bell } from "lucide-solid";
+import { Plus, X, FolderOpen, TerminalSquare, Files, ChevronRight, ChevronDown, GitBranchPlus } from "lucide-solid";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "@/store/LayoutContext";
@@ -10,11 +10,11 @@ import { FileTree } from "@/components/files/FileTree";
 import { pushToast } from "@/commands/toast";
 import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
-import { StatusLed, terminalSignal } from "@/components/layout/StatusLed";
+import { LedSlot, ledLabel, terminalSignal } from "@/components/layout/StatusLed";
 import { Splitter } from "@/components/layout/Splitter";
 import { PANEL_BOUNDS } from "@/store/layout";
-
-const POLL_MS = 1500;
+import { tabMark } from "@/store/activity";
+import { watchTerminal } from "@/store/terminalWatch";
 
 export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) {
   const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
@@ -207,45 +207,39 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
   );
 }
 
+/// One row per shell. Reads `store/activity.ts` and `store/terminalWatch.ts`; it
+/// does not poll.
+///
+/// It used to reimplement the whole signal system: its own 1500ms `processInfo`
+/// poll, its own `hasNotification` flag, an orange `<Bell>`, its own OS
+/// notification, and its own copy of the LED mapping. None of it touched the
+/// activity store, so "finished" existed twice with different colours and
+/// different clear rules — and the two pollers sampled independently, so the row
+/// and the tab could disagree about the same shell for up to 1500ms.
 function TerminalRow(props: {
   term: TerminalSession;
   active: boolean;
   onSelect: () => void;
   onClose: () => void;
 }) {
-  const [busy, setBusy] = createSignal(false);
-  const [name, setName] = createSignal<string | null>(null);
+  const watch = watchTerminal(props.term.id, props.term.ptyId);
   const [cwd, setCwd] = createSignal<string | null>(null);
-  const [hasNotification, setHasNotification] = createSignal(false);
-  let prevBusy = false;
-  let prevName: string | null = null;
 
   onMount(() => {
+    // The one thing the shared watcher does not carry: the foreground process's
+    // working directory, which only this row shows. Sampled on the same cadence
+    // the watcher polls at, off the same command — one extra `invoke` per shell
+    // per interval, and no second source of truth for anything that has one.
     let alive = true;
     const tick = async () => {
       try {
         const info = await terminalApi.processInfo(props.term.ptyId);
-        if (!alive) return;
-        // Busy → idle transition while the tab is unfocused: badge it and
-        // (best-effort) fire a system notification so the user notices a
-        // long-running command finished. We pass the previous foreground
-        // process name as the body for context, since once busy goes false
-        // the foreground process is gone.
-        if (prevBusy && !info.busy && !props.active) {
-          setHasNotification(true);
-          maybeNotify(props.term.label, prevName);
-        }
-        prevBusy = info.busy;
-        prevName = info.name;
-        setBusy(info.busy);
-        setName(info.name);
-        setCwd(info.cwd);
+        if (alive) setCwd(info.cwd);
       } catch {
         // pty may be gone between ticks
       }
     };
     void tick();
-    const timer = setInterval(tick, POLL_MS);
     const unlistenExit = listen<unknown>(`pty-exit:${props.term.ptyId}`, () => {
       forgetTerminalHistory(props.term.ptyId);
       // The size map survives pane unmounts on purpose (a remounted pane needs
@@ -255,20 +249,21 @@ function TerminalRow(props: {
     });
     onCleanup(() => {
       alive = false;
-      clearInterval(timer);
       void unlistenExit.then((u) => u());
     });
   });
 
   /// Same rule as the tab strip: the running command's name takes over the
   /// row while it runs, and the tab's own label falls back in when idle.
-  const displayLabel = () => (busy() && name()) || props.term.label;
+  const displayLabel = () => (watch.busy() && watch.processName()) || props.term.label;
 
-  // Selecting a tab clears its pending notification badge.
-  const select = () => {
-    setHasNotification(false);
-    props.onSelect();
-  };
+  /// Exactly the mark the tab wears, from exactly the same two sources: the
+  /// escalating signals in `store/activity.ts` plus the focus-local `idle`.
+  const mark = () =>
+    tabMark(
+      props.term.id,
+      terminalSignal({ working: watch.working(), focused: props.active }),
+    );
 
   return (
     <div
@@ -279,20 +274,21 @@ function TerminalRow(props: {
       }`}
     >
       <button
-        onClick={select}
-        aria-label={`Terminal: ${props.term.label}${hasNotification() ? " (command finished)" : ""}`}
+        onClick={props.onSelect}
+        aria-label={`Terminal: ${props.term.label}${mark() ? ` (${ledLabel(mark()!)})` : ""}`}
         class="flex-1 flex items-center gap-2 px-2 density-row min-w-0 text-left cursor-pointer focus-visible:outline-none"
       >
-        <LedDot active={props.active} busy={busy()} />
+        {/* Reserved, so a signal arriving never nudges the label (§7.5.3 rule
+            3). The mark itself names the state — there is no separate bell icon
+            any more, because two glyphs for one fact is what made "finished"
+            ambiguous in the first place. */}
+        <LedSlot signal={mark()} dim={!props.active} silent />
         <div class="flex-1 min-w-0">
           <div
             class="text-xs truncate flex items-center gap-1.5"
             title={displayLabel() === props.term.label ? props.term.label : `${props.term.label} — ${displayLabel()}`}
           >
             <span class="truncate">{displayLabel()}</span>
-            <Show when={hasNotification()}>
-              <Bell class="w-2.5 h-2.5 text-warning shrink-0" />
-            </Show>
           </div>
           <Show when={cwd()}>
             {(c) => (
@@ -316,23 +312,8 @@ function TerminalRow(props: {
   );
 }
 
-function maybeNotify(label: string, lastProcess: string | null) {
-  if (typeof Notification === "undefined") return;
-  if (Notification.permission === "granted") {
-    new Notification(`${label} finished`, {
-      body: lastProcess ? `\`${lastProcess}\` completed` : undefined,
-    });
-  } else if (Notification.permission === "default") {
-    // Don't auto-request — we asked nothing, no permission popup spam.
-    // The in-app bell badge still works.
-  }
-}
-
-/// Thin wrapper over the shared `<StatusLed>` (MASTER.md §7.5.3) so the two
-/// call sites keep their `(active, busy)` shape. The glyph itself lives in
-/// `StatusLed.tsx`; do not re-derive its colours here.
-function LedDot(props: { active: boolean; busy: boolean }) {
-  return (
-    <StatusLed signal={terminalSignal(props.busy, props.active)} dim={!props.active && props.busy} />
-  );
-}
+// The OS notification that used to live here ("<label> finished") moved to
+// `MainSurface`, which is always mounted and holds the one reactive read of the
+// activity store. Firing it from a sidebar row meant no notification at all
+// whenever the sidebar was collapsed, and a second set of rules for when
+// "finished" counts.

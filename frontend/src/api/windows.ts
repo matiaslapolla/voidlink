@@ -17,6 +17,11 @@
 ///      `main` broadcasts and asks for mutations by sending requests back. See
 ///      `EditorTabsSnapshot` / `EditorRequest` below for why it is shaped that
 ///      way rather than as a second writer.
+///   4. **Appearance and view preferences** — the active theme and whether
+///      inline blame is on. Both are single localStorage keys the workbench's
+///      UI writes, and a satellite that hydrated once at module eval would show
+///      the *previous* theme for the rest of its life (the editor window is
+///      reused, not recreated). See `publishThemeChange` / `publishBlameEnabled`.
 ///
 /// Everything else the satellites show they read straight from the Rust git and
 /// fs commands, which are stateless and window-agnostic — so there is nothing
@@ -350,6 +355,69 @@ export function bridgeGitRefsAcrossWindows(): () => void {
     offLocal();
     if (unlisten) void unlisten();
   };
+}
+
+// ─── Preferences: any window may write, every window follows ─────────────────
+//
+// Theme and blame-enabled are not owned by `main` the way tab state is: they
+// live in `localStorage`, the workbench happens to be the only window with a
+// picker today, and a satellite toggling blame off its own keymap has to be
+// just as authoritative. So these are symmetric broadcasts rather than the
+// one-writer/one-reader shape above, and the payload carries `source` for the
+// same reason `RefsPayload` does — Tauri delivers an emit back to the sender,
+// and re-applying our own echo would put the value through a second time.
+
+interface SourcedPayload<T> {
+  source: string;
+  value: T;
+}
+
+/// Broadcast a value every window mirrors. See `onSourced` for the pairing.
+async function publishSourced<T>(event: string, value: T): Promise<void> {
+  await emitQuietly(event, { source: currentWindowLabel(), value } satisfies SourcedPayload<T>);
+}
+
+/// Subscribe to a symmetric broadcast, dropping our own echo.
+///
+/// Handlers must apply the value *without* re-publishing it. Even with the echo
+/// dropped, a handler that re-broadcasts turns two windows into a ping-pong: A
+/// publishes, B applies and publishes, A applies and publishes… The `source`
+/// guard only removes the self-hop, not that cycle, so the no-republish rule is
+/// on the handler and each one below states it.
+function onSourced<T>(event: string, handler: (value: T) => void): Promise<UnlistenFn> {
+  const self = currentWindowLabel();
+  return listenLoudly<SourcedPayload<T>>(event, (payload) => {
+    if (!payload || payload.source === self) return;
+    handler(payload.value);
+  });
+}
+
+const THEME_EVENT = "voidlink://theme-changed";
+const BLAME_EVENT = "voidlink://blame-enabled";
+
+/// Tell every other window which theme is now active.
+///
+/// Called from `applyTheme` in `store/theme.ts` — the single mutation point for
+/// the `<html>` class and `data-theme` attribute, and therefore the only place
+/// that knows a theme change happened at all.
+export async function publishThemeChange(themeId: string): Promise<void> {
+  await publishSourced(THEME_EVENT, themeId);
+}
+
+/// Subscribe to theme broadcasts. The handler must apply the theme without
+/// re-publishing it (see `onSourced`).
+export function onThemeChange(handler: (themeId: string) => void): Promise<UnlistenFn> {
+  return onSourced<string>(THEME_EVENT, handler);
+}
+
+/// Tell every other window whether inline blame is on.
+export async function publishBlameEnabled(enabled: boolean): Promise<void> {
+  await publishSourced(BLAME_EVENT, enabled);
+}
+
+/// Subscribe to blame-enabled broadcasts. Same no-republish rule.
+export function onBlameEnabled(handler: (enabled: boolean) => void): Promise<UnlistenFn> {
+  return onSourced<boolean>(BLAME_EVENT, handler);
 }
 
 // ─── Editor tabs: main owns them, the editor window renders them ─────────────

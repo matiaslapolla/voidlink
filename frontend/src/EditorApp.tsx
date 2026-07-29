@@ -83,6 +83,7 @@ import {
   blameEnabled,
   clearBlameFor,
   configureBlame,
+  invalidateAllBlame,
   refreshBlameFor,
   toggleBlame,
 } from "@/components/editor/blameOverlay";
@@ -440,7 +441,19 @@ export function EditorSurface(props: {
 
   // Blame resolves a file to the worktree it belongs to. This window only ever
   // shows one worktree, so that is the whole lookup.
-  configureBlame(() => repoPath());
+  //
+  // The disposer is honoured: `configureBlame` installs a controller
+  // subscription and a cross-window listener, and this runs in a component body,
+  // so a remount (stacked mode turns the editor view on and off) used to leave
+  // the old pair live — two subscribers meaning two blames per notification.
+  onCleanup(configureBlame(() => repoPath()));
+
+  /// Blame is stale the moment history moves. Committing the open file left the
+  /// annotations reading `• You · Uncommitted` until the user switched tabs and
+  /// back, because `refreshGit` below refreshes status and branch and nothing
+  /// touched blame. The refs pulse is also what the cache keys on, so this is the
+  /// one call that both invalidates and repaints.
+  onMount(() => onCleanup(onGitRefsChanged(() => invalidateAllBlame())));
 
   createEffect(() => {
     const path = activeFilePath();
@@ -452,6 +465,25 @@ export function EditorSurface(props: {
     if (!path || !repo) return;
     void refreshBlameFor(repo, path);
   });
+
+  /// Show the commit a blamed line came from.
+  ///
+  /// Same route the git sidebar's commit rows and a SHA clicked in a terminal
+  /// take — a compare tab at `oid^..oid`. Compare is a workbench surface, so
+  /// this goes out as a request and follows it there; in stacked mode both calls
+  /// resolve to the local store and a view switch, which is why there is one
+  /// path and not two. A root commit has no `^` and lands on an empty base,
+  /// which is the same behaviour the terminal's SHA links already have.
+  function revealCommit(oid: string) {
+    send({
+      kind: "open-compare",
+      baseRef: `${oid}^`,
+      headRef: oid,
+      useMergeBase: false,
+      selectedFilePath: activeFilePath(),
+    });
+    void focusMainWindow();
+  }
 
   // ── Git status, for the panel on the right ────────────────────────────────
 
@@ -1068,6 +1100,7 @@ export function EditorSurface(props: {
                 onGoToLine={() => {
                   void editorController.getEditor()?.getAction("editor.action.gotoLine")?.run();
                 }}
+                onRevealCommit={revealCommit}
                 onShowLspLog={() => setLspLog(lspBridge().activeLog())}
                 onRestartLsp={() => lspBridge().restartActive()}
               />

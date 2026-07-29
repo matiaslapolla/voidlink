@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
+use serde::Serialize;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
@@ -203,6 +204,34 @@ fn get_platform_os() -> &'static str {
     std::env::consts::OS
 }
 
+/// Payload of `pty-exit:<sessionId>`.
+///
+/// This used to be `()`, which meant the frontend could see *that* a shell died
+/// but never *how* — so `store/activity.ts`'s `failed` mark was unreachable, and
+/// both it and `store/terminalWatch.ts` carried a comment saying so. Carrying the
+/// status is what closes that.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyExitPayload {
+    /// The shell's exit status, or `None` when we could not obtain one — a
+    /// session already reaped by `close_pty`, or a `wait` that failed.
+    exit_code: Option<u32>,
+}
+
+/// Reap the child and read its status.
+///
+/// Called from the reader thread on EOF, which is *after* the shell has closed
+/// its end of the PTY, so the child has either exited or is about to and `wait`
+/// returns promptly rather than blocking the thread. The `DashMap` shard lock is
+/// held for that window; nothing else in the store does anything slow under the
+/// child mutex (`kill` and `try_wait` are both non-blocking), so there is no
+/// cycle to deadlock on.
+fn reap_exit_code(store: &PtyStore, session_id: &str) -> Option<u32> {
+    let session = store.get(session_id)?;
+    let mut child = session.child.lock().ok()?;
+    child.wait().ok().map(|status| status.exit_code())
+}
+
 #[tauri::command]
 async fn create_pty(
     cwd: String,
@@ -279,6 +308,7 @@ async fn create_pty(
         let reader_app_handle = app_handle.clone();
         let reader_channels = chans.clone();
         let reader_shutdown = shutdown.clone();
+        let reader_store = store.clone();
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
         std::thread::spawn(move || {
@@ -289,8 +319,12 @@ async fn create_pty(
                 }
                 match std::io::Read::read(&mut reader, &mut buf) {
                     Ok(0) | Err(_) => {
-                        let _ = reader_app_handle
-                            .emit(&format!("pty-exit:{}", reader_session_id), ());
+                        let _ = reader_app_handle.emit(
+                            &format!("pty-exit:{}", reader_session_id),
+                            PtyExitPayload {
+                                exit_code: reap_exit_code(&reader_store, &reader_session_id),
+                            },
+                        );
                         break;
                     }
                     Ok(n) => {
@@ -767,13 +801,17 @@ async fn pty_process_info(
             return Ok(PtyProcessInfo { pid: shell_pid, name: None, cwd: None, busy: false });
         }
         let pid = fg_pgid as u32;
-        let busy = shell_pid.map_or(false, |s| s != pid);
-        return Ok(PtyProcessInfo {
+        // `busy` is only "something other than the shell is in the foreground".
+        // It is true for the entire life of any TUI, which is why the frontend
+        // pairs it with an output-rate window before calling anything "working"
+        // — see `store/terminalWatch.ts`.
+        let busy = shell_pid.is_some_and(|s| s != pid);
+        Ok(PtyProcessInfo {
             pid: Some(pid),
             name: proc_info::name(pid),
             cwd: proc_info::cwd(pid),
             busy,
-        });
+        })
     }
     #[cfg(not(unix))]
     {

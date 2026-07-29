@@ -1,6 +1,6 @@
 /// The single status glyph for the whole app. MASTER.md §7.5.3 defines a
-/// *closed* set of six activity signals; this primitive is the only place they
-/// are drawn, so a seventh cannot quietly appear in a feature component.
+/// *closed* set of activity signals; this primitive is the only place they are
+/// drawn, so one more cannot quietly appear in a feature component.
 ///
 /// It is extracted from `TerminalSidebar`'s `LedDot`, which had two states
 /// (busy / active) and no vocabulary. §7.5.3 rule 5 says to promote the LED
@@ -14,8 +14,9 @@
 ///   2. The glyph never changes size between signals, and `<LedSlot>` reserves
 ///      the box even when there is no signal, so a mark arriving causes no
 ///      reflow (§7.5.3 rule 3).
-///   3. `running` is the only pulsing state, and it pulses because work is
-///      genuinely in flight (§7.3.9). Nothing here animates when idle.
+///   3. `running` and `working` are the only pulsing states, and they pulse
+///      because work is genuinely in flight (§7.3.9). Nothing here animates
+///      when idle — `idle` itself is a still, glow-less dot.
 import { Show, splitProps, type JSX } from "solid-js";
 
 /// The closed set. Adding a member here is a design-system change, not a
@@ -23,20 +24,53 @@ import { Show, splitProps, type JSX } from "solid-js";
 export type ActivitySignal =
   /// Unsaved buffer. Filled dot, replaces the close affordance. Clears on save.
   | "dirty"
-  /// A process is running. Pulsing. Clears when the process exits.
+  /// VoidLink is fetching something for this tab — a diff, a stack, an AI
+  /// draft. Chrome work, in the app's own warning hue. Pulsing.
   | "running"
-  /// Work completed while the user was looking elsewhere. Clears on focus.
+  /// A foreground process in this shell is *actively* working: busy **and**
+  /// producing output. Green and pulsing. See `store/terminalWatch.ts` for why
+  /// output rate rather than `busy` alone decides this — `busy` is true for the
+  /// whole lifetime of any TUI, so it cannot tell "claude is thinking" from
+  /// "claude is sitting at its prompt".
+  | "working"
+  /// A shell with nothing in flight, in the tab the user is looking at. The
+  /// quietest lit state: green, no glow, no motion. Never escalates — an idle
+  /// dot on the header of a group you are not looking at is noise, not activity.
+  | "idle"
+  /// Something the user was waiting for finished while they were looking
+  /// elsewhere, or a program asked for attention (BEL, OSC 9, OSC 777). Cyan,
+  /// so it reads as neither "it worked" (green) nor chrome (blue). Clears on
+  /// focus.
+  | "notify"
+  /// Work completed while the user was looking elsewhere — today, a buffer
+  /// reloaded from disk. Clears on focus.
   | "finished"
   /// Work failed. Never clears on focus alone — it must be acknowledged.
   | "failed"
-  /// Terminal bell / attention requested. Clears on focus.
-  | "bell"
   /// The value shown is known to be out of date (§7.5.4).
   | "stale";
 
 /// §7.5.3 rule 2. A tab can carry several signals at once; exactly one mark
 /// renders and it is the highest here. Ordered most to least urgent.
-const PRECEDENCE: ActivitySignal[] = ["failed", "running", "bell", "finished", "dirty", "stale"];
+///
+/// `notify` sits above `working`, and that ordering is the point of the whole
+/// reshuffle. It used to be below (as `bell`, under `running`), so a
+/// notification raised from inside a live TUI — the exact case a user cares
+/// about, "claude finished and is asking me something" — could never render: the
+/// process is still in the foreground, so the busy signal masked it forever.
+///
+/// `idle` is last, because it is the absence of news: anything else a tab is
+/// carrying is more interesting than "this shell is fine".
+const PRECEDENCE: ActivitySignal[] = [
+  "failed",
+  "notify",
+  "working",
+  "running",
+  "finished",
+  "dirty",
+  "stale",
+  "idle",
+];
 
 /// Picks the mark to render from everything a tab is currently signalling.
 /// Returns `undefined` for an empty set so callers can `<Show>` on it.
@@ -68,6 +102,18 @@ const STYLES: Record<ActivitySignal, SignalStyle> = {
     pulse: true,
     label: "running",
   },
+  working: {
+    fill: "bg-success shadow-[0_0_6px_var(--success)]",
+    pulse: true,
+    label: "working",
+  },
+  idle: {
+    // No glow, so it differs from `working` and `finished` in more than motion:
+    // the quietest state is also the dimmest one.
+    fill: "bg-success",
+    pulse: false,
+    label: "idle",
+  },
   finished: {
     fill: "bg-success shadow-[0_0_6px_var(--success)]",
     pulse: false,
@@ -78,10 +124,10 @@ const STYLES: Record<ActivitySignal, SignalStyle> = {
     pulse: false,
     label: "failed",
   },
-  bell: {
-    fill: "bg-info shadow-[0_0_6px_var(--info)]",
+  notify: {
+    fill: "bg-notify shadow-[0_0_6px_var(--notify)]",
     pulse: false,
-    label: "attention requested",
+    label: "finished, needs attention",
   },
   stale: {
     fill: "bg-muted-foreground/60",
@@ -103,9 +149,11 @@ const STYLES: Record<ActivitySignal, SignalStyle> = {
 const PENDING_RINGS: Record<ActivitySignal, string> = {
   dirty: "border-warning",
   running: "border-warning",
+  working: "border-success",
+  idle: "border-success",
   finished: "border-success",
   failed: "border-destructive",
-  bell: "border-info",
+  notify: "border-notify",
   stale: "border-muted-foreground/60",
 };
 
@@ -155,12 +203,31 @@ export function ledLabel(signal: ActivitySignal, pending?: boolean): string {
   return pending ? `${base}, write in flight` : base;
 }
 
-/// The terminal LED's two-bit state (`busy`, `active`) expressed in the §7.5.3
-/// vocabulary. Both the tab strip and the terminal sidebar had their own copy
-/// of this mapping; this is the one.
-export function terminalSignal(busy: boolean, active: boolean): ActivitySignal {
-  if (busy) return "running";
-  return active ? "finished" : "stale";
+/// What a terminal tab's own dot shows, given what its shell is doing and
+/// whether the user is looking at it. The one mapping; the tab strip and the
+/// terminal sidebar both read it.
+///
+/// Returns `undefined` — genuinely off — for an idle shell nobody is watching.
+/// The old two-bit version could never be off: `busy` meant `running` (orange,
+/// pulsing) whether a TUI was working or merely *open*, and idle meant
+/// `finished` on a shell where nothing had finished, or a grey `stale` dot
+/// claiming the value was out of date when it was exactly current. Four states,
+/// none of them "there is nothing to say".
+///
+/// Only two of the five terminal states are decided here. `notify` and `failed`
+/// come from `store/activity.ts`, because they have to survive the user looking
+/// away and escalate to a group header or the status bar; `idle` must *not*
+/// escalate, which is exactly why it is computed at the render site from local
+/// focus rather than stored.
+export function terminalSignal(state: {
+  /// A foreground process is busy **and** producing output. Not `busy` alone —
+  /// see the `working` member of `ActivitySignal`.
+  working: boolean;
+  /// This tab is the one the user is looking at.
+  focused: boolean;
+}): ActivitySignal | undefined {
+  if (state.working) return "working";
+  return state.focused ? "idle" : undefined;
 }
 
 /// Reserves the LED's box whether or not there is a signal, so a mark arriving

@@ -59,7 +59,7 @@ function registerSettingsSchema(monaco: typeof Monaco) {
 }
 
 export function SettingsJsonPane() {
-  const { mode } = useTheme();
+  const { mode, theme } = useTheme();
   const { settings, updateEditor } = useSettings();
   const [error, setError] = createSignal<string | null>(null);
   let container!: HTMLDivElement;
@@ -161,8 +161,12 @@ export function SettingsJsonPane() {
 
   createEffect(
     on(
-      () => mode(),
-      (m) => {
+      // `theme()` as well as `mode()`, matching `EditorHost` and `MonacoPanes`:
+      // the eight named themes rewrite every token without changing mode, so
+      // tracking the mode alone left this pane on monokai's hexes after a
+      // switch to dracula.
+      () => [theme(), mode()] as const,
+      ([, m]) => {
         if (monacoRef) applyVoidlinkTheme(monacoRef, m);
         editor?.updateOptions({ theme: monacoThemeName(m) });
       },

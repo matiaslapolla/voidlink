@@ -264,25 +264,65 @@ export function deriveMonacoTheme(
   };
 }
 
-/// (Re)define both themes from the live cascade and apply the one matching
-/// `mode`. Monaco's theme registry is global, so this is safe to call from any
-/// surface — every editor in the window picks the new colours up immediately.
+export function otherMode(mode: ThemeMode): ThemeMode {
+  return mode === "light" ? "dark" : "light";
+}
+
+/// The *inactive* mode's definition: its stock base and nothing else.
+///
+/// This used to be `deriveMonacoTheme(otherMode, tokens)` off the same snapshot,
+/// which was wrong in a way that only showed up on a race. The cascade holds
+/// exactly one theme, so under `solarized-light` the `--elev-1` in `tokens` is
+/// `#fdf6e3` — and registering `voidlink-dark` with it produced a "dark" theme
+/// whose `editor.background` was cream. Harmless *only* while the applied name
+/// always matched the tokens just read, and Monaco's dynamic import breaks that
+/// (see `editorController.init`): a theme switch mid-load could apply
+/// `voidlink-dark` built from light tokens, giving a light body under a
+/// `vs-dark` floor — the reported "editor drifts to the opposite theme".
+///
+/// An empty inherit-only definition can never invert: `vs` is light and
+/// `vs-dark` is dark by construction. It is a placeholder for the sub-frame
+/// window before the correct definition lands, not a theme anybody sits in.
+function baseOnlyTheme(mode: ThemeMode): Monaco.editor.IStandaloneThemeData {
+  return {
+    base: mode === "light" ? "vs" : "vs-dark",
+    inherit: true,
+    rules: [],
+    colors: {},
+  };
+}
+
+/// (Re)define both theme names and apply the one matching `mode`. Monaco's theme
+/// registry is global, so this is safe to call from any surface — every editor in
+/// the window picks the new colours up immediately.
 ///
 /// Called on mount and on every theme change: `defineTheme` on an existing name
 /// replaces the definition, which is how ten VoidLink themes fit into two
 /// Monaco ones.
 ///
-/// Both names are defined from the *same* snapshot, because the cascade only
-/// ever holds one theme: `--background` under `solarized-light` is the light
-/// value, full stop. The app's mode and the active theme's mode cannot
-/// disagree (`store/theme.ts` sets both together), so the one that gets applied
-/// is always the one whose tokens were just read; the other exists so a surface
-/// created mid-switch never names an undefined theme.
+/// Only the name being applied is derived from the live cascade. The other gets
+/// `baseOnlyTheme`, which is deliberately colourless — see there for why reusing
+/// the snapshot for both is unsafe. Anything that wants full colours in the
+/// other mode must switch the app theme, which re-runs this.
 export function applyVoidlinkTheme(monaco: typeof Monaco, mode: ThemeMode): string {
   const tokens = readCssTokens();
-  monaco.editor.defineTheme(VOIDLINK_DARK, deriveMonacoTheme("dark", tokens));
-  monaco.editor.defineTheme(VOIDLINK_LIGHT, deriveMonacoTheme("light", tokens));
   const name = monacoThemeName(mode);
+  monaco.editor.defineTheme(name, deriveMonacoTheme(mode, tokens));
+  monaco.editor.defineTheme(monacoThemeName(otherMode(mode)), baseOnlyTheme(otherMode(mode)));
   monaco.editor.setTheme(name);
   return name;
+}
+
+/// The two definitions `applyVoidlinkTheme` registers, as data. Exported for the
+/// guard test: the invariant "applying `voidlink-light` never yields a dark
+/// background, and vice versa" is a property of this pair, and asserting it
+/// against a real Monaco registry would mean booting a browser.
+export function voidlinkThemeDefinitions(
+  mode: ThemeMode,
+  tokens: ThemeTokens,
+): Record<string, Monaco.editor.IStandaloneThemeData> {
+  return {
+    [monacoThemeName(mode)]: deriveMonacoTheme(mode, tokens),
+    [monacoThemeName(otherMode(mode))]: baseOnlyTheme(otherMode(mode)),
+  };
 }

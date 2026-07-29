@@ -17,8 +17,12 @@ pub struct BlameLine {
     pub time: i64,
     pub summary: String,
     /// True when this line is part of an uncommitted change in the
-    /// working tree. We skip those — git2 still returns a synthetic
-    /// hunk for them but the metadata is meaningless.
+    /// working tree. git2 marks those hunks with the zero OID; we
+    /// **return** them (the frontend renders them as "Uncommitted" and
+    /// the status-bar chip says so) rather than dropping them, so a
+    /// caller can tell "not committed yet" from "no blame at all".
+    /// `commit_oid` and `short_oid` are empty for these; the signature
+    /// git2 gives us is passed through as-is.
     pub uncommitted: bool,
 }
 
@@ -51,11 +55,20 @@ pub(crate) fn git_blame_file_impl(
         .blame_file(rel, Some(&mut opts))
         .map_err(|e| format!("blame failed: {}", e))?;
 
-    // Read file content for line count (the blame iterator gives us
-    // hunks, not per-line entries — expand here).
+    // The blame iterator gives us hunks, not per-line entries, so the file's
+    // line count is only ever a capacity hint for the expansion below.
+    //
+    // Deliberately `read` and count newline *bytes* rather than
+    // `read_to_string().lines()`. The old version's error aborted the whole
+    // command, so a non-UTF-8 file got no blame at all even though
+    // `blame_file` had already succeeded — and the frontend swallowed the
+    // failure into a `console.debug`. Nothing here needs the text decoded, and
+    // a missing hint costs one reallocation, so both failure modes are
+    // non-fatal now.
     let abs_path = workdir.join(rel);
-    let content = std::fs::read_to_string(&abs_path).map_err(|e| e.to_string())?;
-    let total_lines = content.lines().count();
+    let total_lines = std::fs::read(&abs_path)
+        .map(|bytes| bytes.iter().filter(|b| **b == b'\n').count() + 1)
+        .unwrap_or(0);
 
     let mut out: Vec<BlameLine> = Vec::with_capacity(total_lines);
     // Cache resolved commit metadata per OID — repeated blame hunks on

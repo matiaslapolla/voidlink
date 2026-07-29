@@ -30,8 +30,6 @@ import {
 } from "solid-js";
 import { Portal } from "solid-js/web";
 import {
-  Eye,
-  EyeOff,
   GitBranch,
   GitCommit,
   Layers,
@@ -51,7 +49,6 @@ import { aiCommitState } from "@/commands/aiCommit";
 import { formatChord } from "@/commands/keys";
 import { primaryChordFor } from "@/commands/keymap";
 import { isZen, maximizedGroupId, toggleMaximizedGroup, toggleZen } from "@/store/focusMode";
-import { blameEnabled, toggleBlame } from "@/components/editor/blameOverlay";
 import { hiddenActivity } from "@/store/activity";
 import { StatusLed } from "@/components/layout/StatusLed";
 import {
@@ -380,22 +377,13 @@ export function StatusBar() {
       });
     }
 
-    out.push({
-      id: "blame",
-      priority: STATUS_PRIORITY.blame,
-      align: "end",
-      label: "Toggle inline blame",
-      title: blameEnabled() ? "Inline blame: on (click to disable)" : "Inline blame: off (click to enable)",
-      onClick: toggleBlame,
-      render: () => (
-        <>
-          <Show when={blameEnabled()} fallback={<EyeOff class="w-3 h-3" />}>
-            <Eye class="w-3 h-3" />
-          </Show>
-          <span class="text-[10px] tracking-wide">Blame</span>
-        </>
-      ),
-    });
+    // No blame chip here. It used to live in this bar and did nothing: in the
+    // default detached mode the workbench hosts no Monaco at all (the editor is
+    // its own window, and the chunk is not even fetched), so the toggle reached
+    // `editorController.getActivePath()`, got `null`, and returned. A light
+    // switch wired to no bulb. Blame is now a caret-line readout in
+    // `EditorStatusBar`, next to the buffer it is about, and the toggle is the
+    // `view.toggle-blame` command — already scoped to `window: "editor"`.
 
     out.push({
       id: "workspaces",

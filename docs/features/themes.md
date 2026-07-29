@@ -48,11 +48,37 @@ Three things happen on `<html>`:
    their attribute removed because they live at `:root` and `:root.light`.
 3. The id is written to `localStorage["voidlink-theme"]`.
 
-So dark themes select on `:root[data-theme="nord"]`, while light themes need
-both: `:root.light[data-theme="github-light"]`.
+Every theme block names **both**: `:root.dark[data-theme="nord"]`,
+`:root.light[data-theme="github-light"]`. That is a specificity requirement, not
+a style choice — a bare `:root[data-theme="…"]` is 0-2-0, exactly the same as
+`:root.light` in `index.css`, and `themes.css` is `@import`ed first, so on a tie
+the light block won. Any moment where the class and the attribute disagreed
+painted light tokens under a dark theme.
 
 The theme is loaded and applied at module import time, before the signal is even
-created, specifically so there is no flash of the wrong palette on start.
+created, specifically so there is no flash of the wrong palette on start. A
+pre-paint inline script in `frontend/index.html` gets in earlier still: it sets
+the mode class *and* `data-theme` from `localStorage`, so frame one is already
+the right palette. It carries its own copy of the light-theme id list
+(`light`, `github-light`, `solarized-light`) because it runs before any module
+can be imported — keep it in step with `mode: "light"` in `store/theme.ts`.
+
+## Crossing windows
+
+voidlink runs up to three webviews (workbench, git, editor) and each is its own
+JS context. Mutating `<html>` and writing `localStorage` only changes the window
+that did it, so `applyTheme` also broadcasts the new id on
+`voidlink://theme-changed` and every root subscribes via
+`bridgeThemeAcrossWindows()` in `main.tsx`.
+
+The payload carries the sending window's label. A window drops its own echo
+(Tauri delivers a global emit back to the sender), and a window *applying* a
+remote change does not re-broadcast — the `source` guard removes the self-hop,
+not a two-window ping-pong.
+
+Without this the editor window kept whatever theme it opened on: it is reused
+rather than recreated, it hydrates once at module eval, and it has no theme UI of
+its own.
 
 ## What a theme defines
 
@@ -91,5 +117,34 @@ globally.
   paint every card in the *currently active* theme.
 - **The theme grid's arrow navigation hard-codes two columns.** Changing the
   grid layout breaks up/down movement.
-- Editor and terminal colours follow the theme's mode: Monaco switches between
-  `vs` and `vs-dark`, and the xterm palette is rebuilt on the toggle.
+- Editor and terminal colours follow the theme's mode. Monaco gets exactly two
+  registered theme names, `voidlink-dark` and `voidlink-light`, both derived from
+  the live CSS tokens — stock `vs` / `vs-dark` are only the inheritance floor.
+  The xterm palette is rebuilt on the toggle.
+- **Only the active mode's Monaco theme carries colours.** The other name is
+  registered as a `base`-only placeholder. It has to be registered (a surface
+  created mid-switch must not name an undefined theme) but it must not carry the
+  active theme's hexes, or a stale `setTheme` during the Monaco chunk load paints
+  a light body under a dark floor.
+
+## Manual QA
+
+- [ ] Open the editor in its own window. Toggle the theme in the workbench
+      (title bar sun/moon). **The editor window repaints in the same frame** —
+      body, gutter, widgets. It used to stay on its original theme forever.
+- [ ] Same test with a **same-mode** change: Settings → Theme, `monokai` →
+      `dracula`. Both windows' editors move to the new hexes. Leave the
+      **Settings → JSON pane** open while doing it; that embedded editor has to
+      move too (it used to track only the mode, which does not change here).
+- [ ] Set `solarized-light`, quit, relaunch. **The first painted frame is
+      light.** Watch for a dark flash — that is the pre-paint script failing to
+      set `data-theme`.
+- [ ] Repeat for `github-light` (a light theme whose id is not `"light"`) and for
+      `nord` (a dark theme that is not `"dark"`).
+- [ ] Open a diff tab and a merge editor, switch theme: both follow.
+- [ ] Switch theme *while* the editor window is still loading Monaco (toggle
+      immediately after opening it on a cold start). The editor must land on the
+      theme you ended on, with a matching body and floor — never a light body in
+      a dark shell.
+- [ ] With both windows open, toggle the theme from each in turn. No flicker, no
+      oscillation, no double-apply.
