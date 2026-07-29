@@ -17,6 +17,7 @@ import { gitApi } from "@/api/git";
 import { worktreeLabel, type Workspace, type Worktree } from "@/types/workspace";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { Splitter } from "@/components/layout/Splitter";
+import { EmptyState } from "@/components/layout/EmptyState";
 import { PANEL_BOUNDS } from "@/store/layout";
 
 /// The far-left vertical rail: every workspace, and under each one its
@@ -290,6 +291,12 @@ export function WorkspaceRail() {
 
                 {/* Worktrees */}
                 <Show when={!isCollapsed(ws.id)}>
+                  {/* An expanded workspace with nothing under it is otherwise
+                      indistinguishable from a collapsed one — the chevron is
+                      the only difference, and it is 12px. §9.7. */}
+                  <Show when={ws.worktrees.length === 0}>
+                    <EmptyState id="workspaceNoWorktrees" class="!py-3" />
+                  </Show>
                   <For each={ws.worktrees}>
                     {(wt) => {
                       const isActive = () =>

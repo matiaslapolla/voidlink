@@ -106,7 +106,45 @@ The archive icon opens a prompt with message `WIP` and two toggles:
 | `Mod+Alt+R` | Refresh git status |
 | `Mod+Shift+D` | Toggle inline / split diff |
 
-There is no global shortcut for stage, unstage, or push.
+There is no *global* shortcut for stage, unstage, or push. The changed-file
+list is its own keyboard surface, though — focus it (Tab into it, or `↓` from
+the filter box) and:
+
+| Key | Action |
+|---|---|
+| `↑` `↓` `PageUp` `PageDown` `Home` `End` | Move the cursor. The conflicts / staged / unstaged boundaries are invisible: the three lists are one surface. |
+| `Space` | Stage an unstaged row, unstage a staged one, open a conflicted one |
+| `Enter` | Open the row's diff (or the merge editor) |
+| `Backspace` `Delete` | Discard the row — still behind its confirmation |
+| `Esc` (in the filter box) | Clear the filter |
+
+## The changed-file list
+
+- **Filter box.** Fuzzy and path-aware — the same matcher the command palette
+  and file finder use, so `btn` finds `src/components/Button.tsx` here for the
+  same reason it does there. The matched characters are tinted. The list is
+  **not** reordered by match score: a list that reshuffles as you type loses
+  the one property that makes it scannable.
+- **Two different emptinesses.** "The working tree matches HEAD" (good news)
+  and "No changed file matches this filter" (a typo) are separate empty states
+  with different icons and different sentences.
+- **Windowed above forty rows** with `@tanstack/solid-virtual`, at a fixed 24px
+  row. The height does *not* respond to the density setting, because the height
+  is the virtualizer's size estimate.
+- **Sticky sub-headings.** Scroll a hundred changed files and "Staged (12)" /
+  "Changes (88)" stay put.
+
+## Section order and freshness
+
+- The git sidebar's seven sections render in an order you control: hover a
+  section header and use the two arrows. The order persists globally (not per
+  worktree) alongside the collapse state.
+- The header's branch name, ahead/behind counts and dirty marker each declare
+  their freshness. Live renders normally; refreshing pulses the *value* with
+  the old number still underneath; stale drops to 60% opacity, says
+  `Last read Nm ago` on hover, and grows a refresh button beside it. A stale
+  ahead/behind rendered as if it were live is the failure that contract exists
+  to prevent.
 
 ## Gotchas and limits
 

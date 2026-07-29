@@ -16,6 +16,7 @@ individual features, see [`../specs/`](../specs).
 | [Command palette and file finder](./command-palette.md) | `Mod+K`, `Mod+P`, prompts, toasts, fuzzy matching, overlay stacking |
 | [Editor and markdown preview](./editor-and-preview.md) | Monaco hosting, language detection, saving, the preview pipeline |
 | [Terminal](./terminal.md) | PTY spawning, the environment rebuild, xterm addons, deep links |
+| [Workspaces, worktrees, panes and tabs](./workspaces-and-tabs.md) | The four containers, splitting, MRU and jump-to-N, zen and maximize, tab activity and escalation, what persists where |
 
 ## Git
 
@@ -54,11 +55,14 @@ individual features, see [`../specs/`](../specs).
 Deliberate omissions, so you know they're absent on purpose rather than
 forgotten:
 
-- **Leaf UI** — toasts, buttons, context menus, the status bar, and the
-  operation banner. They're described inside the feature pages that use them.
+- **Leaf UI** — toasts, buttons, context menus, and the operation banner.
+  They're described inside the feature pages that use them. The status bar is
+  now a segment registry; its priority and overflow rules are under
+  [workspaces, worktrees, panes and tabs](./workspaces-and-tabs.md).
 - **The file tree.** Its behaviour is straightforward and its two interesting
   affordances (compare-with-default-branch, drag to terminal) are covered under
   [branch compare](./branch-compare.md) and [terminal](./terminal.md).
-- **The workspace and tab model itself.** Worth its own page; not written yet.
-- **Anything not yet on `main`.** These pages describe the shipped
-  workspace-tab-bar UI.
+- **Leaf UI of the shell itself** — the splitter, the drop targets, the MRU
+  overlay. Their behaviour is described under
+  [workspaces, worktrees, panes and tabs](./workspaces-and-tabs.md).
+- **Anything not yet on `main`.**

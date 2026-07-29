@@ -35,6 +35,7 @@ import {
   type TabDragPayload,
 } from "@/components/layout/TabStrip";
 import { Splitter } from "@/components/layout/Splitter";
+import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
 import { ratiosAfterDrag, resolveActiveTabId, type Rect } from "@/components/layout/paneDrop";
 import { isZen, visibleGroupIds } from "@/store/focusMode";
 import {
@@ -916,20 +917,31 @@ export function MainSurface(props: MainSurfaceProps) {
           <Show when={visibleGroups().has(group.id) ? rects()[group.id] : undefined}>
             {(rect) => (
               <>
+                {/* Two different emptinesses, and §9.7's no-shared-sentence
+                    rule is what lets the user tell them apart: the only pane
+                    in the worktree being empty means "nothing is open at all",
+                    while one pane of a split being empty means "the others
+                    have your tabs". Same box, different icon and sentence. */}
                 <Show when={activeRepoPath() && tabsOf(group.id).length === 0}>
                   <div
-                    class="absolute flex flex-col items-center justify-center text-muted-foreground gap-3 bg-background z-10"
+                    class="absolute flex items-center justify-center bg-background z-10"
                     style={rectStyle(rect())}
                   >
-                    <TerminalSquare class="w-7 h-7 opacity-60" />
-                    <p class="text-[13px]">Nothing open. Use the <span class="font-mono">+</span> in the tab bar, or open a file to work on it in the editor window.</p>
-                    <button
-                      onClick={() => actions.openCompareTab(state.activeWorktreeId)}
-                      class="mt-1 flex items-center gap-1.5 text-[12px] px-3 py-1 rounded-md border border-border hover:bg-accent/40 hover:text-foreground transition-colors"
-                    >
-                      <GitBranchPlus class="w-3.5 h-3.5" />
-                      Compare branches
-                    </button>
+                    <EmptyState
+                      id={groups().length > 1 ? "groupNoTabs" : "worktreeNoTabs"}
+                      size="pane"
+                      action={
+                        <EmptyStateAction
+                          onClick={() => {
+                            actions.focusPaneGroup(state.activeWorktreeId, group.id);
+                            actions.openCompareTab(state.activeWorktreeId);
+                          }}
+                        >
+                          <GitBranchPlus class="w-3.5 h-3.5" />
+                          Compare branches
+                        </EmptyStateAction>
+                      }
+                    />
                   </div>
                 </Show>
                 {/* `pointer-events-none` at rest: the drop target only exists
