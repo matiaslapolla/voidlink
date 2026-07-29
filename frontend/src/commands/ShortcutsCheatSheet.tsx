@@ -95,7 +95,7 @@ function CheatSheetContent() {
   return (
     <Portal>
       <div
-        class="fixed inset-0 z-[80] flex items-start justify-center pt-[10vh] bg-black/40"
+        class="fixed inset-0 z-[var(--z-overlay)] flex items-start justify-center pt-[10vh] bg-black/40"
         onClick={closeCheatSheet}
         onKeyDown={onKeyDown}
       >
@@ -103,7 +103,7 @@ function CheatSheetContent() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="cheat-sheet-title"
-          class="w-[640px] max-w-[92vw] max-h-[80vh] bg-popover border border-border rounded-lg shadow-2xl flex flex-col overflow-hidden"
+          class="w-[640px] max-w-[92vw] max-h-[80vh] bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
           <div class="flex items-center gap-2 px-3 py-2 border-b border-border">

@@ -741,7 +741,7 @@ export function EditorSurface(props: {
 
   return (
     <div
-      class="flex flex-col bg-background text-foreground overflow-hidden"
+      class="flex flex-col bg-canvas text-foreground overflow-hidden"
       classList={{ "h-screen w-screen": !props.embedded, "h-full w-full": props.embedded }}
     >
       {/* Title bar. macOS draws its own traffic lights over the left edge, so
@@ -749,7 +749,7 @@ export function EditorSurface(props: {
           workbench's TitleBar and the git window's header. */}
       <div
         data-tauri-drag-region={props.embedded ? undefined : true}
-        class={`h-9 shrink-0 flex items-center gap-2 border-b border-border px-3 text-xs select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
+        class={`h-9 shrink-0 flex items-center gap-2 px-3 text-xs select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
         classList={{ "pl-[78px]": isMac() && !props.embedded }}
       >
         <FileCode class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
@@ -852,7 +852,10 @@ export function EditorSurface(props: {
       <Show
         when={repoPath()}
         fallback={
-          <div class="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+          <div
+            class="island flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground bg-background"
+            style={{ margin: "0 var(--island-inset) var(--island-inset)" }}
+          >
             <FileCode class="w-7 h-7 opacity-60" />
             <p class="text-[13px]">
               {props.embedded
@@ -868,10 +871,16 @@ export function EditorSurface(props: {
         }
       >
         {(path) => (
-          <div class="flex-1 flex min-h-0">
+          <div
+            class="flex-1 flex min-h-0"
+            style={{
+              padding: "0 var(--island-inset) var(--island-inset)",
+              gap: "var(--island-gap)",
+            }}
+          >
             {/* File tree rail */}
             <Show when={treeVisible()}>
-              <aside class="w-60 shrink-0 border-r border-border bg-sidebar flex flex-col min-h-0">
+              <aside class="island w-60 shrink-0 bg-sidebar flex flex-col min-h-0">
                 <Show when={searchVisible()}>
                   <FindPanel
                     root={() => repoPath()}
@@ -912,7 +921,7 @@ export function EditorSurface(props: {
             </Show>
 
             {/* Tabs + surfaces */}
-            <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
+            <main class="island flex-1 min-w-0 flex flex-col bg-background">
               <TabStrip
                 tabs={tabs()}
                 activeId={activeItem()?.id ?? null}
@@ -1066,7 +1075,7 @@ export function EditorSurface(props: {
 
             {/* Git panel */}
             <Show when={gitVisible()}>
-              <aside class="w-80 shrink-0 border-l border-border bg-sidebar flex flex-col min-h-0">
+              <aside class="island w-80 shrink-0 bg-sidebar flex flex-col min-h-0">
                 <div class="px-3 py-1.5 text-[10px] tracking-wide text-muted-foreground/70 border-b border-border/60 shrink-0">
                   Changes
                 </div>

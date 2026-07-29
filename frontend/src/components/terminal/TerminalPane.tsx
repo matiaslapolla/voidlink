@@ -61,6 +61,20 @@ interface TerminalPaneProps {
 
 // xterm canvas is always rendered opaque: canvas-transparency is unreliable
 // across WebKitGTK and caused visible gaps around the grid.
+//
+// **Direction D1 audit (islands).** The one thing that must be true after the
+// canvas recedes is that the terminal body renders at *island* lightness, not
+// at canvas lightness — otherwise the pane reads as a hole punched in the
+// shell rather than a panel floating on it. These two constants are literals
+// on purpose (a terminal palette is a readability decision, not a chrome
+// one), which means they are structurally immune: nothing here reads
+// `--background`, so nothing here can inherit the recession. `paneBg()` below
+// paints the pane box behind the grid with the *same* literal, so the island's
+// rounded corners show terminal black rather than a strip of canvas.
+//
+// If this file ever starts deriving its palette from the tokens — MASTER §12
+// lists that as a TODO — it must read `--elev-1`, never `--background` and
+// never `--canvas`. `monacoTheme.ts` has the same contract and a test for it.
 const DARK_BG = "#09090b";
 const LIGHT_BG = "#fdf6e3"; // solarized-base3
 

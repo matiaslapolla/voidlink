@@ -41,6 +41,74 @@
 
   --radius: 0.625rem;
 
+  /* ── Canvas & elevation (MASTER.md §3, §6) ─────────────────────────────
+   * Direction D1, "Recessed Canvas": the canvas drops *below* the islands
+   * rather than the islands rising above it. Every reading surface — the
+   * terminal body, the diff, the editor — keeps exactly the lightness it had
+   * before islands existed, which is the whole contrast argument for D1.
+   *
+   * `--canvas` is DERIVED, never hand-tuned per theme. `themes.css` has eight
+   * named themes that each redefine `--background` independently, and ten
+   * hardcoded canvas/island pairs would be ten things to keep in sync. The
+   * derivation is a `color-mix()` toward black, so the invariant
+   * "canvas is strictly darker than the island" holds by construction for
+   * every present and future theme — including `github-light`, whose
+   * `--background` is pure white and therefore has no room to recede by
+   * *lightening*. See `canvasTokens.test.ts` for the machine-checked version.
+   *
+   * Dark and light take different amounts because oklch lightness is
+   * perceptually uniform but the *available* headroom is not: a 15% mix at
+   * L=0.14 is a smaller absolute step than at L=1.0. */
+  --canvas: color-mix(in oklab, var(--background) 85%, black);
+
+  /* The elevation ladder is LIGHTNESS, not shadow. A `box-shadow` on a dark
+   * island renders as a coloured halo — the anti-pattern this direction is
+   * built to avoid. The single permitted shadow in the app is the modal's
+   * (§6), because a modal sits over a scrim and needs to separate from it. */
+  --elev-0: var(--canvas); /* the recessed surface between islands   */
+  --elev-1: var(--background); /* an island — today's background, unchanged */
+  --elev-2: var(--popover); /* raised: palette, popovers, menus      */
+  --elev-3: color-mix(in oklab, var(--popover) 94%, white); /* modal */
+
+  /* ── Island geometry ──────────────────────────────────────────────────
+   * These four are the *only* place D1's geometry is expressed as a number.
+   * `AppShell.tsx` / `MainSurface.tsx` and the `.island` class below consume
+   * them; no panel component may restate them. That isolation is what keeps
+   * the documented D4 fallback (`docs/specs/2026-07-29-ui-directions.md`) a
+   * one-wave rework instead of a four-wave one. */
+  --island-gap: 6px;
+  --island-inset: 8px;
+  --island-radius: var(--radius); /* 10px — the existing lg base */
+  --island-radius-inner: 6px; /* tab cards, rows seated on an island */
+
+  /* ── Spacing scale (4pt base, MASTER.md §5) ────────────────────────────
+   * Names for the paddings that recur across chrome. This is orthogonal to
+   * the `data-density` scale below: density governs *row* rhythm inside an
+   * island, this governs the island's own boxes. */
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs: 6px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+
+  /* ── z-index scale (MASTER.md §6) ──────────────────────────────────────
+   * One system. Every arbitrary `z-[N]` in the app resolves to a name here,
+   * and the numbers are exactly the ones those sites already used, so naming
+   * them changed no stacking order anywhere. `z-0/10/20/30` (Tailwind's own
+   * scale) stay as the in-island stacking steps: base / raised / sticky /
+   * dropdown. Anything that escapes an island uses a name below. */
+  --z-frame: 60; /* native window-resize strips                */
+  --z-modal: 70; /* settings, snapshot manager                 */
+  --z-overlay: 80; /* palette, quick pick, cheat sheet, pickers  */
+  --z-cycle: 85; /* held-modifier tab cycle                    */
+  --z-dialog: 90; /* secret scan and other blocking dialogs     */
+  --z-toast: 100; /* toast viewport                             */
+  --z-prompt: 110; /* text prompt — a modal raised over a modal  */
+  --z-wizard: 9998; /* the worktree wizard — below the menus it opens */
+  --z-menu: 9999; /* portalled menus, context menus, tooltips   */
+  --z-drag: 10000; /* the drag ghost, above everything it explains */
+
   /* ── Motion ───────────────────────────────────────────────────────────── */
   /* MASTER.md §7.2. Never inline a cubic-bezier or a raw ms value in a
      component — name a token. Durations are budgets, not defaults: §7.1's
@@ -67,6 +135,13 @@
 
 :root.light {
   color-scheme: light;
+
+  /* Light themes recede by a smaller fraction: at L≈1.0 a 15% mix toward
+   * black is a 0.15 drop, which reads as grey chrome rather than a recessed
+   * canvas. 4% puts `github-light`'s canvas at ~oklch(0.960) against its pure
+   * white island — the same order of separation GitHub itself uses between
+   * `#ffffff` and `#f6f8fa`. Still strictly darker, so the invariant holds. */
+  --canvas: color-mix(in oklab, var(--background) 96%, black);
 
   --background: oklch(0.980 0.006 270);
   --foreground: oklch(0.145 0.012 270);
@@ -150,6 +225,11 @@ body {
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-canvas: var(--canvas);
+  --color-elev-0: var(--elev-0);
+  --color-elev-1: var(--elev-1);
+  --color-elev-2: var(--elev-2);
+  --color-elev-3: var(--elev-3);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -169,9 +249,15 @@ body {
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
   }
+  /* Focus rings are the *primary* boundary channel now that islands have no
+   * border, so they have to survive being drawn at an island's edge. `inset`
+   * is what makes that true: an outward ring on a control flush against a
+   * rounded, clipping island is silently cut in half. It also keeps §7.6's
+   * no-layout-shift promise honestly — the ring is painted inside the box the
+   * control already occupies and nothing around it moves. */
   button:focus-visible,
   [role="tab"]:focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-0;
+    @apply outline-none ring-2 ring-inset ring-ring ring-offset-0;
   }
 }
 
@@ -184,8 +270,49 @@ body,
 }
 
 #root {
-  background-color: var(--background);
+  /* The window's own surface is the canvas. Islands are drawn on top of it. */
+  background-color: var(--canvas);
   min-height: 100vh;
+}
+
+/* ── Island (Direction D1) ───────────────────────────────────────────────────
+ * One detached panel on the recessed canvas. Defined once, here, so that the
+ * documented D4 fallback is an edit to this rule plus `AppShell`/`MainSurface`
+ * — not an edit to every panel in the app.
+ *
+ * Two things are deliberately absent:
+ *   • **No border.** MASTER's "never nest a bordered container inside a
+ *     bordered container" rule means the boundary budget gets spent once, and
+ *     in D1 it is spent on the tab card. Lightness does the separation.
+ *   • **No shadow.** On a dark surface a box-shadow is a coloured halo. The
+ *     modal is the one exception in the whole app (§6).
+ *
+ * `overflow: hidden` is load-bearing, not incidental: a tab strip painting its
+ * own `--sidebar` into a rounded corner is the failure it prevents.
+ *
+ * The focus ring is now the *primary* boundary channel for a focused island,
+ * because there is no border for it to sit beside. It must therefore cost no
+ * geometry — `ring-inset` everywhere, per §7.6's no-layout-shift rule. */
+.island {
+  border-radius: var(--island-radius);
+  overflow: hidden;
+}
+
+/* A shell slot that is holding nothing — zen's hidden rail, the git sidebar
+ * with no repository selected. Without this the flex `gap` would still be paid
+ * for a zero-width island, leaving a 6px notch where a panel used to be.
+ * Solid's control-flow markers are comment nodes, which `:empty` ignores. */
+.island-slot:empty {
+  display: none;
+}
+
+/* An island whose top edge is covered by a strip that already has square top
+ * corners inside it — the pane body under a tab strip. Rounds the bottom only,
+ * so text in a Monaco or xterm body is never clipped by a top corner. */
+.island-bottom {
+  border-bottom-left-radius: var(--island-radius);
+  border-bottom-right-radius: var(--island-radius);
+  overflow: hidden;
 }
 
 /* ── UI density knob ──────────────────────────────────────────────────────────
@@ -399,6 +526,30 @@ html:not([data-density]) {
 .markdown-body th { background: var(--muted); font-weight: 600; }
 .markdown-body img { max-width: 100%; height: auto; border-radius: 4px; }
 .markdown-body input[type="checkbox"] { margin-right: 0.4em; vertical-align: middle; }
+
+/* ── High contrast (MASTER §7.4) ──────────────────────────────────────────────
+ * Direction D1 separates panels with lightness alone. That is a deliberate
+ * trade — lightness is the only elevation channel that does not become a
+ * coloured halo on a dark surface — but it is also exactly the channel a user
+ * who asks for more contrast is telling us they cannot rely on. Under
+ * `prefers-contrast: more` the islands get their edge back.
+ *
+ * `outline` with a negative offset rather than `border`, because §7.6 forbids
+ * a state or preference changing an element's geometry: an outline is painted
+ * inside the existing box and costs nothing. */
+@media (prefers-contrast: more) {
+  .island,
+  .island-bottom {
+    outline: 1px solid var(--border);
+    outline-offset: -1px;
+  }
+}
+
+/* `prefers-reduced-transparency` needs no rule here and that is a finding, not
+ * an omission: VoidLink has no `backdrop-filter` anywhere, and its scrims are
+ * flat `bg-black/40`–`/60` rather than blurs. If a translucent surface is ever
+ * added, §7.4 requires it raise its opacity and drop its blur under that
+ * query — the hook belongs next to this comment. */
 
 /* ── Reduced motion ─────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

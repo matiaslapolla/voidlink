@@ -278,7 +278,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
   return (
     <Portal>
       <div
-        class="fixed inset-0 z-[9998] bg-black/40 flex items-start justify-center pt-[12vh]"
+        class="fixed inset-0 z-[var(--z-wizard)] bg-black/40 flex items-start justify-center pt-[12vh]"
         onClick={(e) => {
           if (e.target === e.currentTarget) cancel();
         }}
@@ -287,7 +287,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
           role="dialog"
           aria-modal="true"
           aria-label="New worktree"
-          class="w-[560px] max-w-[92vw] max-h-[76vh] flex flex-col rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl"
+          class="w-[560px] max-w-[92vw] max-h-[76vh] flex flex-col rounded-lg border border-border bg-elev-3 text-popover-foreground shadow-xl"
         >
           {/* Header */}
           <div class="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-border">

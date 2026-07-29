@@ -211,7 +211,7 @@ export function GitSurface(props: {
 
   return (
     <div
-      class="flex flex-col bg-background text-foreground overflow-hidden"
+      class="flex flex-col bg-canvas text-foreground overflow-hidden"
       classList={{ "h-screen w-screen": !props.embedded, "h-full w-full": props.embedded }}
     >
       {/* Title bar. macOS draws its own traffic lights over the left edge, so
@@ -220,7 +220,7 @@ export function GitSurface(props: {
           this one, so neither the inset nor the drag region applies. */}
       <div
         data-tauri-drag-region={props.embedded ? undefined : true}
-        class={`h-9 shrink-0 flex items-center gap-2 border-b border-border px-3 text-xs select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
+        class={`h-9 shrink-0 flex items-center gap-2 px-3 text-xs select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
         classList={{ "pl-[78px]": isMac() && !props.embedded }}
       >
         <GitBranch class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
@@ -245,7 +245,10 @@ export function GitSurface(props: {
       <Show
         when={repoPath()}
         fallback={
-          <div class="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+          <div
+            class="island flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground bg-background"
+            style={{ margin: "0 var(--island-inset) var(--island-inset)" }}
+          >
             <GitBranch class="w-7 h-7 opacity-60" />
             <p class="text-[13px]">
               {props.embedded
@@ -261,9 +264,15 @@ export function GitSurface(props: {
         }
       >
         {(path) => (
-          <div class="flex-1 flex min-h-0">
+          <div
+            class="flex-1 flex min-h-0"
+            style={{
+              padding: "0 var(--island-inset) var(--island-inset)",
+              gap: "var(--island-gap)",
+            }}
+          >
             {/* Nav */}
-            <nav class="w-44 shrink-0 border-r border-border bg-sidebar flex flex-col">
+            <nav class="island w-44 shrink-0 bg-sidebar flex flex-col">
               <div class="flex-1 overflow-y-auto scrollbar-thin py-1">
                 <For each={SECTIONS}>
                   {(s) => (
@@ -308,7 +317,7 @@ export function GitSurface(props: {
             </nav>
 
             {/* Detail */}
-            <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
+            <main class="island flex-1 min-w-0 flex flex-col bg-background">
               <Show
                 when={comparing() && activeCompare()}
                 fallback={

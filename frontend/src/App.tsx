@@ -1425,7 +1425,9 @@ function AppInner(props: {
 
   return (
     <>
-      <div class="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+      {/* The window surface is the canvas (D1). Every view drawn into it
+          composes its own islands on top. */}
+      <div class="flex flex-col h-screen w-screen overflow-hidden bg-canvas text-foreground">
         <TitleBar onOpenSettings={props.onOpenSettings} />
         <div class="relative flex-1 min-h-0">
           {view("workbench", workbench)}

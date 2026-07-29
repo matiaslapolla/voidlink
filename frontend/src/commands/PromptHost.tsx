@@ -27,11 +27,11 @@ export function PromptHost() {
       {(r) => (
         <Portal>
           <div
-            class="fixed inset-0 z-[110] flex items-start justify-center bg-black/40 pt-[20vh]"
+            class="fixed inset-0 z-[var(--z-prompt)] flex items-start justify-center bg-black/40 pt-[20vh]"
             onClick={() => resolvePrompt(null)}
           >
             <div
-              class="w-[min(420px,90vw)] bg-popover border border-border rounded-lg shadow-xl p-4"
+              class="w-[min(420px,90vw)] bg-elev-3 border border-border rounded-lg shadow-xl p-4"
               onClick={(e) => e.stopPropagation()}
             >
               <h2 class="text-sm font-semibold text-foreground mb-2">{r().title}</h2>

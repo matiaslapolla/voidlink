@@ -326,7 +326,7 @@ function MatchRow(props: { match: SearchMatch; onOpen: () => void }) {
       <span class="min-w-0 truncate font-mono text-[11px] text-foreground/85">
         {before()}
         {/* One highlight colour, the app's own (§11.5). Never a second. */}
-        <span class="bg-primary/15 text-primary rounded-[2px]">{hit()}</span>
+        <span class="bg-primary/15 text-primary rounded">{hit()}</span>
         {after()}
       </span>
     </button>

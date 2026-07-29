@@ -28,12 +28,59 @@ Defined in `src/index.css` (dark = `:root`, light = `:root.light`) and overridde
 
 | Token | Tailwind | Purpose |
 |---|---|---|
-| `--background` | `bg-background` | App canvas, terminal surface, diff body |
-| `--sidebar` | `bg-sidebar` | Left and right rails (TerminalSidebar, GitSidebar) |
-| `--card` | `bg-card` | Inner elevated blocks (currently unused — reserve for future popovers-as-cards) |
-| `--popover` | `bg-popover` | Modal body (SettingsDialog) |
+| `--canvas` | `bg-canvas` | **The recessed surface islands float on.** The window body, the shell inset, the gaps between panes. Never a reading surface. |
+| `--background` | `bg-background` | The **island** surface: editor body, terminal pane box, diff body, pane group |
+| `--sidebar` | `bg-sidebar` | Bands inside an island — the rail, both sidebars, the tab strip |
+| `--card` | `bg-card` | Inner elevated blocks. Still unclaimed; `--popover` covers today's floating surfaces. |
+| `--popover` | `bg-popover` | Overlay body — palette, menus, popovers. Aliased as `--elev-2`. |
 | `--muted` | `bg-muted` | Input backgrounds, hunk headers |
 | `--accent` | `bg-accent` | Hover/active row highlight — use with /40–/70 alpha |
+
+### The canvas, and why it is derived
+
+Direction D1 (`docs/specs/2026-07-29-ui-directions.md`) makes every panel a
+detached island on a canvas that sits **below** it. The load-bearing sentence
+is *"the canvas recedes, the islands do not rise"*: raising the islands would
+lighten the terminal and diff bodies and cost contrast on the two surfaces the
+user reads for eight hours, so `--background` is exactly the value it always
+was and only `--canvas` is new.
+
+`--canvas` is **derived, never hand-authored per theme**:
+
+```css
+:root       { --canvas: color-mix(in oklab, var(--background) 85%, black); }
+:root.light { --canvas: color-mix(in oklab, var(--background) 96%, black); }
+```
+
+Eight named themes redefine `--background` independently, so ten hardcoded
+canvas/island pairs would be ten things to keep in sync. Two mix ratios instead
+of one because the available headroom differs by mode: a 15% mix at `L ≈ 0.14`
+is a much smaller absolute step than at `L = 1.0`.
+
+**Darkening, not lightening, is the rule** — and `github-light` is why.
+Its `--background` is `oklch(1.000 0.000 0)`: pure white, with nowhere to go
+up. Every theme can go down. `src/canvasTokens.test.ts` asserts the invariant
+for all ten surface-defining blocks (the two base roots plus the eight themes)
+without needing a DOM. Adding a ninth theme fails that test until it is listed.
+
+### Elevation tiers
+
+Elevation is **lightness**, not shadow — see §6.
+
+| Token | Value | Used by |
+|---|---|---|
+| `--elev-0` | `var(--canvas)` | the recessed surface between islands |
+| `--elev-1` | `var(--background)` | an island — unchanged from before islands existed |
+| `--elev-2` | `var(--popover)` | palette, popovers, menus, toasts |
+| `--elev-3` | `--popover` mixed 6% toward white | modals only |
+
+`--elev-1` is the name Monaco reads (`components/editor/monacoTheme.ts`) for
+`editor.background`, `editorGutter.background` and `peekViewEditor.background`.
+That is a contract with a test: an editor painted at `--canvas` reads as a hole
+punched in the shell instead of a panel floating on it, and it is the single
+most likely thing to be broken by a future token rename. `TerminalPane.tsx`'s
+xterm palette is literal and therefore structurally immune; if it is ever
+derived, it must read `--elev-1` too.
 
 ### Text
 
@@ -80,17 +127,28 @@ Current component usage:
 | `text-xs` (0.75rem) | Tab labels, file rows, terminal row title, diff header, commit textarea | Default interactive text |
 | `text-[11px]` | Commit button, git tab labels, branch rows, history rows | Minor actions |
 | `text-[10px]` | Uppercase section headers, cwd subtext, diff line numbers, badges | Floor — anything smaller is too small |
-| `text-[9px]` | HEAD badge | Avoid — promote to 10px if re-used |
+| ~~`text-[9px]`~~ | — | **Retired.** No component uses it. The only surviving 9px in the app is `.dev-chrome-badge` in `index.css`, which is literal by design so a `make dev` window can never be mistaken for the installed bundle. Do not reintroduce it. |
 
 **Rule**: stop adding new sizes. If you need smaller than `text-[10px]`, rethink the hierarchy. If you need a new intermediate size, add it as a utility class here first.
 
 ### Section label pattern (recurring)
 
-```
-text-[10px] uppercase tracking-wider font-semibold text-muted-foreground
+**Extracted.** `.ui-section-label` in `index.css` is the one definition:
+
+```css
+.ui-section-label {
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
 ```
 
-Used in TerminalSidebar (Terminals, Diffs), GitSidebar (Staged, Changes), SettingsDialog (Section). Worth extracting as a `.ui-section-label` class in `index.css`.
+Used in TerminalSidebar (Terminals, Diffs), GitSidebar (Staged, Changes) and
+SettingsDialog. Note it is **sentence case, not caps**: weight and colour carry
+the hierarchy, and the generous tracking that made all-caps legible is dialled
+back to near-neutral because sentence case does not need it. Do not re-inline
+the old `text-[10px] uppercase tracking-wider font-semibold` string.
 
 ## 5. Spacing & density
 
@@ -106,17 +164,113 @@ Used in TerminalSidebar (Terminals, Diffs), GitSidebar (Staged, Changes), Settin
 
 Horizontal padding stays rem-based (Tailwind `px-2 / px-2.5 / px-3`) and scales naturally with textSize.
 
+### The named spacing scale
+
+Orthogonal to density, and added with the islands. Density governs the **row**
+rhythm *inside* an island and scales with the user's preference; this scale
+names the fixed boxes chrome is built out of, on a 4pt base:
+
+| Token | px | Typical use |
+|---|---|---|
+| `--space-3xs` | 2 | gap between tab cards |
+| `--space-2xs` | 4 | icon-to-label, chip inner gap |
+| `--space-xs` | 6 | tight row padding |
+| `--space-sm` | 8 | standard control padding |
+| `--space-md` | 12 | panel padding |
+| `--space-lg` | 16 | dialog padding |
+
+**Rule**: these do not replace Tailwind's `p-*` / `gap-*` scale for ordinary
+work. Reach for a name when the value is *shared geometry* — something a second
+component has to agree with — rather than local padding.
+
+### Island geometry
+
+Four constants, and they live in exactly one place:
+
+| Token | Value |
+|---|---|
+| `--island-gap` | `6px` — between two islands, and the width of the channel a splitter sits in |
+| `--island-inset` | `8px` — from the window edge |
+| `--island-radius` | `var(--radius)` (10px) — an island's outer corner |
+| `--island-radius-inner` | `6px` — a tab card, or anything seated *on* an island |
+
+**Only `AppShell.tsx`, `MainSurface.tsx` and the `.island` class in `index.css`
+may compose these into layout.** A panel that decides its own inset or radius
+is the regression to watch for: `docs/specs/2026-07-29-ui-directions.md` keeps
+Direction D4 as a documented fallback, and that fallback is a one-wave rework
+only for as long as the geometry stays in the shell. Everything else about D1 —
+the token ladder, the contained tabs, the polish pass — is
+direction-independent and carries over unchanged.
+
+JavaScript reads `--island-gap` in exactly one function, `islandGapPx()` in
+`Splitter.tsx`, because the pane-split ratio arithmetic has to subtract the
+gaps. Do not add a second reader and do not retype the number.
+
 ## 6. Radius & elevation
+
+### Radius
 
 - `--radius: 0.625rem` (10px) is the lg base; Tailwind reads `--radius-sm/md/lg/xl` (60% / 80% / 100% / 140% of base).
 - **Component usage**:
+  - Islands → `--island-radius` via the `.island` class, never a per-panel value
+  - Tab cards, and anything seated *on* an island → `--island-radius-inner` (6px)
   - Inputs, buttons, rows → `rounded-md` (8px)
-  - Tabs (top only) → `rounded-t-md`
   - Dialog → `rounded-md`
   - Toggle pills → `rounded-full`
   - Close icon buttons → `rounded` (4px) — smaller to match icon size
-- **Elevation**: only the modal uses `shadow-xl`. No elevation scale exists. If more floating surfaces arrive, define `shadow-sm/md/lg` tokens before adding them ad-hoc.
-- **Glow effect** (used for LED): `shadow-[0_0_6px_theme(colors.success)]`. Used once; don't generalize until reused.
+
+### Elevation is lightness. Do not add `shadow-md`.
+
+This section used to say *"No elevation scale exists. If more floating
+surfaces arrive, define `shadow-sm/md/lg` tokens before adding them ad-hoc."*
+Islands are that moment, and the answer is **not** a shadow scale.
+
+On a dark surface a `box-shadow` renders as a coloured halo. VoidLink is dark
+by default and six of its eight named themes are dark, so a shadow ladder
+would be an anti-pattern in six themes to buy separation in two. The token
+ladder already runs by lightness (`--canvas` → `--background` → `--sidebar` →
+`--popover`), so the elevation scale is that ladder, named: `--elev-0/1/2/3`
+in §3.
+
+**The next person's shortcut is to add `shadow-md` to something. Don't.** If a
+surface needs to separate from what is under it, move it up the lightness
+ladder.
+
+Three exceptions, and they are the whole list:
+
+1. **Modals and other scrimmed overlays** keep `shadow-xl` — one level, not
+   two. They sit over a `bg-black/40`–`/60` scrim which is itself doing most
+   of the separating; a heavier second tier (`shadow-2xl`) was decoration and
+   has been removed.
+2. **Unscrimmed portalled surfaces** — context menus, the tab overflow
+   popover, tooltips, toasts — keep `shadow-lg`. They float over arbitrary
+   live content with no scrim, and on a light theme lightness alone does not
+   separate them.
+3. **Islands take no shadow, ever.** That is the direction, not a preference.
+
+- **Glow effect** (used for the LED): `shadow-[0_0_6px_theme(colors.success)]`. Used once; don't generalize until reused.
+
+### z-index
+
+One scale, named in `index.css`. The numbers are exactly the ones the app was
+already using, so naming them changed no stacking order anywhere.
+
+| Token | Value | Surface |
+|---|---|---|
+| — | `z-0/10/20/30` | in-island stacking: base / raised / sticky / dropdown. Tailwind's own scale; leave as is. |
+| `--z-frame` | 60 | native window-resize strips |
+| `--z-modal` | 70 | settings, snapshot manager |
+| `--z-overlay` | 80 | palette, quick pick, cheat sheet, pickers |
+| `--z-cycle` | 85 | held-modifier tab cycle |
+| `--z-dialog` | 90 | secret scan and other blocking dialogs |
+| `--z-toast` | 100 | toast viewport |
+| `--z-prompt` | 110 | text prompt — a modal raised over a modal |
+| `--z-wizard` | 9998 | the worktree wizard, below the menus it opens |
+| `--z-menu` | 9999 | portalled menus, context menus, tooltips |
+| `--z-drag` | 10000 | the drag ghost, above everything it explains |
+
+**Rule**: no new `z-[<number>]`. `src/tokenHygiene.test.ts` fails the build on
+one. If a surface genuinely needs a new layer, add a name here first.
 
 ## 7. Motion
 
@@ -177,7 +331,17 @@ The forced `!important` durations in `index.css` stay as the floor for the 145 e
 - **Functional loops keep running** — spinners and indeterminate shimmers still animate (slower is fine); they carry state, not decoration. Exempt them from the global zeroing explicitly rather than losing the state signal.
 - **Presence signals must not depend on motion.** An LED that only reads as "running" because it pulses is invisible under reduced motion. Every pulsing signal also differs in colour or fill (§7.5).
 
-Also honour `prefers-reduced-transparency: reduce` on any future `backdrop-filter` surface (raise opacity, drop the blur) and `prefers-contrast: more` (near-solid backgrounds, defined borders).
+`prefers-contrast: more` is **handled**, and islands are why. D1 separates
+panels by lightness alone, which is precisely the channel a user asking for
+more contrast is telling us they cannot rely on — so under that query
+`index.css` gives `.island` a 1px `--border` **outline** (negative offset, so
+it costs no geometry per §7.6) and the edge comes back.
+
+`prefers-reduced-transparency: reduce` needs no rule today and that is a
+finding rather than an omission: the app has no `backdrop-filter` anywhere and
+its scrims are flat `bg-black/40`–`/60` rather than blurs. The first
+translucent surface added must raise its opacity and drop its blur under that
+query; the hook belongs beside the contrast block in `index.css`.
 
 ## 7.5 Liveness & presence
 
@@ -386,6 +550,10 @@ Centered icon + short message. See `TerminalSurface.tsx` / `TerminalSidebar.tsx`
 - **Disabling a control to indicate "busy"** — that's the pending state (§7.6).
 - A state change that shifts `border-width`, `padding`, `height` or an icon slot (§7.6).
 - A second status-indicator shape competing with the LED (§7.5.3 rule 5).
+- **A `box-shadow` on an island** (§6). Elevation is lightness here.
+- **`shadow-md` / `shadow-sm` / a new shadow tier** (§6). There are two: `shadow-xl` scrimmed, `shadow-lg` unscrimmed.
+- **A panel restating `--island-gap`, `--island-inset` or a radius** (§5). Geometry lives in the shell.
+- **A hardcoded colour in a data visualisation** — the commit graph's lane colours are `--chart-*`, so the graph changes with the theme like everything around it (§11.5).
 
 ## 11.5 Brand & visual identity
 
@@ -405,7 +573,10 @@ The identity risk to guard against: as the editor and workbench grow, they drift
 
 | File | Role |
 |---|---|
-| `src/index.css` | Tokens, density vars, global transitions, scrollbar styling |
+| `src/index.css` | Tokens (colour, canvas, elevation, spacing, island geometry, z-index), density vars, `.island`, global transitions, scrollbar styling |
+| `src/canvasTokens.test.ts` | Asserts the canvas is darker than the island in all ten surface-defining blocks |
+| `src/tokenHygiene.test.ts` | Fails the build on an inline hex, `oklch()`, `z-[N]`, raw ms or raw px radius under `src/components/` |
+| `src/components/layout/AppShell.tsx` | The island composition — inset, gaps, slots. One of the three files that own D1's geometry |
 | `src/themes.css` | Named theme overrides (8 themes) |
 | `src/store/theme.ts` | `THEMES` list + light/dark toggle |
 | `src/store/settings.ts` | `ui.textSize` + `ui.density` + terminal prefs |

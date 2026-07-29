@@ -52,9 +52,9 @@ export function TabCycleOverlay() {
   return (
     <Show when={isCycleOpen()}>
       <Portal>
-        <div class="fixed inset-0 z-[85] flex items-center justify-center pointer-events-none">
+        <div class="fixed inset-0 z-[var(--z-cycle)] flex items-center justify-center pointer-events-none">
           <div
-            class="w-[320px] max-w-[80vw] bg-popover border border-border rounded-lg shadow-2xl overflow-hidden"
+            class="w-[320px] max-w-[80vw] bg-popover border border-border rounded-lg shadow-xl overflow-hidden"
             role="listbox"
             aria-label="Recently used tabs"
             aria-live="polite"

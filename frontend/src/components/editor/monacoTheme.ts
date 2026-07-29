@@ -30,6 +30,13 @@ export function monacoThemeName(mode: ThemeMode): string {
 /// The design tokens the editor surface consumes. Named rather than open so a
 /// missing token is a type error instead of a black editor.
 export const THEME_TOKEN_NAMES = [
+  // The island surface. Under Direction D1 the *canvas* recedes below the
+  // islands and `--background` stays exactly where it was, so the editor body
+  // reads at island lightness either way — but naming `--elev-1` here makes
+  // that a stated contract rather than a coincidence. `--canvas` is
+  // deliberately absent from this list: an editor painted at canvas lightness
+  // is the failure mode D1 exists to avoid, and the test below guards it.
+  "--elev-1",
   "--background",
   "--foreground",
   "--card",
@@ -76,7 +83,7 @@ export function readCssTokens(el: Element = document.documentElement): ThemeToke
 /// flag, because mixing them up produces a theme that silently ignores half its
 /// rules.
 function rule(tokens: ThemeTokens, name: ThemeTokenName): string | undefined {
-  const hex = cssColorToHex(tokens[name], { over: tokens["--background"] });
+  const hex = cssColorToHex(tokens[name], { over: tokens["--elev-1"] });
   return hex ? hex.slice(1, 7) : undefined;
 }
 
@@ -87,7 +94,7 @@ function color(
 ): string | undefined {
   const hex = cssColorToHex(tokens[name], {
     alpha: opts.alpha,
-    over: opts.opaque ? tokens["--background"] : undefined,
+    over: opts.opaque ? tokens["--elev-1"] : undefined,
   });
   return hex ?? undefined;
 }
@@ -141,7 +148,7 @@ function tokenRules(tokens: ThemeTokens): Monaco.editor.ITokenThemeRule[] {
 function editorColors(tokens: ThemeTokens): Record<string, string> {
   return defined({
     // ── Canvas
-    "editor.background": color(tokens, "--background", { opaque: true }),
+    "editor.background": color(tokens, "--elev-1", { opaque: true }),
     "editor.foreground": color(tokens, "--foreground", { opaque: true }),
     "editorCursor.foreground": color(tokens, "--primary", { opaque: true }),
     "editor.lineHighlightBackground": color(tokens, "--accent", { alpha: 0.45 }),
@@ -157,13 +164,16 @@ function editorColors(tokens: ThemeTokens): Record<string, string> {
     "editorLink.activeForeground": color(tokens, "--primary", { opaque: true }),
 
     // ── Gutter
-    "editorGutter.background": color(tokens, "--background", { opaque: true }),
+    "editorGutter.background": color(tokens, "--elev-1", { opaque: true }),
     "editorLineNumber.foreground": color(tokens, "--muted-foreground", { alpha: 0.55 }),
     "editorLineNumber.activeForeground": color(tokens, "--foreground", { opaque: true }),
     "editorIndentGuide.background1": color(tokens, "--border", { alpha: 0.7 }),
     "editorIndentGuide.activeBackground1": color(tokens, "--primary", { alpha: 0.4 }),
     "editorRuler.foreground": color(tokens, "--border"),
-    "editorOverviewRuler.border": "#00000000",
+    // Monaco has no "off" for this id, only a colour — so it gets the border
+    // token at zero alpha. Written as a token rather than as `#00000000`
+    // because a literal here is a literal (§2.4) even when it is invisible.
+    "editorOverviewRuler.border": color(tokens, "--border", { alpha: 0 }),
 
     // ── Sticky scroll (Monaco 0.55 renders it as its own surface)
     "editorStickyScroll.background": color(tokens, "--sidebar", { opaque: true }),
@@ -200,7 +210,7 @@ function editorColors(tokens: ThemeTokens): Record<string, string> {
     "editorHoverWidget.background": color(tokens, "--popover", { opaque: true }),
     "editorHoverWidget.foreground": color(tokens, "--popover-foreground", { opaque: true }),
     "editorHoverWidget.border": color(tokens, "--border"),
-    "peekViewEditor.background": color(tokens, "--background", { opaque: true }),
+    "peekViewEditor.background": color(tokens, "--elev-1", { opaque: true }),
     "peekViewResult.background": color(tokens, "--sidebar", { opaque: true }),
     "peekViewTitle.background": color(tokens, "--sidebar", { opaque: true }),
 

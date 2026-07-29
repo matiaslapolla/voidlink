@@ -72,7 +72,10 @@ import {
 /// different heights across two windows of the same app is the kind of seam
 /// users notice without being able to name.
 export const STATUS_BAR_ROW =
-  "flex items-center h-6 px-2 gap-3 text-[11px] text-muted-foreground border-t border-border bg-sidebar shrink-0 select-none overflow-hidden";
+  // No `border-t`: under D1 the status bar is its own island and the canvas
+  // gap above it is the separator. The editor window's scoped bar reuses this
+  // string, so both windows lose the rule together.
+  "flex items-center h-6 px-2 gap-3 text-[11px] text-muted-foreground bg-sidebar shrink-0 select-none overflow-hidden";
 
 /// One chip. Every status-bar control is this shape: `text-[10px]`, an optional
 /// LED, an optional click action, and an accessible name whether or not the
@@ -596,7 +599,7 @@ function OverflowMenu(props: { segments: StatusSegment[] }) {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[240px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[9999] py-1 text-[11px]"
+            class="fixed w-[240px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[11px]"
             style={{ left: `${pos().left}px`, bottom: `${pos().bottom}px` }}
           >
             <For each={props.segments}>

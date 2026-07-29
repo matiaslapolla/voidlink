@@ -119,13 +119,13 @@ function SymbolPicker(props: { onClose: () => void }) {
   return (
     <Portal>
       <div
-        class="fixed inset-0 z-[80] flex items-start justify-center pt-[12vh] bg-black/40"
+        class="fixed inset-0 z-[var(--z-overlay)] flex items-start justify-center pt-[12vh] bg-black/40"
         onClick={props.onClose}
       >
         <div
           role="dialog"
           aria-label="Go to symbol"
-          class="w-[560px] max-w-[92vw] bg-popover border border-border rounded-lg shadow-2xl flex flex-col overflow-hidden"
+          class="w-[560px] max-w-[92vw] bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
           <div class="flex items-center gap-2 px-3 py-2 border-b border-border">

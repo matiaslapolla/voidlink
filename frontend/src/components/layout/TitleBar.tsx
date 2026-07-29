@@ -100,7 +100,11 @@ export function TitleBar(props: TitleBarProps) {
 
   return (
     <div
-      class={`flex items-stretch h-8 shrink-0 select-none border-b border-border bg-background ${DEV_CHROME_CLASS}`}
+      /* The title bar is window chrome, not an island: it stays flush to the
+         window edge (it carries the traffic lights) and takes the canvas
+         colour, so the islands below read as floating on it. Its `border-b` is
+         gone with the islands' — the 8px canvas inset is the separation. */
+      class={`flex items-stretch h-8 shrink-0 select-none bg-canvas ${DEV_CHROME_CLASS}`}
     >
       {/*
         Tauri's injected drag-region script already starts a native drag on
