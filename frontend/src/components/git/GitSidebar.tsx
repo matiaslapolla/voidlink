@@ -63,7 +63,7 @@ import type { MatchRange } from "@/commands/fuzzy";
 import { PANEL_BOUNDS } from "@/store/layout";
 
 import { useAppStore } from "@/store/LayoutContext";
-import { samePath, type AppStore, type GitSectionKey } from "@/store/layout";
+import { samePath, type GitSectionKey } from "@/store/layout";
 
 import { requestNewWorktree } from "@/commands/worktree";
 import { useSettings } from "@/store/settings";
@@ -749,7 +749,6 @@ export function ChangesPane(props: {
   };
 
   const staged = () => (props.status ?? []).filter((f) => f.staged && f.status !== "conflicted");
-  const unstaged = () => (props.status ?? []).filter((f) => !f.staged && f.status !== "conflicted");
   const conflicted = () => (props.status ?? []).filter((f) => f.status === "conflicted");
 
   // ── Filter and keyboard cursor ───────────────────────────────────────────
