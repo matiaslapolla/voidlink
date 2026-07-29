@@ -36,6 +36,7 @@ export interface Binding extends Chord {
 export type KeymapGroup =
   | "App"
   | "File"
+  | "Editor"
   | "View"
   | "Tabs"
   | "Workspace"
@@ -48,6 +49,7 @@ export type KeymapGroup =
 export const KEYMAP_GROUPS: readonly KeymapGroup[] = [
   "App",
   "File",
+  "Editor",
   "View",
   "Tabs",
   "Workspace",
@@ -110,11 +112,53 @@ export const KEYMAP: readonly KeymapEntry[] = [
   // ── File ──────────────────────────────────────────────────────────────
   { actionId: "file.open", group: "File", binding: { meta: true, key: "p" } },
   {
+    actionId: "file.new",
+    group: "File",
+    window: "editor",
+    binding: { meta: true, alt: true, key: "n" },
+    note: "Not ⌘N: that is the workbench's new-workspace chord, and validateKeymapShape forbids a second claim on it regardless of which window each entry belongs to.",
+  },
+  {
     actionId: "file.save",
     group: "File",
     window: "editor",
     binding: { meta: true, key: "s", scope: "outside-terminal" },
     note: "Ctrl+S is XOFF in a shell — scoped so the terminal keeps flow control.",
+  },
+
+  // ── Editor ────────────────────────────────────────────────────────────
+  // The rest of the editing commands (duplicate/move line, toggle comment,
+  // multi-cursor) are reachable through ⌘K and Monaco's own chords, which
+  // already match every other editor the user has. Binding them globally here
+  // would shadow those with identical behaviour and take the chord away from
+  // the terminal for nothing.
+  {
+    actionId: "editor.format-document",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, shift: true, key: "i", scope: "outside-terminal" },
+    note: "⌥⇧F is VS Code's, but Option remaps the character on macOS so the chord never matches. ⌘⇧I is the Windows/Linux binding and survives both layouts.",
+  },
+  {
+    actionId: "editor.find-in-files",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, alt: true, key: "f", scope: "outside-terminal" },
+    note: "⌘⇧F is the convention but git.fetch already owns it, and moving a chord users have is worse than picking the adjacent one. ⌘⌥ keeps the character unremapped on macOS, same as ⌘⌥B for blame.",
+  },
+  {
+    actionId: "editor.go-to-symbol",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, shift: true, key: "o", scope: "outside-terminal" },
+    note: "VS Code's own chord, and unclaimed here. Scoped out of the terminal, where ⌘⇧O is nothing but ought to stay nothing.",
+  },
+  {
+    actionId: "editor.split-right",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, alt: true, key: "\\", scope: "outside-terminal" },
+    note: "VS Code's split is bare ⌘\\, but ui.swap-sidebars has owned that since before the editor had groups and moving a chord users already have is worse than taking the adjacent one. Split-down, close-group and focus-next-group stay palette-only: they are far rarer than split-right, and every remaining ⌘⌥ punctuation chord is remapped by at least one macOS keyboard layout.",
   },
 
   // ── View ──────────────────────────────────────────────────────────────

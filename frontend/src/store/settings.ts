@@ -31,6 +31,77 @@ export interface TerminalSettings {
   scrollOnUserInput: boolean;
 }
 
+/// Word wrap. `bounded` wraps at the smaller of the viewport and
+/// `wordWrapColumn`, which is the only mode that behaves the same in a split
+/// pane as in a full-width one.
+export type EditorWordWrap = "off" | "on" | "bounded";
+export type EditorRenderWhitespace = "none" | "selection" | "boundary" | "all";
+export type EditorLineNumbers = "on" | "off" | "relative";
+/// Monaco's cursor vocabulary, not xterm's — `line` where the terminal says
+/// `bar`. Kept separate from `CursorStyle` rather than mapped, because the two
+/// surfaces genuinely have different option sets and a shared type would have
+/// to lie about one of them.
+export type EditorCursorStyle = "line" | "block" | "underline";
+export type EditorCursorBlinking = "blink" | "smooth" | "phase" | "expand" | "solid";
+/// When a buffer is written back without an explicit ⌘S. `afterDelay` writes
+/// `autoSaveDelayMs` after the last keystroke; `onFocusChange` on blur.
+///
+/// The dirty dot is *never* suppressed by any of these (MASTER §7.5.3): it
+/// appears on the first edit and clears on the write, so a pending autosave is
+/// always visible rather than being quietly implied.
+export type EditorAutoSave = "off" | "afterDelay" | "onFocusChange";
+
+/// Everything the code editor reads. Every field here must be applicable to a
+/// live editor through `updateOptions` / `model.updateOptions` — a setting that
+/// only takes effect after a reload is a bug, not a limitation, so a new field
+/// that Monaco can only consume at construction time does not belong in this
+/// interface without a note saying why.
+export interface EditorSettings {
+  fontFamily: string;
+  fontSize: number;
+  /// Monaco's own convention: `0` computes the height from the font size, and
+  /// anything in `(0, 8]` is a multiplier. Larger values are raw pixels.
+  lineHeight: number;
+  fontLigatures: boolean;
+  tabSize: number;
+  insertSpaces: boolean;
+  wordWrap: EditorWordWrap;
+  wordWrapColumn: number;
+  minimap: boolean;
+  stickyScroll: boolean;
+  bracketPairColorization: boolean;
+  renderWhitespace: EditorRenderWhitespace;
+  indentGuides: boolean;
+  lineNumbers: EditorLineNumbers;
+  cursorStyle: EditorCursorStyle;
+  cursorBlinking: EditorCursorBlinking;
+  smoothScrolling: boolean;
+  scrollBeyondLastLine: boolean;
+  formatOnSave: boolean;
+  trimTrailingWhitespaceOnSave: boolean;
+  insertFinalNewlineOnSave: boolean;
+  autoSave: EditorAutoSave;
+  autoSaveDelayMs: number;
+  /// Vim keybindings. Off by default, and `monaco-vim` is only imported when
+  /// this is on, so declining it costs nothing. Ships with a mode indicator —
+  /// a Vim mode whose current mode is invisible is unusable.
+  vimMode: boolean;
+  /// Start language servers for files that have one. On by default: a server
+  /// is only ever started when its binary is already installed, so the setting
+  /// costs nothing for the users who have none, and the ones who installed
+  /// rust-analyzer did so in order to use it.
+  ///
+  /// Like `formatOnSave`, `autoSave` and `vimMode`, this is not a Monaco option
+  /// — the "must apply through `updateOptions`" rule above is about the fields
+  /// that *are*. Turning it off stops the running servers immediately; it does
+  /// not need a reload either.
+  lspEnabled: boolean;
+  /// Override where a server's binary lives, keyed by server id (see
+  /// `components/editor/lspServers.ts`). An empty or absent value means "find
+  /// it on `PATH`", which is the case for everyone who installed it normally.
+  lspServerPaths: Record<string, string>;
+}
+
 export interface UiSettings {
   textSize: UiTextSize;
   density: UiDensity;
@@ -108,6 +179,7 @@ export interface GitSettings {
 export interface AppSettings {
   ui: UiSettings;
   terminal: TerminalSettings;
+  editor: EditorSettings;
   ai: AiSettings;
   brain: BrainSettings;
   git: GitSettings;
@@ -156,6 +228,39 @@ const DEFAULTS: AppSettings = {
     scrollSensitivity: 1,
     scrollOnUserInput: true,
   },
+  /// Chosen to reproduce exactly what the editor did before it was
+  /// configurable: the old hardcoded `SHARED_EDITOR_OPTIONS` for the keys it
+  /// set, and Monaco's own defaults for the keys it left alone. An existing
+  /// install therefore sees no visual change on upgrade — the pane starts
+  /// where the editor already was.
+  editor: {
+    fontFamily: "'Geist Mono Variable', 'Geist Mono', monospace",
+    fontSize: 13,
+    lineHeight: 0, // 0 = derive from font size, which is what Monaco was doing
+    fontLigatures: false,
+    tabSize: 4,
+    insertSpaces: true,
+    wordWrap: "off",
+    wordWrapColumn: 80,
+    minimap: false,
+    stickyScroll: false,
+    bracketPairColorization: false,
+    renderWhitespace: "selection",
+    indentGuides: true,
+    lineNumbers: "on",
+    cursorStyle: "line",
+    cursorBlinking: "blink",
+    smoothScrolling: false,
+    scrollBeyondLastLine: false,
+    formatOnSave: false,
+    trimTrailingWhitespaceOnSave: false,
+    insertFinalNewlineOnSave: false,
+    autoSave: "off",
+    autoSaveDelayMs: 1000,
+    vimMode: false,
+    lspEnabled: true,
+    lspServerPaths: {},
+  },
   ai: {
     commitCommand: "",
     agentCommand: "",
@@ -174,18 +279,34 @@ function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | unde
   return { ...defaults, ...partial };
 }
 
-function load(): AppSettings {
+/// Fold a persisted payload into a complete settings object.
+///
+/// Split out of `load` and exported so the forward-compatibility rule — a
+/// payload saved before a section existed loads with that section's defaults
+/// filled in — is testable without a browser. Every new top-level section needs
+/// a line here or it silently stays `undefined` for every existing install.
+export function parseSettings(raw: string | null): AppSettings {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return JSON.parse(JSON.stringify(DEFAULTS));
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
     return {
       ui: mergeDefaults(DEFAULTS.ui, parsed.ui),
       terminal: mergeDefaults(DEFAULTS.terminal, parsed.terminal),
+      // Absent in every payload saved before the editor became configurable,
+      // which is every payload on disk today.
+      editor: mergeDefaults(DEFAULTS.editor, parsed.editor),
       ai: mergeDefaults(DEFAULTS.ai, parsed.ai),
       brain: mergeDefaults(DEFAULTS.brain, parsed.brain),
       git: mergeDefaults(DEFAULTS.git, parsed.git),
     };
+  } catch {
+    return JSON.parse(JSON.stringify(DEFAULTS));
+  }
+}
+
+function load(): AppSettings {
+  try {
+    return parseSettings(localStorage.getItem(STORAGE_KEY));
   } catch {
     return JSON.parse(JSON.stringify(DEFAULTS));
   }
@@ -211,6 +332,9 @@ export function useSettings() {
     settings,
     updateTerminal(patch: Partial<TerminalSettings>) {
       setSettings("terminal", patch);
+    },
+    updateEditor(patch: Partial<EditorSettings>) {
+      setSettings("editor", patch);
     },
     updateUi(patch: Partial<UiSettings>) {
       setSettings("ui", patch);

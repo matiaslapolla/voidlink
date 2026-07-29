@@ -8,6 +8,7 @@
 /// behind a memoised import that everything else awaits.
 
 import type * as Monaco from "monaco-editor";
+import type { EditorSettings } from "@/store/settings";
 
 let loading: Promise<typeof Monaco> | null = null;
 
@@ -52,19 +53,64 @@ export function loadMonaco(): Promise<typeof Monaco> {
   return loading;
 }
 
-/// Editor options every surface in the editor window shares, so the code
-/// editor, the diff panes and the merge panes read as one typeface and rhythm.
-export const SHARED_EDITOR_OPTIONS = {
-  fontSize: 13,
-  fontFamily: "'Geist Mono Variable', 'Geist Mono', monospace",
-  minimap: { enabled: false },
-  scrollBeyondLastLine: false,
+/// The parts of the editor surface that are VoidLink's, not the user's.
+///
+/// Chrome, not preference: the overview ruler border and the in-ruler cursor
+/// are Monaco decorations that fight the app's own gutter idiom, and
+/// `automaticLayout` is load-bearing for the splitter. Nothing here is exposed
+/// in Settings, which is why it is separate from the derived options rather
+/// than being defaults inside them.
+const EDITOR_CHROME = {
   renderLineHighlight: "line",
   overviewRulerBorder: false,
   hideCursorInOverviewRuler: true,
   padding: { top: 8, bottom: 8 },
   automaticLayout: true,
 } as const satisfies Monaco.editor.IEditorOptions;
+
+/// Monaco options derived from the store, shared by every surface in the
+/// editor window — the code editor, the diff panes and the merge panes — so
+/// they read as one typeface and rhythm.
+///
+/// Pure, and deliberately so: this is the whole settings→Monaco contract in one
+/// function, testable without a DOM, and the only place a setting name meets a
+/// Monaco option name. Callers spread it into `create` and pass the same object
+/// to `updateOptions` when the store changes, which is what makes every setting
+/// apply live.
+///
+/// Note the two exceptions that are *not* here: `tabSize` and `insertSpaces`
+/// are model options in Monaco, not editor options, so they go through
+/// `modelOptions` below. Passing them to `updateOptions` silently does nothing.
+export function editorOptions(
+  s: EditorSettings,
+): Monaco.editor.IEditorOptions & Monaco.editor.IGlobalEditorOptions {
+  return {
+    ...EDITOR_CHROME,
+    fontFamily: s.fontFamily,
+    fontSize: s.fontSize,
+    lineHeight: s.lineHeight,
+    fontLigatures: s.fontLigatures,
+    wordWrap: s.wordWrap,
+    wordWrapColumn: s.wordWrapColumn,
+    minimap: { enabled: s.minimap },
+    stickyScroll: { enabled: s.stickyScroll },
+    bracketPairColorization: { enabled: s.bracketPairColorization },
+    renderWhitespace: s.renderWhitespace,
+    guides: { indentation: s.indentGuides, highlightActiveIndentation: s.indentGuides },
+    lineNumbers: s.lineNumbers,
+    cursorStyle: s.cursorStyle,
+    cursorBlinking: s.cursorBlinking,
+    smoothScrolling: s.smoothScrolling,
+    scrollBeyondLastLine: s.scrollBeyondLastLine,
+  };
+}
+
+/// The two settings Monaco keeps on the *model* rather than the editor. Applied
+/// per model on creation and on every settings change; see the note in
+/// `editorOptions`.
+export function modelOptions(s: EditorSettings): Monaco.editor.ITextModelUpdateOptions {
+  return { tabSize: s.tabSize, insertSpaces: s.insertSpaces };
+}
 
 /// Monaco's built-in language id for a path's extension. Unknown extensions
 /// fall back to plaintext rather than guessing.

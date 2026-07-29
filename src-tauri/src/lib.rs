@@ -7,6 +7,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 mod browser;
 mod git;
 mod fs;
+mod lsp;
 mod brain;
 mod menu;
 mod secrets;
@@ -957,6 +958,13 @@ pub fn run() {
             git::git_config_get,
             git::git_config_set,
             git::git_config_unset,
+            fs::search::fs_search_files,
+            fs::search::fs_search_cancel,
+            fs::fs_stat_files,
+            lsp::lsp_locate,
+            lsp::lsp_start,
+            lsp::lsp_send,
+            lsp::lsp_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

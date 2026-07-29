@@ -24,14 +24,17 @@ import {
   type JSX,
 } from "solid-js";
 import {
+  AlertTriangle,
   ArrowUpRight,
   Eye,
   FileCode,
   FolderTree,
   GitBranch,
+  Search,
   GitCompare,
   GitMerge,
   PanelRight,
+  Columns2,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { isMac } from "@/api/platform";
@@ -50,7 +53,31 @@ import {
 } from "@/api/windows";
 import { ChangesPane } from "@/components/git/GitSidebar";
 import { EditorHost } from "@/components/editor/EditorHost";
+import { EditorGroupsView } from "@/components/editor/EditorGroupsView";
+import { Breadcrumbs } from "@/components/editor/Breadcrumbs";
+import { GoToSymbol } from "@/components/editor/GoToSymbol";
+import {
+  DEFAULT_SPLIT_FRACTION,
+  SINGLE_GROUP,
+  cycleFocus,
+  focusGroup,
+  isSplit,
+  splitEditor,
+  unsplit,
+  type GroupId,
+  type SplitLayout,
+} from "@/components/editor/editorGroups";
 import { editorController } from "@/components/editor/editorController";
+import { editorPaletteActions } from "@/components/editor/editorActions";
+import { loadMonaco } from "@/components/editor/monaco";
+import {
+  createLspBridge,
+  INERT_LSP_BRIDGE,
+  type LspBridge,
+} from "@/components/editor/lspBridge";
+import { LspLogDialog } from "@/components/editor/LspLogDialog";
+import { EditorEmptyState } from "@/components/editor/EditorEmptyState";
+import { EditorStatusBar } from "@/components/editor/EditorStatusBar";
 import { useOpenFiles } from "@/components/editor/useOpenFiles";
 import {
   blameEnabled,
@@ -62,10 +89,13 @@ import {
 import { DiffTabView } from "@/components/editor/DiffTabView";
 import { MergeEditor } from "@/components/editor/MergeEditor";
 import { FileTree } from "@/components/files/FileTree";
+import { FindPanel } from "@/components/search/FindPanel";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import { TabStrip, type TabDescriptor, type TabKind } from "@/components/layout/TabStrip";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { PromptHost } from "@/commands/PromptHost";
+import { textPrompt } from "@/commands/prompt";
+import { fsApi } from "@/api/fs";
 import { ToastViewport } from "@/commands/ToastViewport";
 import { keymapBindings, useKeybindings } from "@/commands/keybindings";
 import { registerActions, type Action } from "@/commands/registry";
@@ -73,6 +103,7 @@ import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { pushToast } from "@/commands/toast";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
 import { createAppStore } from "@/store/layout";
+import { useSettings } from "@/store/settings";
 import type { EditorReorderableKind, EditorTabKind } from "@/api/windows";
 
 const EMPTY_SNAPSHOT: EditorTabsSnapshot = {
@@ -173,6 +204,9 @@ export function EditorSurface(props: {
   const context = () => props.context();
   const snapshot = () => props.tabs();
   const [treeVisible, setTreeVisible] = createSignal(true);
+  /// The left rail shows either the file tree or find-in-files, never both —
+  /// two scrolling trees in a 240px column is a worse answer than a swap.
+  const [searchVisible, setSearchVisible] = createSignal(false);
   const [gitVisible, setGitVisible] = createSignal(true);
 
   const repoPath = createMemo(() => context()?.repoPath ?? null);
@@ -180,9 +214,20 @@ export function EditorSurface(props: {
 
   // ── Monaco ───────────────────────────────────────────────────────────────
 
-  const { openFiles } = useOpenFiles();
+  const { openFiles, groups } = useOpenFiles();
   const dirtyPaths = createMemo(
     () => new Set(openFiles().filter((f) => f.dirty).map((f) => f.path)),
+  );
+  /// A write in flight. The dot stays — it only changes to its pending form
+  /// (§7.6), because the buffer still differs from disk until the write lands.
+  const savingPaths = createMemo(
+    () => new Set(openFiles().filter((f) => f.saving).map((f) => f.path)),
+  );
+  const reloadedPaths = createMemo(
+    () => new Set(openFiles().filter((f) => f.reloaded).map((f) => f.path)),
+  );
+  const conflictedPaths = createMemo(
+    () => new Set(openFiles().filter((f) => f.conflicted).map((f) => f.path)),
   );
 
   const activeItem = () => snapshot().active;
@@ -190,6 +235,42 @@ export function EditorSurface(props: {
     const item = activeItem();
     return item?.type === "file" ? item.path : null;
   };
+
+  // ── Editor groups ────────────────────────────────────────────────────────
+  //
+  // Local to this window, and deliberately not part of the broadcast snapshot:
+  // the tab *list* is the workbench's, but how many panes this window draws it
+  // in is nobody else's business. `api/windows.ts` therefore stays exactly as
+  // it was — split panes send no new requests and honour the same contract.
+
+  const [split, setSplit] = createSignal<SplitLayout>(SINGLE_GROUP);
+  const [splitFraction, setSplitFraction] = createSignal(DEFAULT_SPLIT_FRACTION);
+  /// What the new pane opens on when a split is created: whatever the pane it
+  /// was split off was showing. A blank second editor would make the user open
+  /// the file twice to get the side-by-side they asked for.
+  const [seedPath, setSeedPath] = createSignal<string | null>(null);
+  const [symbolPickerOpen, setSymbolPickerOpen] = createSignal(false);
+
+  /// Focus is the controller's — Monaco reports it whenever the caret lands in
+  /// a pane, including routes this component never sees (the find widget, a
+  /// peek, a command). Mirroring it back into the layout keeps the focus ring
+  /// and the "which group gets the next file" decision reading the same value.
+  createEffect(() => {
+    const focused = groups().find((g) => g.focused)?.id;
+    if (focused) setSplit((l) => focusGroup(l, focused));
+  });
+
+  const groupPath = (id: GroupId) => groups().find((g) => g.id === id)?.activePath ?? null;
+
+  function doSplit(orientation: "horizontal" | "vertical") {
+    setSeedPath(editorController.getActivePath());
+    setSplit((l) => splitEditor(l, orientation));
+  }
+
+  function focusEditorGroup(id: GroupId) {
+    setSplit((l) => focusGroup(l, id));
+    editorController.focusGroup(id);
+  }
 
   /// Fold each snapshot into Monaco's model cache. This is the only thing that
   /// opens or closes a model in this window — clicking a tab sends a request to
@@ -230,6 +311,132 @@ export function EditorSurface(props: {
       },
     ),
   );
+
+  /// One place a failed write is reported, whether the user pressed ⌘S or an
+  /// autosave timer fired. The buffer stays dirty (the controller never clears
+  /// the flag on a throw), so the toast's Retry is the only thing the user has
+  /// to act on — MASTER §7.5.6, never leave an optimistic clean state standing.
+  function saveWithRetry(path: string): Promise<void> {
+    return editorController.save(path).catch((e) => {
+      pushToast(
+        `Could not save ${baseName(path)}: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+        8000,
+        { label: "Retry", run: () => void saveWithRetry(path) },
+      );
+    });
+  }
+
+  /// Create a file and open it. Repo-relative, so the prompt is a path and not
+  /// a name — `src/foo/bar.ts` is what people actually type, and the Rust side
+  /// creates the parents.
+  ///
+  /// The file tree already grows a file inline from its context menu; this is
+  /// the keyboard route to the same `fs_create_file`, which is what lets the
+  /// empty state advertise a chord rather than "right-click a folder".
+  async function newFile() {
+    const root = repoPath();
+    if (!root) return;
+    const rel = await textPrompt({
+      title: "New file",
+      label: "Path, relative to the repository root",
+      placeholder: "src/example.ts",
+      confirmLabel: "Create",
+    });
+    if (!rel) return;
+    const path = `${root}/${rel.replace(/^\/+/, "")}`;
+    try {
+      await fsApi.createFile(path);
+    } catch (e) {
+      pushToast(
+        `Could not create ${rel}: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+      return;
+    }
+    // The workbench owns the tab list; opening is a request, same as every
+    // other tab mutation in this window.
+    send({ kind: "open-file", path });
+  }
+
+  // ── Language servers ──────────────────────────────────────────────────────
+  //
+  // One bridge per editor window. Everything it does is conditional on a binary
+  // actually being installed, so a machine with neither server sees exactly
+  // today's editor: no session, no status segment, no error.
+
+  const { settings: appSettings } = useSettings();
+  const [lspBridge, setLspBridge] = createSignal<LspBridge>(INERT_LSP_BRIDGE);
+  const [lspLog, setLspLog] = createSignal<
+    { server: string; binary: string; lines: string[] } | null
+  >(null);
+
+  onMount(() => {
+    // `onCleanup` is registered synchronously, before the await: after
+    // `loadMonaco()` resolves Solid's owner is gone and a cleanup registered
+    // there would never run, leaving a server process alive per window close.
+    let bridge: LspBridge | null = null;
+    let cancelled = false;
+    onCleanup(() => {
+      cancelled = true;
+      bridge?.dispose();
+      bridge = null;
+    });
+    void loadMonaco()
+      .then((monaco) => {
+        if (cancelled) return;
+        bridge = createLspBridge(monaco, {
+          workspaceRoot: repoPath,
+          settings: () => appSettings.editor,
+          // The single toast at three consecutive crashes; `shouldToastCrash`
+          // in `lspStatus.ts` owns that policy and the bridge is its only
+          // caller.
+          onToast: (message) => pushToast(message, "error"),
+        });
+        setLspBridge(() => bridge as LspBridge);
+      })
+      .catch((e) => {
+        // Monaco failing to load is already fatal for the editor surface; it is
+        // not this feature's job to report it a second time.
+        console.warn("[lsp] Monaco unavailable, language features are off", e);
+      });
+  });
+
+  // Settings and workspace both change what should be running. `refresh` is
+  // idempotent, so re-running it on any of them is cheaper than working out
+  // which one moved.
+  createEffect(() => {
+    // Read every dependency before the call so the effect tracks all three.
+    void repoPath();
+    void appSettings.editor.lspEnabled;
+    void appSettings.editor.lspServerPaths;
+    lspBridge().refresh();
+  });
+
+  /// Session restore is filed per workspace, so the repo has to be known before
+  /// the first file opens. This effect runs on the same `repoPath()` the tab
+  /// snapshot arrives with, which is ahead of any `reconcile`.
+  createEffect(() => {
+    editorController.setSessionKey(repoPath());
+  });
+
+  /// A closing window gets no unmount, so the coalesced session write has to be
+  /// forced here or the last few positions are lost on every quit.
+  onMount(() => {
+    const flush = () => editorController.persistSession();
+    window.addEventListener("beforeunload", flush);
+    onCleanup(() => {
+      window.removeEventListener("beforeunload", flush);
+      flush();
+    });
+  });
+
+  onMount(() => {
+    editorController.autoSaveFailed = (path) => void saveWithRetry(path);
+    onCleanup(() => {
+      editorController.autoSaveFailed = null;
+    });
+  });
 
   // Blame resolves a file to the worktree it belongs to. This window only ever
   // shows one worktree, so that is the whole lookup.
@@ -281,6 +488,26 @@ export function EditorSurface(props: {
   });
   onMount(() => onCleanup(onGitRefsChanged(() => void refreshGit())));
 
+  /// Notice out-of-band edits under open tabs.
+  ///
+  /// Polled at the two moments the answer can have changed: the window
+  /// regaining focus (an edit from another editor or a terminal) and a git ref
+  /// change (checkout, rebase, stash). Clean buffers reload silently and wear
+  /// the finished mark; dirty ones raise the inline bar below. A checkout
+  /// touching 200 files therefore produces 200 silent reloads and zero
+  /// interruptions, which is the point.
+  onMount(() => {
+    const check = () => void editorController.checkExternalChanges();
+    window.addEventListener("focus", check);
+    const offRefs = onGitRefsChanged(check);
+    // One baseline pass so the first real poll has something to compare to.
+    check();
+    onCleanup(() => {
+      window.removeEventListener("focus", check);
+      offRefs();
+    });
+  });
+
   // ── Commands ─────────────────────────────────────────────────────────────
   // Only the handful that mean something in this window. Ids match the entries
   // in `commands/keymap.ts`, so the chords the user already knows keep working;
@@ -293,7 +520,98 @@ export function EditorSurface(props: {
         description: "Write the active editor tab to disk",
         group: "File",
         enabled: () => !!editorController.getActivePath(),
-        run: () => void editorController.saveActive(),
+        run: () => {
+          const path = editorController.getActivePath();
+          if (path) void saveWithRetry(path);
+        },
+      },
+      {
+        // Monaco's own go-to-definition can only navigate to a model that
+        // already exists, and this window does not own the tab list — opening a
+        // file is a request to the workbench. So the cross-file case goes
+        // through the bridge and the same `open-file` request everything else
+        // uses. Within an already-open file, Monaco's F12 keeps working too.
+        id: "editor.go-to-definition",
+        label: "Go to definition",
+        description: "Jump to where the symbol under the cursor is defined",
+        group: "Editor",
+        enabled: () => !!editorController.getActivePath(),
+        run: async () => {
+          const target = await lspBridge().definitionAtCursor();
+          if (!target) {
+            // Honest, and names the two reasons it can happen. A silent no-op
+            // reads as a broken keybinding.
+            pushToast("No definition found — the language server may still be indexing", "warning");
+            return;
+          }
+          send({ kind: "open-file", path: target.path });
+          // The open is a round trip through the workbench; the reveal has to
+          // wait for the model to be attached here.
+          setTimeout(() => editorController.revealPosition(target.line, target.column), 120);
+        },
+      },
+      {
+        id: "file.new",
+        label: "New file",
+        description: "Create a file in this repository and open it",
+        group: "File",
+        enabled: () => !!repoPath(),
+        run: () => void newFile(),
+      },
+      ...editorPaletteActions(() => editorController.getEditor()),
+      {
+        id: "editor.find-in-files",
+        label: "Find in files",
+        description: "Search this repository, gitignore-aware",
+        group: "Editor",
+        enabled: () => !!repoPath(),
+        run: () => {
+          setTreeVisible(true);
+          setSearchVisible(true);
+        },
+      },
+      {
+        id: "editor.go-to-symbol",
+        label: "Go to symbol in file",
+        description: "Jump to a declaration in the file in front",
+        group: "Editor",
+        enabled: () => !!editorController.getActivePath(),
+        run: () => setSymbolPickerOpen(true),
+      },
+      {
+        id: "editor.split-right",
+        label: isSplit(split()) ? "Split editor side by side" : "Split editor right",
+        description: "Show a second editor group beside this one",
+        group: "Editor",
+        enabled: () => !!editorController.getEditor(),
+        run: () => doSplit("horizontal"),
+      },
+      {
+        id: "editor.split-down",
+        label: isSplit(split()) ? "Stack editor groups" : "Split editor down",
+        description: "Show a second editor group below this one",
+        group: "Editor",
+        enabled: () => !!editorController.getEditor(),
+        run: () => doSplit("vertical"),
+      },
+      {
+        id: "editor.close-group",
+        label: "Close the other editor group",
+        description: "Return to a single editor pane",
+        group: "Editor",
+        enabled: () => isSplit(split()),
+        run: () => setSplit((l) => unsplit(l)),
+      },
+      {
+        id: "editor.focus-next-group",
+        label: "Focus the other editor group",
+        group: "Editor",
+        enabled: () => isSplit(split()),
+        run: () => {
+          const next = cycleFocus(split());
+          setSplit(next);
+          editorController.focusGroupEditor(next.focused);
+        },
       },
       {
         id: "view.toggle-blame",
@@ -361,6 +679,8 @@ export function EditorSurface(props: {
         icon: <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />,
         title: f.path,
         dirty: dirtyPaths().has(f.path),
+        saving: savingPaths().has(f.path),
+        reloaded: reloadedPaths().has(f.path),
       });
     }
     for (const d of snap.diffs) {
@@ -397,6 +717,9 @@ export function EditorSurface(props: {
         icon: <Eye class="w-3.5 h-3.5 shrink-0 text-info opacity-80" />,
         title: `Previewing ${p.filePath}`,
         labelWidth: "max-w-[200px]",
+        // A rendered view of a file you are editing elsewhere, not a buffer of
+        // its own. Italic is the affordance every editor uses for that.
+        preview: true,
       });
     }
     return out;
@@ -439,6 +762,9 @@ export function EditorSurface(props: {
         <Show when={repoInfo()?.isClean === false}>
           <span class="text-warning">• changes</span>
         </Show>
+        {/* Vim's mode used to live here, because there was no editor status
+            bar to put it in. There is one now, and a mode indicator belongs
+            beside line:col rather than beside the branch name. */}
 
         <span class="ml-auto text-muted-foreground truncate max-w-[40%]">
           {context()
@@ -456,6 +782,34 @@ export function EditorSurface(props: {
             label={treeVisible() ? "Hide file tree" : "Show file tree"}
           >
             <FolderTree class="w-3.5 h-3.5" />
+          </HeaderToggle>
+          <HeaderToggle
+            active={searchVisible()}
+            onClick={() => {
+              setSearchVisible((v) => !v);
+              if (!searchVisible()) return;
+              setTreeVisible(true);
+            }}
+            title={searchVisible() ? "Show the file tree" : "Find in files"}
+            label={searchVisible() ? "Show file tree" : "Find in files"}
+          >
+            <Search class="w-3.5 h-3.5" />
+          </HeaderToggle>
+          {/* Splitting is a ⌘⌥\ / palette command; this is the pointer route
+              to the same state, and it doubles as the indication that the view
+              *is* split, which the seam alone reads as ambiguous next to a
+              sidebar border. */}
+          <HeaderToggle
+            active={isSplit(split())}
+            onClick={() => (isSplit(split()) ? setSplit((l) => unsplit(l)) : doSplit("horizontal"))}
+            title={
+              isSplit(split())
+                ? "Close the second editor group"
+                : "Split the editor side by side"
+            }
+            label={isSplit(split()) ? "Close editor group" : "Split editor"}
+          >
+            <Columns2 class="w-3.5 h-3.5" />
           </HeaderToggle>
           <HeaderToggle
             active={gitVisible()}
@@ -518,6 +872,21 @@ export function EditorSurface(props: {
             {/* File tree rail */}
             <Show when={treeVisible()}>
               <aside class="w-60 shrink-0 border-r border-border bg-sidebar flex flex-col min-h-0">
+                <Show when={searchVisible()}>
+                  <FindPanel
+                    root={() => repoPath()}
+                    onClose={() => setSearchVisible(false)}
+                    onOpen={(p, line, column) => {
+                      send({ kind: "open-file", path: p });
+                      // Queue behind the reconcile the request triggers, so the
+                      // model exists before the cursor is moved into it.
+                      void editorController.openFile(p).then(() => {
+                        editorController.revealPosition(line, column);
+                      });
+                    }}
+                  />
+                </Show>
+                <Show when={!searchVisible()}>
                 <div class="px-3 py-1.5 text-[10px] tracking-wide text-muted-foreground/70 border-b border-border/60 shrink-0">
                   Files
                 </div>
@@ -538,6 +907,7 @@ export function EditorSurface(props: {
                     },
                   }}
                 />
+                </Show>
               </aside>
             </Show>
 
@@ -591,7 +961,51 @@ export function EditorSurface(props: {
                   class="absolute inset-0"
                   style={{ display: activeItem()?.type === "file" ? "block" : "none" }}
                 >
-                  <EditorHost class="w-full h-full" />
+                  <EditorGroupsView
+                    layout={split}
+                    fraction={splitFraction}
+                    onFraction={setSplitFraction}
+                    onFocusGroup={focusEditorGroup}
+                    renderGroup={(groupId) => (
+                      <>
+                        {/* Per-buffer, inline, and it does not steal focus. A
+                            modal here would fire once per file during a rebase;
+                            a toast would scroll away before the user could
+                            choose. Per *group*, because a split can have a
+                            conflicted file in one pane and a clean one in the
+                            other, and a bar over the wrong buffer is a lie. */}
+                        <Show when={groupPath(groupId)}>
+                          {(path) => (
+                            <Show when={conflictedPaths().has(path())}>
+                              <ExternalChangeBar
+                                path={path()}
+                                onKeepMine={() => editorController.keepMine(path())}
+                                onTakeTheirs={() => void editorController.takeTheirs(path())}
+                                onShowDiff={() => send({ kind: "open-diff", filePath: path() })}
+                              />
+                            </Show>
+                          )}
+                        </Show>
+                        {/* Where you are, and what you are inside of. The app's
+                            own row idiom, not Monaco's breadcrumb widget —
+                            MASTER §11.5. */}
+                        <Breadcrumbs
+                          groupId={groupId}
+                          path={() => groupPath(groupId)}
+                          repoRoot={repoPath}
+                          onGoToSymbol={() => {
+                            focusEditorGroup(groupId);
+                            setSymbolPickerOpen(true);
+                          }}
+                        />
+                        <EditorHost
+                          class="w-full flex-1 min-h-0"
+                          groupId={groupId}
+                          seedPath={groupId === "primary" ? undefined : seedPath}
+                        />
+                      </>
+                    )}
+                  />
                 </div>
 
                 <For each={snapshot().diffs}>
@@ -632,12 +1046,22 @@ export function EditorSurface(props: {
                 </For>
 
                 <Show when={tabs().length === 0}>
-                  <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground bg-background z-10">
-                    <FileCode class="w-7 h-7 opacity-60" />
-                    <p class="text-[13px]">Nothing open. Pick a file from the tree.</p>
-                  </div>
+                  <EditorEmptyState />
                 </Show>
               </div>
+
+              {/* What the buffer in front actually is. Below the surfaces, not
+                  inside the editor group: it reports on whichever group has
+                  focus, and one bar per pane would be two bars saying the same
+                  thing about the same file half the time. */}
+              <EditorStatusBar
+                path={activeFilePath}
+                onGoToLine={() => {
+                  void editorController.getEditor()?.getAction("editor.action.gotoLine")?.run();
+                }}
+                onShowLspLog={() => setLspLog(lspBridge().activeLog())}
+                onRestartLsp={() => lspBridge().restartActive()}
+              />
             </main>
 
             {/* Git panel */}
@@ -663,7 +1087,54 @@ export function EditorSurface(props: {
           </div>
         )}
       </Show>
+
+      {/* ⇧⌘O. A portal, so it is above the panes without either of them
+          needing to know it exists. */}
+      <GoToSymbol open={symbolPickerOpen} onClose={() => setSymbolPickerOpen(false)} />
+
+      {/* What the status segment's `log` click opens. Rendered here rather than
+          inside the status bar so it sits above the panes. */}
+      <LspLogDialog log={lspLog} onClose={() => setLspLog(null)} />
     </div>
+  );
+}
+
+/// "This file changed on disk", inline above the buffer it is about.
+///
+/// Three choices, no default, and no focus steal — the user may be mid-word.
+/// It stacks with nothing: only the buffer in front ever shows one.
+function ExternalChangeBar(props: {
+  path: string;
+  onKeepMine: () => void;
+  onTakeTheirs: () => void;
+  onShowDiff: () => void;
+}) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      class="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-warning/40 bg-warning/10 text-[11px]"
+    >
+      <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
+      <span class="flex-1 min-w-0 truncate">
+        This file changed on disk while you had unsaved edits.
+      </span>
+      <BarButton onClick={props.onKeepMine} label="Keep mine">Keep mine</BarButton>
+      <BarButton onClick={props.onTakeTheirs} label="Take theirs">Take theirs</BarButton>
+      <BarButton onClick={props.onShowDiff} label="Show diff">Show diff</BarButton>
+    </div>
+  );
+}
+
+function BarButton(props: { onClick: () => void; label: string; children: JSX.Element }) {
+  return (
+    <button
+      onClick={props.onClick}
+      aria-label={props.label}
+      class="shrink-0 px-2 py-0.5 rounded border border-border bg-background/40 text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {props.children}
+    </button>
   );
 }
 

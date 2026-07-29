@@ -5,7 +5,12 @@
     "useDefineForClassFields": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
-    "types": ["vite/client"],
+    // "node" is here for the guard tests only: `monacoTheme.test.ts` walks the
+    // source tree for stray `vs-dark` strings and `lspProtocol.test.ts` parses
+    // Monaco's own `editor.api.d.ts` to catch enum renumbering. Both read files
+    // at test time, so they need `node:fs`. App code has no business importing
+    // node builtins — Vite would fail the build if it did.
+    "types": ["vite/client", "node"],
     "skipLibCheck": true,
 
     /* Bundler mode */

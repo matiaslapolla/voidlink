@@ -26,7 +26,16 @@ export const ACTION_IDS = [
   "help.shortcuts",
   // File
   "file.open",
+  "file.new",
   "file.save",
+  // Editor
+  "editor.format-document",
+  "editor.find-in-files",
+  "editor.split-right",
+  "editor.split-down",
+  "editor.close-group",
+  "editor.focus-next-group",
+  "editor.go-to-symbol",
   // Terminal
   "terminal.new",
   "terminal.repeat-last",

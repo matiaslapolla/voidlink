@@ -28,7 +28,12 @@ import { Portal } from "solid-js/web";
 import { ChevronsRight, Pin, PinOff, X } from "lucide-solid";
 import { terminalApi } from "@/api/terminal";
 import type { TerminalSession } from "@/types/workspace";
-import { StatusLed, terminalSignal } from "@/components/layout/StatusLed";
+import {
+  StatusLed,
+  highestSignal,
+  terminalSignal,
+  type ActivitySignal,
+} from "@/components/layout/StatusLed";
 
 const POLL_MS = 1500;
 
@@ -61,6 +66,17 @@ export interface TabDescriptor {
   title: string;
   /// Unsaved-changes marker. Editor-window state, so only file tabs set it.
   dirty?: boolean;
+  /// A write for this buffer is in flight. Puts the dirty dot into its pending
+  /// form (MASTER §7.6) rather than replacing or hiding it — the buffer still
+  /// differs from disk until the write lands, so the dot must stay.
+  saving?: boolean;
+  /// Reloaded from disk while this tab was in the background. The §7.5.3
+  /// *finished* mark, cleared when the tab is next activated.
+  reloaded?: boolean;
+  /// A transient / preview tab: showing something the user glanced at rather
+  /// than something they committed to keeping open. Italic label, the idiom
+  /// every editor uses for this, and the only place italics appear in the strip.
+  preview?: boolean;
   /// Present on terminal tabs. Swaps the icon for a live LED + process name;
   /// the strip owns that polling because the tab is the only place it shows.
   terminal?: TerminalSession;
@@ -325,6 +341,13 @@ interface TabChromeProps {
 
 function PlainTab(props: TabChromeProps & { pinned: boolean }) {
   const closable = () => !props.pinned;
+  /// §7.5.3 rule 2: one mark, the highest. `highestSignal` owns the ordering,
+  /// so dirty-beats-reloaded is not re-decided here.
+  const mark = () =>
+    highestSignal([
+      props.tab.dirty ? ("dirty" as const) : undefined,
+      props.tab.reloaded ? ("finished" as const) : undefined,
+    ]);
   return (
     <div
       draggable={isDraggable(props.tab)}
@@ -350,6 +373,7 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
         class={`truncate ${props.tab.labelWidth ?? "max-w-[140px]"} ${
           props.tab.mono ? "font-mono text-[12px]" : ""
         }`}
+        classList={{ italic: props.tab.preview }}
       >
         <Show when={props.tab.prefix}>
           <span
@@ -364,13 +388,60 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
         </Show>
         {props.tab.label}
       </span>
-      <Show when={props.tab.dirty}>
-        <span class="w-1.5 h-1.5 rounded-full bg-warning shrink-0" />
-      </Show>
-      <Show when={closable()}>
-        <CloseButton label={`Close ${props.tab.label}`} onClose={props.onClose} />
-      </Show>
+      <TabTrailing
+        mark={mark()}
+        pending={props.tab.saving}
+        closable={closable()}
+        closeLabel={`Close ${props.tab.label}`}
+        onClose={props.onClose}
+      />
     </div>
+  );
+}
+
+/// The one trailing slot every tab reserves: the activity mark, or the close
+/// button, never both and never neither-then-suddenly-one.
+///
+/// §7.5.3 says the dirty mark *replaces* the close affordance rather than
+/// sitting beside it, and rule 3 says a mark arriving must not move layout —
+/// so the slot is a fixed 16px box and the two contents swap inside it. Hover
+/// brings the close button back over a marked tab, which is also what makes
+/// the close visible at rest on an unmarked one instead of the `opacity-0`
+/// that §10.4 calls out.
+///
+/// The only transition here is the close button's own hover tint, which §7.6
+/// sanctions at `--dur-tint`. Nothing about the mark animates except the
+/// pending pulse, and that pulse is not the only channel — see `StatusLed`.
+function TabTrailing(props: {
+  mark?: ActivitySignal;
+  pending?: boolean;
+  closable: boolean;
+  closeLabel: string;
+  onClose: () => void;
+}) {
+  return (
+    <span class="ml-0.5 w-4 h-4 shrink-0 flex items-center justify-center">
+      <Show when={props.mark}>
+        {(signal) => (
+          <span classList={{ "group-hover:hidden": props.closable }} class="flex">
+            <StatusLed signal={signal()} pending={props.pending} />
+          </span>
+        )}
+      </Show>
+      <Show when={props.closable}>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onClose();
+          }}
+          class="p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          classList={{ "hidden group-hover:flex": !!props.mark, flex: !props.mark }}
+          aria-label={props.closeLabel}
+        >
+          <X class="w-3 h-3" />
+        </button>
+      </Show>
+    </span>
   );
 }
 
@@ -450,7 +521,9 @@ function CloseButton(props: { label: string; onClose: () => void }) {
         e.stopPropagation();
         props.onClose();
       }}
-      class="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
+      // §10.4: a hover-only action is invisible until you already know it is
+      // there. 60% at rest, full on hover — the tint shift §7.6 sanctions.
+      class="ml-0.5 p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       aria-label={props.label}
     >
       <X class="w-3 h-3" />

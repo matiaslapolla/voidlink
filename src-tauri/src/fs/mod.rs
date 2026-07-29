@@ -1,3 +1,5 @@
+pub mod search;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
@@ -198,9 +200,76 @@ pub fn fs_find_repo_root(path: String) -> Result<Option<String>, String> {
     }
 }
 
+/// Modification stamp for one path. `exists: false` covers a file deleted out
+/// from under an open tab, which is a change like any other.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileStamp {
+    pub path: String,
+    pub exists: bool,
+    /// Seconds since the epoch. `None` on a filesystem that does not report it.
+    pub modified: Option<i64>,
+    pub size: u64,
+}
+
+/// Stat a batch of paths in one call.
+///
+/// Batched deliberately: the editor polls every open buffer on window focus and
+/// after every git ref change, and one IPC round trip per open tab would make a
+/// branch switch with twenty tabs open twenty round trips. There is no watcher
+/// because a watcher means a new dependency and an OS-level handle per file,
+/// for information that is only ever consumed at two discrete moments.
+#[tauri::command]
+pub fn fs_stat_files(paths: Vec<String>) -> Vec<FileStamp> {
+    paths
+        .into_iter()
+        .map(|path| match std::fs::metadata(Path::new(&path)) {
+            Ok(meta) => FileStamp {
+                exists: true,
+                modified: meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64),
+                size: meta.len(),
+                path,
+            },
+            Err(_) => FileStamp {
+                path,
+                exists: false,
+                modified: None,
+                size: 0,
+            },
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stats_report_existence_size_and_absence() {
+        let dir = std::env::temp_dir().join("voidlink-fs-stat-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let present = dir.join("a.txt");
+        std::fs::write(&present, "hello").unwrap();
+        let missing = dir.join("gone.txt");
+
+        let stamps = fs_stat_files(vec![
+            present.to_string_lossy().to_string(),
+            missing.to_string_lossy().to_string(),
+        ]);
+        assert_eq!(stamps.len(), 2);
+        assert!(stamps[0].exists);
+        assert_eq!(stamps[0].size, 5);
+        // A file deleted out from under an open tab is a change like any other.
+        assert!(!stamps[1].exists);
+        assert_eq!(stamps[1].size, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A gitignored file is invisible by default and appears, flagged, once
     /// ignores are off — the `.env` case the toggle exists for.

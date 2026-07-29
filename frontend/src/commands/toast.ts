@@ -1,5 +1,14 @@
 import { createSignal } from "solid-js";
 
+/// An affordance rendered inside the toast. MASTER.md §7.5.5: a transient
+/// notice for a failure carries Retry, and one for a reversible effect carries
+/// Undo — a toast that only says what went wrong makes the user go and find the
+/// control again. Invoking it dismisses the toast.
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Toast {
   id: number;
   message: string;
@@ -10,11 +19,6 @@ export interface Toast {
   /// failure toast with no way to act on it is just an obituary). Running it
   /// dismisses the toast.
   action?: ToastAction;
-}
-
-export interface ToastAction {
-  label: string;
-  run: () => void;
 }
 
 const [toasts, setToasts] = createSignal<Toast[]>([]);
