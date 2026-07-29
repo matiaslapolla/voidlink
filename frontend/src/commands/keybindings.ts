@@ -1,7 +1,7 @@
 import { onCleanup, onMount } from "solid-js";
 import { matches, type Chord } from "@/commands/keys";
 import { KEYMAP, chordsOf, type BindingScope } from "@/commands/keymap";
-import { getAction } from "@/commands/registry";
+import { getAction, runAction } from "@/commands/registry";
 
 export type { Chord };
 export { matches };
@@ -64,6 +64,39 @@ export function useKeybindings(bindings: () => KeyBinding[]) {
   });
 }
 
+/// Watch for the platform modifier being released.
+///
+/// `Ctrl+Tab` is the only held-modifier interaction in the app: the chord opens
+/// a preview and the *release* is what commits it. That is a keyup, and keyup
+/// is not something the chord table can express — so it lives here, beside the
+/// keydown listener, rather than in the overlay component. No component
+/// registers key handling of its own.
+///
+/// `blur` counts as a release: a user who Cmd-tabs away mid-cycle would
+/// otherwise come back to an overlay with no modifier left to lift.
+export function useModifierRelease(handlers: {
+  onRelease: () => void;
+  onCancel: () => void;
+}) {
+  onMount(() => {
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "Control" || e.key === "Meta") handlers.onRelease();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") handlers.onCancel();
+    };
+    const onBlur = () => handlers.onCancel();
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", onBlur);
+    onCleanup(() => {
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", onBlur);
+    });
+  });
+}
+
 /// The keymap, flattened into runnable bindings.
 ///
 /// Each binding resolves its action at press time rather than at build time,
@@ -85,7 +118,9 @@ export function keymapBindings(): KeyBinding[] {
         run: () => {
           const action = getAction(entry.actionId);
           if (!action) return true;
-          void action.run();
+          // Through `runAction` so the palette's recency order reflects what
+          // the user actually does, chords included.
+          void runAction(action);
         },
       });
     }

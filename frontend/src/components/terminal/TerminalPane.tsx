@@ -37,6 +37,11 @@ interface TerminalPaneProps {
   // cause TUIs to redraw at the wrong width ("compressed, repeated" output).
   active?: boolean;
   onExit?: () => void;
+  /// The shell rang the bell (BEL). One of the three distinct terminal events
+  /// MASTER §7.5.3 names — the other two (a command running, a command
+  /// finishing) come from the process poll in `store/terminalWatch.ts`, not
+  /// from the emulator. Ambient only: it must never steal focus.
+  onBell?: () => void;
   /// Click handler for `path[:line[:column]]` matches in scrollback. The
   /// path is whatever the regex captured — may be relative; the caller
   /// is responsible for resolving against the workspace root.
@@ -664,6 +669,9 @@ export function TerminalPane(props: TerminalPaneProps) {
       onOutput: outputChannel,
     });
     void subscription.catch(() => { /* pane will show nothing; nothing to undo */ });
+
+    const bellSub = term.onBell(() => props.onBell?.());
+    ownedCleanup(() => bellSub.dispose());
 
     const unlistenExit = await listen(`pty-exit:${ptyId}`, () => props.onExit?.());
 

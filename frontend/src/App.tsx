@@ -18,11 +18,22 @@ import { MainSurface } from "@/components/layout/MainSurface";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { GitSidebar, GitSidebarCollapsed } from "@/components/git/GitSidebar";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
+import { SnapshotManager } from "@/components/layout/SnapshotManager";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
-import { createAppStore } from "@/store/layout";
+import {
+  createAppStore,
+  setCorruptKeyHandler,
+  setPersistenceErrorHandler,
+} from "@/store/layout";
 import { isMac } from "@/api/platform";
+import { isZen, toggleMaximizedGroup, toggleZen } from "@/store/focusMode";
 import { CommandPalette } from "@/commands/CommandPalette";
 import { FileFinder } from "@/commands/FileFinder";
+import { TabCycleOverlay } from "@/commands/TabCycleOverlay";
+import { TabSwitcher } from "@/commands/TabSwitcher";
+import { WorktreeSwitcher } from "@/commands/WorktreeSwitcher";
+import { abortCycle, commitCycle, stepCycle } from "@/commands/tabCycle";
+import type { OpenTabTarget, RecentFileTarget } from "@/commands/targets";
 import { ShortcutsCheatSheet } from "@/commands/ShortcutsCheatSheet";
 import { ToastViewport } from "@/commands/ToastViewport";
 import { PromptHost } from "@/commands/PromptHost";
@@ -35,21 +46,32 @@ import {
   isCheatSheetOpen,
   isFileFinderOpen,
   isPaletteOpen,
+  isTabSwitcherOpen,
+  isWorktreeSwitcherOpen,
   openCheatSheet,
   openFileFinder,
   openPalette,
+  openTabSwitcher,
+  openWorktreeSwitcher,
+  closeTabSwitcher,
+  closeWorktreeSwitcher,
   registerActions,
   type Action,
 } from "@/commands/registry";
-import { keymapBindings, useKeybindings } from "@/commands/keybindings";
+import { keymapBindings, useKeybindings, useModifierRelease } from "@/commands/keybindings";
 import { validateKeymap } from "@/commands/keymap";
-import { WORKSPACE_SELECT_COUNT, workspaceSelectId } from "@/commands/actionIds";
+import {
+  TAB_SELECT_COUNT,
+  WORKSPACE_SELECT_COUNT,
+  tabSelectId,
+  workspaceSelectId,
+} from "@/commands/actionIds";
 import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { requestAiCommitDraft } from "@/commands/aiCommit";
 import { toggleAgentPanel } from "@/commands/agent";
 import { AgentPanel } from "@/components/agent/AgentPanel";
-import { snapshotsFor, removeSnapshot } from "@/commands/snapshots";
+import { snapshotsFor, snapshotTabCount } from "@/commands/snapshots";
 import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
 import { setOverlayOpen } from "@/commands/overlay";
 import { agentPanelOpen } from "@/commands/agent";
@@ -80,7 +102,8 @@ import {
 } from "@/api/windows";
 import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
-import type { ActiveItem } from "@/store/layout";
+import { resolveGroupTabs, type ActiveItem } from "@/store/layout";
+import { browserTabLabel } from "@/components/browser/BrowserPane";
 
 /// The other two surfaces, loaded only if stacked mode actually renders them.
 /// Static imports would put the editor and git shells in the workbench's entry
@@ -90,8 +113,24 @@ const EditorView = lazy(() =>
 );
 const GitView = lazy(() => import("@/GitApp").then((m) => ({ default: m.GitSurface })));
 
-function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) {
-  const { state, activeWorkspace, activeWorktree, activeRepoPath, actions } = useAppStore();
+function AppInner(props: {
+  onOpenSettings: () => void;
+  settingsOpen: boolean;
+  onOpenSnapshots: () => void;
+}) {
+  const {
+    state,
+    activeWorkspace,
+    activeWorktree,
+    activeRepoPath,
+    focusedGroupId,
+    focusedGroupMru,
+    paneLayout,
+    workbenchTabIds,
+    canGoBack,
+    canGoForward,
+    actions,
+  } = useAppStore();
 
   // Hydrate the real worktree list for every repo-backed workspace once, on
   // boot. Persisted state only knows what we last saw; git is the truth, and
@@ -149,7 +188,15 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   /// exists and is in front. Every "open a file" path in the workbench — the
   /// file finder, the tree, a terminal deep-link — funnels through this.
   async function openInEditorWindow(path: string, line?: number, column?: number) {
-    actions.openFileTab(state.activeWorktreeId, path);
+    const id = actions.openFileTab(state.activeWorktreeId, path);
+    // Editor targets never move the workbench's active item, so the store's
+    // activation effect cannot see them. Record the visit — with the line, which
+    // is the whole reason back is useful inside a file — explicitly.
+    actions.recordNavVisit(state.activeWorktreeId, {
+      groupId: null,
+      item: { type: "file", id, path },
+      ...(line === undefined ? {} : { line }),
+    });
     revealSeq += 1;
     setReveal({ path, line, column, seq: revealSeq });
     try {
@@ -257,6 +304,8 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   // every modal surface has to actively push them out of the way while open.
   createEffect(() => setOverlayOpen("palette", isPaletteOpen()));
   createEffect(() => setOverlayOpen("file-finder", isFileFinderOpen()));
+  createEffect(() => setOverlayOpen("worktree-switcher", isWorktreeSwitcherOpen()));
+  createEffect(() => setOverlayOpen("tab-switcher", isTabSwitcherOpen()));
   createEffect(() => setOverlayOpen("worktree-wizard", !!newWorktreeRequest()));
   createEffect(() => setOverlayOpen("agent", agentPanelOpen()));
   createEffect(() => setOverlayOpen("settings", props.settingsOpen));
@@ -571,6 +620,20 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
         run: () => actions.toggleIgnoreWhitespace(),
       },
       {
+        id: "ui.maximize-pane",
+        label: "Maximize / restore the focused pane",
+        description: "Fill the workbench with the focused pane group; press again to restore",
+        group: "View",
+        run: () => toggleMaximizedGroup(focusedGroupId()),
+      },
+      {
+        id: "ui.zen",
+        label: "Toggle zen mode",
+        description: "Hide the rail, both sidebars and the tab strips; the status bar stays",
+        group: "View",
+        run: () => toggleZen(),
+      },
+      {
         id: "app.settings",
         label: "Open settings…",
         group: "App",
@@ -715,6 +778,72 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
         run: () => cycleTab(-1),
       },
       {
+        id: "tab.mru-next",
+        label: "Cycle tabs by most recently used",
+        description: "Hold Ctrl and press Tab; releasing Ctrl switches to the highlighted tab",
+        group: "Tabs",
+        enabled: () => focusedGroupMru().length > 1,
+        run: () => cycleMru(1),
+      },
+      {
+        id: "tab.mru-prev",
+        label: "Cycle tabs backwards by most recently used",
+        group: "Tabs",
+        hidden: true,
+        enabled: () => focusedGroupMru().length > 1,
+        run: () => cycleMru(-1),
+      },
+      {
+        id: "tab.switch",
+        label: "Go to open tab…",
+        description: "Fuzzy search every tab open in this worktree",
+        group: "Tabs",
+        enabled: () => allItems().length > 0,
+        run: () => (isTabSwitcherOpen() ? closeTabSwitcher() : openTabSwitcher()),
+      },
+      // ⌘⌥1-⌘⌥9 jump to a tab in the focused group. Registered so the keymap
+      // can bind them, hidden so nine near-identical rows don't drown the
+      // palette — the same bargain the nine workspace slots make.
+      ...Array.from({ length: TAB_SELECT_COUNT }, (_, i): Action => ({
+        id: tabSelectId(i + 1),
+        label: `Go to tab ${i + 1}`,
+        group: "Tabs",
+        hidden: true,
+        enabled: () => focusedGroupTabIds().length > i,
+        run: () => selectTabAt(i + 1),
+      })),
+      {
+        id: "tab.select.last",
+        label: "Go to last tab",
+        group: "Tabs",
+        hidden: true,
+        enabled: () => focusedGroupTabIds().length > 0,
+        run: () => selectTabAt("last"),
+      },
+      {
+        id: "ui.navigate-back",
+        label: "Go back",
+        description: "The previous tab, pane and line you were looking at",
+        group: "View",
+        enabled: () => canGoBack(),
+        run: () => navigateHistory(-1),
+      },
+      {
+        id: "ui.navigate-forward",
+        label: "Go forward",
+        group: "View",
+        enabled: () => canGoForward(),
+        run: () => navigateHistory(1),
+      },
+      {
+        id: "workspace.switch",
+        label: "Go to worktree…",
+        description: "Every worktree across every workspace, with its dirty and ahead/behind state",
+        group: "Workspace",
+        run: () =>
+          isWorktreeSwitcherOpen() ? closeWorktreeSwitcher() : openWorktreeSwitcher(),
+      },
+      {
         id: "tab.reopen-last",
         label: "Reopen last closed tab",
         description: "File / diff / compare / stack — terminals can't be reopened",
@@ -740,30 +869,28 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
           pushToast(`Snapshot "${name}" saved`, "success");
         },
       },
-      // Dynamic entries — one restore + one delete per saved snapshot for
-      // the active workspace. Re-registers each effect run.
-      ...snapshotsFor(state.activeWorktreeId).flatMap<Action>((snap) => [
-        {
-          id: `snapshot.restore.${snap.name}`,
-          label: `Snapshot: restore "${snap.name}"`,
-          description: `${snap.files.length} files · ${snap.terminals.length} terminals · ${snap.compares.length} compares`,
-          group: "Workspace",
-          run: async () => {
-            const ok = await actions.restoreWorkspaceSnapshot(state.activeWorktreeId, snap.name);
-            if (!ok) pushToast(`Snapshot "${snap.name}" not found`, "error");
-            else pushToast(`Restored "${snap.name}"`, "success");
-          },
+      {
+        id: "snapshot.manage",
+        label: "Snapshot: manage saved snapshots…",
+        description: "Restore, rename or delete a saved session",
+        group: "Workspace",
+        run: () => props.onOpenSnapshots(),
+      },
+      // Dynamic entries — one restore per saved snapshot for the active
+      // worktree, re-registered on each effect run. Delete and rename live in
+      // the snapshot manager: they are destructive and need to be seen next to
+      // what they act on, which a palette row cannot show.
+      ...snapshotsFor(state.activeWorktreeId).map<Action>((snap) => ({
+        id: `snapshot.restore.${snap.name}`,
+        label: `Snapshot: restore "${snap.name}"`,
+        description: `${snapshotTabCount(snap)} tabs`,
+        group: "Workspace",
+        run: async () => {
+          const ok = await actions.restoreWorkspaceSnapshot(state.activeWorktreeId, snap.name);
+          if (!ok) pushToast(`Snapshot "${snap.name}" not found`, "error");
+          else pushToast(`Restored "${snap.name}"`, "success");
         },
-        {
-          id: `snapshot.delete.${snap.name}`,
-          label: `Snapshot: delete "${snap.name}"`,
-          group: "Workspace",
-          run: () => {
-            removeSnapshot(state.activeWorktreeId, snap.name);
-            pushToast(`Deleted "${snap.name}"`, "info");
-          },
-        },
-      ]),
+      })),
     ];
     const dispose = registerActions(list);
 
@@ -811,8 +938,171 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
     return items;
   }
 
+  /// Every open workbench tab as something a picker can send you to. One
+  /// builder for the palette's default mode, the "go to open tab" switcher and
+  /// the `Ctrl+Tab` overlay — three surfaces that must agree about what a tab
+  /// is called.
+  function workbenchTargets(): OpenTabTarget[] {
+    const wtId = state.activeWorktreeId;
+    const go = (item: ActiveItem) => () => activateItem(item);
+    const out: OpenTabTarget[] = [];
+    for (const t of state.terminalsByWorktree[wtId] ?? []) {
+      out.push({
+        id: t.id,
+        label: t.label,
+        kind: "terminal",
+        detail: t.cwd,
+        open: go({ type: "terminal", id: t.id }),
+      });
+    }
+    for (const c of state.compareTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: c.id,
+        label: `${c.baseRef || "?"}..${c.headRef || "?"}`,
+        kind: "compare",
+        detail: "compare",
+        open: go({ type: "compare", id: c.id }),
+      });
+    }
+    for (const s of state.stackTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: s.id,
+        label: s.topBranch,
+        kind: "stack",
+        detail: `stack → ${s.trunk}`,
+        open: go({ type: "stack", id: s.id }),
+      });
+    }
+    for (const h of state.historyTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: h.id,
+        label: "Commit graph",
+        kind: "history",
+        open: go({ type: "history", id: h.id }),
+      });
+    }
+    for (const b of state.brainTabsByWorktree[wtId] ?? []) {
+      out.push({ id: b.id, label: "Brain", kind: "brain", open: go({ type: "brain", id: b.id }) });
+    }
+    for (const b of state.browserTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: b.id,
+        label: browserTabLabel(b),
+        kind: "browser",
+        detail: b.url,
+        open: go({ type: "browser", id: b.id }),
+      });
+    }
+    return out;
+  }
+
+  /// Files worth offering back: what the editor window has open, then what was
+  /// recently closed. No new tracking — the store already keeps both, and a
+  /// third "recent files" list would be a third thing that can go stale.
+  function recentFileTargets(): RecentFileTarget[] {
+    const wtId = state.activeWorktreeId;
+    const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
+    const seen = new Set<string>();
+    const out: RecentFileTarget[] = [];
+    const add = (path: string) => {
+      if (seen.has(path)) return;
+      seen.add(path);
+      out.push({
+        path,
+        label: basename(path),
+        open: () => void openInEditorWindow(path),
+      });
+    };
+    for (const f of state.openFilesByWorktree[wtId] ?? []) add(f.path);
+    // The LIFO is oldest-first, and "recent" means the other way round.
+    for (const closed of [...(state.closedTabsByWorktree[wtId] ?? [])].reverse()) {
+      if (closed.type === "file") add(closed.path);
+    }
+    return out;
+  }
+
+  /// The focused group's tabs in strip order — what jump-to-tab-N counts. MRU
+  /// order is a different question and has its own chord.
+  function focusedGroupTabIds(): string[] {
+    const groupId = focusedGroupId();
+    if (!groupId) return workbenchTabIds();
+    return resolveGroupTabs(paneLayout(), workbenchTabIds()).get(groupId) ?? [];
+  }
+
+  function itemForTabId(tabId: string): ActiveItem | null {
+    return allItems().find((i) => i.id === tabId) ?? null;
+  }
+
+  /// `⌘⌥1`…`⌘⌥9`, and `⌘⌥0` for the last tab in the group.
+  function selectTabAt(position: number | "last") {
+    const ids = focusedGroupTabIds();
+    const id = position === "last" ? ids[ids.length - 1] : ids[position - 1];
+    if (!id) return;
+    const item = itemForTabId(id);
+    if (item) activateItem(item);
+  }
+
+  /// One press of `Ctrl+Tab`. The candidate list is the focused group's MRU;
+  /// nothing is activated until `useModifierRelease` below sees the modifier
+  /// come up.
+  function cycleMru(delta: 1 | -1) {
+    const byId = new Map(workbenchTargets().map((t) => [t.id, t]));
+    const candidates = focusedGroupMru()
+      .map((id) => byId.get(id))
+      .filter((t): t is OpenTabTarget => !!t)
+      .map((t) => ({ id: t.id, label: t.label, kind: t.kind }));
+    stepCycle(candidates, delta);
+  }
+
+  useModifierRelease({
+    onRelease: () => {
+      const selected = commitCycle();
+      if (!selected) return;
+      const item = itemForTabId(selected.id);
+      if (item) activateItem(item);
+    },
+    onCancel: abortCycle,
+  });
+
+  /// Walk the per-worktree navigation history. Editor targets are re-opened in
+  /// the editor window at the recorded line; workbench targets are activated in
+  /// their own group, which `navigateHistory` has already focused.
+  function navigateHistory(direction: -1 | 1) {
+    const wtId = state.activeWorktreeId;
+    const entry = actions.navigateHistory(wtId, direction);
+    if (!entry) return;
+    switch (entry.item.type) {
+      case "file":
+        void openInEditorWindow(entry.item.path, entry.line);
+        break;
+      case "diff":
+        actions.selectDiffTab(wtId, entry.item.id);
+        void showEditorWindow();
+        break;
+      case "conflict":
+        actions.selectConflictTab(wtId, entry.item.id);
+        void showEditorWindow();
+        break;
+      case "preview":
+        actions.selectPreviewTab(wtId, entry.item.id);
+        void showEditorWindow();
+        break;
+      default:
+        activateItem(entry.item);
+    }
+  }
+
   function activateItem(item: ActiveItem) {
     const wtId = state.activeWorktreeId;
+    // Jumping to a tab focuses the pane holding it and brings it to the front
+    // there. Without this, `Ctrl+Tab` into a background group would change the
+    // active item while leaving the user's focus — and the group's own front
+    // tab — somewhere else.
+    const groupId = actions.paneGroupOwning(wtId, item.id);
+    if (groupId) {
+      actions.focusPaneGroup(wtId, groupId);
+      actions.setPaneGroupActiveTab(wtId, groupId, item.id);
+    }
     switch (item.type) {
       case "terminal":
         actions.selectTerminal(wtId, item.id);
@@ -1006,14 +1296,17 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
       // The window's title bar is drawn above the view container in both modes,
       // so the shell itself never draws one.
       titleBar={null}
-      rail={<WorkspaceRail />}
-      sidebar={state.sidebarsSwapped ? rightPane() : leftPane()}
+      // Zen removes the panels rather than sliding them away — a
+      // keyboard-initiated geometry change never animates (MASTER §7.1), and
+      // the pane tree underneath is untouched, so the way back is exact.
+      rail={isZen() ? null : <WorkspaceRail />}
+      sidebar={isZen() ? null : state.sidebarsSwapped ? rightPane() : leftPane()}
       main={
         <MainSurface
           onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
         />
       }
-      rightSidebar={state.sidebarsSwapped ? leftPane() : rightPane()}
+      rightSidebar={isZen() ? null : state.sidebarsSwapped ? leftPane() : rightPane()}
       statusBar={<StatusBar />}
     />
   );
@@ -1067,12 +1360,16 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
           </Show>
         </div>
       </div>
-      <CommandPalette />
+      <CommandPalette openTabs={workbenchTargets} recentFiles={recentFileTargets} />
       <ShortcutsCheatSheet />
       <FileFinder
         repoPath={activeRepoPath()}
         onOpenFile={(p) => void openInEditorWindow(p)}
       />
+      <WorktreeSwitcher />
+      <TabSwitcher tabs={workbenchTargets} />
+      {/* Held-modifier UI: no scrim, no transition, gone on the keyup. */}
+      <TabCycleOverlay />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />
       <ToastViewport />
@@ -1085,13 +1382,41 @@ function AppInner(props: { onOpenSettings: () => void; settingsOpen: boolean }) 
   );
 }
 
+/// The two things the layout store cannot fix by itself, wired before the
+/// store is created so the very first read can report.
+///
+/// A quarantined blob is a *failure* the user did not ask for and cannot see
+/// otherwise — their panes are back to defaults and nothing on screen says
+/// why — so it is `assertive` (MASTER §10.10). A failed write is a warning:
+/// the session in front of them is still correct, only its durability is lost.
+setCorruptKeyHandler((key) =>
+  pushToast(
+    `Saved layout state in "${key}" was unreadable and has been reset to defaults. Everything else was kept.`,
+    "error",
+    8000,
+  ),
+);
+setPersistenceErrorHandler((key) =>
+  pushToast(
+    `Couldn't save layout state ("${key}") — storage is full or unavailable. This session still works; it may not come back after a reload.`,
+    "warning",
+    8000,
+  ),
+);
+
 export default function App() {
   const store = createAppStore();
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [snapshotsOpen, setSnapshotsOpen] = createSignal(false);
   return (
     <AppStoreContext.Provider value={store}>
-      <AppInner onOpenSettings={() => setSettingsOpen(true)} settingsOpen={settingsOpen()} />
+      <AppInner
+        onOpenSettings={() => setSettingsOpen(true)}
+        settingsOpen={settingsOpen()}
+        onOpenSnapshots={() => setSnapshotsOpen(true)}
+      />
       <SettingsDialog open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+      <SnapshotManager open={snapshotsOpen()} onClose={() => setSnapshotsOpen(false)} />
     </AppStoreContext.Provider>
   );
 }

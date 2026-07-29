@@ -15,9 +15,36 @@
 /// version key, and it also leaves any workspace that already has worktrees
 /// alone. Running it on already-migrated state is a no-op either way.
 
-export const LAYOUT_VERSION = 1;
+/// v1 → v2 accompanies the `store/layout.ts` → `store/layout/` decomposition.
+/// It is deliberately *not* a re-shaping of the tab blobs: `voidlink-editor-tabs`
+/// and friends keep their exact on-disk layout, because the tab registry
+/// describes those keys rather than replacing them (see `layout/tabs.ts`).
+/// Consolidating them into one new key would orphan every existing user's tabs
+/// on the boot after the upgrade — for zero gain, since one key per kind *is*
+/// the registry's storage shape.
+///
+/// What v2 does add is a repair pass: any registry key that is present but not
+/// a JSON object is reset to an empty one, at rest and once, rather than being
+/// re-parsed and re-discarded on every boot. That is the migration-time half of
+/// the "a corrupt blob costs one key, never the boot" policy that
+/// `layout/persistence.ts` enforces at read time.
+
+export const LAYOUT_VERSION = 2;
 export const LAYOUT_VERSION_KEY = "voidlink-layout-version";
 export const WORKSPACES_KEY = "voidlink-workspaces";
+
+/// The keys the layout store persists tab state under, spelled out here rather
+/// than imported from `layout/persistence.ts`. This module is deliberately
+/// standalone — a pure transform with no DOM and no store imports — and that
+/// property is worth more than deduplicating five string literals.
+export const TAB_STORAGE_KEYS = [
+  "voidlink-compare-tabs",
+  "voidlink-stack-tabs",
+  "voidlink-pinned-tabs",
+  "voidlink-browser-tabs",
+  "voidlink-editor-tabs",
+  "voidlink-pane-layout",
+] as const;
 
 /// The subset of localStorage the migration reads and writes, as a plain
 /// object. `null` means "key absent".
@@ -40,7 +67,11 @@ interface V0Workspace {
 
 /// Keys the migration reads. Everything else in localStorage is out of scope
 /// and must be carried through untouched.
-export const MIGRATION_INPUT_KEYS = [LAYOUT_VERSION_KEY, WORKSPACES_KEY] as const;
+export const MIGRATION_INPUT_KEYS = [
+  LAYOUT_VERSION_KEY,
+  WORKSPACES_KEY,
+  ...TAB_STORAGE_KEYS,
+] as const;
 
 function parseVersion(raw: string | null): number {
   if (raw === null) return 0;
@@ -90,31 +121,77 @@ function upgradeWorkspace(raw: V0Workspace): Record<string, unknown> | null {
   };
 }
 
-/// Pure v0 → v1 transform. Returns a new snapshot; the input is never mutated.
-/// Keys the migration doesn't understand are copied through as-is.
-export function migrateLayoutStorage(snapshot: StorageSnapshot): StorageSnapshot {
+/// v0 → v1: give every workspace exactly one main worktree whose id is the old
+/// workspace id, so the per-workspace tab blobs stay valid verbatim under the
+/// new per-worktree keying.
+function migrateV0ToV1(snapshot: StorageSnapshot): StorageSnapshot {
   const out: StorageSnapshot = { ...snapshot };
-  if (parseVersion(snapshot[LAYOUT_VERSION_KEY] ?? null) >= LAYOUT_VERSION) return out;
-
   const rawWorkspaces = snapshot[WORKSPACES_KEY] ?? null;
-  if (rawWorkspaces !== null) {
-    try {
-      const parsed: unknown = JSON.parse(rawWorkspaces);
-      if (Array.isArray(parsed)) {
-        const upgraded = parsed
-          .map((w) => upgradeWorkspace((w ?? {}) as V0Workspace))
-          .filter((w): w is Record<string, unknown> => w !== null);
-        // Only rewrite when we actually produced something. An unparseable or
-        // fully-empty list is left alone so the store's own fallback ("create a
-        // fresh Main workspace") runs instead of us persisting `[]`.
-        if (upgraded.length > 0) {
-          out[WORKSPACES_KEY] = JSON.stringify(upgraded);
-        }
+  if (rawWorkspaces === null) return out;
+  try {
+    const parsed: unknown = JSON.parse(rawWorkspaces);
+    if (Array.isArray(parsed)) {
+      const upgraded = parsed
+        .map((w) => upgradeWorkspace((w ?? {}) as V0Workspace))
+        .filter((w): w is Record<string, unknown> => w !== null);
+      // Only rewrite when we actually produced something. An unparseable or
+      // fully-empty list is left alone so the store's own fallback ("create a
+      // fresh Main workspace") runs instead of us persisting `[]`.
+      if (upgraded.length > 0) {
+        out[WORKSPACES_KEY] = JSON.stringify(upgraded);
       }
-    } catch {
-      // Corrupt JSON: leave the key untouched. `loadWorkspaces` already treats
-      // a parse failure as "no saved workspaces" and starts fresh.
     }
+  } catch {
+    // Corrupt JSON: leave the key untouched. `loadWorkspaces` already treats
+    // a parse failure as "no saved workspaces" and starts fresh.
+  }
+  return out;
+}
+
+function isJsonObject(raw: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+/// v1 → v2: quarantine corrupt registry blobs. A key that is present but is not
+/// a JSON object — truncated by a crash mid-write, or hand-edited — is reset to
+/// an empty object here rather than being parsed and thrown away on every boot
+/// forever after. Well-formed keys are left byte-identical, which is why the
+/// v0 fixtures in `migrate.test.ts` still round-trip unchanged.
+function migrateV1ToV2(snapshot: StorageSnapshot): StorageSnapshot {
+  const out: StorageSnapshot = { ...snapshot };
+  for (const key of TAB_STORAGE_KEYS) {
+    const raw = out[key];
+    if (typeof raw !== "string") continue;
+    if (!isJsonObject(raw)) out[key] = "{}";
+  }
+  return out;
+}
+
+/// The ordered upgrade path. A snapshot at version N runs every step whose
+/// target is greater than N, in order, then gets stamped with the current
+/// version. Each step is a pure `StorageSnapshot → StorageSnapshot` and is
+/// idempotent on its own output.
+const STEPS: { to: number; apply: (s: StorageSnapshot) => StorageSnapshot }[] = [
+  { to: 1, apply: migrateV0ToV1 },
+  { to: 2, apply: migrateV1ToV2 },
+];
+
+/// Pure transform from whatever version is on disk up to `LAYOUT_VERSION`.
+/// Returns a new snapshot; the input is never mutated. Keys the migration
+/// doesn't understand are copied through as-is.
+export function migrateLayoutStorage(snapshot: StorageSnapshot): StorageSnapshot {
+  const from = parseVersion(snapshot[LAYOUT_VERSION_KEY] ?? null);
+  if (from >= LAYOUT_VERSION) return { ...snapshot };
+
+  let out: StorageSnapshot = { ...snapshot };
+  for (const step of STEPS) {
+    if (from >= step.to) continue;
+    out = step.apply(out);
   }
 
   out[LAYOUT_VERSION_KEY] = String(LAYOUT_VERSION);

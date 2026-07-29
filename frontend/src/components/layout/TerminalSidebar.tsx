@@ -11,27 +11,13 @@ import { pushToast } from "@/commands/toast";
 import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
 import { StatusLed, terminalSignal } from "@/components/layout/StatusLed";
+import { Splitter } from "@/components/layout/Splitter";
+import { PANEL_BOUNDS } from "@/store/layout";
 
 const POLL_MS = 1500;
 
 export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) {
   const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
-  const [sidebarWidth, setSidebarWidth] = createSignal(256);
-
-  function startResize(e: MouseEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = sidebarWidth();
-    function onMove(mv: MouseEvent) {
-      setSidebarWidth(Math.max(180, Math.min(520, startW + mv.clientX - startX)));
-    }
-    function onUp() {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
 
   async function chooseRepo() {
     const ws = activeWorkspace();
@@ -67,7 +53,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
   return (
     <aside
       class="flex flex-col border-r border-border bg-sidebar overflow-hidden relative"
-      style={{ width: `${sidebarWidth()}px` }}
+      style={{ width: `${state.panels.sidebar}px` }}
     >
       {/* Repo picker — h-9 to match center column tab bar */}
       <div class="h-9 px-3 border-b border-border flex items-center shrink-0">
@@ -207,10 +193,14 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
         </button>
       </div>
 
-      {/* Resize handle on right edge */}
-      <div
-        class="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-primary/30 transition-colors"
-        onMouseDown={startResize}
+      <Splitter
+        side="end"
+        label="Files and terminals sidebar width"
+        value={state.panels.sidebar}
+        min={PANEL_BOUNDS.sidebar.min}
+        max={PANEL_BOUNDS.sidebar.max}
+        defaultValue={PANEL_BOUNDS.sidebar.default}
+        onResize={(w) => actions.setPanelWidth("sidebar", w)}
       />
     </aside>
   );

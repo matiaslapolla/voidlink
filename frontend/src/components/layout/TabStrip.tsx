@@ -18,6 +18,7 @@ import {
   Show,
   createEffect,
   createMemo,
+  createRoot,
   createSignal,
   on,
   onCleanup,
@@ -26,16 +27,17 @@ import {
 } from "solid-js";
 import { Portal } from "solid-js/web";
 import { ChevronsRight, Pin, PinOff, X } from "lucide-solid";
-import { terminalApi } from "@/api/terminal";
 import type { TerminalSession } from "@/types/workspace";
 import {
+  LedSlot,
   StatusLed,
   highestSignal,
   terminalSignal,
   type ActivitySignal,
 } from "@/components/layout/StatusLed";
-
-const POLL_MS = 1500;
+import { watchTerminal, type TerminalWatch } from "@/store/terminalWatch";
+import { dropIntentAt, type DropIntent } from "@/components/layout/paneDrop";
+import type { SplitOrientation } from "@/store/layout";
 
 /// Every tab kind either window can show. The strip only ever compares these
 /// for equality (grouping, reorder targets) — it attaches no behaviour to any
@@ -77,6 +79,11 @@ export interface TabDescriptor {
   /// than something they committed to keeping open. Italic label, the idiom
   /// every editor uses for this, and the only place italics appear in the strip.
   preview?: boolean;
+  /// The tab's live §7.5.3 signal, already reduced to one mark by the caller
+  /// (`store/activity.ts`). `dirty` is folded in here rather than by the
+  /// caller, so a window that only knows about unsaved buffers — the editor —
+  /// keeps working without setting this at all.
+  activity?: ActivitySignal;
   /// Present on terminal tabs. Swaps the icon for a live LED + process name;
   /// the strip owns that polling because the tab is the only place it shows.
   terminal?: TerminalSession;
@@ -92,7 +99,46 @@ export interface TabDescriptor {
 }
 
 const isPinnable = (t: TabDescriptor) => t.pinnable !== false && !t.terminal;
-const isDraggable = (t: TabDescriptor) => t.draggable !== false;
+/// Whether a tab can be *reordered within its own strip*. Some kinds can't:
+/// a browser tab's page is a child webview keyed by tab id, so shuffling the
+/// store list would move the tab and leave the page behind.
+const isReorderable = (t: TabDescriptor) => t.draggable !== false;
+
+// ── Cross-group drag ───────────────────────────────────────────────────────
+// One drag is in flight at a time, and every strip and every pane drop target
+// in the window has to see it — the strip a tab is dropped on is usually not
+// the strip it came from. This is module state rather than a store because it
+// is transient gesture state, and because the strip has to keep working in the
+// editor window, which has no store to put it in.
+
+export interface TabDragPayload {
+  kind: TabKind;
+  id: string;
+  /// Shown in the drag ghost when a drop is refused, so the refusal names the
+  /// tab it is about.
+  label: string;
+  /// The pane group the drag started in, or `null` in a window with no groups
+  /// (the editor). `null` on both ends means "reorder only", which is exactly
+  /// the pre-groups behaviour.
+  groupId: string | null;
+}
+
+const [tabDrag, setTabDrag] = createSignal<TabDragPayload | null>(null);
+
+/// The tab currently being dragged. Pane drop targets subscribe to it so they
+/// only exist during a drag — a permanently mounted overlay would eat every
+/// click in the pane underneath.
+export const draggingTab = tabDrag;
+
+/// The ghost is a single element for the whole window; `owner` is whichever
+/// drop target last had the pointer, so two overlapping targets can't both
+/// render one.
+const [dragGhost, setDragGhost] = createSignal<{
+  owner: string;
+  x: number;
+  y: number;
+  reason: string;
+} | null>(null);
 
 export interface TabStripProps {
   tabs: TabDescriptor[];
@@ -106,6 +152,29 @@ export interface TabStripProps {
   /// Buttons pinned to the right edge, after the overflow chevron — the "+"
   /// menu in the workbench, the markdown-preview eye in the editor window.
   trailing?: JSX.Element;
+
+  // ── Pane groups ────────────────────────────────────────────────────────
+  // All optional: a window with one group (or none at all, like the editor)
+  // passes none of them and gets exactly the strip it had before.
+
+  /// Which pane group this strip belongs to. Presence is what turns on
+  /// cross-group drag — a tab can be dragged out of a strip that has an
+  /// identity, whether or not its kind is reorderable.
+  groupId?: string;
+  /// The group header (workbench prompt `<design>`). Omitted with a single
+  /// group: today's workbench has no header and grows none. With two or more,
+  /// the focused group's strip takes a 2px `--primary` rule and the others
+  /// take `--border` — the same 2px either way, so focus moving between groups
+  /// never reflows anything.
+  groupHeader?: "focused" | "unfocused";
+  /// The group's aggregate activity mark (§7.5.3 escalation). Wave 5 fills it
+  /// in; the slot is reserved from now so its arrival costs no layout.
+  groupActivity?: ActivitySignal;
+  /// Clicking anywhere in the strip focuses its group.
+  onFocusGroup?: () => void;
+  /// A tab from another group landed here. `beforeTabId` is the tab it should
+  /// land in front of, or `null` for the end of the strip.
+  onMoveTab?: (payload: TabDragPayload, beforeTabId: string | null) => void;
 }
 
 export function TabStrip(props: TabStripProps) {
@@ -132,41 +201,105 @@ export function TabStrip(props: TabStripProps) {
   });
 
   // ── Drag state ───────────────────────────────────────────────────────────
-  // Tabs of different kinds cannot be reordered across each other — they live
-  // in separate arrays in the store — so `dragRef.kind` gates every dragover.
-  const [dragRef, setDragRef] = createSignal<{ kind: TabKind; id: string } | null>(null);
-  const [dropRef, setDropRef] = createSignal<{ kind: TabKind; id: string } | null>(null);
+  // Two different gestures share one drag. *Within* a strip a drag reorders,
+  // and tabs of different kinds cannot cross each other because they live in
+  // separate arrays in the store. *Between* groups a drag moves the tab, which
+  // touches no store array at all — only the group's claim list — so it has
+  // neither of those constraints.
+  const [dropRef, setDropRef] = createSignal<string | null>(null);
+  /// Insertion caret past the last tab, for a drop on the strip's empty space.
+  const [dropAtEnd, setDropAtEnd] = createSignal(false);
+
+  /// True when the in-flight drag came from another group and would therefore
+  /// *move* rather than reorder.
+  const incoming = () => {
+    const drag = tabDrag();
+    return !!drag && !!props.groupId && drag.groupId !== props.groupId;
+  };
 
   function resetDrag() {
-    setDragRef(null);
+    setTabDrag(null);
     setDropRef(null);
+    setDropAtEnd(false);
+    setDragGhost(null);
   }
 
   function onDragStart(e: DragEvent, tab: TabDescriptor) {
     if (!e.dataTransfer) return;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/voidlink-item", `${tab.kind}:${tab.id}`);
-    setDragRef({ kind: tab.kind, id: tab.id });
+    setTabDrag({
+      kind: tab.kind,
+      id: tab.id,
+      label: tab.label,
+      groupId: props.groupId ?? null,
+    });
+  }
+
+  /// Can the in-flight drag land on `tab`? Either as a move from another group
+  /// (any kind), or as a reorder within this strip (same kind, reorderable,
+  /// not onto itself).
+  function canLandOn(tab: TabDescriptor): boolean {
+    const drag = tabDrag();
+    if (!drag) return false;
+    if (incoming()) return true;
+    return drag.kind === tab.kind && drag.id !== tab.id && isReorderable(tab);
   }
 
   function onDragOver(e: DragEvent, tab: TabDescriptor) {
-    const drag = dragRef();
-    if (!drag || drag.kind !== tab.kind || drag.id === tab.id) return;
+    if (!canLandOn(tab)) return;
     e.preventDefault();
+    e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    setDropRef({ kind: tab.kind, id: tab.id });
+    setDropRef(tab.id);
+    setDropAtEnd(false);
   }
 
   function onDrop(e: DragEvent, tab: TabDescriptor) {
-    const drag = dragRef();
-    if (!drag || drag.kind !== tab.kind || drag.id === tab.id) {
+    const drag = tabDrag();
+    if (!drag || !canLandOn(tab)) {
       resetDrag();
       return;
     }
     e.preventDefault();
-    props.onReorder(tab.kind, drag.id, tab.id);
+    e.stopPropagation();
+    if (incoming()) props.onMoveTab?.(drag, tab.id);
+    else props.onReorder(tab.kind, drag.id, tab.id);
     resetDrag();
   }
+
+  /// A drop on the strip's empty space appends. Reached only when the event
+  /// did not come from a tab row — those stop propagation above.
+  function onStripDragOver(e: DragEvent) {
+    const drag = tabDrag();
+    if (!drag) return;
+    if (!incoming() && !isReorderableKindHere(drag)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    setDropRef(null);
+    setDropAtEnd(true);
+  }
+
+  function onStripDrop(e: DragEvent) {
+    const drag = tabDrag();
+    if (!drag) return;
+    e.preventDefault();
+    if (incoming()) props.onMoveTab?.(drag, null);
+    else if (isReorderableKindHere(drag)) props.onReorder(drag.kind, drag.id, null);
+    resetDrag();
+  }
+
+  /// Appending within the same strip only makes sense for a kind this strip
+  /// actually holds — otherwise "move to the end" would target another kind's
+  /// array.
+  const isReorderableKindHere = (drag: TabDragPayload) =>
+    props.tabs.some((t) => t.kind === drag.kind && isReorderable(t));
+
+  /// The insertion caret: 2px `--primary` on the edge the tab would land on.
+  /// It is an inset shadow rather than an element, so the row it marks does not
+  /// move by a single pixel while the caret is on it.
+  const CARET_BEFORE = "shadow-[inset_2px_0_0_0_var(--color-primary,theme(colors.primary))]";
+  const CARET_AFTER = "shadow-[inset_-2px_0_0_0_var(--color-primary,theme(colors.primary))]";
 
   function tabClasses(tab: TabDescriptor, active: boolean) {
     const base =
@@ -174,12 +307,13 @@ export function TabStrip(props: TabStripProps) {
     const tone = active
       ? "bg-background text-foreground"
       : "text-muted-foreground hover:text-foreground hover:bg-accent/30";
-    const drag = dragRef();
-    const drop = dropRef();
-    const dim = drag && drag.kind === tab.kind && drag.id === tab.id ? "opacity-50" : "";
-    const indicator =
-      drop && drop.kind === tab.kind && drop.id === tab.id
-        ? "shadow-[inset_2px_0_0_0_var(--color-primary,theme(colors.primary))]"
+    const drag = tabDrag();
+    const dim = drag && drag.id === tab.id ? "opacity-50" : "";
+    const last = ordered()[ordered().length - 1];
+    const indicator = dropRef() === tab.id
+      ? CARET_BEFORE
+      : dropAtEnd() && last?.id === tab.id
+        ? CARET_AFTER
         : "";
     return `${base} ${tone} ${dim} ${indicator}`;
   }
@@ -238,10 +372,27 @@ export function TabStrip(props: TabStripProps) {
     }
   }
 
+  /// A tab is DOM-draggable when it can be reordered *or* when this strip
+  /// belongs to a pane group — a browser tab can't be shuffled within its strip
+  /// but can absolutely be dragged into another pane, because moving it between
+  /// groups reorders no store array.
+  const canDrag = (tab: TabDescriptor) => isReorderable(tab) || props.groupId != null;
+
   return (
-    <div class="flex items-center border-b border-border bg-sidebar shrink-0 h-9">
+    <div
+      class="flex items-center border-b border-border bg-sidebar shrink-0 h-9"
+      classList={{
+        // Same 2px in both states — see `groupHeader`. Only the colour moves.
+        "border-t-2": !!props.groupHeader,
+        "border-t-primary": props.groupHeader === "focused",
+        "border-t-border": props.groupHeader === "unfocused",
+      }}
+      onMouseDown={() => props.onFocusGroup?.()}
+    >
       <div
         ref={(el) => (scrollRef = el)}
+        onDragOver={onStripDragOver}
+        onDrop={onStripDrop}
         class="flex items-center overflow-x-auto scrollbar-none flex-1 min-w-0 h-full"
       >
         {/*
@@ -260,6 +411,7 @@ export function TabStrip(props: TabStripProps) {
                   tab={tab()}
                   active={tab().id === props.activeId}
                   pinned={props.isPinned(tab().id)}
+                  draggable={canDrag(tab())}
                   class={tabClasses(tab(), tab().id === props.activeId)}
                   onSelect={() => props.onSelect(tab())}
                   onClose={() => props.onClose(tab())}
@@ -276,6 +428,7 @@ export function TabStrip(props: TabStripProps) {
                   session={session()}
                   tab={tab()}
                   active={tab().id === props.activeId}
+                  draggable={canDrag(tab())}
                   class={tabClasses(tab(), tab().id === props.activeId)}
                   onSelect={() => props.onSelect(tab())}
                   onClose={() => props.onClose(tab())}
@@ -292,6 +445,14 @@ export function TabStrip(props: TabStripProps) {
       </div>
 
       {props.trailing}
+
+      {/* The group's aggregate activity mark. Reserved, not conditional: it
+          occupies its 8px whether or not a signal is live, so a background
+          pane lighting up never nudges the "+" button sideways (§7.5.3 rule
+          3). Wave 5 is what starts passing `groupActivity`. */}
+      <Show when={props.groupHeader}>
+        <LedSlot signal={props.groupActivity} class="mx-1.5" />
+      </Show>
 
       <Show when={overflowing()}>
         <TabOverflowMenu
@@ -329,6 +490,9 @@ export function TabStrip(props: TabStripProps) {
 interface TabChromeProps {
   tab: TabDescriptor;
   active: boolean;
+  /// Resolved by the strip, because it depends on whether the strip has a pane
+  /// group as well as on the descriptor.
+  draggable: boolean;
   class: string;
   onSelect: () => void;
   onClose: () => void;
@@ -341,16 +505,12 @@ interface TabChromeProps {
 
 function PlainTab(props: TabChromeProps & { pinned: boolean }) {
   const closable = () => !props.pinned;
-  /// §7.5.3 rule 2: one mark, the highest. `highestSignal` owns the ordering,
-  /// so dirty-beats-reloaded is not re-decided here.
-  const mark = () =>
-    highestSignal([
-      props.tab.dirty ? ("dirty" as const) : undefined,
-      props.tab.reloaded ? ("finished" as const) : undefined,
-    ]);
+  /// The mark itself is derived inside `TabTrailing`, which owns the slot —
+  /// §7.5.3 rule 2's ordering lives in `highestSignal` and is not re-decided
+  /// per caller.
   return (
     <div
-      draggable={isDraggable(props.tab)}
+      draggable={props.draggable}
       onDragStart={props.onDragStart}
       onDragOver={props.onDragOver}
       onDrop={props.onDrop}
@@ -389,8 +549,7 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
         {props.tab.label}
       </span>
       <TabTrailing
-        mark={mark()}
-        pending={props.tab.saving}
+        tab={props.tab}
         closable={closable()}
         closeLabel={`Close ${props.tab.label}`}
         onClose={props.onClose}
@@ -399,47 +558,46 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
   );
 }
 
-/// The one trailing slot every tab reserves: the activity mark, or the close
-/// button, never both and never neither-then-suddenly-one.
+/// The tab's right-hand slot: its §7.5.3 activity mark at rest, its close
+/// button on hover. One box, one fixed size, both states inside it.
 ///
-/// §7.5.3 says the dirty mark *replaces* the close affordance rather than
-/// sitting beside it, and rule 3 says a mark arriving must not move layout —
-/// so the slot is a fixed 16px box and the two contents swap inside it. Hover
-/// brings the close button back over a marked tab, which is also what makes
-/// the close visible at rest on an unmarked one instead of the `opacity-0`
-/// that §10.4 calls out.
-///
-/// The only transition here is the close button's own hover tint, which §7.6
-/// sanctions at `--dur-tint`. Nothing about the mark animates except the
-/// pending pulse, and that pulse is not the only channel — see `StatusLed`.
+/// Four things here are load-bearing and each is easy to lose:
+///   • The mark **replaces** the close affordance rather than sitting beside
+///     it (§7.5.3). A tab wearing both a badge and an × reads as two controls.
+///   • The box is `w-4 h-4` whether or not there is a mark and whether or not
+///     the tab is closable, so a background pane lighting up never nudges the
+///     label (§7.5.3 rule 3, and §7.6's no-layout-shift rule).
+///   • `dirty` and `reloaded` are folded in here, so the editor window — which
+///     knows about unsaved buffers and disk reloads and nothing else — gets the
+///     right mark without ever setting `activity`.
+///   • On an *unmarked* tab the close button sits at 60% rather than
+///     `opacity-0`: §10.4, a hover-only action is invisible until you already
+///     know it is there. It only hides behind hover when a mark owns the slot.
 function TabTrailing(props: {
-  mark?: ActivitySignal;
-  pending?: boolean;
+  tab: TabDescriptor;
   closable: boolean;
   closeLabel: string;
   onClose: () => void;
 }) {
+  const mark = () =>
+    highestSignal([
+      props.tab.activity,
+      props.tab.reloaded ? ("finished" as const) : undefined,
+      props.tab.dirty ? ("dirty" as const) : undefined,
+    ]);
   return (
     <span class="ml-0.5 w-4 h-4 shrink-0 flex items-center justify-center">
-      <Show when={props.mark}>
+      <Show when={mark()}>
         {(signal) => (
           <span classList={{ "group-hover:hidden": props.closable }} class="flex">
-            <StatusLed signal={signal()} pending={props.pending} />
+            <StatusLed signal={signal()} pending={props.tab.saving} />
           </span>
         )}
       </Show>
       <Show when={props.closable}>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            props.onClose();
-          }}
-          class="p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          classList={{ "hidden group-hover:flex": !!props.mark, flex: !props.mark }}
-          aria-label={props.closeLabel}
-        >
-          <X class="w-3 h-3" />
-        </button>
+        <span classList={{ "hidden group-hover:flex": !!mark(), flex: !mark() }}>
+          <CloseButton label={props.closeLabel} onClose={props.onClose} />
+        </span>
       </Show>
     </span>
   );
@@ -448,38 +606,31 @@ function TabTrailing(props: {
 /// A terminal tab. Polls its PTY so the tab can wear the name of whatever is
 /// running in it, which is what you actually scan for across a row of shells.
 function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
-  const [busy, setBusy] = createSignal(false);
-  const [processName, setProcessName] = createSignal<string | null>(null);
+  const [watch, setWatch] = createSignal<TerminalWatch | null>(null);
 
   // Keyed on `ptyId`, not on mount: the strip renders slot-keyed rows, so
   // closing a tab hands this component a different session at the same slot,
-  // and a mount-only poll would keep reporting the old shell's process.
+  // and a mount-only subscription would keep reporting the old shell.
+  //
+  // The poll itself lives in `store/terminalWatch.ts` now — see its header for
+  // why the strip stopped owning it. Subscribing inside `createRoot` gives the
+  // subscription a lifetime tied to this `ptyId` rather than to the component,
+  // so switching sessions releases the old shell's refcount.
   createEffect(
     on(
-      () => props.session.ptyId,
-      (ptyId) => {
-        setBusy(false);
-        setProcessName(null);
-        let alive = true;
-        const poll = async () => {
-          try {
-            const info = await terminalApi.processInfo(ptyId);
-            if (!alive) return;
-            setBusy(info.busy);
-            setProcessName(info.name);
-          } catch {
-            /* the PTY went away; the tab is about to be removed anyway */
-          }
-        };
-        void poll();
-        const interval = setInterval(poll, POLL_MS);
-        onCleanup(() => {
-          alive = false;
-          clearInterval(interval);
+      () => ({ tabId: props.tab.id, ptyId: props.session.ptyId }),
+      ({ tabId, ptyId }) => {
+        const dispose = createRoot((d) => {
+          setWatch(watchTerminal(tabId, ptyId));
+          return d;
         });
+        onCleanup(dispose);
       },
     ),
   );
+
+  const busy = () => watch()?.busy() ?? false;
+  const processName = () => watch()?.processName() ?? null;
 
   /// While a foreground command runs, the tab wears its name. The static label
   /// ("Terminal 2") stays in the tooltip and comes back when the process exits.
@@ -487,7 +638,7 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
 
   return (
     <div
-      draggable={isDraggable(props.tab)}
+      draggable={props.draggable}
       onDragStart={props.onDragStart}
       onDragOver={props.onDragOver}
       onDrop={props.onDrop}
@@ -507,9 +658,20 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
           : `${props.session.label} — ${displayLabel()}`
       }
     >
+      {/* The leading LED is the terminal tab's *icon*: it says whether this
+          shell is busy, which is what you scan a row of shells for. The
+          trailing slot is a different question — "did something happen here
+          while I was elsewhere?" — and §7.5.3 rule 4 wants signals to differ
+          in position as well as fill, so the two never read as one repeated
+          mark. */}
       <LedDot active={props.active} busy={busy()} />
       <span class="max-w-[140px] truncate">{displayLabel()}</span>
-      <CloseButton label={`Kill ${props.session.label}`} onClose={props.onClose} />
+      <TabTrailing
+        tab={props.tab}
+        closable
+        closeLabel={`Kill ${props.session.label}`}
+        onClose={props.onClose}
+      />
     </div>
   );
 }
@@ -752,6 +914,129 @@ function TabContextMenu(props: {
           </div>
         </Portal>
       )}
+    </Show>
+  );
+}
+
+/// The drop target covering one pane group's body.
+///
+/// It exists only while a tab is being dragged — the rest of the time there is
+/// nothing between the user and the pane. Three outcomes, and each one has to
+/// be *visible before release*, because a drag whose result you can only
+/// discover by committing to it is not an affordance:
+///
+///   • Centre 60% — "drop into this group". `bg-primary/10` plus a 1px inset
+///     `--primary` border.
+///   • Outer 20% of any edge — a split. The prospective new group is filled
+///     `bg-primary/15` **at the exact geometry it would occupy**, which is
+///     computable because `splitGroup` always halves the group it splits. A
+///     generic edge glow would tell the user something is about to happen but
+///     not what.
+///   • The same edge at the four-group cap — refused: `cursor: no-drop`, no
+///     preview, and the reason in the ghost following the pointer. Not a toast:
+///     a toast about a gesture arrives after the gesture.
+///
+/// Only `background` and `opacity` move. The preview's geometry is never
+/// animated — it jumps between edges as the pointer crosses zones, which is
+/// what makes it readable at drag speed.
+export function PaneDropOverlay(props: {
+  groupId: string;
+  /// From `canSplit(paneLayout())`. False at the cap.
+  canSplit: boolean;
+  onMoveTab: (payload: TabDragPayload, beforeTabId: string | null) => void;
+  onSplitDrop: (
+    payload: TabDragPayload,
+    orientation: SplitOrientation,
+    placement: "before" | "after",
+  ) => void;
+}) {
+  let ref: HTMLDivElement | undefined;
+  const [intent, setIntent] = createSignal<DropIntent | null>(null);
+
+  function clear() {
+    setIntent(null);
+    setDragGhost((g) => (g?.owner === props.groupId ? null : g));
+  }
+
+  function onDragOver(e: DragEvent) {
+    if (!ref || !tabDrag()) return;
+    e.preventDefault();
+    const box = ref.getBoundingClientRect();
+    const next = dropIntentAt(
+      { width: box.width, height: box.height },
+      { x: e.clientX - box.left, y: e.clientY - box.top },
+      { canSplit: props.canSplit },
+    );
+    setIntent(next);
+    if (e.dataTransfer) e.dataTransfer.dropEffect = next.kind === "refused" ? "none" : "move";
+    if (next.kind === "refused") {
+      setDragGhost({ owner: props.groupId, x: e.clientX, y: e.clientY, reason: next.reason });
+    } else {
+      setDragGhost((g) => (g?.owner === props.groupId ? null : g));
+    }
+  }
+
+  function onDrop(e: DragEvent) {
+    const drag = tabDrag();
+    const target = intent();
+    e.preventDefault();
+    clear();
+    setTabDrag(null);
+    if (!drag || !target) return;
+    if (target.kind === "body") props.onMoveTab(drag, null);
+    else if (target.kind === "edge") {
+      props.onSplitDrop(drag, target.orientation, target.placement);
+    }
+  }
+
+  const edge = () => {
+    const i = intent();
+    return i?.kind === "edge" ? i.preview : null;
+  };
+
+  return (
+    <Show when={draggingTab()}>
+      <div
+        ref={(el) => (ref = el)}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onDragLeave={(e) => {
+          if (!ref || (e.relatedTarget instanceof Node && ref.contains(e.relatedTarget))) return;
+          clear();
+        }}
+        class="absolute inset-0 z-30 pointer-events-auto"
+        classList={{ "cursor-no-drop": intent()?.kind === "refused" }}
+        aria-hidden="true"
+      >
+        <Show when={intent()?.kind === "body"}>
+          <div class="absolute inset-0 bg-primary/10 ring-1 ring-inset ring-primary" />
+        </Show>
+        <Show when={edge()}>
+          {(rect) => (
+            <div
+              class="absolute bg-primary/15 ring-1 ring-inset ring-primary"
+              style={{
+                left: `${rect().x}px`,
+                top: `${rect().y}px`,
+                width: `${rect().width}px`,
+                height: `${rect().height}px`,
+              }}
+            />
+          )}
+        </Show>
+      </div>
+      <Show when={dragGhost()?.owner === props.groupId ? dragGhost() : null}>
+        {(g) => (
+          <Portal>
+            <div
+              class="fixed z-[10000] pointer-events-none rounded-md border border-destructive/60 bg-popover px-2 py-1 text-[11px] text-destructive shadow-lg"
+              style={{ left: `${g().x + 14}px`, top: `${g().y + 14}px` }}
+            >
+              {g().reason}
+            </div>
+          </Portal>
+        )}
+      </Show>
     </Show>
   );
 }

@@ -214,6 +214,21 @@ html:not([data-density]) {
   --section-pad-y: 0.5rem;
 }
 
+/* Coverage audit (MASTER §5). Every *row-shaped* surface in the shell opts in:
+ *   • rail worktree rows            — WorkspaceRail
+ *   • terminal rows + file section  — TerminalSidebar
+ *   • change/branch/worktree/stash/tag rows and section headers — GitSidebar
+ * Four surfaces are deliberately *excluded*, and adding a second density
+ * mechanism for them would be the wrong fix:
+ *   • the tab strip (h-9) and the sidebar/rail headers (h-9) — their heights
+ *     are load-bearing, they must line up across all three columns;
+ *   • the status bar (h-6) — one line of 10px text has no slack to give;
+ *   • the file tree's rows (24px) — `@tanstack/solid-virtual` estimates from a
+ *     fixed row height, so a density-driven height would desync the estimates
+ *     (this is the same constraint the workbench prompt states for every
+ *     virtualized list).
+ * A density *preference* is therefore purely a surfacing task — see MASTER §5.
+ */
 /* Apply the density scale to elements that opt in via .density-row / .density-section. */
 .density-row {
   padding-top: var(--row-pad-y);

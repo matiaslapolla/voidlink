@@ -8,8 +8,8 @@
 /// inside a component, closed over the layout store).
 ///
 /// Dynamic ids are deliberately *not* here: the per-snapshot
-/// `snapshot.restore.<name>` / `snapshot.delete.<name>` entries are generated
-/// at runtime from user data and are never bound to a key.
+/// `snapshot.restore.<name>` entries are generated at runtime from user data
+/// and are never bound to a key.
 
 export const WORKSPACE_SELECT_COUNT = 9;
 
@@ -17,6 +17,18 @@ export const WORKSPACE_SELECT_COUNT = 9;
 /// `App.tsx` and the keymap so the two can never drift.
 export function workspaceSelectId(oneBasedIndex: number): string {
   return `workspace.select.${oneBasedIndex}`;
+}
+
+/// Jump-to-tab-N in the focused pane group. Nine, for the same reason the
+/// workspace slots are nine: that is how many chords a digit row has.
+export const TAB_SELECT_COUNT = 9;
+
+/// `tab.select.1` … `tab.select.9`, generated the way `workspaceSelectId` is so
+/// the catalog in `App.tsx` and the keymap cannot drift. `tab.select.last` is
+/// spelled out in `ACTION_IDS` rather than generated — it is one id, not a
+/// family.
+export function tabSelectId(oneBasedIndex: number): string {
+  return `tab.select.${oneBasedIndex}`;
 }
 
 export const ACTION_IDS = [
@@ -60,6 +72,10 @@ export const ACTION_IDS = [
   "ui.swap-sidebars",
   "ui.toggle-diff-mode",
   "ui.toggle-ignore-ws",
+  "ui.maximize-pane",
+  "ui.zen",
+  "ui.navigate-back",
+  "ui.navigate-forward",
   "view.toggle-blame",
   // AI
   "agent.toggle",
@@ -76,12 +92,27 @@ export const ACTION_IDS = [
   "workspace.select.7",
   "workspace.select.8",
   "workspace.select.9",
+  "workspace.switch",
   "snapshot.save",
+  "snapshot.manage",
   // Tabs
   "tab.close",
   "tab.next",
   "tab.prev",
   "tab.reopen-last",
+  "tab.mru-next",
+  "tab.mru-prev",
+  "tab.switch",
+  "tab.select.1",
+  "tab.select.2",
+  "tab.select.3",
+  "tab.select.4",
+  "tab.select.5",
+  "tab.select.6",
+  "tab.select.7",
+  "tab.select.8",
+  "tab.select.9",
+  "tab.select.last",
 ] as const;
 
 export type ActionId = (typeof ACTION_IDS)[number];

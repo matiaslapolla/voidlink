@@ -50,6 +50,10 @@ the shell as XOFF.
 | `Mod+\` | Swap left/right sidebars |
 | `Mod+Alt+B` | Toggle inline blame |
 | `Mod+Shift+D` | Toggle inline / split diff |
+| `Mod+Alt+M` | Maximize the focused pane group (toggle) |
+| `Mod+Alt+Z` | Zen mode — hide the rail, both sidebars and every tab strip |
+| `Mod+Alt+[` | Navigate back |
+| `Mod+Alt+]` | Navigate forward |
 
 ### Tabs
 
@@ -62,6 +66,11 @@ the shell as XOFF.
 | `Mod+Alt+←` | Previous tab |
 | `Mod+Shift+]` | Next tab (alternate) |
 | `Mod+Shift+[` | Previous tab (alternate) |
+| `Ctrl+Tab` | Cycle tabs in most-recently-used order (hold to see the list) |
+| `Ctrl+Shift+Tab` | Cycle MRU backwards |
+| `Mod+Shift+E` | Go to an open tab by name |
+| `Mod+Alt+1` … `Mod+Alt+9` | Jump to tab 1–9 in the focused group |
+| `Mod+Alt+0` | Jump to the last tab in the focused group |
 
 Tab navigation answers to both conventions: `Mod+Alt+Arrow` is what Safari and
 Chrome use, `Mod+Shift+[`/`]` is what VS Code uses. Both fire.
@@ -129,6 +138,17 @@ These are handled by the widget that owns them, not by the keymap:
 - `Enter` / `Shift+Enter` in the repo agent composer sends / inserts a newline.
 - `↑` `↓` `Enter` `Esc` inside the palette, file finder, ref picker, and prompt
   dialogs.
+- The git sidebar's **changed-file list** is its own keyboard surface. Focus it
+  (Tab into it, or press `↓` from the filter box) and:
+
+  | Key | Effect |
+  |---|---|
+  | `↑` `↓` | Move the cursor. The conflicts / staged / unstaged boundaries are invisible — the three lists behave as one. |
+  | `PageUp` `PageDown` `Home` `End` | Move ten rows, or to either end. |
+  | `Space` | Stage an unstaged row, unstage a staged one, open a conflicted one. |
+  | `Enter` | Open the row's diff (or the merge editor, for a conflict). |
+  | `Backspace` `Delete` | Discard the row — still behind its confirmation, because it is irreversible. |
+  | `Esc` (in the filter box) | Clear the filter. |
 - Everything Monaco and xterm handle themselves — see the gotchas below.
 
 ## How the matcher works

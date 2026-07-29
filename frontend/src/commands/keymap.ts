@@ -16,7 +16,13 @@
 
 import type { Chord } from "@/commands/keys";
 import { chordId } from "@/commands/keys";
-import { ACTION_IDS, workspaceSelectId, type ActionId } from "@/commands/actionIds";
+import {
+  ACTION_IDS,
+  TAB_SELECT_COUNT,
+  tabSelectId,
+  workspaceSelectId,
+  type ActionId,
+} from "@/commands/actionIds";
 
 /// Where a chord is live.
 ///
@@ -177,6 +183,30 @@ export const KEYMAP: readonly KeymapEntry[] = [
     binding: { meta: true, shift: true, key: "d" },
     note: "D for diff layout. ⌘⌥D would be swallowed by macOS (Dock hiding).",
   },
+  {
+    actionId: "ui.maximize-pane",
+    group: "View",
+    binding: { meta: true, alt: true, key: "m" },
+    note: "M for maximize. ⌘M is minimise-window on macOS and never reaches us; the ⌥ slot is free.",
+  },
+  {
+    actionId: "ui.zen",
+    group: "View",
+    binding: { meta: true, alt: true, key: "z" },
+    note: "Zen has no chord sequences to lean on (`keys.ts` models single chords), and ⌘⇧Z is Monaco's redo — so the ⌥ slot again. The status bar renders whatever this entry says, so the two cannot drift.",
+  },
+
+  {
+    actionId: "ui.navigate-back",
+    group: "View",
+    binding: { meta: true, alt: true, key: "[" },
+    note: "⌘⌥←/→ are already tab next/prev and ⌘⇧[ / ⌘⇧] are their VS Code alternates, so back/forward take the remaining bracket pair. The title bar carries the same two as buttons for anyone who would rather not remember it.",
+  },
+  {
+    actionId: "ui.navigate-forward",
+    group: "View",
+    binding: { meta: true, alt: true, key: "]" },
+  },
 
   // ── Tabs ──────────────────────────────────────────────────────────────
   {
@@ -205,6 +235,37 @@ export const KEYMAP: readonly KeymapEntry[] = [
       { meta: true, shift: true, key: "[" },
     ],
   },
+  {
+    actionId: "tab.mru-next",
+    group: "Tabs",
+    binding: { meta: true, key: "Tab" },
+    note: "Ctrl+Tab. `meta` is Cmd-or-Ctrl, and on macOS ⌘Tab never reaches an app — the OS app switcher takes it — so this is Ctrl+Tab there and Ctrl+Tab on Linux/Windows too. Held-modifier UI: the overlay commits when the modifier is released, which `keybindings.ts` watches for.",
+  },
+  {
+    actionId: "tab.mru-prev",
+    group: "Tabs",
+    binding: { meta: true, shift: true, key: "Tab" },
+  },
+  {
+    actionId: "tab.switch",
+    group: "Tabs",
+    binding: { meta: true, shift: true, key: "e" },
+    note: "Go to an open tab by name. E for 'everything open'; ⌘E is Monaco's find-selection and is left alone.",
+  },
+  // ⌘⌥1-⌘⌥9 jump to a tab in the focused group; ⌘1-⌘9 are already the nine
+  // workspace slots. ⌥ alone remaps `event.key` on macOS (⌥1 reports "¡"), but
+  // ⌘⌥ does not — which is why the digit chords here carry both modifiers.
+  ...Array.from({ length: TAB_SELECT_COUNT }, (_, i): KeymapEntry => ({
+    actionId: tabSelectId(i + 1) as ActionId,
+    group: "Tabs",
+    binding: { meta: true, alt: true, key: String(i + 1) },
+  })),
+  {
+    actionId: "tab.select.last",
+    group: "Tabs",
+    binding: { meta: true, alt: true, key: "0" },
+    note: "0 sits past 9 on the digit row, which is where 'the last one' belongs.",
+  },
 
   // ── Workspace ─────────────────────────────────────────────────────────
   {
@@ -228,6 +289,12 @@ export const KEYMAP: readonly KeymapEntry[] = [
     group: "Workspace",
     binding: { meta: true, key: String(i + 1) },
   })),
+  {
+    actionId: "workspace.switch",
+    group: "Workspace",
+    binding: { meta: true, shift: true, key: "p" },
+    note: "Every worktree across every workspace, with its dirty/ahead/behind badges. ⌘⇧P is the switcher chord people arrive with; the command palette here is ⌘K, so it is free.",
+  },
 
   // ── Terminal ──────────────────────────────────────────────────────────
   {

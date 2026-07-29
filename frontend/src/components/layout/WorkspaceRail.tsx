@@ -16,9 +16,9 @@ import { pushToast } from "@/commands/toast";
 import { gitApi } from "@/api/git";
 import { worktreeLabel, type Workspace, type Worktree } from "@/types/workspace";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
-
-const MIN_WIDTH = 160;
-const MAX_WIDTH = 380;
+import { Splitter } from "@/components/layout/Splitter";
+import { EmptyState } from "@/components/layout/EmptyState";
+import { PANEL_BOUNDS } from "@/store/layout";
 
 /// The far-left vertical rail: every workspace, and under each one its
 /// worktrees. Replaces the old horizontal workspace tab bar — the tab strip in
@@ -28,7 +28,6 @@ const MAX_WIDTH = 380;
 /// `hydrateWorktrees`) rather than being recomputed here.
 export function WorkspaceRail() {
   const { state, actions } = useAppStore();
-  const [width, setWidth] = createSignal(212);
   const [renaming, setRenaming] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal("");
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
@@ -48,20 +47,6 @@ export function WorkspaceRail() {
   // Re-hydrating on the shared refresh pulse keeps the rail's badges honest
   // without it owning a poller.
   onMount(() => onCleanup(onGitRefsChanged(() => void actions.hydrateAllWorktrees())));
-
-  function startResize(e: MouseEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = width();
-    const onMove = (mv: MouseEvent) =>
-      setWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startW + mv.clientX - startX)));
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
 
   const isCollapsed = (id: string) => collapsed().has(id);
   function toggleCollapsed(id: string) {
@@ -206,7 +191,7 @@ export function WorkspaceRail() {
     <nav
       aria-label="Workspaces"
       class="flex flex-col border-r border-border bg-sidebar overflow-hidden relative shrink-0"
-      style={{ width: `${width()}px` }}
+      style={{ width: `${state.panels.rail}px` }}
       onDragOver={onDragOverEnd}
       onDrop={onDropAtEnd}
     >
@@ -306,6 +291,12 @@ export function WorkspaceRail() {
 
                 {/* Worktrees */}
                 <Show when={!isCollapsed(ws.id)}>
+                  {/* An expanded workspace with nothing under it is otherwise
+                      indistinguishable from a collapsed one — the chevron is
+                      the only difference, and it is 12px. §9.7. */}
+                  <Show when={ws.worktrees.length === 0}>
+                    <EmptyState id="workspaceNoWorktrees" class="!py-3" />
+                  </Show>
                   <For each={ws.worktrees}>
                     {(wt) => {
                       const isActive = () =>
@@ -411,10 +402,14 @@ export function WorkspaceRail() {
         )}
       </Show>
 
-      {/* Resize handle on right edge */}
-      <div
-        class="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-primary/30 transition-colors"
-        onMouseDown={startResize}
+      <Splitter
+        side="end"
+        label="Workspace rail width"
+        value={state.panels.rail}
+        min={PANEL_BOUNDS.rail.min}
+        max={PANEL_BOUNDS.rail.max}
+        defaultValue={PANEL_BOUNDS.rail.default}
+        onResize={(w) => actions.setPanelWidth("rail", w)}
       />
     </nav>
   );
