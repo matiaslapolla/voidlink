@@ -178,6 +178,37 @@ describe("KEYMAP integrity", () => {
     }
   });
 
+  it("binds ⌘⌥1-⌘⌥9 to the nine tab slots, and ⌘⌥0 to the last", () => {
+    // ⌘1-⌘9 are the workspace slots, so jump-to-tab-N takes the ⌥ row. ⌥ alone
+    // would not match on macOS — it remaps `event.key` — but ⌘⌥ does.
+    for (let i = 1; i <= 9; i++) {
+      const chord = primaryChordFor(`tab.select.${i}`);
+      expect(chord, `tab ${i}`).toBeDefined();
+      expect(chordId(chord!)).toBe(chordId({ meta: true, alt: true, key: String(i) }));
+    }
+    expect(chordId(primaryChordFor("tab.select.last")!)).toBe(
+      chordId({ meta: true, alt: true, key: "0" }),
+    );
+  });
+
+  it("cycles the MRU on Ctrl+Tab in both directions", () => {
+    expect(chordId(primaryChordFor("tab.mru-next")!)).toBe(chordId({ meta: true, key: "Tab" }));
+    expect(chordId(primaryChordFor("tab.mru-prev")!)).toBe(
+      chordId({ meta: true, shift: true, key: "Tab" }),
+    );
+  });
+
+  it("keeps tab.next/tab.prev as document-order navigation beside the MRU", () => {
+    // The two are deliberately different questions; neither may absorb the
+    // other's chords.
+    expect(chordId(primaryChordFor("tab.next")!)).toBe(
+      chordId({ meta: true, alt: true, key: "ArrowRight" }),
+    );
+    expect(chordId(primaryChordFor("tab.prev")!)).toBe(
+      chordId({ meta: true, alt: true, key: "ArrowLeft" }),
+    );
+  });
+
   it("gives every new binding a modifier beyond the platform key, or a scope", () => {
     // Bare ⌘<letter> is also Ctrl+<letter>, which is a readline binding in any
     // shell. The pre-existing bare chords are grandfathered; anything else has
@@ -193,6 +224,10 @@ describe("KEYMAP integrity", () => {
       "meta+\\",
       "meta+,",
       ...Array.from({ length: 9 }, (_, i) => `meta+${i + 1}`),
+      // Ctrl+Tab is not a readline binding — the rule above is about bare
+      // ⌘<letter>, which is Ctrl+<letter> and therefore a shell chord. Tab is
+      // not a letter, and Ctrl+Tab is the tab switcher everywhere.
+      "meta+tab",
     ]);
     for (const entry of KEYMAP) {
       for (const chord of chordsOf(entry)) {

@@ -33,6 +33,13 @@ export const STORAGE_KEYS = {
   /// per worktree and not synced across windows, so it sits beside the tab
   /// blobs rather than inside them.
   paneLayout: "voidlink-pane-layout",
+  /// `Record<worktreeId, Record<groupId, tabId[]>>` — the per-group tab MRU
+  /// `Ctrl+Tab` cycles. Persisted so the first cycle after a reload lands
+  /// somewhere meaningful instead of on whatever happens to be leftmost.
+  tabMru: "voidlink-tab-mru",
+  /// `Record<worktreeId, NavHistory>` — back/forward. Per worktree, like the
+  /// geometry it navigates.
+  navHistory: "voidlink-nav-history",
 } as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];

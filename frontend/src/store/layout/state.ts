@@ -8,6 +8,7 @@
 import type { TerminalSession, Workspace } from "@/types/workspace";
 import { TAB_KINDS, TAB_SPECS } from "./tabs";
 import { singleGroupLayout, type PaneNode } from "./panes";
+import { emptyNavHistory, type GroupMru, type NavHistory } from "./navigation";
 import type {
   ActiveItem,
   BrainTab,
@@ -68,6 +69,12 @@ export interface AppStoreState {
   /// claiming nothing — resolves to today's single-strip workbench, so a
   /// worktree that has never been split needs no saved geometry at all.
   paneLayoutByWorktree: Record<string, PaneNode>;
+  /// Per-group most-recently-used tab order, per worktree. `Ctrl+Tab` cycles
+  /// this; `tab.next` / `tab.prev` deliberately do not — document order and
+  /// recency are two different questions and both have their users.
+  tabMruByWorktree: Record<string, GroupMru>;
+  /// Back/forward across (group, tab, line), per worktree.
+  navHistoryByWorktree: Record<string, NavHistory>;
   /// Which group has keyboard focus, per worktree. `null` means the first.
   /// Persisted with the geometry: coming back to a split worktree and landing
   /// in a different pane than you left is disorienting.
@@ -109,6 +116,8 @@ export function seedWorktreeCollections(s: AppStoreState, wtId: string) {
   s.closedTabsByWorktree[wtId] ??= [];
   s.pinnedTabsByWorktree[wtId] ??= [];
   s.paneLayoutByWorktree[wtId] ??= singleGroupLayout();
+  s.tabMruByWorktree[wtId] ??= {};
+  s.navHistoryByWorktree[wtId] ??= emptyNavHistory();
   if (!(wtId in s.focusedGroupByWorktree)) s.focusedGroupByWorktree[wtId] = null;
   if (!(wtId in s.activeItemByWorktree)) s.activeItemByWorktree[wtId] = null;
   if (!(wtId in s.editorActiveItemByWorktree)) s.editorActiveItemByWorktree[wtId] = null;
@@ -124,6 +133,8 @@ export function dropWorktreeCollections(s: AppStoreState, wtId: string) {
   delete s.closedTabsByWorktree[wtId];
   delete s.pinnedTabsByWorktree[wtId];
   delete s.paneLayoutByWorktree[wtId];
+  delete s.tabMruByWorktree[wtId];
+  delete s.navHistoryByWorktree[wtId];
   delete s.focusedGroupByWorktree[wtId];
   delete s.activeItemByWorktree[wtId];
   delete s.editorActiveItemByWorktree[wtId];

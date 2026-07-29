@@ -1,4 +1,4 @@
-import { Show } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import {
   Sun,
   Moon,
@@ -10,6 +10,8 @@ import {
   PanelRight,
   ArrowLeftRight,
   ArrowUpRight,
+  ArrowLeft,
+  ArrowRight,
   GitBranch,
   FileCode,
 } from "lucide-solid";
@@ -22,14 +24,55 @@ import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { ViewSwitcher } from "@/components/layout/ViewSwitcher";
 import { isStackedMode } from "@/commands/environment";
 import { useAppStore } from "@/store/LayoutContext";
+import { getAction, runAction } from "@/commands/registry";
+import { shortcutLabel } from "@/commands/shortcuts";
 
 interface TitleBarProps {
   onOpenSettings: () => void;
 }
 
+/// Back / forward across the navigation history.
+///
+/// The button runs the registered action rather than calling the store, so the
+/// chord and the click are one code path — the same reason the palette rows do.
+/// A history with nowhere to go renders the button disabled with the reason in
+/// its `title`, which §7.6 requires of every disabled control.
+function NavButton(props: {
+  actionId: string;
+  enabled: boolean;
+  label: string;
+  disabledReason: string;
+  children: JSX.Element;
+}) {
+  const accelerator = () => shortcutLabel(props.actionId);
+  const title = () =>
+    props.enabled
+      ? `${props.label}${accelerator() ? ` (${accelerator()})` : ""}`
+      : props.disabledReason;
+  return (
+    <button
+      onClick={() => {
+        const action = getAction(props.actionId);
+        if (action) void runAction(action);
+      }}
+      disabled={!props.enabled}
+      aria-disabled={!props.enabled}
+      aria-label={props.label}
+      title={title()}
+      class="w-9 flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      classList={{
+        "hover:bg-accent/60 hover:text-foreground": props.enabled,
+        "opacity-40 cursor-not-allowed": !props.enabled,
+      }}
+    >
+      {props.children}
+    </button>
+  );
+}
+
 export function TitleBar(props: TitleBarProps) {
   const { mode, toggleTheme } = useTheme();
-  const { state, actions } = useAppStore();
+  const { state, canGoBack, canGoForward, actions } = useAppStore();
 
   // Resolved per click, not once at construction. `getCurrentWindow()` reads
   // Tauri's injected metadata and throws where that is absent — which used to
@@ -76,6 +119,23 @@ export function TitleBar(props: TitleBarProps) {
         <DevBadge class="ml-2 pointer-events-none" />
       </div>
       <div class="flex items-stretch text-muted-foreground">
+        <NavButton
+          actionId="ui.navigate-back"
+          enabled={canGoBack()}
+          label="Go back"
+          disabledReason="Nothing to go back to yet"
+        >
+          <ArrowLeft class="w-3.5 h-3.5" />
+        </NavButton>
+        <NavButton
+          actionId="ui.navigate-forward"
+          enabled={canGoForward()}
+          label="Go forward"
+          disabledReason="Nothing to go forward to"
+        >
+          <ArrowRight class="w-3.5 h-3.5" />
+        </NavButton>
+        <div class="w-px self-center h-4 bg-border mx-1" />
         <button
           onClick={toggleLeft}
           aria-label={leftCollapsed() ? "Show left sidebar" : "Hide left sidebar"}

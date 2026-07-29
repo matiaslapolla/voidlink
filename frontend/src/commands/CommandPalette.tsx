@@ -1,186 +1,241 @@
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
-import { Portal } from "solid-js/web";
-import { Search } from "lucide-solid";
+/// ⌘K — actions, open tabs and recent files in one list.
+///
+/// Three things make it feel different from the list-of-everything it was:
+///
+///   1. **Recently-used first.** Actions the user ran this session float to the
+///      top of the resting list. The order is snapshotted when the palette
+///      opens and held for as long as it is on screen — reordering rows under
+///      a user who is halfway through a muscle-memory press is worse than not
+///      ranking at all.
+///   2. **A `>`-free default mode.** With no prefix the list mixes actions with
+///      what is already open and what was recently closed, so ⌘K is "go to the
+///      thing" as well as "run the thing". A leading `>` narrows to actions,
+///      the convention every editor shares.
+///   3. **Match ranges, not just scores.** `fuzzy.ts` returns which characters
+///      matched and `FuzzyText` tints them, using the same treatment as the
+///      file finder and both switchers.
+///
+/// Chrome, keyboard navigation and the highlight all come from `QuickPick.tsx`.
+/// Nothing here animates: ⌘K is keyboard-initiated (MASTER §7.1).
+import { Show, createMemo, createSignal } from "solid-js";
+import { FileClock, SearchX } from "lucide-solid";
 import {
   type Action,
   closePalette,
   getVisibleActions,
   isPaletteOpen,
+  recentActionOrder,
+  runAction,
 } from "@/commands/registry";
+import { bestFuzzyMatch, type MatchRange } from "@/commands/fuzzy";
+import { FuzzyText, QuickPick, QuickPickEmpty, QuickPickRow } from "@/commands/QuickPick";
+import { TabKindIcon } from "@/commands/TabCycleOverlay";
 import { shortcutLabel } from "@/commands/shortcuts";
+import type { OpenTabTarget, RecentFileTarget } from "@/commands/targets";
 
-function fuzzyScore(text: string, query: string): number {
-  if (!query) return 0;
-  const t = text.toLowerCase();
-  const q = query.toLowerCase();
-  // Direct substring: strong score, prefer earlier match.
-  const idx = t.indexOf(q);
-  if (idx !== -1) return 1000 - idx;
-  // Character-in-order fallback (subsequence). Score by gaps.
-  let score = 0;
-  let ti = 0;
-  for (const ch of q) {
-    const found = t.indexOf(ch, ti);
-    if (found === -1) return -1;
-    score -= found - ti;
-    ti = found + 1;
-  }
-  return 100 + score;
+export interface CommandPaletteProps {
+  /// Open tabs to mix into the default mode. Omitted in windows that have none.
+  openTabs?: () => OpenTabTarget[];
+  recentFiles?: () => RecentFileTarget[];
 }
 
-export function CommandPalette() {
+type Row =
+  | { sort: "action"; key: string; action: Action; score: number; ranges: MatchRange[] }
+  | { sort: "tab"; key: string; tab: OpenTabTarget; score: number; ranges: MatchRange[] }
+  | { sort: "file"; key: string; file: RecentFileTarget; score: number; ranges: MatchRange[] };
+
+export function CommandPalette(props: CommandPaletteProps) {
   return (
     <Show when={isPaletteOpen()}>
-      <PaletteContent />
+      <PaletteContent openTabs={props.openTabs} recentFiles={props.recentFiles} />
     </Show>
   );
 }
 
-function PaletteContent() {
+function PaletteContent(props: CommandPaletteProps) {
   const [query, setQuery] = createSignal("");
-  const [highlight, setHighlight] = createSignal(0);
-  let inputRef: HTMLInputElement | undefined;
 
-  onMount(() => {
-    queueMicrotask(() => inputRef?.focus());
-  });
+  /// Captured once, on mount. See the module comment — this is the "stable
+  /// within a session" requirement, and it is why this is a plain array rather
+  /// than a call to `recentActionOrder()` inside the memo.
+  const recency = new Map(recentActionOrder().map((id, i) => [id, i]));
 
-  const filtered = createMemo<Array<Action & { score: number }>>(() => {
-    const q = query();
-    const list = getVisibleActions();
-    if (!q.trim()) {
-      return list.map((a) => ({ ...a, score: 0 }));
+  /// `>` narrows to actions. Everything after it is the real query.
+  const actionsOnly = () => query().trimStart().startsWith(">");
+  const term = () => {
+    const raw = query().trimStart();
+    return (actionsOnly() ? raw.slice(1) : raw).trim();
+  };
+
+  /// Actions first in the resting list, recency-ordered, then everything else in
+  /// registration order. With a query, score decides and recency only breaks
+  /// ties — otherwise a stale favourite would outrank an exact match.
+  const rows = createMemo<Row[]>(() => {
+    const q = term();
+    const out: Row[] = [];
+
+    for (const action of getVisibleActions()) {
+      const match = bestFuzzyMatch([action.label, action.group ?? ""], q);
+      if (!match) continue;
+      out.push({
+        sort: "action",
+        key: `a:${action.id}`,
+        action,
+        // Only a label match is worth highlighting; a hit on the group column
+        // would tint text the user did not type against.
+        ranges: match.field === 0 ? match.match.ranges : [],
+        score: match.match.score,
+      });
     }
-    return list
-      .map((a) => {
-        const labelScore = fuzzyScore(a.label, q);
-        const groupScore = a.group ? fuzzyScore(a.group, q) : -1;
-        return { ...a, score: Math.max(labelScore, groupScore) };
-      })
-      .filter((a) => a.score >= 0)
-      .sort((a, b) => b.score - a.score);
+
+    if (!actionsOnly()) {
+      for (const tab of props.openTabs?.() ?? []) {
+        const match = bestFuzzyMatch([tab.label, tab.detail ?? ""], q);
+        if (!match) continue;
+        out.push({
+          sort: "tab",
+          key: `t:${tab.id}`,
+          tab,
+          ranges: match.field === 0 ? match.match.ranges : [],
+          score: match.match.score,
+        });
+      }
+      for (const file of props.recentFiles?.() ?? []) {
+        const match = bestFuzzyMatch([file.label, file.path], q, { pathAware: true });
+        if (!match) continue;
+        out.push({
+          sort: "file",
+          key: `f:${file.path}`,
+          file,
+          ranges: match.field === 0 ? match.match.ranges : [],
+          score: match.match.score,
+        });
+      }
+    }
+
+    const rank = (row: Row) =>
+      row.sort === "action" ? (recency.get(row.action.id) ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+
+    if (!q) {
+      // Resting order: recently-used actions, then open tabs (the thing you are
+      // most likely to want to get back to), then the rest.
+      const bucket = (row: Row) =>
+        row.sort === "action" && recency.has(row.action.id) ? 0 : row.sort === "tab" ? 1 : 2;
+      return out.sort((a, b) => bucket(a) - bucket(b) || rank(a) - rank(b));
+    }
+    return out.sort((a, b) => b.score - a.score || rank(a) - rank(b));
   });
 
-  function runAt(index: number) {
-    const list = filtered();
-    const action = list[index];
-    if (!action) return;
-    if (action.enabled && !action.enabled()) return;
-    closePalette();
-    void action.run();
-  }
-
-  function onKeyDown(e: KeyboardEvent) {
-    const list = filtered();
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setHighlight((h) => Math.min(list.length - 1, h + 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlight((h) => Math.max(0, h - 1));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      runAt(highlight());
-    } else if (e.key === "Escape") {
-      e.preventDefault();
+  function pick(row: Row) {
+    if (row.sort === "action") {
+      if (row.action.enabled && !row.action.enabled()) return;
       closePalette();
+      void runAction(row.action);
+      return;
     }
+    closePalette();
+    if (row.sort === "tab") row.tab.open();
+    else row.file.open();
   }
 
   return (
-    <Portal>
-      <div
-        class="fixed inset-0 z-[80] flex items-start justify-center pt-[12vh] bg-black/40"
-        onClick={closePalette}
-      >
-        <div
-          class="w-[520px] max-w-[92vw] bg-popover border border-border rounded-lg shadow-2xl flex flex-col overflow-hidden"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
-            <Search class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-            <input
-              ref={inputRef}
-              type="text"
-              value={query()}
-              onInput={(e) => {
-                setQuery(e.currentTarget.value);
-                setHighlight(0);
-              }}
-              onKeyDown={onKeyDown}
-              placeholder="Search actions…"
-              class="flex-1 bg-transparent border-0 outline-none text-sm placeholder:text-muted-foreground"
-            />
-            <span class="text-[10px] text-muted-foreground/70 tracking-wide">ESC</span>
-          </div>
-          <div class="max-h-[60vh] overflow-y-auto scrollbar-thin py-1">
-            <Show
-              when={filtered().length > 0}
-              fallback={
-                <div class="px-3 py-6 text-center text-xs text-muted-foreground">
-                  No matching actions
-                </div>
-              }
-            >
-              <For each={filtered()}>
-                {(action, i) => (
-                  <PaletteRow
-                    action={action}
-                    highlighted={highlight() === i()}
-                    onClick={() => runAt(i())}
-                    onMouseEnter={() => setHighlight(i())}
-                  />
-                )}
-              </For>
-            </Show>
-          </div>
-        </div>
-      </div>
-    </Portal>
+    <QuickPick
+      items={rows()}
+      itemKey={(row) => row.key}
+      query={query()}
+      onQuery={setQuery}
+      onPick={pick}
+      onClose={closePalette}
+      label="Command palette"
+      width="w-[560px]"
+      placeholder="Search commands, open tabs and recent files… (> for commands only)"
+      empty={
+        <QuickPickEmpty
+          icon={<SearchX class="w-5 h-5" />}
+          message="Nothing matches that."
+          hint={actionsOnly() ? undefined : "Drop the > to search open tabs and recent files too."}
+        />
+      }
+      renderItem={(row, highlighted) => <PaletteRow row={row} highlighted={highlighted()} />}
+    />
   );
 }
 
-function PaletteRow(props: {
-  action: Action;
-  highlighted: boolean;
-  onClick: () => void;
-  onMouseEnter: () => void;
-}) {
-  const disabled = () => props.action.enabled && !props.action.enabled();
-  // Derived from the keymap, never stored on the action — the label and the
-  // chord that actually fires cannot disagree.
-  const accelerator = () => shortcutLabel(props.action.id);
+function PaletteRow(props: { row: Row; highlighted: boolean }) {
+  const disabled = () =>
+    props.row.sort === "action" && !!props.row.action.enabled && !props.row.action.enabled();
+
   return (
-    <button
-      onClick={props.onClick}
-      onMouseEnter={props.onMouseEnter}
+    <QuickPickRow
+      highlighted={props.highlighted}
       disabled={disabled()}
-      class={`w-full flex items-center gap-3 px-3 py-1.5 text-left text-[13px] transition-colors ${
-        props.highlighted ? "bg-accent/70 text-foreground" : "text-muted-foreground"
-      } ${disabled() ? "opacity-40" : "hover:bg-accent/40 hover:text-foreground"}`}
+      disabledReason="Not available in this context — open a repository first"
     >
-      <Show when={props.action.group}>
-        {(g) => (
-          <span class="text-[10px] tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
-            {g()}
-          </span>
+      <Show when={props.row.sort === "action" ? props.row : undefined}>
+        {(row) => (
+          <>
+            <span class="text-[10px] tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
+              {row().action.group ?? ""}
+            </span>
+            <span class="flex-1 truncate">
+              <FuzzyText text={row().action.label} ranges={row().ranges} />
+              <Show when={row().action.description}>
+                {(d) => <span class="ml-2 text-[11px] text-muted-foreground/80">· {d()}</span>}
+              </Show>
+            </span>
+            <Accelerator actionId={row().action.id} />
+          </>
         )}
       </Show>
-      <span class="flex-1 truncate">
-        {props.action.label}
-        <Show when={props.action.description}>
-          {(d) => (
-            <span class="ml-2 text-[11px] text-muted-foreground/80">· {d()}</span>
-          )}
-        </Show>
-      </span>
-      <Show when={accelerator()}>
-        {(s) => (
-          <span class="text-[10px] text-muted-foreground/70 font-mono tracking-wide">
-            {s()}
-          </span>
+
+      <Show when={props.row.sort === "tab" ? props.row : undefined}>
+        {(row) => (
+          <>
+            <span class="text-[10px] tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
+              open
+            </span>
+            <TabKindIcon kind={row().tab.kind} />
+            <span class="flex-1 truncate">
+              <FuzzyText text={row().tab.label} ranges={row().ranges} />
+              <Show when={row().tab.detail}>
+                {(d) => <span class="ml-2 text-[11px] text-muted-foreground/80">· {d()}</span>}
+              </Show>
+            </span>
+          </>
         )}
       </Show>
-    </button>
+
+      <Show when={props.row.sort === "file" ? props.row : undefined}>
+        {(row) => (
+          <>
+            <span class="text-[10px] tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
+              recent
+            </span>
+            <FileClock class="w-3.5 h-3.5 shrink-0 opacity-60" />
+            <span class="flex-1 truncate">
+              <FuzzyText text={row().file.label} ranges={row().ranges} />
+              <span class="ml-2 text-[11px] text-muted-foreground/80 font-mono">
+                {row().file.path}
+              </span>
+            </span>
+          </>
+        )}
+      </Show>
+    </QuickPickRow>
+  );
+}
+
+/// Derived from the keymap, never stored on the action — the label and the
+/// chord that actually fires cannot disagree.
+function Accelerator(props: { actionId: string }) {
+  const label = () => shortcutLabel(props.actionId);
+  return (
+    <Show when={label()}>
+      {(s) => (
+        <span class="ml-auto shrink-0 text-right text-[10px] text-muted-foreground font-mono tracking-wide">
+          {s()}
+        </span>
+      )}
+    </Show>
   );
 }

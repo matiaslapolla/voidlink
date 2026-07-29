@@ -1,30 +1,15 @@
-import { For, Show, createMemo, createResource, createSignal, onMount } from "solid-js";
-import { Portal } from "solid-js/web";
-import { Eye, EyeOff, File, Search } from "lucide-solid";
+import { Show, createMemo, createResource, createSignal } from "solid-js";
+import { Eye, EyeOff, File, FileSearch } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { closeFileFinder, isFileFinderOpen } from "@/commands/registry";
+import { fuzzyMatch, type MatchRange } from "@/commands/fuzzy";
+import { FuzzyText, QuickPick, QuickPickEmpty, QuickPickRow } from "@/commands/QuickPick";
 import { useSettings } from "@/store/settings";
 
-function fuzzyScore(path: string, query: string): number {
-  if (!query) return 0;
-  const t = path.toLowerCase();
-  const q = query.toLowerCase();
-  const idx = t.indexOf(q);
-  if (idx !== -1) {
-    // Heavily prefer matches on the file name (last segment).
-    const slash = t.lastIndexOf("/");
-    if (idx > slash) return 2000 - (idx - slash);
-    return 1000 - idx;
-  }
-  let score = 0;
-  let ti = 0;
-  for (const ch of q) {
-    const found = t.indexOf(ch, ti);
-    if (found === -1) return -1;
-    score -= found - ti;
-    ti = found + 1;
-  }
-  return 100 + score;
+interface Ranked {
+  path: string;
+  score: number;
+  ranges: MatchRange[];
 }
 
 export function FileFinder(props: {
@@ -43,15 +28,10 @@ function FinderContent(props: {
   onOpenFile: (absolutePath: string) => void;
 }) {
   const [query, setQuery] = createSignal("");
-  const [highlight, setHighlight] = createSignal(0);
-  let inputRef: HTMLInputElement | undefined;
 
   const { settings, updateUi } = useSettings();
   const showIgnored = () => settings.ui.showIgnoredFiles;
-  const toggleIgnored = () => {
-    updateUi({ showIgnoredFiles: !showIgnored() });
-    setHighlight(0);
-  };
+  const toggleIgnored = () => updateUi({ showIgnoredFiles: !showIgnored() });
 
   // Cache the file list per repo path — re-runs when the path or the
   // ignored-files preference changes.
@@ -60,148 +40,107 @@ function FinderContent(props: {
     (src) => gitApi.lsFiles(src.path, src.includeIgnored),
   );
 
-  onMount(() => queueMicrotask(() => inputRef?.focus()));
-
-  const ranked = createMemo<Array<{ path: string; score: number }>>(() => {
+  const ranked = createMemo<Ranked[]>(() => {
     const list = files() ?? [];
-    const q = query();
-    if (!q.trim()) {
-      return list.slice(0, 200).map((p) => ({ path: p, score: 0 }));
+    const q = query().trim();
+    if (!q) return list.slice(0, 200).map((path) => ({ path, score: 0, ranges: [] }));
+    const out: Ranked[] = [];
+    for (const path of list) {
+      // `pathAware`: a hit in the file's own name beats the same letters buried
+      // in a directory, which is what makes typing a basename work.
+      const match = fuzzyMatch(path, q, { pathAware: true });
+      if (match) out.push({ path, score: match.score, ranges: match.ranges });
     }
-    return list
-      .map((p) => ({ path: p, score: fuzzyScore(p, q) }))
-      .filter((r) => r.score >= 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 200);
+    return out.sort((a, b) => b.score - a.score).slice(0, 200);
   });
 
-  function open(index: number) {
-    const r = ranked()[index];
-    if (!r) return;
+  function open(row: Ranked) {
     closeFileFinder();
-    props.onOpenFile(`${props.repoPath}/${r.path}`);
-  }
-
-  function onKeyDown(e: KeyboardEvent) {
-    const list = ranked();
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setHighlight((h) => Math.min(list.length - 1, h + 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlight((h) => Math.max(0, h - 1));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      open(highlight());
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      closeFileFinder();
-    } else if (e.altKey && (e.key === "h" || e.key === "˙")) {
-      // Alt+H mirrors the header button. macOS turns Alt+H into "˙", so both
-      // the letter and the dead-key output are accepted.
-      e.preventDefault();
-      toggleIgnored();
-    }
+    props.onOpenFile(`${props.repoPath}/${row.path}`);
   }
 
   return (
-    <Portal>
-      <div
-        class="fixed inset-0 z-[80] flex items-start justify-center pt-[12vh] bg-black/40"
-        onClick={closeFileFinder}
-      >
-        <div
-          class="w-[560px] max-w-[92vw] bg-popover border border-border rounded-lg shadow-2xl flex flex-col overflow-hidden"
-          onClick={(e) => e.stopPropagation()}
+    <QuickPick
+      items={ranked()}
+      itemKey={(r) => r.path}
+      query={query()}
+      onQuery={setQuery}
+      onPick={open}
+      onClose={closeFileFinder}
+      label="Open file"
+      placeholder={showIgnored() ? "Open any file, ignored included…" : "Open tracked file…"}
+      loading={files.loading}
+      loadingLabel={showIgnored() ? "Indexing files…" : "Indexing tracked files…"}
+      onKeyDown={(e) => {
+        // Alt+H mirrors the header button. macOS turns Alt+H into "˙", so both
+        // the letter and the dead-key output are accepted.
+        if (e.altKey && (e.key === "h" || e.key === "˙")) {
+          e.preventDefault();
+          toggleIgnored();
+          return true;
+        }
+        return false;
+      }}
+      headerTrailing={
+        <button
+          type="button"
+          onClick={toggleIgnored}
+          aria-label={showIgnored() ? "Hide gitignored files" : "Show gitignored files"}
+          aria-pressed={showIgnored()}
+          title={
+            showIgnored()
+              ? "Hide gitignored files (⌥H)"
+              : "Show gitignored files, e.g. .env (⌥H)"
+          }
+          class={`shrink-0 p-1 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+            showIgnored()
+              ? "text-foreground bg-accent/60"
+              : "text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
+          }`}
         >
-          <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
-            <Search class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-            <input
-              ref={inputRef}
-              type="text"
-              value={query()}
-              onInput={(e) => {
-                setQuery(e.currentTarget.value);
-                setHighlight(0);
-              }}
-              onKeyDown={onKeyDown}
-              placeholder={showIgnored() ? "Open any file, ignored included…" : "Open tracked file…"}
-              class="flex-1 bg-transparent border-0 outline-none text-sm placeholder:text-muted-foreground"
-            />
-            <button
-              onClick={() => {
-                toggleIgnored();
-                inputRef?.focus();
-              }}
-              title={
-                showIgnored()
-                  ? "Hide gitignored files (⌥H)"
-                  : "Show gitignored files, e.g. .env (⌥H)"
-              }
-              class={`shrink-0 p-1 rounded transition-colors ${
-                showIgnored()
-                  ? "text-foreground bg-accent/60"
-                  : "text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
-              }`}
-            >
-              {showIgnored() ? <Eye class="w-3.5 h-3.5" /> : <EyeOff class="w-3.5 h-3.5" />}
-            </button>
-            <span class="text-[10px] text-muted-foreground/70 tracking-wide">ESC</span>
-          </div>
-          <div class="max-h-[60vh] overflow-y-auto scrollbar-thin py-1">
-            <Show when={files.loading}>
-              <div class="px-3 py-6 text-center text-xs text-muted-foreground">
-                {showIgnored() ? "Indexing files…" : "Indexing tracked files…"}
-              </div>
-            </Show>
-            <Show when={!files.loading && ranked().length === 0}>
-              <div class="px-3 py-6 text-center text-xs text-muted-foreground">
-                No matching files
-              </div>
-            </Show>
-            <For each={ranked()}>
-              {(row, i) => (
-                <FinderRow
-                  path={row.path}
-                  highlighted={highlight() === i()}
-                  onClick={() => open(i())}
-                  onMouseEnter={() => setHighlight(i())}
-                />
-              )}
-            </For>
-          </div>
-        </div>
-      </div>
-    </Portal>
+          {showIgnored() ? <Eye class="w-3.5 h-3.5" /> : <EyeOff class="w-3.5 h-3.5" />}
+        </button>
+      }
+      empty={
+        <QuickPickEmpty
+          icon={<FileSearch class="w-5 h-5" />}
+          message="No tracked file matches that."
+          hint={showIgnored() ? undefined : "⌥H also searches gitignored files."}
+        />
+      }
+      renderItem={(row, highlighted) => (
+        <FinderRow path={row.path} ranges={row.ranges} highlighted={highlighted()} />
+      )}
+    />
   );
 }
 
-function FinderRow(props: {
-  path: string;
-  highlighted: boolean;
-  onClick: () => void;
-  onMouseEnter: () => void;
-}) {
-  const name = () => props.path.split("/").pop() ?? props.path;
-  const dir = () => {
-    const idx = props.path.lastIndexOf("/");
-    return idx === -1 ? "" : props.path.slice(0, idx);
-  };
+function FinderRow(props: { path: string; ranges: MatchRange[]; highlighted: boolean }) {
+  const cut = () => props.path.lastIndexOf("/");
+  const name = () => (cut() === -1 ? props.path : props.path.slice(cut() + 1));
+  const dir = () => (cut() === -1 ? "" : props.path.slice(0, cut()));
+  /// The matcher ran against the whole path, so the ranges are rebased onto the
+  /// two halves the row draws rather than re-matching each of them.
+  const shift = (from: number, to: number): MatchRange[] =>
+    props.ranges
+      .map(([s, e]): MatchRange => [Math.max(s, from) - from, Math.min(e, to) - from])
+      .filter(([s, e]) => e > s);
+
   return (
-    <button
-      onClick={props.onClick}
-      onMouseEnter={props.onMouseEnter}
-      class={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] transition-colors ${
-        props.highlighted ? "bg-accent/70 text-foreground" : "text-muted-foreground hover:bg-accent/40 hover:text-foreground"
-      }`}
-    >
+    <QuickPickRow highlighted={props.highlighted}>
       <File class="w-3.5 h-3.5 shrink-0 opacity-60" />
-      <span class="truncate font-medium">{name()}</span>
+      <FuzzyText
+        text={name()}
+        ranges={shift(cut() + 1, props.path.length)}
+        class="truncate font-medium"
+      />
       <Show when={dir()}>
-        {(d) => (
-          <span class="ml-2 text-[11px] text-muted-foreground/70 truncate">{d()}</span>
-        )}
+        <FuzzyText
+          text={dir()}
+          ranges={shift(0, cut())}
+          class="ml-2 text-[11px] text-muted-foreground/70 truncate"
+        />
       </Show>
-    </button>
+    </QuickPickRow>
   );
 }

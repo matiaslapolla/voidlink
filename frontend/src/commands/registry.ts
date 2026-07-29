@@ -53,6 +53,42 @@ export function getVisibleActions(): Action[] {
 const [paletteOpen, setPaletteOpen] = createSignal(false);
 const [fileFinderOpen, setFileFinderOpen] = createSignal(false);
 const [cheatSheetOpen, setCheatSheetOpen] = createSignal(false);
+const [worktreeSwitcherOpen, setWorktreeSwitcherOpen] = createSignal(false);
+const [tabSwitcherOpen, setTabSwitcherOpen] = createSignal(false);
+
+// ─── Recently-used actions ────────────────────────────────────────────────
+/// Ids in most-recent-first order, capped. In memory rather than persisted: the
+/// palette's job is to make *this* session's repetition cheap, and a list
+/// restored from last week reorders rows the user has already learned the
+/// position of.
+///
+/// Read as a plain array, not a signal, and snapshotted by the palette when it
+/// opens — MASTER's palette rule is that recency ordering must be stable while
+/// the palette is on screen, so running an action must not reshuffle the list
+/// under the row you are about to press.
+const RECENT_ACTION_LIMIT = 12;
+let recentActionIds: string[] = [];
+
+export function recordActionUse(id: string): void {
+  recentActionIds = [id, ...recentActionIds.filter((x) => x !== id)].slice(
+    0,
+    RECENT_ACTION_LIMIT,
+  );
+}
+
+/// A snapshot of the recency order. Callers hold onto what they get rather than
+/// re-reading it.
+export function recentActionOrder(): string[] {
+  return [...recentActionIds];
+}
+
+/// Run an action and record it. Every palette row and every keybinding goes
+/// through here so "recently used" means "recently used", not "recently used
+/// from the palette".
+export function runAction(action: Action): void | Promise<void> {
+  recordActionUse(action.id);
+  return action.run();
+}
 
 export function isPaletteOpen() {
   return paletteOpen();
@@ -106,4 +142,31 @@ export function openCheatSheet() {
 
 export function closeCheatSheet() {
   setCheatSheetOpen(false);
+}
+
+/// The worktree/workspace switcher: every worktree across every workspace, with
+/// its dirty/ahead/behind badges.
+export function isWorktreeSwitcherOpen() {
+  return worktreeSwitcherOpen();
+}
+
+export function openWorktreeSwitcher() {
+  setWorktreeSwitcherOpen(true);
+}
+
+export function closeWorktreeSwitcher() {
+  setWorktreeSwitcherOpen(false);
+}
+
+/// "Go to open tab" — the same chrome, over what is already open.
+export function isTabSwitcherOpen() {
+  return tabSwitcherOpen();
+}
+
+export function openTabSwitcher() {
+  setTabSwitcherOpen(true);
+}
+
+export function closeTabSwitcher() {
+  setTabSwitcherOpen(false);
 }

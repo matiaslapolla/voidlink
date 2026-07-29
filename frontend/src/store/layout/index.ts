@@ -36,6 +36,7 @@ import {
   parsePaneLayouts,
   pruneClosedTabs,
   removeGroup,
+  resolveGroupTabs,
   serializePaneLayout,
   setGroupActiveTab,
   setSplitRatios,
@@ -43,6 +44,23 @@ import {
   splitGroup,
   type SplitOrientation,
 } from "./panes";
+import {
+  canNavigateBack,
+  canNavigateForward,
+  emptyNavHistory,
+  mruIndexAfter,
+  mruOrder,
+  parseGroupMrus,
+  parseNavHistories,
+  pruneMru,
+  pruneNav,
+  pushNav,
+  removeFromMru,
+  stepNav,
+  touchMru,
+  type NavEntry,
+  type NavHistory,
+} from "./navigation";
 import {
   TAB_KINDS,
   TAB_SPECS,
@@ -99,6 +117,14 @@ export { TAB_KINDS, TAB_SPECS, parseEditorTabs, samePath, serializeEditorTabs } 
 export type { DiffMode, GitTab, PanelId, PanelWidths, SidebarTab, UiPrefs } from "./prefs";
 export { PANEL_BOUNDS } from "./prefs";
 export type { PaneGroup, PaneNode, SplitOrientation } from "./panes";
+export type { GroupMru, MruList, NavEntry, NavHistory } from "./navigation";
+export {
+  NAV_HISTORY_LIMIT,
+  canNavigateBack,
+  canNavigateForward,
+  emptyNavHistory,
+  mruOrder,
+} from "./navigation";
 export {
   MAX_GROUPS,
   MIN_RATIO,
@@ -191,6 +217,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       worktreeIds,
     ),
     focusedGroupByWorktree: Object.fromEntries(worktreeIds.map((id) => [id, null])),
+    tabMruByWorktree: parseGroupMrus(readJson(STORAGE_KEYS.tabMru, null), worktreeIds),
+    navHistoryByWorktree: parseNavHistories(
+      readJson(STORAGE_KEYS.navHistory, null),
+      worktreeIds,
+    ),
     panels: prefs.panels,
     gitSidebarCollapsed: prefs.gitSidebarCollapsed,
     leftSidebarCollapsed: prefs.leftSidebarCollapsed,
@@ -245,6 +276,16 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   createEffect(() => {
     if (!persist) return;
     writeJson(STORAGE_KEYS.editorTabs, serializeEditorTabs(state));
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    writeJson(STORAGE_KEYS.tabMru, state.tabMruByWorktree);
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    writeJson(STORAGE_KEYS.navHistory, state.navHistoryByWorktree);
   });
 
   createEffect(() => {
@@ -359,6 +400,77 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activePinnedTabs = createMemo(
     () => state.pinnedTabsByWorktree[state.activeWorktreeId] ?? [],
   );
+
+  // ── Navigation: MRU and history ───────────────────────────────────────────
+
+  /// The MRU-ordered candidate list for one group: recorded order first, then
+  /// the group's untouched tabs in strip order. This is exactly what the
+  /// `Ctrl+Tab` overlay lists, so the overlay needs no ordering logic of its
+  /// own.
+  function mruOrderFor(groupId: string | null): string[] {
+    const target = groupId ?? focusedGroupId();
+    if (!target) return [];
+    const ids = resolveGroupTabs(paneLayout(), workbenchTabIds()).get(target) ?? [];
+    const mru = state.tabMruByWorktree[state.activeWorktreeId]?.[target] ?? [];
+    return mruOrder(mru, ids);
+  }
+
+  /// The candidate list for the focused group, as a memo so the overlay can
+  /// track it reactively while it is held open.
+  const focusedGroupMru = createMemo(() => mruOrderFor(focusedGroupId()));
+
+  const navHistory = createMemo(
+    () => state.navHistoryByWorktree[state.activeWorktreeId] ?? emptyNavHistory(),
+  );
+  const canGoBack = createMemo(() => canNavigateBack(navHistory()));
+  const canGoForward = createMemo(() => canNavigateForward(navHistory()));
+
+  /// Record every workbench tab activation, whatever caused it — a click, a
+  /// chord, a drop, a restore. One effect rather than a call at each of the six
+  /// `select*Tab` actions: those are not the only writers of `activeItem`, and a
+  /// history with holes in it is worse than none.
+  ///
+  /// Back/forward do not need to suppress this. `pushNav` dedupes against the
+  /// entry the cursor is *on*, so re-reporting the tab a back step just landed
+  /// on is a no-op — see `navigation.ts`.
+  createEffect(() => {
+    const wtId = state.activeWorktreeId;
+    const item = activeItem();
+    if (!item) return;
+    const groupId = groupOwning(paneLayout(), item.id, workbenchTabIds());
+    setState(
+      produce((s) => {
+        const groups = (s.tabMruByWorktree[wtId] ??= {});
+        if (groupId) groups[groupId] = touchMru(groups[groupId] ?? [], item.id);
+        const history = s.navHistoryByWorktree[wtId] ?? emptyNavHistory();
+        s.navHistoryByWorktree[wtId] = pushNav(history, { groupId, item });
+      }),
+    );
+  });
+
+  /// Forget closed tabs. Runs on the same signal the pane tree's prune does,
+  /// and is likewise guarded on "did anything actually change" — the reducers
+  /// return their input by reference when it did not.
+  createEffect(() => {
+    const wtId = state.activeWorktreeId;
+    const live = workbenchTabIds();
+    const mru = state.tabMruByWorktree[wtId];
+    const history = state.navHistoryByWorktree[wtId];
+    setState(
+      produce((s) => {
+        if (mru) {
+          for (const [groupId, list] of Object.entries(mru)) {
+            const next = pruneMru(list, live);
+            if (next !== list) s.tabMruByWorktree[wtId][groupId] = next;
+          }
+        }
+        if (history) {
+          const next = pruneNav(history, live);
+          if (next !== history) s.navHistoryByWorktree[wtId] = next;
+        }
+      }),
+    );
+  });
 
   /// Find a worktree anywhere in the store by id, with its owning workspace.
   function locateWorktree(wtId: string) {
@@ -799,6 +911,70 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const current = state.paneLayoutByWorktree[wtId];
       if (!current) return null;
       return groupOwning(current, tabId, workbenchTabIds());
+    },
+
+    // ── Navigation ───────────────────────────────────────────────────────
+    /// The MRU-ordered tab ids for a group (default: the focused one). Index 0
+    /// is the tab you are on, so `Ctrl+Tab` once is index 1.
+    tabMruOrder(groupId?: string | null): string[] {
+      return mruOrderFor(groupId ?? null);
+    },
+
+    /// Where `steps` presses of `Ctrl+Tab` land in `groupId`'s MRU, or `null`
+    /// when the group has nothing to cycle.
+    tabAfterMruSteps(steps: number, groupId?: string | null): string | null {
+      const order = mruOrderFor(groupId ?? null);
+      if (order.length < 2) return null;
+      return order[mruIndexAfter(order.length, steps)] ?? null;
+    },
+
+    /// Drop a tab from every group's MRU. Closing is handled by the prune
+    /// effect; this is for the case where a tab has to be forgotten without
+    /// having closed — a snapshot restore replacing the whole tab set.
+    forgetTabInMru(wtId: string, tabId: string) {
+      setState(
+        produce((s) => {
+          const groups = s.tabMruByWorktree[wtId];
+          if (!groups) return;
+          for (const [groupId, list] of Object.entries(groups)) {
+            const next = removeFromMru(list, tabId);
+            if (next !== list) groups[groupId] = next;
+          }
+        }),
+      );
+    },
+
+    /// Record a visit the activation effect cannot see: an editor-window
+    /// target, which the workbench opens but never renders and which therefore
+    /// never moves `activeItem`. The line is what makes back land on the place
+    /// you were reading rather than the top of the file.
+    recordNavVisit(wtId: string, entry: NavEntry) {
+      setState(
+        produce((s) => {
+          s.navHistoryByWorktree[wtId] = pushNav(
+            s.navHistoryByWorktree[wtId] ?? emptyNavHistory(),
+            entry,
+          );
+        }),
+      );
+    },
+
+    /// Step back (`-1`) or forward (`1`), returning the entry the caller should
+    /// now activate. `null` means the end of the history — the caller renders a
+    /// disabled control rather than reporting a failure.
+    navigateHistory(wtId: string, direction: -1 | 1): NavEntry | null {
+      const current: NavHistory = state.navHistoryByWorktree[wtId] ?? emptyNavHistory();
+      const { history, entry } = stepNav(current, direction);
+      if (!entry) return null;
+      setState(
+        produce((s) => {
+          s.navHistoryByWorktree[wtId] = history;
+          // Landing in another pane focuses it: back is a statement about where
+          // you want to be, not just what you want to look at.
+          if (entry.groupId) s.focusedGroupByWorktree[wtId] = entry.groupId;
+        }),
+      );
+      return entry;
     },
 
     // ── Panel geometry ───────────────────────────────────────────────────
@@ -1465,6 +1641,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     workbenchTabIds,
     paneLayout,
     focusedGroupId,
+    focusedGroupMru,
+    navHistory,
+    canGoBack,
+    canGoForward,
     activeClosedTabs,
     activePinnedTabs,
     actions,
