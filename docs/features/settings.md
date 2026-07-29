@@ -2,7 +2,7 @@
 
 ## What it does
 
-A modal dialog with eight tabs. Most read and write a single settings store
+A modal dialog with nine tabs. Most read and write a single settings store
 persisted to `localStorage["voidlink-settings"]`; **Stack** and **Git** write to
 real git config instead — the active repo's `.git/config` or your global
 `~/.gitconfig` — and **Keyboard** is read-only.
@@ -24,6 +24,60 @@ Open with `Mod+,`, the palette's `Open settings…`, or the gear in the title ba
 ### Theme
 
 Ten palettes — see [themes](./themes.md).
+
+### Editor
+
+The only pane rendered from a **schema** rather than hand-placed:
+`store/settingsSchema.ts` holds one entry per setting — dotted id
+(`editor.fontSize`), type, constraints, default, description and section — and
+the defaults, the parse, the controls, the search and the JSON view's
+validation are all derived from it. Adding a setting is one entry there.
+
+Thirteen sections: `Font`, `Indentation`, `Wrapping`, `Display`, `Scrolling`,
+`Folding`, `Cursor`, `Suggestions`, `Highlighting`, `Editing`, `Save`,
+`Keybindings`, `Language servers`.
+
+Three things sit above the sections:
+
+| Control | What it does |
+|---|---|
+| Search box | Fuzzy-matches id, label, description **and enum members** — typing `relative` finds `editor.lineNumbers`, `deepIndent` finds `editor.wrappingIndent`. Matched characters are highlighted, using the same scorer as `Mod+K`. |
+| `Modified (n)` | Shows only the settings that differ from their default. Disabled, with the reason on hover, when nothing does. |
+| `Controls` / `JSON` | Switches between the controls and the text view. |
+
+A changed setting grows a small reset button next to its label; the tooltip
+names the default it would return to. `Reset to defaults` in the footer still
+resets the whole store.
+
+**Per-language overrides** live at the bottom of the pane: pick a Monaco
+language id, add settings to override, and those values win for buffers in that
+language only. Keys are language ids (`typescript`, `rust`), not file
+extensions. The dropdown lists every language a buffer in this app can be in,
+plus any language already carrying an override.
+
+**The JSON view** is a Monaco editor over the same store — not a copy of it.
+Edits apply as you type; a change made with a control rewrites the buffer under
+the cursor. It uses VS Code's dotted form:
+
+```jsonc
+{
+  "editor.fontSize": 13,
+  "editor.wordWrap": "off",
+  "[rust]": { "editor.tabSize": 4 }
+}
+```
+
+Completion, hover text and inline validation come from a JSON Schema generated
+from the same table the controls are drawn from, registered through
+`monaco.json.jsonDefaults` — so it cannot drift from the GUI. **Malformed JSON
+is refused out loud**: an inline error bar names the line and the store is left
+untouched until the text parses. A value that parses but is not valid (an enum
+member that no longer exists, a font size of 400) is not an error — it falls
+back to its default or clamps into range, exactly as a blob loaded from
+localStorage does.
+
+Every editor setting applies to the running editor. See
+[editor and preview](./editor-and-preview.md#settings).
 
 ### Terminal
 
@@ -119,6 +173,10 @@ The vault path. See [brain vault](./brain-vault.md).
 | `Esc` | Close |
 | `Tab` / `Shift+Tab` | Move focus, trapped inside the dialog |
 
+`Mod+K` → `Go to setting…` asks for a name and opens the Editor pane filtered
+to it, with the filter box focused — the same fuzzy match the box itself runs,
+so `font size`, `fontSize` and `editor.fontSize` all land in the same place.
+
 ## Gotchas and limits
 
 - **The settings dialog sits at `z-70`, below the palette and file finder at
@@ -139,7 +197,14 @@ The vault path. See [brain vault](./brain-vault.md).
   focusable element, which is the `UI` tab button.
 - **Defaults are merged shallowly per group**, so a key persisted under an older
   schema and later removed from the defaults survives in `localStorage`
-  indefinitely.
+  indefinitely. The **editor** group is the exception: it goes through the
+  schema, which validates and clamps as well as filling. Unknown keys still
+  survive the round-trip there — deliberately, so an older build opening a newer
+  build's config does not eat fields.
+- **The JSON view edits `localStorage`, not a file.** There is no
+  `~/.voidlink/settings.json`; import, export, sync and profiles do not exist.
+- **Per-language overrides are global, not per workspace.** `[rust]` means every
+  Rust buffer in every repo.
 - **The whole settings object is re-serialised on every keystroke** into a text
   field.
 - **Terminal settings apply live** to every open pane.

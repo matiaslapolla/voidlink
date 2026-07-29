@@ -61,7 +61,6 @@ export function loadMonaco(): Promise<typeof Monaco> {
 /// in Settings, which is why it is separate from the derived options rather
 /// than being defaults inside them.
 const EDITOR_CHROME = {
-  renderLineHighlight: "line",
   overviewRulerBorder: false,
   hideCursorInOverviewRuler: true,
   padding: { top: 8, bottom: 8 },
@@ -92,31 +91,94 @@ export function editorOptions(
     fontLigatures: s.fontLigatures,
     wordWrap: s.wordWrap,
     wordWrapColumn: s.wordWrapColumn,
+    wrappingIndent: s.wrappingIndent,
     minimap: { enabled: s.minimap },
     stickyScroll: { enabled: s.stickyScroll },
     bracketPairColorization: { enabled: s.bracketPairColorization },
     renderWhitespace: s.renderWhitespace,
-    guides: { indentation: s.indentGuides, highlightActiveIndentation: s.indentGuides },
+    renderFinalNewline: s.renderFinalNewline,
+    rulers: [...s.rulers],
+    guides: {
+      indentation: s.indentGuides,
+      highlightActiveIndentation: s.indentGuides,
+      bracketPairs: s.bracketPairGuides,
+    },
     lineNumbers: s.lineNumbers,
+    renderLineHighlight: s.renderLineHighlight,
+    folding: s.folding,
+    foldingStrategy: s.foldingStrategy,
+    showFoldingControls: s.showFoldingControls,
     cursorStyle: s.cursorStyle,
     cursorBlinking: s.cursorBlinking,
+    cursorSurroundingLines: s.cursorSurroundingLines,
+    multiCursorModifier: s.multiCursorModifier,
     smoothScrolling: s.smoothScrolling,
     scrollBeyondLastLine: s.scrollBeyondLastLine,
+    mouseWheelZoom: s.mouseWheelZoom,
+    scrollbar: {
+      verticalScrollbarSize: s.scrollbarVerticalSize,
+      horizontalScrollbarSize: s.scrollbarHorizontalSize,
+    },
+    suggestOnTriggerCharacters: s.suggestOnTriggerCharacters,
+    // Monaco's default is the object below, *not* the bare boolean: `true`
+    // would also suggest inside comments and string literals, which is a
+    // different editor. The setting is one switch over `other` alone.
+    quickSuggestions: {
+      other: s.quickSuggestions ? "on" : "off",
+      comments: "off",
+      strings: "off",
+    },
+    acceptSuggestionOnEnter: s.acceptSuggestionOnEnter,
+    snippetSuggestions: s.snippetSuggestions,
+    inlayHints: { enabled: s.inlayHints ? "on" : "off" },
+    parameterHints: { enabled: s.parameterHints },
+    occurrencesHighlight: s.occurrencesHighlight,
+    selectionHighlight: s.selectionHighlight,
+    unicodeHighlight: {
+      ambiguousCharacters: s.unicodeHighlight,
+      invisibleCharacters: s.unicodeHighlight,
+    },
+    autoClosingBrackets: s.autoClosingBrackets,
+    autoSurround: s.autoSurround,
+    linkedEditing: s.linkedEditing,
+    // `detectIndentation` is an `IGlobalEditorOptions` field, so it rides along
+    // here; making it apply to an *already open* model additionally needs the
+    // `model.detectIndentation` call in `applyModelSettings`.
+    detectIndentation: s.detectIndentation,
   };
 }
 
-/// The two settings Monaco keeps on the *model* rather than the editor. Applied
+/// The settings Monaco keeps on the *model* rather than the editor. Applied
 /// per model on creation and on every settings change; see the note in
 /// `editorOptions`.
 export function modelOptions(s: EditorSettings): Monaco.editor.ITextModelUpdateOptions {
-  return { tabSize: s.tabSize, insertSpaces: s.insertSpaces };
+  return {
+    tabSize: s.tabSize,
+    insertSpaces: s.insertSpaces,
+    trimAutoWhitespace: s.trimAutoWhitespace,
+  };
 }
 
-/// Monaco's built-in language id for a path's extension. Unknown extensions
-/// fall back to plaintext rather than guessing.
-export function inferLanguage(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  const map: Record<string, string> = {
+/// Push the model half of the settings into one live model.
+///
+/// The only thing here that `modelOptions` cannot express: `detectIndentation`
+/// is not a model *option*, it is a model *method*, and Monaco only calls it
+/// when a model is created. Calling it here is what makes the setting apply to
+/// the buffers already open instead of only to the next file you touch — the
+/// "a setting that only takes effect on reload is a bug" rule, kept honest.
+///
+/// Ordering matters: the explicit tab size goes in first as the fallback the
+/// detection starts from, then detection overwrites it when it finds evidence.
+export function applyModelSettings(model: Monaco.editor.ITextModel, s: EditorSettings) {
+  model.updateOptions(modelOptions(s));
+  if (s.detectIndentation) model.detectIndentation(s.insertSpaces, s.tabSize);
+}
+
+/// Extension → Monaco language id. Exported as a constant rather than kept
+/// inside `inferLanguage` because the per-language settings overrides need the
+/// *set of ids*, and deriving it from the same table is what stops the picker
+/// offering a language no buffer in this app can ever be in.
+const EXTENSION_LANGUAGES: Record<string, string> = {
     ts: "typescript", tsx: "typescript",
     js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
     json: "json", jsonc: "json",
@@ -144,6 +206,18 @@ export function inferLanguage(path: string): string {
     r: "r",
     lua: "lua",
     powershell: "powershell", ps1: "powershell",
-  };
-  return map[ext] ?? "plaintext";
+};
+
+/// Every language id a buffer in this app can be in, sorted, with `plaintext`
+/// first because it is the fallback rather than a choice.
+export const MONACO_LANGUAGE_IDS: readonly string[] = [
+  "plaintext",
+  ...[...new Set(Object.values(EXTENSION_LANGUAGES))].sort(),
+];
+
+/// Monaco's built-in language id for a path's extension. Unknown extensions
+/// fall back to plaintext rather than guessing.
+export function inferLanguage(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return EXTENSION_LANGUAGES[ext] ?? "plaintext";
 }

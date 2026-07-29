@@ -1,6 +1,7 @@
 import type * as Monaco from "monaco-editor";
 import { fsApi } from "@/api/fs";
-import { editorOptions, inferLanguage, loadMonaco, modelOptions } from "./monaco";
+import { applyModelSettings, editorOptions, inferLanguage, loadMonaco } from "./monaco";
+import { effectiveEditorSettings } from "@/store/settingsSchema";
 import { applyVoidlinkTheme, monacoThemeName } from "./monacoTheme";
 import { registerEditorActions } from "./editorActions";
 import { applySaveTransforms } from "./saveTransforms";
@@ -251,6 +252,9 @@ class EditorController {
     const model = path ? (this.models.get(path)?.model ?? null) : null;
     group.activePath = model ? path : null;
     group.editor.setModel(model);
+    // The incoming model may be in a different language from the outgoing one,
+    // and per-language overrides live on the editor as well as on the model.
+    this.applyGroupOptions(group);
     if (group.activePath) this.restoreViewState(group, group.activePath);
     requestAnimationFrame(() => group.editor.layout());
   }
@@ -320,10 +324,21 @@ class EditorController {
     const uri = this.monaco.Uri.file(path);
     const model = this.monaco.editor.createModel(content, inferLanguage(path), uri);
     // Indentation is a model option, so a freshly-created model does not
-    // inherit it from the editor it is about to be attached to.
-    model.updateOptions(modelOptions(this.settings));
+    // inherit it from the editor it is about to be attached to — and resolving
+    // it needs the model's language, which only exists once the model does.
+    this.applyModelOptions(model);
     const meta: EditorModel = { path, model, dirty: false, saving: false };
     this.models.set(path, meta);
+
+    // A model whose language changes has to re-resolve: `[rust]` overrides are
+    // keyed by language id, so a buffer relabelled from plaintext to rust must
+    // pick them up without being closed and reopened.
+    const languageSub = model.onDidChangeLanguage(() => {
+      this.applyModelOptions(model);
+      for (const g of this.groups.values()) {
+        if (g.editor.getModel() === model) this.applyGroupOptions(g);
+      }
+    });
 
     let dirtyTimer: ReturnType<typeof setTimeout> | null = null;
     const disposable = model.onDidChangeContent(() => {
@@ -338,7 +353,12 @@ class EditorController {
       // keystroke, not 100ms after it.
       this.scheduleAutoSave(path);
     });
-    this.disposeMap.set(path, disposable);
+    this.disposeMap.set(path, {
+      dispose: () => {
+        disposable.dispose();
+        languageSub.dispose();
+      },
+    });
     return meta;
   }
 
@@ -599,10 +619,28 @@ class EditorController {
   /// true: there is no second path by which options reach Monaco.
   applyEditorSettings(next: EditorSettings) {
     this.settings = next;
-    const eOpts = editorOptions(next);
-    for (const g of this.groups.values()) g.editor.updateOptions(eOpts);
-    const mOpts = modelOptions(next);
-    for (const meta of this.models.values()) meta.model.updateOptions(mOpts);
+    for (const g of this.groups.values()) this.applyGroupOptions(g);
+    for (const meta of this.models.values()) this.applyModelOptions(meta.model);
+  }
+
+  /// The editor half of the settings, resolved for whatever language the group
+  /// is currently showing.
+  ///
+  /// A group is a *view* onto a model, so its options follow the model: opening
+  /// a Rust file in a pane that was showing TypeScript has to re-resolve, which
+  /// is why `attach` calls this too and not only `applyEditorSettings`.
+  private applyGroupOptions(group: EditorGroup) {
+    const language = group.editor.getModel()?.getLanguageId() ?? null;
+    group.editor.updateOptions(
+      editorOptions(effectiveEditorSettings(this.settings, language)),
+    );
+  }
+
+  /// The model half, resolved for that model's own language. Every model in the
+  /// cache resolves independently — that is what makes `[rust] editor.tabSize`
+  /// leave the TypeScript buffer in the other pane alone.
+  private applyModelOptions(model: Monaco.editor.ITextModel) {
+    applyModelSettings(model, effectiveEditorSettings(this.settings, model.getLanguageId()));
   }
 
   // ── External changes ─────────────────────────────────────────────────────

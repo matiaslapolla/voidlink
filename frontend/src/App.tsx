@@ -1408,6 +1408,21 @@ export default function App() {
   const store = createAppStore();
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [snapshotsOpen, setSnapshotsOpen] = createSignal(false);
+  /// The palette's "Go to setting…" query. A signal rather than a one-shot
+  /// call so asking twice for the same setting still re-focuses the filter —
+  /// the wrapper object makes each request a distinct value even when the text
+  /// is identical.
+  const [gotoSetting, setGotoSetting] = createSignal<{ query: string } | null>(null);
+
+  const onGotoSetting = (e: Event) => {
+    const query = (e as CustomEvent<string>).detail;
+    if (typeof query !== "string") return;
+    setGotoSetting({ query });
+    setSettingsOpen(true);
+  };
+  window.addEventListener("voidlink:goto-setting", onGotoSetting);
+  onCleanup(() => window.removeEventListener("voidlink:goto-setting", onGotoSetting));
+
   return (
     <AppStoreContext.Provider value={store}>
       <AppInner
@@ -1415,7 +1430,14 @@ export default function App() {
         settingsOpen={settingsOpen()}
         onOpenSnapshots={() => setSnapshotsOpen(true)}
       />
-      <SettingsDialog open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+      <SettingsDialog
+        open={settingsOpen()}
+        onClose={() => {
+          setSettingsOpen(false);
+          setGotoSetting(null);
+        }}
+        gotoSetting={gotoSetting()?.query}
+      />
       <SnapshotManager open={snapshotsOpen()} onClose={() => setSnapshotsOpen(false)} />
     </AppStoreContext.Provider>
   );

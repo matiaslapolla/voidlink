@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { textPrompt } from "./prompt";
 
 /// A user-invokable action surfaced by the Cmd+K palette and (optionally)
 /// bound to a global keyboard shortcut. Actions are registered once at app
@@ -170,3 +171,31 @@ export function openTabSwitcher() {
 export function closeTabSwitcher() {
   setTabSwitcherOpen(false);
 }
+
+/// Deep link into one editor setting by name.
+///
+/// Registered here rather than in `App.tsx`'s catalog for the same reason
+/// "Open commit graph" is: it needs no store closure, only an event the shell
+/// picks up. The typed name becomes the settings pane's filter query, which is
+/// the same fuzzy search the pane's own box runs — so "font size", "fontSize"
+/// and "editor.fontSize" all land in the same place.
+registerActions([
+  {
+    id: "settings.goto",
+    label: "Go to setting…",
+    description: "Open Settings filtered to one editor setting by name or dotted id",
+    group: "App",
+    run: async () => {
+      const query = await textPrompt({
+        title: "Go to setting",
+        label: "Setting",
+        placeholder: "editor.fontSize, word wrap, relative…",
+        confirmLabel: "Go",
+      });
+      if (query === null) return;
+      window.dispatchEvent(
+        new CustomEvent("voidlink:goto-setting", { detail: query }),
+      );
+    },
+  },
+]);
