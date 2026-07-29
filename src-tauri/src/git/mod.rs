@@ -85,7 +85,9 @@ use stash::{
     git_stash_save_impl, git_stash_show_impl, StashEntry,
 };
 use status::{git_file_status_impl, git_log_impl};
-use tag::{git_create_tag_impl, git_delete_tag_impl, git_push_tag_impl};
+use tag::{
+    git_create_tag_impl, git_delete_remote_tag_impl, git_delete_tag_impl, git_push_tag_impl,
+};
 use push::git_push_impl;
 use worktree::{
     git_add_worktree_impl, git_list_worktrees_impl, git_remove_worktree_impl, WorktreeInfo,
@@ -649,9 +651,11 @@ pub async fn git_create_tag(
     name: String,
     target: Option<String>,
     message: Option<String>,
+    force: Option<bool>,
     state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
-    blocking_git!(state, repo_path, git_create_tag_impl(repo_path, name, target, message))
+    let f = force.unwrap_or(false);
+    blocking_git!(state, repo_path, git_create_tag_impl(repo_path, name, target, message, f))
 }
 
 #[tauri::command]
@@ -661,6 +665,18 @@ pub async fn git_delete_tag(
     state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
     blocking_git!(state, repo_path, git_delete_tag_impl(repo_path, name))
+}
+
+/// Delete a tag on the remote too. Local deletion alone leaves the published tag
+/// in place, which is the one everyone else fetches.
+#[tauri::command]
+pub async fn git_delete_remote_tag(
+    repo_path: String,
+    name: String,
+    remote: Option<String>,
+    state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(state, repo_path, git_delete_remote_tag_impl(repo_path, name, remote))
 }
 
 #[tauri::command]

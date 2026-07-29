@@ -65,12 +65,32 @@ export const gitApi = {
     return invoke<void>("git_rename_branch", { repoPath, oldName, newName, force: force ?? false });
   },
 
-  createTag(repoPath: string, name: string, target?: string, message?: string): Promise<void> {
-    return invoke<void>("git_create_tag", { repoPath, name, target, message });
+  /// `force` moves an existing tag of the same name. Without it a retag errors,
+  /// which is the right default — the UI asks before passing it.
+  createTag(
+    repoPath: string,
+    name: string,
+    target?: string,
+    message?: string,
+    force?: boolean,
+  ): Promise<void> {
+    return invoke<void>("git_create_tag", {
+      repoPath,
+      name,
+      target,
+      message,
+      force: force ?? false,
+    });
   },
 
   deleteTag(repoPath: string, name: string): Promise<void> {
     return invoke<void>("git_delete_tag", { repoPath, name });
+  },
+
+  /// Delete the tag on the remote as well. Deleting locally leaves the published
+  /// tag in place — the one everyone else fetches.
+  deleteRemoteTag(repoPath: string, name: string, remote?: string): Promise<void> {
+    return invoke<void>("git_delete_remote_tag", { repoPath, name, remote });
   },
 
   pushTag(repoPath: string, name: string, remote?: string): Promise<void> {

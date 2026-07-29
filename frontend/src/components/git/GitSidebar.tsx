@@ -729,6 +729,8 @@ export function ChangesPane(props: {
   const [pushOk, setPushOk] = createSignal(false);
   const [pushError, setPushError] = createSignal("");
   const [pendingFindings, setPendingFindings] = createSignal<SecretFinding[]>([]);
+  /// Findings the user explicitly chose to commit anyway, by key.
+  const [acknowledged, setAcknowledged] = createSignal<Set<string>>(new Set());
   const [amendMode, setAmendMode] = createSignal(false);
 
   /// True while *this* sidebar's repo is the one being drafted. We scope
@@ -951,7 +953,41 @@ export function ChangesPane(props: {
       }
     });
   }
+  /// A stable identity for a finding, so "I already reviewed this one" survives
+  /// the pause between the scan and the commit.
+  function findingKey(f: SecretFinding): string {
+    return `${f.file}:${f.line}:${f.rule}`;
+  }
+
+  /// Scan the staged diff and return the findings the user has not already
+  /// accepted. Called immediately before the commit itself — the previous flow
+  /// scanned, then awaited a dialog, then committed, and anything staged during
+  /// that window went out unscanned. "Commit anyway" re-scans too: it acknowledges
+  /// the findings it was shown, not everything that might appear later.
+  async function unacknowledgedFindings(): Promise<SecretFinding[] | null> {
+    try {
+      const diff = await gitApi.diffWorking(props.repoPath, true);
+      const acked = acknowledged();
+      return scanStagedDiff(diff).filter((f) => !acked.has(findingKey(f)));
+    } catch (e) {
+      // A scanner glitch must not block committing; say so rather than pretend
+      // the tree was clean.
+      pushToast(
+        `Secret scan skipped: ${e instanceof Error ? e.message : String(e)}`,
+        "warning",
+        5000,
+      );
+      return null;
+    }
+  }
+
   async function performCommit(msg: string) {
+    // Rescan against the index as it is *now*.
+    const findings = await unacknowledgedFindings();
+    if (findings && findings.length > 0) {
+      setPendingFindings(findings);
+      return;
+    }
     setCommitting(true);
     setCommitError("");
     setCommitOk(false);
@@ -1031,20 +1067,8 @@ export function ChangesPane(props: {
     // Amend can proceed with no staged files (message-only) and no message
     // (keeps the original); a normal commit needs both.
     if (!amendMode() && (!msg || staged().length === 0)) return;
-    // Secret scan on the staged diff before any commit goes out. A finding
-    // pauses the flow and lets the user inspect or commit-anyway.
-    try {
-      const diff = await gitApi.diffWorking(props.repoPath, true);
-      const findings = scanStagedDiff(diff);
-      if (findings.length > 0) {
-        setPendingFindings(findings);
-        return;
-      }
-    } catch (e) {
-      // If the diff fetch fails we don't want to block committing on a
-      // scanner glitch — log and continue.
-      console.warn("Pre-commit secret scan failed:", e);
-    }
+    // The scan lives inside `performCommit`, immediately before the commit, so
+    // there is no window between "looks clean" and "committed".
     await performCommit(msg);
   }
   async function draftAiCommit() {
@@ -1488,6 +1512,10 @@ export function ChangesPane(props: {
         findings={pendingFindings()}
         onCancel={() => setPendingFindings([])}
         onCommitAnyway={() => {
+          // Acknowledge exactly what was on screen. performCommit rescans, so a
+          // secret staged during the pause still stops the commit.
+          const shown = pendingFindings().map(findingKey);
+          setAcknowledged((prev) => new Set([...prev, ...shown]));
           setPendingFindings([]);
           void performCommit(commitMsg().trim());
         }}
@@ -2053,31 +2081,92 @@ export function TagsPane(props: { repoPath: string }) {
     if (!res) return;
     let message: string | undefined;
     if (res.toggles.annotated) {
-      message = (await textPrompt({
-        title: "Tag message",
-        label: `Annotation for ${res.value}`,
-        confirmLabel: "Create tag",
-      })) ?? undefined;
+      message =
+        (await textPrompt({
+          title: "Tag message",
+          label: `Annotation for ${res.value}`,
+          confirmLabel: "Create tag",
+        })) ?? undefined;
+      // Cancelling the message used to fall through and create a *lightweight*
+      // tag — a different kind of object than the one the user asked for, with no
+      // mention of the substitution. An annotated tag without an annotation is
+      // not a thing, so this is a cancel.
+      if (!message) {
+        pushToast("Tag not created — an annotated tag needs a message.", "info", 4000);
+        return;
+      }
     }
-    try {
-      await gitApi.createTag(props.repoPath, res.value, undefined, message);
-      pushToast(`Created tag ${res.value}`, "success", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await createTagOrOfferForce(res.value, undefined, message);
+  }
+
+  /// Create a tag, and when the name is taken, offer to move it.
+  ///
+  /// `force` was hardcoded false in Rust, so retagging a release always failed
+  /// with libgit2's "tag already exists" and the UI had no way to say "yes, move
+  /// it" short of deleting the tag first.
+  async function createTagOrOfferForce(name: string, target?: string, message?: string) {
+    await run(async () => {
+      try {
+        await gitApi.createTag(props.repoPath, name, target, message);
+        pushToast(`Created tag ${name}`, "success", 2500);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!/exists/i.test(msg)) {
+          pushToast(msg, "error", 6000);
+          return;
+        }
+        const move = await dialogConfirm(
+          `A tag named ${name} already exists. Move it to this commit?`,
+          { title: "Overwrite tag", kind: "warning" },
+        );
+        if (!move) return;
+        try {
+          await gitApi.createTag(props.repoPath, name, target, message, true);
+          pushToast(`Moved tag ${name}`, "success", 2500);
+        } catch (e2) {
+          pushToast(e2 instanceof Error ? e2.message : String(e2), "error", 6000);
+        }
+      } finally {
+        emitGitRefsChanged();
+      }
+    });
   }
 
   async function deleteTag(name: string) {
-    const ok = await dialogConfirm(`Delete tag ${name}?`, { title: "Delete tag", kind: "warning" });
+    const ok = await dialogConfirm(`Delete tag ${name} from this repository?`, {
+      title: "Delete tag",
+      kind: "warning",
+    });
     if (!ok) return;
-    try {
-      await gitApi.deleteTag(props.repoPath, name);
-      pushToast(`Deleted tag ${name}`, "info", 2500);
-      emitGitRefsChanged();
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    }
+    await run(async () => {
+      try {
+        await gitApi.deleteTag(props.repoPath, name);
+        pushToast(`Deleted tag ${name} locally`, "info", 2500);
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+        return;
+      } finally {
+        emitGitRefsChanged();
+      }
+
+      // The remote copy is the one everyone else fetches, and deleting locally
+      // said nothing about it — the next fetch would quietly bring it back.
+      const alsoRemote = await dialogConfirm(
+        `Also delete ${name} on origin? Anyone who has fetched it keeps their copy.`,
+        { title: "Delete remote tag", kind: "warning" },
+      );
+      if (!alsoRemote) return;
+      try {
+        await gitApi.deleteRemoteTag(props.repoPath, name);
+        pushToast(`Deleted tag ${name} on origin`, "info", 2500);
+      } catch (e) {
+        pushToast(
+          `Deleted locally, but origin still has ${name}: ${e instanceof Error ? e.message : String(e)}`,
+          "error",
+          7000,
+        );
+      }
+    });
   }
 
   async function pushTag(name: string) {
@@ -2661,7 +2750,22 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
         await gitApi.createTag(props.repoPath, name, c.oid);
         pushToast(`Created tag ${name}`, "success", 2500);
       } catch (e) {
-        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!/exists/i.test(msg)) {
+          pushToast(msg, "error", 6000);
+          return;
+        }
+        const move = await dialogConfirm(
+          `A tag named ${name} already exists. Move it to ${c.oid.slice(0, 7)}?`,
+          { title: "Overwrite tag", kind: "warning" },
+        );
+        if (!move) return;
+        try {
+          await gitApi.createTag(props.repoPath, name, c.oid, undefined, true);
+          pushToast(`Moved tag ${name}`, "success", 2500);
+        } catch (e2) {
+          pushToast(e2 instanceof Error ? e2.message : String(e2), "error", 6000);
+        }
       } finally {
         emitGitRefsChanged();
       }

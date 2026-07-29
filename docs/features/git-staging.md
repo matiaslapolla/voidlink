@@ -8,6 +8,11 @@ the diff view — the equivalent of `git add -p` and `git checkout -p`.
 
 All of it runs on libgit2. Nothing here shells out to a `git` binary.
 
+Every command serializes per repository: one mutex keyed by the shared git dir,
+held for the whole command, plus retry-with-backoff when an external `git`
+process holds `index.lock`. A click that fans out into a dozen reads no longer
+interleaves them inside libgit2's read-modify-write of the index.
+
 ## When you'd use it
 
 The default loop: review what changed, stage the parts you want, write a
@@ -25,7 +30,10 @@ message, commit.
 - In the **Staged** list, `-` unstages.
 
 Staging a *deleted* file works because the backend checks whether the path
-exists on disk: present → `index.add_path`, absent → `index.remove_path`.
+exists on disk: present → `index.add_path`, absent → `index.update_all`, which
+re-reads the working tree rather than trusting an earlier answer (the old
+`remove_path` raced the status read, so a file recreated in between was staged as
+deleted).
 
 ### Hunk-level
 
@@ -55,6 +63,9 @@ previous commit's **summary line**.
 `Undo commit` does a soft reset to `HEAD~1`, keeping the changes staged. It
 confirms first:
 `Undo the last commit? Its changes are kept and re-staged (soft reset to HEAD~1).`
+It refuses when HEAD is a **merge** commit: resetting to the first parent throws
+away the other side's history while keeping its content staged, which is not what
+"undo" means. Use a reset to a specific commit, or revert the merge.
 
 ### Commit author
 
@@ -94,8 +105,11 @@ commit should not reattribute it.
 
 ### Discarding everything
 
-The trash icon on the **Changes** header confirms with
-`Discard ALL changes in the working tree? Tracked files revert to HEAD. This cannot be undone.`
+The trash icon on the **Changes** header (shown whenever anything has changed,
+including an untracked-only tree) asks up to two questions: first about tracked
+files — staged *and* unstaged edits revert to HEAD — then, separately, whether to
+delete untracked files from disk. Declining both does nothing; it does not report
+a discard that did not happen.
 
 ### Stashing
 
@@ -121,7 +135,7 @@ the filter box) and:
 | `↑` `↓` `PageUp` `PageDown` `Home` `End` | Move the cursor. The conflicts / staged / unstaged boundaries are invisible: the three lists are one surface. |
 | `Space` | Stage an unstaged row, unstage a staged one, open a conflicted one |
 | `Enter` | Open the row's diff (or the merge editor) |
-| `Backspace` `Delete` | Discard the row — still behind its confirmation |
+| `Backspace` `Delete` | Discard an **unstaged** row — still behind its confirmation. Does nothing on a staged or conflicted row, matching the mouse UI, which offers no discard there. |
 | `Esc` (in the filter box) | Clear the filter |
 
 ## The changed-file list
@@ -154,20 +168,14 @@ the filter box) and:
 
 ## Gotchas and limits
 
-- **The commit path does not create merge commits.** `git_commit` builds its
-  parent list from `HEAD` alone and never reads `MERGE_HEAD`. The operation
-  banner tells you `Commit to finish.` during a merge, but committing that way
-  produces a single-parent commit and leaves `MERGE_HEAD` in place. Finish
-  merges from a terminal.
 - **A file that is both staged and modified in the working tree appears once,
   as staged.** The status walk checks index state before worktree state and
   returns one bucket per file.
 - **Ignored files are never listed.**
-- **`Discard all` never deletes untracked files**, even though the backend
-  supports it — the UI hard-codes `includeUntracked: false`. Untracked files
-  must be deleted individually.
-- **Per-file deletion failures during discard-all are swallowed**, and only
-  files are removed — an untracked *directory* survives.
+- **Discard-all asks about untracked files separately.** Tracked files (staged
+  *and* unstaged) revert to HEAD; untracked files are a second, explicit
+  confirmation, and declining both does nothing rather than reporting success.
+  Deletion failures are reported, not swallowed.
 - **Renames are downgraded to modifications for hunk staging.** Both sides of
   the generated patch use the new path; you can't stage half a rename, and the
   rename itself stays unstaged.
@@ -193,3 +201,56 @@ the filter box) and:
   then submitting the prefilled text **drops the body**.
 - **Amend can run with nothing staged and an empty message.** That is
   deliberate — it is how you fix only a message.
+
+## Manual QA checklist
+
+Every item below is a regression that shipped once. None of them is covered by
+an automated test end-to-end, because each needs a real repository in a state a
+unit test cannot cheaply fake.
+
+**Finishing a conflicted merge.** Merge a branch that conflicts, resolve the
+files in the merge editor, then press Commit in the sidebar.
+- The operation banner disappears after the commit. (It used to stay forever.)
+- `git log --format=%p -1` shows **two** parents.
+- `.git/MERGE_HEAD` and `.git/MERGE_MSG` are gone.
+- Committing *before* resolving is refused with a message naming conflicts, not
+  a corrupt commit.
+
+**Stash apply after the list shifted.** Stash something, then stash something
+else (or switch branches so the auto-stash pushes onto the stack), then apply the
+first stash from the row it originally occupied.
+- The right stash is applied, or you get "the stash list changed" — never the
+  wrong one silently.
+- Drop behaves the same way. This one is irreversible, so check it.
+
+**A fresh `git init` repository renders.** Open a directory with a repo that has
+no commits.
+- The sidebar renders; no white panel.
+- The header shows the branch git intends (`main`), no ahead/behind.
+- History is empty rather than an error; the ref picker opens.
+- Pull is disabled and says why.
+
+**A rejected push shows red.** Push a branch whose remote has moved on (or
+force-push someone else's commit onto it from a clone, then push).
+- The push button does **not** turn green.
+- The error appears in its own line, labelled as a push failure, and does not
+  overwrite a commit error already on screen.
+- After a *successful* first push of a new branch, ahead/behind starts working
+  (an upstream was set).
+
+**Staging updates the detached git window.** Open the git window
+(`Open git window`), then stage a file in the workbench sidebar.
+- The git window's Changes list updates without being touched.
+- Same for unstage, stage-all, commit, checkout, tag push and the Remotes
+  dialog's four actions.
+
+**Mid-operation guards.** Start a rebase that stops on a conflict.
+- Branch checkout / rename / delete / create are disabled and say why.
+- The merge and rebase context-menu entries are replaced by the reason.
+- Committing is refused with a message pointing at the banner's Continue.
+- A hard reset is allowed, and afterwards the banner is gone.
+
+**Keyboard discard.** Focus a **staged** row and press Backspace, then Delete.
+- Nothing is discarded. (The mouse UI offers no discard on a staged row, so the
+  keyboard must not either.)
+- On an unstaged row both keys still confirm and discard.
