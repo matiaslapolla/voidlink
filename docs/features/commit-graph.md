@@ -79,23 +79,28 @@ bottom columns match, otherwise a cubic S-curve. Five lane colours cycling
 
 ## Gotchas and limits
 
-- **The graph tab does not survive a reload.** There is no persistence key for
-  it, and `Mod+Shift+T` cannot reopen it — closing it doesn't push to the
-  closed-tab history.
 - **`Load more` resets to 200 on any remount**, because the limit is component
-  state.
-- **`Load more` is shown only when the returned count exactly equals the
-  limit.** A repo whose total commit count happens to be a multiple of 200 shows
-  a button that then loads nothing.
-- **Ref chips can't tell a branch from a tag.** The remote-versus-local styling
-  is inferred purely from whether the name contains `/`, so a local branch named
-  `feature/x` renders with the cloud icon and remote styling. Tags look
-  identical to branches. The code documents this as a known gap that would need
-  a richer backend payload.
-- **A lane whose target commit falls outside the fetched window runs off the
-  bottom** unterminated. That is the intended railroad look, but it does mean
-  the bottom of the graph is not a complete picture.
-- **Clicking a root commit produces an error** — it opens `<oid>^ .. <oid>`, and
-  `<oid>^` doesn't resolve.
+  state, and it refetches the whole window rather than appending. The refetch is
+  correct — libgit2's topological order is a function of the ref set, not of the
+  limit, so the first 200 oids are a stable prefix of the first 400 — but it is
+  redundant work. It no longer costs you your scroll position.
+- **The seeded ref set is wide**: HEAD, local and remote branches, tags,
+  stashes, notes, `ORIG_HEAD`/`MERGE_HEAD`/`REBASE_HEAD`/`CHERRY_PICK_HEAD`, and
+  every other linked worktree's HEAD. A commit reachable only through a tag —
+  `v1` on a branch since deleted — is in the graph, with its chip.
+- **Rows are ordered and timestamped by committer time.** Author time is also
+  carried but not displayed; showing it beside a committer-time ordering made a
+  rebased history read newest-first with timestamps that went up and down.
+- **A lane whose target commit falls outside the fetched window** is drawn to
+  the bottom edge as a faded dashed stub, and the header says "more history
+  below". Nothing is silently cut off.
+- **The first parent does not always keep the mainline vertical.** When an
+  earlier child already claimed the lane heading to that parent, this dot bends
+  into it diagonally instead. Two children of one parent cannot both keep their
+  column, and the one that got there first owns it.
+- **The gutter is capped at 180 px.** Beyond ~10 concurrent lanes the columns
+  overlap rather than squeezing the commit summary to nothing.
+- **No virtualization.** At a limit of 5000 that is ~5000 rows and 15–25k SVG
+  paths, plus a full topological walk holding the per-repo lock.
 - **Long ref names truncate** at 120 px.
 - Commits with an empty message render as italic `(no message)`.

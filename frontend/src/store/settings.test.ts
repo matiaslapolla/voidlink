@@ -59,6 +59,72 @@ describe("parseSettings", () => {
   });
 });
 
+describe("agent roster migration", () => {
+  it("builds a one-entry roster from the single agentCommand", () => {
+    // Exactly what is on disk for an install that configured the pre-roster
+    // agent: an `ai` section with a command and no `agents` key.
+    const legacy = JSON.stringify({ ai: { commitCommand: "cc", agentCommand: "  llm run  " } });
+    const parsed = parseSettings(legacy);
+
+    expect(parsed.ai.agents).toEqual([
+      { id: "default", name: "Repo agent", commandTemplate: "llm run" },
+    ]);
+    // The fallback field survives the migration — it is what a roster entry
+    // with a blank template resolves through.
+    expect(parsed.ai.agentCommand).toBe("  llm run  ");
+  });
+
+  it("synthesizes a blank entry when no agent was ever configured", () => {
+    const parsed = parseSettings(JSON.stringify({ ai: { commitCommand: "cc" } }));
+    expect(parsed.ai.agents).toEqual([
+      { id: "default", name: "Repo agent", commandTemplate: "" },
+    ]);
+  });
+
+  it("keeps a persisted roster verbatim", () => {
+    const saved = JSON.stringify({
+      ai: { agentCommand: "shared", agents: [{ id: "a", name: "Reviewer", commandTemplate: "x" }] },
+    });
+    expect(parseSettings(saved).ai.agents).toEqual([
+      { id: "a", name: "Reviewer", commandTemplate: "x" },
+    ]);
+  });
+
+  it("drops malformed rows instead of throwing, and dedupes ids keeping the first", () => {
+    const saved = JSON.stringify({
+      ai: {
+        agents: [
+          { id: "a", name: "Good", commandTemplate: "x" },
+          { id: "a", name: "Shadow", commandTemplate: "y" },
+          { id: "", name: "No id", commandTemplate: "z" },
+          { id: "n", name: 7, commandTemplate: "z" },
+          { id: "t", name: "No template" },
+          "nonsense",
+          null,
+        ],
+      },
+    });
+    expect(parseSettings(saved).ai.agents).toEqual([
+      { id: "a", name: "Good", commandTemplate: "x" },
+    ]);
+  });
+
+  it("falls back to the synthesized entry when every persisted row is malformed", () => {
+    const saved = JSON.stringify({ ai: { agentCommand: "llm", agents: [{ nope: true }] } });
+    expect(parseSettings(saved).ai.agents).toEqual([
+      { id: "default", name: "Repo agent", commandTemplate: "llm" },
+    ]);
+    // …and for a roster that is not an array at all.
+    expect(parseSettings(JSON.stringify({ ai: { agents: {} } })).ai.agents).toHaveLength(1);
+  });
+
+  it("never hands the store a reference to the defaults array", () => {
+    const parsed = parseSettings(null);
+    expect(parsed.ai.agents).not.toBe(DEFAULT_SETTINGS.ai.agents);
+    expect(parsed.ai.agents).toEqual(DEFAULT_SETTINGS.ai.agents);
+  });
+});
+
 describe("editor defaults", () => {
   it("reproduce the hardcoded options the editor shipped with", () => {
     // The upgrade contract: turning `SHARED_EDITOR_OPTIONS` into a derivation

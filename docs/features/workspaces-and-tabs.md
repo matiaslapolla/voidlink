@@ -27,6 +27,15 @@ double-click), a repo root when the folder is a git repository, and a list of
 worktrees. Workspaces persist across restarts; there is no limit on how many
 you keep open, and `Mod+1` … `Mod+9` jump to the first nine.
 
+Every workspace's header row in the rail carries three actions, hidden until you
+hover it: **open folder** (the folder icon), **new worktree** (`+`) and **close
+workspace** (`×`). Open folder is the way a workspace acquires — or changes — its
+root, and it works on any workspace in the rail without making it active first:
+cancel the dialog and nothing moves, complete it and that workspace becomes the
+active one so you land in front of what you just opened. The files sidebar's
+header runs the same pick for the *active* workspace, so a subdirectory pick
+resolves to the same repository root from either entry point.
+
 A workspace that is not a git repository still opens — you just get no
 worktrees, no git sidebar content, and an empty state saying so.
 

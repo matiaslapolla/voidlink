@@ -4,6 +4,7 @@ import {
   flattenChanges,
   moveFocus,
   reconcileFocus,
+  rowKey,
   rowsIn,
   type ChangeEntry,
 } from "./changesNav";
@@ -72,8 +73,8 @@ describe("moveFocus", () => {
   const rows = flattenChanges(entries);
 
   it("starts at the top on the way down and at the bottom on the way up", () => {
-    expect(moveFocus(rows, null, 1)).toBe(rows[0].entry.path);
-    expect(moveFocus(rows, null, -1)).toBe(rows[rows.length - 1].entry.path);
+    expect(moveFocus(rows, null, 1)).toBe(rows[0].key);
+    expect(moveFocus(rows, null, -1)).toBe(rows[rows.length - 1].key);
   });
 
   /// The three lists are one keyboard surface — the boundary between staged
@@ -81,13 +82,13 @@ describe("moveFocus", () => {
   it("crosses section boundaries without stopping", () => {
     const staged = rows[1];
     expect(staged.section).toBe("staged");
-    const next = moveFocus(rows, staged.entry.path, 1);
-    expect(rows.find((r) => r.entry.path === next)?.section).toBe("unstaged");
+    const next = moveFocus(rows, staged.key, 1);
+    expect(rows.find((r) => r.key === next)?.section).toBe("unstaged");
   });
 
   it("clamps rather than wrapping", () => {
-    const first = rows[0].entry.path;
-    const last = rows[rows.length - 1].entry.path;
+    const first = rows[0].key;
+    const last = rows[rows.length - 1].key;
     expect(moveFocus(rows, first, -1)).toBe(first);
     expect(moveFocus(rows, last, 1)).toBe(last);
     expect(moveFocus(rows, first, 999)).toBe(last);
@@ -95,11 +96,48 @@ describe("moveFocus", () => {
 
   it("has nothing to focus in an empty list", () => {
     expect(moveFocus([], null, 1)).toBeNull();
-    expect(moveFocus([], "src/api/git.ts", 1)).toBeNull();
+    expect(moveFocus([], rowKey("conflicted", "src/api/git.ts"), 1)).toBeNull();
   });
 
-  it("starts from the top when the current path is gone", () => {
-    expect(moveFocus(rows, "deleted.txt", 1)).toBe(rows[0].entry.path);
+  it("starts from the top when the current row is gone", () => {
+    expect(moveFocus(rows, rowKey("unstaged", "deleted.txt"), 1)).toBe(rows[0].key);
+  });
+});
+
+/// A file that was staged and then edited again is two rows with one path, and
+/// they do opposite things: `Space` unstages the first and stages the second.
+/// Every one of these failed while the cursor was a path — each lookup found
+/// the staged row, so the unstaged row could not be focused, acted on, or
+/// distinguished on screen.
+describe("a path in both sections", () => {
+  const bothSides: ChangeEntry[] = [
+    { path: "a.txt", status: "modified", staged: true },
+    { path: "a.txt", status: "modified", staged: false },
+  ];
+  const rows = flattenChanges(bothSides);
+
+  it("is two rows, one per section", () => {
+    expect(rows.map((r) => r.section)).toEqual(["staged", "unstaged"]);
+  });
+
+  it("gives them distinct keys", () => {
+    expect(rows[0].key).not.toBe(rows[1].key);
+  });
+
+  it("moves the cursor between them rather than sticking", () => {
+    expect(moveFocus(rows, rows[0].key, 1)).toBe(rows[1].key);
+    expect(moveFocus(rows, rows[1].key, -1)).toBe(rows[0].key);
+  });
+
+  it("keeps the cursor on the side it was on across a refresh", () => {
+    expect(reconcileFocus(rows, rows[1].key, 0)).toBe(rows[1].key);
+  });
+
+  /// Staging the rest of the file collapses it to one row. The cursor cannot
+  /// stay where it was, and landing on the surviving row beats vanishing.
+  it("falls back by index when its side disappears", () => {
+    const stagedOnly = flattenChanges([bothSides[0]]);
+    expect(reconcileFocus(stagedOnly, rows[1].key, 1)).toBe(stagedOnly[0].key);
   });
 });
 
@@ -107,22 +145,24 @@ describe("reconcileFocus", () => {
   const rows = flattenChanges(entries);
 
   it("keeps the cursor when the row survived", () => {
-    expect(reconcileFocus(rows, "README.md", 0)).toBe("README.md");
+    const readme = rowKey("unstaged", "README.md");
+    expect(reconcileFocus(rows, readme, 0)).toBe(readme);
   });
 
   /// Staging a file moves it between sections; filtering can remove it. The
   /// cursor lands near where it was so the user can keep pressing the key.
   it("falls back to the same index when the row is gone", () => {
-    expect(reconcileFocus(rows, "gone.txt", 2)).toBe(rows[2].entry.path);
+    expect(reconcileFocus(rows, rowKey("unstaged", "gone.txt"), 2)).toBe(rows[2].key);
   });
 
   it("clamps the fallback index to the list", () => {
-    expect(reconcileFocus(rows, "gone.txt", 99)).toBe(rows[rows.length - 1].entry.path);
-    expect(reconcileFocus(rows, "gone.txt", -5)).toBe(rows[0].entry.path);
+    const gone = rowKey("unstaged", "gone.txt");
+    expect(reconcileFocus(rows, gone, 99)).toBe(rows[rows.length - 1].key);
+    expect(reconcileFocus(rows, gone, -5)).toBe(rows[0].key);
   });
 
   it("gives up on an empty list", () => {
-    expect(reconcileFocus([], "README.md", 0)).toBeNull();
+    expect(reconcileFocus([], rowKey("unstaged", "README.md"), 0)).toBeNull();
   });
 });
 

@@ -135,6 +135,20 @@ function WorktreeRow(props: { row: Row; current: boolean; highlighted: boolean }
             ↓{wt().behind}
           </span>
         </Show>
+        <Show when={wt().statusUnknown}>
+          <span
+            class="text-muted-foreground/70"
+            title="Could not read this worktree's status — it may be missing or unreachable"
+            aria-label="status unknown"
+          >
+            ?
+          </span>
+        </Show>
+        <Show when={wt().isPrunable}>
+          <span class="text-destructive" title="This worktree's directory is gone">
+            missing
+          </span>
+        </Show>
         <Show when={wt().isLocked}>
           <Lock class="w-3 h-3 text-muted-foreground" aria-label="locked" />
         </Show>

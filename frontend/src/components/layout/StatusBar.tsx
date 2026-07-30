@@ -1,3 +1,4 @@
+import { onGitRefsChanged } from "@/commands/gitEvents";
 /// The bottom bar: "what is the state of my repo, and of the panes I can't
 /// see, right now".
 ///
@@ -142,9 +143,9 @@ export function StatusBar() {
   /// refetch cadence as the git sidebar.
   const [tick, setTick] = createSignal(0);
   onMount(() => {
-    const onRefresh = () => setTick((t) => t + 1);
-    window.addEventListener("voidlink:refresh-git", onRefresh);
-    onCleanup(() => window.removeEventListener("voidlink:refresh-git", onRefresh));
+    // Through the shared helper, not a raw listener: raw listeners see every
+    // un-coalesced dispatch and cannot read the pulse's `remote` flag.
+    onCleanup(onGitRefsChanged(() => setTick((t) => t + 1)));
   });
 
   const [info] = createResource(

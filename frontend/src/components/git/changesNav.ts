@@ -28,6 +28,15 @@ export type ChangeSection = "conflicted" | "staged" | "unstaged";
 export interface ChangeRow {
   entry: ChangeEntry;
   section: ChangeSection;
+  /// Identity of the *row*, not of the file.
+  ///
+  /// A path is no longer unique in this list: a file that is staged and then
+  /// edited again appears once under Staged and once under Changes, and the two
+  /// rows do opposite things — `Space` unstages the first and stages the
+  /// second. Keying the cursor by path alone meant every lookup found the
+  /// staged row, so pressing `Space` on the unstaged row unstaged the other
+  /// one, and both rows drew the focus ring at once.
+  key: string;
   /// Which characters of `entry.path` matched the filter, for the
   /// `bg-primary/15` highlight the palette and file finder already use. Empty
   /// when there is no filter.
@@ -41,6 +50,14 @@ const SECTION_ORDER: ChangeSection[] = ["conflicted", "staged", "unstaged"];
 function sectionOf(entry: ChangeEntry): ChangeSection {
   if (entry.status === "conflicted") return "conflicted";
   return entry.staged ? "staged" : "unstaged";
+}
+
+/// The row's stable identity: its section plus its path.
+///
+/// A NUL escape as the separator because it is the one byte a path cannot
+/// contain, so no filename can forge another row's key.
+export function rowKey(section: ChangeSection, path: string): string {
+  return `${section}\u0000${path}`;
 }
 
 /// The whole list, filtered and flattened into the exact order it renders in.
@@ -57,7 +74,7 @@ export function flattenChanges(entries: readonly ChangeEntry[], filter = ""): Ch
       if (sectionOf(entry) !== section) continue;
       const match = fuzzyMatch(entry.path, filter, { pathAware: true });
       if (!match) continue;
-      rows.push({ entry, section, ranges: match.ranges });
+      rows.push({ entry, section, key: rowKey(section, entry.path), ranges: match.ranges });
     }
   }
   return rows;
@@ -76,18 +93,19 @@ export function rowsIn(rows: readonly ChangeRow[], section: ChangeSection): Chan
 /// Crossing a section boundary is invisible on purpose — the three lists are
 /// one keyboard surface.
 ///
-/// Returns the path to focus, or `null` when there is nothing to focus.
+/// Takes and returns a `ChangeRow.key`, not a path — see `rowKey`. Returns
+/// `null` when there is nothing to focus.
 export function moveFocus(
   rows: readonly ChangeRow[],
-  currentPath: string | null,
+  currentKey: string | null,
   delta: number,
 ): string | null {
   if (rows.length === 0) return null;
-  const current = rows.findIndex((r) => r.entry.path === currentPath);
+  const current = rows.findIndex((r) => r.key === currentKey);
   // No cursor yet: `ArrowDown` starts at the top, `ArrowUp` at the bottom.
-  if (current === -1) return delta > 0 ? rows[0].entry.path : rows[rows.length - 1].entry.path;
+  if (current === -1) return delta > 0 ? rows[0].key : rows[rows.length - 1].key;
   const next = Math.min(rows.length - 1, Math.max(0, current + delta));
-  return rows[next].entry.path;
+  return rows[next].key;
 }
 
 /// Keep the cursor on something real after a refresh. Staging a file moves it
@@ -96,13 +114,13 @@ export function moveFocus(
 /// keep pressing the same key.
 export function reconcileFocus(
   rows: readonly ChangeRow[],
-  currentPath: string | null,
+  currentKey: string | null,
   previousIndex: number,
 ): string | null {
   if (rows.length === 0) return null;
-  if (currentPath && rows.some((r) => r.entry.path === currentPath)) return currentPath;
+  if (currentKey && rows.some((r) => r.key === currentKey)) return currentKey;
   const idx = Math.min(rows.length - 1, Math.max(0, previousIndex));
-  return rows[idx].entry.path;
+  return rows[idx].key;
 }
 
 /// What a key does to the focused row. Returned rather than performed, so the

@@ -51,6 +51,14 @@ export interface WorktreeInfo {
   /** The dirty flag could not be read (directory gone, status failed/timed out).
    * `isDirty: false` must not be read as "clean" when this is true. */
   statusUnknown: boolean;
+  /** Git would remove this entry on `git worktree prune` — almost always
+   * because its directory no longer exists, so it cannot be opened. */
+  isPrunable: boolean;
+  /** Why git calls it prunable, when it says. */
+  prunableReason: string | null;
+  /** A bare repository entry: no working tree, so it can never be opened,
+   * removed, or dirty. */
+  isBare: boolean;
 }
 
 export interface GitBranchInfo {
@@ -101,11 +109,31 @@ export interface DiffHunk {
 export interface FileDiff {
   oldPath: string | null;
   newPath: string | null;
-  status: "added" | "deleted" | "modified" | "renamed" | "copied";
+  /// Mirrors the `Delta` arms `collect_diff` maps in `src-tauri/src/git/diff.rs`.
+  ///
+  /// The narrow five-arm version was a lie the shared `StatusBadge` was typed
+  /// against: it branches on `untracked`, `typechange` and `conflicted` too,
+  /// and `git_file_status` emits them.
+  status:
+    | "added"
+    | "deleted"
+    | "modified"
+    | "renamed"
+    | "copied"
+    | "untracked"
+    | "typechange"
+    | "conflicted";
   hunks: DiffHunk[];
   isBinary: boolean;
   additions: number;
   deletions: number;
+  /// Blob oid of the old side — the content this diff was computed against.
+  /// `null` for an added or untracked file.
+  ///
+  /// Round-tripped back to Rust with a hunk patch so it can refuse when the
+  /// file has moved since the diff was drawn. Never read by the UI; it exists
+  /// so hunk-level staging cannot apply a patch to content nobody looked at.
+  oldBlobOid: string | null;
 }
 
 export interface DiffResult {

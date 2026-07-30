@@ -5,6 +5,7 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
+mod agent;
 mod browser;
 mod git;
 mod fs;
@@ -12,6 +13,7 @@ mod lsp;
 mod brain;
 mod menu;
 mod secrets;
+mod watch;
 mod window;
 
 // ─── PTY session store ────────────────────────────────────────────────────────
@@ -490,15 +492,170 @@ async fn close_pty(
 /// primitives here; the naming heuristics on top of them are shared.
 #[cfg(unix)]
 pub(crate) mod proc_info {
-    /// Display name for `pid`: the executable's basename, refined through
-    /// argv when that executable is a language runtime. `node` alone tells the
+    /// Display name for `pid`: the executable's basename, refined through argv
+    /// when that basename is not the interesting fact. `node` alone tells the
     /// user nothing — `claude-code` or `vite` is the thing they launched.
+    ///
+    /// Three refinements, each answering a different way the exec path lies:
+    ///
+    /// 1. **The path names a release, not a program.** Version-pinned
+    ///    installers exec a file named after the version and point a stable
+    ///    `bin/` symlink at it; both platforms' exec-path primitives resolve
+    ///    that symlink. This is what put `2.1.220` on a Claude Code tab.
+    /// 2. **The binary is a language runtime.** The script it was handed is the
+    ///    answer.
+    /// 3. **The runtime is a shell with `-c`.** Then there is no script at all,
+    ///    only a command line, and its first word is the answer.
     pub fn name(pid: u32) -> Option<String> {
-        let exe = exe_name(pid)?;
+        let path = exe_path(pid);
+        let exe = path
+            .as_deref()
+            .and_then(basename)
+            .or_else(|| comm_name(pid))?;
+        // One `sysctl` / one `/proc` read, shared by every rule below.
+        let args = argv(pid);
+
+        if is_release_tag(&exe) {
+            // What the user invoked is the best answer available, and unlike the
+            // exec path it still has the symlink's name in it.
+            if let Some(name) = args.as_deref().and_then(argv0_name) {
+                return Some(name);
+            }
+            // argv is unreadable or version-shaped too (Claude Code's own
+            // helpers re-exec with argv[0] set to the release path). Fall back
+            // to the package directory the release sits in.
+            if let Some(name) = path.as_deref().and_then(package_dir_name) {
+                return Some(name);
+            }
+        }
+
         if !is_runtime(&exe) {
             return Some(exe);
         }
-        Some(argv(pid).and_then(|a| script_name(&a)).unwrap_or(exe))
+        let Some(args) = args else { return Some(exe) };
+        if is_shell(&exe) {
+            if let Some(name) = shell_command_name(&args) {
+                return Some(name);
+            }
+        }
+        Some(script_name(&args).unwrap_or(exe))
+    }
+
+    /// The widest name worth showing. A tab title is about twenty characters of
+    /// visible space; anything past this is a command line that has escaped
+    /// into the UI rather than a program with a long name.
+    const MAX_NAME_LEN: usize = 32;
+
+    /// Gate every candidate name through one definition of "this is a program
+    /// name". Without it, a single argv entry holding a whole shell command
+    /// (`source /…/snapshot.sh && eval 'docker compose up'`) became the tab
+    /// label verbatim, because nothing downstream had an opinion about length or
+    /// about shell punctuation.
+    fn plausible_name(word: &str) -> Option<String> {
+        let word = word.trim();
+        if word.is_empty() || word.len() > MAX_NAME_LEN {
+            return None;
+        }
+        let junk = |c: char| c.is_whitespace() || "|&;<>()$`'\"*?[]{}!\\=".contains(c);
+        if word.chars().any(junk) {
+            return None;
+        }
+        Some(word.to_string())
+    }
+
+    /// Basenames that name a *release* rather than a program: `2.1.220`, `v18`,
+    /// `1.2.3-rc1`.
+    ///
+    /// Deliberately strict — leading optional `v`, then digits and dots only up
+    /// to the first `-`/`+`/`_` — so real names that merely start with a digit
+    /// (`7z`, `2to3`) are not swept up. `vim` survives because stripping the `v`
+    /// leaves `im`, which does not start with a digit.
+    fn is_release_tag(name: &str) -> bool {
+        let core = name.strip_prefix('v').unwrap_or(name);
+        let head = core.split(['-', '+', '_']).next().unwrap_or(core);
+        !head.is_empty()
+            && head.starts_with(|c: char| c.is_ascii_digit())
+            && head.chars().all(|c| c.is_ascii_digit() || c == '.')
+    }
+
+    /// The name a program was invoked as: `argv[0]`, reduced to a basename.
+    ///
+    /// Trusted over the exec path only when that path has thrown the name away,
+    /// because argv[0] is under the caller's control and is routinely something
+    /// other than a path — login shells exec as `-zsh`, and Claude Code's
+    /// background helpers set it to `claude bg-pty-host`. Both are handled: the
+    /// login dash goes, and only the first word is kept.
+    fn argv0_name(argv: &[String]) -> Option<String> {
+        let raw = argv.first()?.trim();
+        let raw = raw.strip_prefix('-').unwrap_or(raw);
+        let base = raw.rsplit('/').next()?.split_whitespace().next()?;
+        if is_release_tag(base) {
+            return None;
+        }
+        plausible_name(base)
+    }
+
+    /// Directories a version-pinned installer keeps its releases in.
+    fn is_version_container(seg: &str) -> bool {
+        matches!(
+            seg,
+            "versions" | "version" | "releases" | "installs" | "pkgs" | "toolchains"
+        )
+    }
+
+    /// The program a version-pinned release belongs to, read off its path:
+    /// `~/.local/share/claude/versions/2.1.220` → `claude`.
+    ///
+    /// Gated on the release file sitting *directly inside* a version container,
+    /// which is what makes the climb meaningful. Without that gate a
+    /// version-shaped binary anywhere else — `/usr/local/bin/v8` — would climb
+    /// into the filesystem layout and report `local`.
+    fn package_dir_name(path: &str) -> Option<String> {
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let container = segments.get(segments.len().checked_sub(2)?)?;
+        if !is_version_container(container) {
+            return None;
+        }
+        segments
+            .iter()
+            .rev()
+            .skip(2)
+            .find(|s| {
+                !is_layout_dir(s)
+                    && !is_version_container(s)
+                    && !is_release_tag(s)
+                    && !s.starts_with('@')
+                    && !s.starts_with('.')
+            })
+            .and_then(|s| plausible_name(s))
+    }
+
+    /// Shells specifically, as opposed to the other runtimes: they take a whole
+    /// command string after `-c` rather than a path to run.
+    fn is_shell(name: &str) -> bool {
+        matches!(
+            name,
+            "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "csh" | "tcsh"
+        )
+    }
+
+    /// The program a shell was told to run: `bash -c 'npm run build'` reads as
+    /// `npm`.
+    ///
+    /// Only the first word is taken. The rest is a pipeline, a redirect or a
+    /// quoted argument, and `script_name`'s path logic applied to it produced
+    /// labels hundreds of characters long. When the first word is not a program
+    /// name at all (a variable assignment, a subshell) there is no answer and
+    /// the shell's own name stands.
+    fn shell_command_name(argv: &[String]) -> Option<String> {
+        // `-c`, and the interactive/login spellings of it: `-lc`, `-ic`, `-ec`.
+        // Long options are never `-c`, so `--color` cannot match.
+        let flag = argv.iter().position(|a| {
+            a.starts_with('-') && !a.starts_with("--") && a.contains('c')
+        })?;
+        let command = argv.get(flag + 1)?;
+        let word = command.split_whitespace().next()?;
+        plausible_name(word.rsplit('/').next()?)
     }
 
     /// Interpreters that are never the interesting name — the script they were
@@ -535,18 +692,30 @@ pub(crate) mod proc_info {
         matches!(
             seg,
             "bin" | ".bin" | "lib" | "libexec" | "src" | "dist" | "build" | "out" | "js"
-                | "esm" | "cjs" | "node_modules" | "site-packages" | "scripts"
+                | "esm" | "cjs" | "node_modules" | "site-packages" | "scripts" | "share"
+                | "local" | "opt"
         )
     }
 
-    /// First non-flag argument after argv[0], reduced to a friendly name.
+    /// Words that name a *subcommand* rather than what is running. Every
+    /// package manager puts one of these exactly where the interesting argument
+    /// would otherwise be — `pnpm run dev` used to report `run`, and `uv run
+    /// pytest` reported `run` as well, for two completely different programs.
+    fn is_subcommand(word: &str) -> bool {
+        matches!(
+            word,
+            "run" | "run-script" | "exec" | "dlx" | "tool" | "x" | "create" | "init"
+        )
+    }
+
+    /// First meaningful argument after argv[0], reduced to a friendly name.
     /// Flags are skipped, which incidentally makes `python -m pkg` resolve to
     /// `pkg` — the module name is the first bare word.
     fn script_name(argv: &[String]) -> Option<String> {
         let arg = argv
             .iter()
             .skip(1)
-            .find(|a| !a.starts_with('-') && !a.is_empty())?;
+            .find(|a| !a.starts_with('-') && !a.is_empty() && !is_subcommand(a))?;
         let segments: Vec<&str> = arg.split('/').filter(|s| !s.is_empty()).collect();
         let last = *segments.last()?;
         // Only script extensions are stripped — a bare `rsplit_once('.')`
@@ -555,16 +724,19 @@ pub(crate) mod proc_info {
             Some((s, ext)) if is_script_ext(ext) && !s.is_empty() => s,
             _ => last,
         };
-        if !is_generic(stem) {
-            return Some(stem.to_string());
+        // A stem that names layout is no more a program name than a generic one
+        // is: `node --loader ts-node/esm` reported `esm` because the climb only
+        // triggered on `is_generic`.
+        if !is_generic(stem) && !is_layout_dir(stem) {
+            return plausible_name(stem);
         }
         segments
             .iter()
             .rev()
             .skip(1)
             .find(|s| !is_layout_dir(s) && !s.starts_with('@'))
-            .map(|s| s.to_string())
-            .or_else(|| Some(stem.to_string()))
+            .and_then(|s| plausible_name(s))
+            .or_else(|| plausible_name(stem))
     }
 
     fn basename(path: &str) -> Option<String> {
@@ -576,8 +748,12 @@ pub(crate) mod proc_info {
         }
     }
 
+    /// Absolute path of the running executable. **Symlinks are already resolved**
+    /// by both platforms' primitives — which is precisely why `is_release_tag`
+    /// exists, since a version-pinned `bin/` symlink is exactly the name we
+    /// wanted and exactly what gets resolved away.
     #[cfg(target_os = "macos")]
-    fn exe_name(pid: u32) -> Option<String> {
+    fn exe_path(pid: u32) -> Option<String> {
         let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
         let n = unsafe {
             libc::proc_pidpath(
@@ -590,7 +766,15 @@ pub(crate) mod proc_info {
             return None;
         }
         buf.truncate(n as usize);
-        basename(&String::from_utf8_lossy(&buf))
+        Some(String::from_utf8_lossy(&buf).to_string())
+    }
+
+    /// Short name from the kernel's own bookkeeping, for when there is no path.
+    /// macOS has no equivalent of Linux's `comm` that `proc_pidpath` does not
+    /// already cover.
+    #[cfg(target_os = "macos")]
+    fn comm_name(_pid: u32) -> Option<String> {
+        None
     }
 
     #[cfg(target_os = "macos")]
@@ -693,12 +877,14 @@ pub(crate) mod proc_info {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn exe_name(pid: u32) -> Option<String> {
-        if let Ok(path) = std::fs::read_link(format!("/proc/{}/exe", pid)) {
-            if let Some(name) = basename(&path.to_string_lossy()) {
-                return Some(name);
-            }
-        }
+    fn exe_path(pid: u32) -> Option<String> {
+        std::fs::read_link(format!("/proc/{}/exe", pid))
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn comm_name(pid: u32) -> Option<String> {
         std::fs::read_to_string(format!("/proc/{}/comm", pid))
             .ok()
             .and_then(|s| basename(s.trim()))
@@ -755,6 +941,126 @@ pub(crate) mod proc_info {
         fn flags_are_skipped() {
             let argv = vec!["python3".into(), "-m".into(), "http.server".into()];
             assert_eq!(script_name(&argv).as_deref(), Some("http.server"));
+        }
+
+        // ── Version-pinned launchers ────────────────────────────────────────
+        //
+        // The reported bug: `~/.local/bin/claude` is a symlink into
+        // `~/.local/share/claude/versions/2.1.220`, `proc_pidpath` resolves it,
+        // and the tab wore the release number.
+
+        #[test]
+        fn release_tags_are_recognised() {
+            for tag in ["2.1.220", "v18", "1.2.3-rc1", "0", "20.11.0+build"] {
+                assert!(is_release_tag(tag), "{tag} should read as a release");
+            }
+        }
+
+        #[test]
+        fn program_names_are_not_release_tags() {
+            for name in ["claude", "vim", "7z", "2to3", "node", "p7zip", "python3"] {
+                assert!(!is_release_tag(name), "{name} should read as a program");
+            }
+        }
+
+        #[test]
+        fn argv0_beats_a_resolved_version_symlink() {
+            let argv = vec!["/Users/me/.local/bin/claude".to_string()];
+            assert_eq!(argv0_name(&argv).as_deref(), Some("claude"));
+        }
+
+        #[test]
+        fn argv0_survives_a_login_dash_and_a_multi_word_argv0() {
+            assert_eq!(argv0_name(&["-zsh".to_string()]).as_deref(), Some("zsh"));
+            // Claude Code's background helpers re-exec like this.
+            assert_eq!(
+                argv0_name(&["claude bg-pty-host".to_string()]).as_deref(),
+                Some("claude"),
+            );
+        }
+
+        #[test]
+        fn a_version_shaped_argv0_is_no_answer() {
+            let argv = vec!["/Users/me/.local/share/claude/versions/2.1.220".to_string()];
+            assert_eq!(argv0_name(&argv), None);
+        }
+
+        #[test]
+        fn the_package_dir_names_the_release() {
+            assert_eq!(
+                package_dir_name("/Users/me/.local/share/claude/versions/2.1.220").as_deref(),
+                Some("claude"),
+            );
+        }
+
+        /// The gate that keeps the climb from wandering into filesystem layout:
+        /// a version-shaped binary that is *not* inside a version container has
+        /// no package to be read off its path.
+        #[test]
+        fn a_version_shaped_binary_elsewhere_is_left_alone() {
+            assert_eq!(package_dir_name("/usr/local/bin/v8"), None);
+        }
+
+        // ── Shell `-c` ──────────────────────────────────────────────────────
+
+        #[test]
+        fn a_shell_command_reads_as_its_first_word() {
+            let argv = vec!["bash".into(), "-c".into(), "npm run build".into()];
+            assert_eq!(shell_command_name(&argv).as_deref(), Some("npm"));
+        }
+
+        #[test]
+        fn login_and_interactive_spellings_of_dash_c_count() {
+            let argv = vec!["zsh".into(), "-lc".into(), "/usr/bin/cargo test".into()];
+            assert_eq!(shell_command_name(&argv).as_deref(), Some("cargo"));
+        }
+
+        /// The label that used to escape: one argv entry holding a whole shell
+        /// program. `script_name` split it on `/` and returned the tail.
+        #[test]
+        fn a_whole_shell_program_is_not_a_label() {
+            let argv = vec![
+                "zsh".into(),
+                "-c".into(),
+                "source /tmp/snapshot-zsh-123.sh 2>/dev/null || true && eval 'docker compose up'"
+                    .into(),
+            ];
+            // "source" is the honest first word; what matters is that nothing
+            // longer than a program name comes back.
+            let got = shell_command_name(&argv).unwrap();
+            assert!(got.len() <= MAX_NAME_LEN, "{got:?} is not a program name");
+            assert_eq!(got, "source");
+            // And the path-shaped reading of the same argv is refused outright.
+            assert_eq!(script_name(&argv), None);
+        }
+
+        #[test]
+        fn shell_metacharacters_and_long_strings_are_refused() {
+            assert_eq!(plausible_name("docker compose up"), None);
+            assert_eq!(plausible_name("FOO=bar"), None);
+            assert_eq!(plausible_name("a".repeat(MAX_NAME_LEN + 1).as_str()), None);
+            assert_eq!(plausible_name("claude").as_deref(), Some("claude"));
+        }
+
+        // ── Subcommands and layout stems ────────────────────────────────────
+
+        #[test]
+        fn package_manager_subcommands_are_skipped() {
+            let argv = vec!["pnpm".into(), "run".into(), "dev".into()];
+            assert_eq!(script_name(&argv).as_deref(), Some("dev"));
+            let argv = vec!["uv".into(), "run".into(), "pytest".into()];
+            assert_eq!(script_name(&argv).as_deref(), Some("pytest"));
+        }
+
+        #[test]
+        fn a_layout_stem_climbs_like_a_generic_one() {
+            let argv = vec![
+                "node".into(),
+                "--loader".into(),
+                "ts-node/esm".into(),
+                "app.ts".into(),
+            ];
+            assert_eq!(script_name(&argv).as_deref(), Some("ts-node"));
         }
 
         /// Exercises the real platform primitives against our own process —
@@ -849,6 +1155,7 @@ pub fn run() {
         .manage(pty_channels)
         .manage(git_state)
         .manage(browser::new_store())
+        .manage(watch::WatchState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -947,8 +1254,10 @@ pub fn run() {
             git::git_resolve_conflict,
             git::git_agent_query,
             git::git_list_worktrees,
+            watch::watch_repos,
             git::git_add_worktree,
             git::git_remove_worktree,
+            git::git_unlock_worktree,
             git::worktree_setup_plan,
             git::worktree_apply_setup,
             git::worktree_save_defaults,
@@ -1035,6 +1344,8 @@ pub fn run() {
             lsp::lsp_start,
             lsp::lsp_send,
             lsp::lsp_stop,
+            agent::agent_stream_query,
+            agent::agent_cancel_turn,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

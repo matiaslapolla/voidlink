@@ -109,6 +109,7 @@ import {
 import type {
   ActiveItem,
   TabRestoreContext,
+  AgentTab,
   BrainTab,
   BrowserTab,
   ClosedTab,
@@ -136,6 +137,7 @@ import {
 
 export type {
   ActiveItem,
+  AgentTab,
   BrainTab,
   BrowserTab,
   ClosedTab,
@@ -347,6 +349,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       string,
       BrowserTab[]
     >,
+    agentTabsByWorktree: loadKindRecord("agent", worktreeIds) as Record<string, AgentTab[]>,
     closedTabsByWorktree: loadClosedTabs(worktreeIds),
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
     activeItemByWorktree: loadActiveItems(worktreeIds),
@@ -485,7 +488,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     return path.length > 0 ? path : null;
   });
 
-  /// The ten `active*Tabs` memos, generated from the registry. Adding a kind
+  /// The eleven `active*Tabs` memos, generated from the registry. Adding a kind
   /// used to mean writing an eleventh by hand; now the spec entry is enough.
   const activeOf = <T,>(kind: TabKind) =>
     createMemo(
@@ -503,6 +506,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activePreviewTabs = activeOf<PreviewTab>("preview");
   const activeBrainTabs = activeOf<BrainTab>("brain");
   const activeBrowserTabs = activeOf<BrowserTab>("browser");
+  const activeAgentTabs = activeOf<AgentTab>("agent");
 
   /// Every workbench tab id for the active worktree, in strip order. The pane
   /// tree stores claims by id, so this is what turns those claims into content
@@ -517,6 +521,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     ...activeHistoryTabs().map((t) => t.id),
     ...activeBrainTabs().map((t) => t.id),
     ...activeBrowserTabs().map((t) => t.id),
+    ...activeAgentTabs().map((t) => t.id),
   ]);
 
   /// The active worktree's split tree, defaulted rather than `undefined` so no
@@ -566,6 +571,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     "history",
     "brain",
     "browser",
+    "agent",
   ];
 
   /// Every workbench tab id for an *arbitrary* worktree. `workbenchTabIds` is
@@ -855,6 +861,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       case "history": return { type: "history", id };
       case "brain": return { type: "brain", id };
       case "browser": return { type: "browser", id };
+      case "agent": return { type: "agent", id };
       default: return null;
     }
   }
@@ -930,13 +937,20 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
 
     // ── Diff tabs ───────────────────────────────────────────────────────
-    openDiffTab(wtId: string, filePath: string) {
-      const existing = (state.diffTabsByWorktree[wtId] ?? []).find((d) => d.filePath === filePath);
+    /// `staged` is part of the key, not a flag on the tab.
+    ///
+    /// A partially-staged file has two sidebar rows and two different diffs.
+    /// Deduping on `filePath` alone made the second row select the first row's
+    /// tab, so whichever side you clicked second was simply unreachable.
+    openDiffTab(wtId: string, filePath: string, staged = false) {
+      const existing = (state.diffTabsByWorktree[wtId] ?? []).find(
+        (d) => d.filePath === filePath && d.staged === staged,
+      );
       if (existing) {
         setState("editorActiveItemByWorktree", wtId, { type: "diff", id: existing.id });
         return existing.id;
       }
-      const tab: DiffTab = { id: crypto.randomUUID(), filePath };
+      const tab: DiffTab = { id: crypto.randomUUID(), filePath, staged };
       setState(produce((s) => {
         s.diffTabsByWorktree[wtId] = [...(s.diffTabsByWorktree[wtId] ?? []), tab];
         s.editorActiveItemByWorktree[wtId] = { type: "diff", id: tab.id };
@@ -973,15 +987,42 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
 
     // ── Compare tabs ────────────────────────────────────────────────────
+    /// Open a compare tab, reusing one that already asks the same question.
+    ///
+    /// It used to create a tab unconditionally, unlike `openHistoryTab` beside
+    /// it. Clicking ten rows in the commit graph produced ten identical tabs,
+    /// and clicking the same row twice produced two — the tab strip filled with
+    /// duplicates of a view that has no per-tab state worth duplicating.
     openCompareTab(
       wtId: string,
       opts?: { baseRef?: string; headRef?: string; useMergeBase?: boolean },
     ) {
+      const baseRef = opts?.baseRef ?? "";
+      const headRef = opts?.headRef ?? "";
+      const useMergeBase = opts?.useMergeBase ?? true;
+      // Only dedupe a tab that names both refs: a blank compare tab is the
+      // "pick two refs" surface, and the user may legitimately want two.
+      if (baseRef && headRef) {
+        const existing = (state.compareTabsByWorktree[wtId] ?? []).find(
+          (t) =>
+            t.baseRef === baseRef &&
+            t.headRef === headRef &&
+            t.useMergeBase === useMergeBase,
+        );
+        if (existing) {
+          setState(
+            produce((s) => {
+              s.activeItemByWorktree[wtId] = { type: "compare", id: existing.id };
+            }),
+          );
+          return existing.id;
+        }
+      }
       const tab: CompareTab = {
         id: crypto.randomUUID(),
-        baseRef: opts?.baseRef ?? "",
-        headRef: opts?.headRef ?? "",
-        useMergeBase: opts?.useMergeBase ?? true,
+        baseRef,
+        headRef,
+        useMergeBase,
         selectedFilePath: null,
         treeMode: "tree",
         treeFilter: "",
@@ -1593,7 +1634,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           actions.openFileTab(wtId, popped.path);
           break;
         case "diff":
-          actions.openDiffTab(wtId, popped.filePath);
+          actions.openDiffTab(wtId, popped.filePath, popped.staged ?? false);
           break;
         case "compare": {
           const id = actions.openCompareTab(wtId, {
@@ -1635,6 +1676,12 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           if (popped.title) actions.setBrowserTitle(wtId, id, popped.title);
           break;
         }
+        case "agent":
+          // The thread's transcript is keyed by the tab id that just went away,
+          // so what comes back is a fresh thread with the same agent — the same
+          // trade a reopened terminal makes with its scrollback.
+          actions.openAgentTab(wtId, popped.agentId, popped.title);
+          break;
       }
       return popped;
     },
@@ -1845,6 +1892,47 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       }));
     },
 
+    // ── Agent tabs (AI threads) ─────────────────────────────────────────
+    /// Open a new agent thread in the active pane group. Like a browser tab and
+    /// unlike the Brain tab, this never dedupes: two threads on the same roster
+    /// entry are two conversations, and that is the normal case.
+    ///
+    /// `title` is the agent's display name snapshotted here, because the store
+    /// cannot reach settings and the tab label has to say something.
+    openAgentTab(wtId: string, agentId: string, title?: string) {
+      const tab: AgentTab = { id: crypto.randomUUID(), agentId, title };
+      setState(produce((s) => {
+        s.agentTabsByWorktree[wtId] = [...(s.agentTabsByWorktree[wtId] ?? []), tab];
+        s.activeItemByWorktree[wtId] = { type: "agent", id: tab.id };
+      }));
+      return tab.id;
+    },
+
+    closeAgentTab(wtId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.agentTabsByWorktree[wtId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        recordClose(s, wtId, "agent", arr[idx]);
+        unpin(s, wtId, tabId);
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorktree[wtId];
+        if (active?.type === "agent" && active.id === tabId) {
+          const nextAgent = arr[arr.length - 1];
+          const terms = s.terminalsByWorktree[wtId] ?? [];
+          s.activeItemByWorktree[wtId] = nextAgent
+            ? { type: "agent", id: nextAgent.id }
+            : terms[0]
+              ? { type: "terminal", id: terms[0].id }
+              : null;
+        }
+      }));
+    },
+
+    selectAgentTab(wtId: string, tabId: string) {
+      setState("activeItemByWorktree", wtId, { type: "agent", id: tabId });
+    },
+
     // ── Preview tabs (markdown preview) ─────────────────────────────────
     openPreviewTab(wtId: string, filePath: string) {
       const existing = (state.previewTabsByWorktree[wtId] ?? []).find(
@@ -1922,14 +2010,16 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const browsers = state.browserTabsByWorktree[wtId] ?? [];
       const histories = state.historyTabsByWorktree[wtId] ?? [];
       const brains = state.brainTabsByWorktree[wtId] ?? [];
+      const agents = state.agentTabsByWorktree[wtId] ?? [];
 
       /// tab id → content key, for every open tab. Built once and used three
       /// times: for the active pointer, for the pins, and for rewriting the
       /// pane tree's claims.
       ///
-      /// Terminals and browser tabs are keyed by *index* because neither has a
-      /// stable identity of its own — two shells in the same directory, or two
-      /// tabs on the same URL, are a normal thing to have open.
+      /// Terminals, browser tabs and agent threads are keyed by *index* because
+      /// none has a stable identity of its own — two shells in the same
+      /// directory, two tabs on the same URL, or two threads with the same agent
+      /// are all a normal thing to have open.
       const keyByTabId = new Map<string, string>();
       for (const f of files) keyByTabId.set(f.id, `file:${f.path}`);
       terminals.forEach((t, i) => keyByTabId.set(t.id, `terminal:${i}`));
@@ -1941,6 +2031,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       browsers.forEach((b, i) => keyByTabId.set(b.id, `browser:${i}`));
       for (const h of histories) keyByTabId.set(h.id, "history:");
       for (const b of brains) keyByTabId.set(b.id, "brain:");
+      agents.forEach((a, i) => keyByTabId.set(a.id, `agent:${i}`));
 
       // A snapshot spans both windows, so it records whichever pointer is set.
       // The workbench's wins when both are: it is the window you were looking
@@ -1981,6 +2072,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           browsers: browsers.map((b) => ({ url: b.url, title: b.title })),
           history: histories.length > 0,
           brain: brains.length > 0,
+          // The tab, not the conversation: a snapshot is a named arrangement of
+          // panes, and restoring one into a transcript from another day would be
+          // a stranger outcome than an empty thread on the right agent.
+          agents: agents.map((a) => ({ agentId: a.agentId, title: a.title })),
         },
         panes,
         active: activeKey,
@@ -2044,7 +2139,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           idByKey.set(`file:${path}`, tab.id);
         }
         for (const filePath of snap.tabs.diffs) {
-          const tab: DiffTab = { id: crypto.randomUUID(), filePath };
+          // Snapshots record diffs as bare paths, so which side of the index
+          // was open is not in the format. Unstaged is the restore: it is the
+          // view every snapshot written before `staged` existed was showing,
+          // and widening the snapshot schema is a migration this does not need.
+          const tab: DiffTab = { id: crypto.randomUUID(), filePath, staged: false };
           s.diffTabsByWorktree[wtId].push(tab);
           idByKey.set(`diff:${filePath}`, tab.id);
         }
@@ -2095,6 +2194,15 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           s.brainTabsByWorktree[wtId].push(tab);
           idByKey.set("brain:", tab.id);
         }
+        snap.tabs.agents.forEach((a, i) => {
+          const tab: AgentTab = {
+            id: crypto.randomUUID(),
+            agentId: a.agentId,
+            title: a.title,
+          };
+          s.agentTabsByWorktree[wtId].push(tab);
+          idByKey.set(`agent:${i}`, tab.id);
+        });
       }));
 
       // Terminals come last because the spawn is async. We don't await
@@ -2275,6 +2383,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     activePreviewTabs,
     activeBrainTabs,
     activeBrowserTabs,
+    activeAgentTabs,
     activeItem,
     editorActiveItem,
     workbenchTabIds,

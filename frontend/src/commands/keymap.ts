@@ -353,6 +353,12 @@ export const KEYMAP: readonly KeymapEntry[] = [
 
   // ── AI ────────────────────────────────────────────────────────────────
   { actionId: "agent.toggle", group: "AI", binding: { meta: true, shift: true, key: "a" } },
+  {
+    actionId: "agent.newTab",
+    group: "AI",
+    binding: { meta: true, alt: true, key: "a" },
+    note: "The slide-over is for a quick question; a tab is for a thread you want to keep, split, and come back to after a reload.",
+  },
 ];
 
 /// Every chord an entry claims, primary first.

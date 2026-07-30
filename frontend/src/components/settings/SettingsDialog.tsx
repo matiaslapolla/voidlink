@@ -1,3 +1,4 @@
+import { emitGitRefsChanged } from "@/commands/gitEvents";
 import {
   Show,
   For,
@@ -25,6 +26,7 @@ import {
   AI_KEY_PRESETS,
   aiKeyBindings,
   useSettings,
+  type AgentRosterEntry,
   type AiKeyBinding,
   type CursorStyle,
   type EditorCoreSettings,
@@ -1361,7 +1363,8 @@ function AiPane() {
           </For>
         </div>
       </Section>
-      <Section title="Repo agent">
+      <AgentRosterSection />
+      <Section title="Agent fallback command">
         <TextRow
           label="Command"
           value={settings.ai.agentCommand}
@@ -1369,14 +1372,94 @@ function AiPane() {
           onInput={(v) => updateAi({ agentCommand: v })}
         />
         <p class="text-[11px] text-muted-foreground leading-relaxed pl-28">
-          Used by the repo agent ({shortcutLabel("agent.toggle")}). A prompt
-          grounded in your live workspace state — branch, status, recent log,
-          staged diff, open files — is piped to stdin; stdout is the answer.
-          Leave blank to reuse the commit command.
+          Used by any agent above that leaves its own command blank — and, if
+          this is blank too, the commit command. A prompt grounded in your live
+          workspace state — branch, status, recent log, staged diff, open files —
+          is piped to stdin; stdout is the answer ({shortcutLabel("agent.toggle")}).
         </p>
       </Section>
       <ProviderKeysSection />
     </div>
+  );
+}
+
+// ─── Agent roster ───────────────────────────────────────────────────────────
+
+const AGENT_INPUT_CLASS =
+  "min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono outline-2 outline-transparent transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring";
+
+/// The workspace's named agents. An agent tab is bound to one of these rows, so
+/// two rows pointing at differently-configured CLIs can answer side by side.
+///
+/// Edits are written straight through on every keystroke, like every other row
+/// in this dialog — there is no Save button to be out of sync with, and a
+/// half-typed command is only ever spawned when the user asks the agent to run.
+///
+/// The last row's remove button stays *present* and disabled rather than
+/// disappearing (§7.6): a control that vanishes teaches nothing, and the reason
+/// a roster can't be emptied is exactly what the user needs told.
+function AgentRosterSection() {
+  const { settings, addAgent, updateAgent, removeAgent } = useSettings();
+  const soleEntry = () => settings.ai.agents.length <= 1;
+
+  return (
+    <Section title="Agents">
+      <p class="text-[11px] text-muted-foreground leading-relaxed">
+        Each agent is a name plus the CLI command its prompt is piped to. Bind an
+        agent tab to one of these; leave a command blank to use the fallback
+        below.
+      </p>
+      <For each={settings.ai.agents}>
+        {(entry: AgentRosterEntry) => (
+          <div class="flex items-center gap-1.5">
+            <input
+              type="text"
+              value={entry.name}
+              placeholder="Repo agent"
+              aria-label="Agent name"
+              onInput={(e) => updateAgent(entry.id, { name: e.currentTarget.value })}
+              class={`w-28 shrink-0 ${AGENT_INPUT_CLASS}`}
+            />
+            <input
+              type="text"
+              value={entry.commandTemplate}
+              placeholder="optional — falls back to the command below"
+              aria-label={`Command for ${entry.name || "this agent"}`}
+              onInput={(e) => updateAgent(entry.id, { commandTemplate: e.currentTarget.value })}
+              class={`flex-1 ${AGENT_INPUT_CLASS}`}
+            />
+            <button
+              onClick={() => {
+                if (soleEntry()) return;
+                removeAgent(entry.id);
+              }}
+              aria-disabled={soleEntry()}
+              title={
+                soleEntry()
+                  ? "A roster needs at least one agent"
+                  : `Remove ${entry.name || "this agent"} from the roster`
+              }
+              aria-label={`Remove ${entry.name || "this agent"} from the roster`}
+              class={`p-1 rounded text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                soleEntry()
+                  ? "opacity-40 cursor-not-allowed"
+                  : "hover:text-destructive hover:bg-destructive/10"
+              }`}
+            >
+              <X class="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </For>
+      <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
+        <button
+          onClick={() => addAgent("New agent", "")}
+          class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Add agent
+        </button>
+      </div>
+    </Section>
   );
 }
 
@@ -2290,7 +2373,7 @@ function StackPane() {
       );
       // Discovery in the sidebar reads trunks fresh; broadcast so STACK
       // section adopts the new rule immediately.
-      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+      emitGitRefsChanged();
       refetch();
     } catch (e) {
       pushToast(String(e), "error");

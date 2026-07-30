@@ -43,7 +43,16 @@ export interface SnapshotBrowser {
   title?: string;
 }
 
-/// All ten kinds. The two repo-wide singletons (commit graph, brain) are
+/// An agent thread, as a snapshot records it: which roster entry it talks to and
+/// what the tab was called. Not the transcript — a snapshot is a named
+/// *arrangement*, and restoring one into a conversation from another day would be
+/// stranger than restoring an empty thread on the right agent.
+export interface SnapshotAgent {
+  agentId: string;
+  title?: string;
+}
+
+/// All eleven kinds. The two repo-wide singletons (commit graph, brain) are
 /// booleans rather than arrays because there is never more than one of each.
 export interface SnapshotTabs {
   files: string[];
@@ -56,6 +65,7 @@ export interface SnapshotTabs {
   browsers: SnapshotBrowser[];
   history: boolean;
   brain: boolean;
+  agents: SnapshotAgent[];
 }
 
 export interface SnapshotUi {
@@ -80,7 +90,7 @@ export interface WorkspaceSnapshot {
   panes: unknown | null;
   /// Content key of the active item, `"kind:identifier"`. Identifiers: file →
   /// absolute path, terminal → index, diff/conflict/preview → filePath,
-  /// compare → `baseRef..headRef`, stack → topBranch, browser → index,
+  /// compare → `baseRef..headRef`, stack → topBranch, browser/agent → index,
   /// history/brain → empty (there is only one).
   active: string | null;
   /// Content keys of pinned tabs (same format as `active`).
@@ -100,6 +110,7 @@ export function emptySnapshotTabs(): SnapshotTabs {
     browsers: [],
     history: false,
     brain: false,
+    agents: [],
   };
 }
 
@@ -170,6 +181,9 @@ function migrateTabs(raw: Record<string, unknown>): SnapshotTabs {
     browsers: migrateBrowsers(raw.browsers),
     history: raw.history === true,
     brain: raw.brain === true,
+    // Absent from every snapshot saved before agent tabs existed, which is why a
+    // missing list defaults to empty rather than rejecting the whole blob.
+    agents: migrateAgents(raw.agents),
   };
 }
 
@@ -215,6 +229,20 @@ function migrateBrowsers(raw: unknown): SnapshotBrowser[] {
   return raw.flatMap((entry) =>
     isRecord(entry) && typeof entry.url === "string"
       ? [{ url: entry.url, title: typeof entry.title === "string" ? entry.title : undefined }]
+      : [],
+  );
+}
+
+function migrateAgents(raw: unknown): SnapshotAgent[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) =>
+    isRecord(entry) && typeof entry.agentId === "string"
+      ? [
+          {
+            agentId: entry.agentId,
+            title: typeof entry.title === "string" ? entry.title : undefined,
+          },
+        ]
       : [],
   );
 }
@@ -316,6 +344,7 @@ export function snapshotTabCount(snap: WorkspaceSnapshot): number {
     t.conflicts.length +
     t.previews.length +
     t.browsers.length +
+    t.agents.length +
     (t.history ? 1 : 0) +
     (t.brain ? 1 : 0)
   );

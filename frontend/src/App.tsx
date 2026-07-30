@@ -1,3 +1,4 @@
+import { emitGitRefsChanged } from "@/commands/gitEvents";
 import {
   Show,
   Suspense,
@@ -70,6 +71,7 @@ import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { requestAiCommitDraft } from "@/commands/aiCommit";
 import { toggleAgentPanel } from "@/commands/agent";
+import { agentById, defaultAgentId } from "@/store/settings";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, snapshotTabCount } from "@/commands/snapshots";
 import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
@@ -89,6 +91,7 @@ import {
   onEditorTabsRequest,
   onWindowContextRequest,
   onWorktreeWizardRequest,
+  onOpenWorktreeRequest,
   closeEditorWindow,
   closeGitWindow,
   openEditorWindow,
@@ -100,8 +103,14 @@ import {
   type EditorReveal,
   type EditorTabsSnapshot,
 } from "@/api/windows";
+import { watchRepos } from "@/api/watch";
+import {
+  requestGitSidebarAction,
+  type GitSidebarAction,
+} from "@/commands/gitSidebarActions";
 import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
+import { samePath } from "@/store/layout/tabs";
 import {
   AUTO_GROUP_MODES,
   removePreset,
@@ -137,6 +146,17 @@ function AppInner(props: {
     canGoForward,
     actions,
   } = useAppStore();
+
+  /// Run a sidebar-owned git action, revealing the panel if it is not mounted.
+  ///
+  /// The request is held by `gitSidebarActions` and replayed when the sidebar
+  /// registers, so expanding here completes it rather than merely making the
+  /// next attempt work. Previously this dispatched a window event into a
+  /// collapsed — and therefore unmounted — sidebar and did nothing at all.
+  function runGitSidebarAction(action: GitSidebarAction): void {
+    if (requestGitSidebarAction(action)) return;
+    if (state.gitSidebarCollapsed) actions.toggleGitSidebar();
+  }
 
   // Hydrate the real worktree list for every repo-backed workspace once, on
   // boot. Persisted state only knows what we last saw; git is the truth, and
@@ -263,11 +283,52 @@ function AppInner(props: {
       }),
     );
 
+    // Same reason: "open this worktree" from the git window has no rail to
+    // select into there, so it forwards the path and the workbench does it.
+    track(
+      onOpenWorktreeRequest((req) => {
+        const ws = untrack(activeWorkspace);
+        if (!ws) return;
+        const existing = ws.worktrees.find((wt) => samePath(wt.path, req.path));
+        // Registered on demand, so a worktree created outside voidlink still
+        // opens without waiting for the next hydration pass.
+        const id = existing?.id ?? actions.addWorktree(ws.id, { path: req.path, branch: req.branch });
+        if (id) actions.selectWorktree(id);
+      }),
+    );
+
     const disposeBridge = bridgeGitRefsAcrossWindows();
     onCleanup(() => {
       disposed = true;
       for (const fn of unlisteners) fn();
       disposeBridge();
+    });
+  });
+
+  // ── Filesystem watching ──────────────────────────────────────────────────
+  // Every worktree of every workspace, re-sent whenever that set changes.
+  //
+  // Worktrees rather than just `repoRoot`: each has its own working tree that
+  // can be edited independently, and a linked worktree's refs live in a git
+  // dir outside it that Rust adds as a second watch root.
+  //
+  // Only this window does it. `watchRepos` replaces the whole watched set, so
+  // the editor or git window sending its own idea of it would unwatch
+  // everything the workbench asked for.
+  createEffect(() => {
+    const paths = Array.from(
+      new Set(
+        useAppStore()
+          .state.workspaces.flatMap((ws) => ws.worktrees.map((wt) => wt.path))
+          .filter((p) => p.length > 0),
+      ),
+    ).sort();
+    void watchRepos(paths).then((failures) => {
+      // Reported, not surfaced: a folder that is not a repository is an
+      // ordinary thing to have open, and a toast per non-repo workspace at
+      // startup would be noise. The surfaces still refresh on their own
+      // actions either way.
+      for (const failure of failures) console.warn("[watch]", failure);
     });
   });
 
@@ -349,7 +410,7 @@ function AppInner(props: {
           // The guard lives here rather than in the keybinding so pressing the
           // chord and picking the palette row behave identically.
           if (!repo) {
-            pushToast("Select a repository first", "warning");
+            pushToast("Open a folder first", "warning");
             return;
           }
           if (isFileFinderOpen()) closeFileFinder();
@@ -381,7 +442,7 @@ function AppInner(props: {
         run: () => {
           // The sidebar owns its own refetch; broadcasting via a window event
           // keeps the action decoupled from the component tree.
-          window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+          emitGitRefsChanged();
         },
       },
       {
@@ -389,27 +450,21 @@ function AppInner(props: {
         label: "Fetch from origin",
         group: "Git",
         enabled: () => !!repo,
-        run: () => {
-          window.dispatchEvent(new CustomEvent("voidlink:git-fetch"));
-        },
+        run: () => runGitSidebarAction("fetch"),
       },
       {
         id: "git.pull",
         label: "Pull from origin",
         group: "Git",
         enabled: () => !!repo,
-        run: () => {
-          window.dispatchEvent(new CustomEvent("voidlink:git-pull"));
-        },
+        run: () => runGitSidebarAction("pull"),
       },
       {
         id: "git.remotes",
         label: "Manage remotes…",
         group: "Git",
         enabled: () => !!repo,
-        run: () => {
-          window.dispatchEvent(new CustomEvent("voidlink:git-remotes"));
-        },
+        run: () => runGitSidebarAction("remotes"),
       },
       {
         id: "git.undo-last-commit",
@@ -420,7 +475,7 @@ function AppInner(props: {
           if (!repo) return;
           const { gitApi } = await import("@/api/git");
           await gitApi.undoLastCommit(repo);
-          window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+          emitGitRefsChanged();
         },
       },
       {
@@ -492,7 +547,7 @@ function AppInner(props: {
             if (!name) return;
             await stackApi.createBranch(repo, name, parent);
             pushToast(`Created ${name} on top of ${parent}`, "success");
-            window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+            emitGitRefsChanged();
           } catch (e) {
             pushToast(String(e), "error");
           }
@@ -531,7 +586,7 @@ function AppInner(props: {
               );
               pushToast(`Stack restacked clean (${replayed} commits replayed)`, "success");
             }
-            window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+            emitGitRefsChanged();
           } catch (e) {
             pushToast(String(e), "error");
           }
@@ -566,7 +621,7 @@ function AppInner(props: {
                 6000,
               );
             }
-            window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+            emitGitRefsChanged();
           } catch (e) {
             pushToast(String(e), "error", 6000);
           }
@@ -674,6 +729,21 @@ function AppInner(props: {
         },
       },
       {
+        id: "agent.newTab",
+        label: "New agent thread",
+        description: "Open an agent as a pane you can split, drag and come back to",
+        group: "AI",
+        enabled: () => !!repo,
+        run: () => {
+          if (!repo) {
+            pushToast("Open a repository first", "warning");
+            return;
+          }
+          const agentId = defaultAgentId();
+          actions.openAgentTab(state.activeWorktreeId, agentId, agentById(agentId)?.name);
+        },
+      },
+      {
         id: "workspace.new",
         label: "New workspace",
         group: "Workspace",
@@ -705,7 +775,7 @@ function AppInner(props: {
         run: () => {
           const ws = activeWorkspace();
           if (!ws?.repoRoot) {
-            pushToast("Select a repository for this workspace first", "warning");
+            pushToast("Open a folder in this workspace first", "warning");
             return;
           }
           if (!ws.isRepo) {
@@ -1272,6 +1342,11 @@ function AppInner(props: {
 
   /// Remove the active worktree from git and from the rail. Main worktrees are
   /// the workspace itself and are never removable this way.
+  /// The palette's "Remove current worktree…".
+  ///
+  /// The `…` used to be a lie: this deleted the directory with no confirmation
+  /// at all, offered no force path when git refused, and emitted no refresh
+  /// pulse. It now runs the same flow as the rail and the sidebar.
   async function removeActiveWorktree() {
     const ws = activeWorkspace();
     const wt = activeWorktree();
@@ -1279,15 +1354,14 @@ function AppInner(props: {
       pushToast("The main worktree can't be removed — close the workspace instead", "warning");
       return;
     }
-    const { gitApi } = await import("@/api/git");
-    try {
-      await gitApi.removeWorktree(ws.repoRoot, wt.path, false);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-      return;
-    }
-    actions.removeWorktree(ws.id, wt.id);
-    pushToast(`Removed worktree ${wt.branch ?? wt.path}`, "info", 2500);
+    const { removeWorktreeWithConfirm } = await import("@/commands/worktreeRemove");
+    const { worktreeLabel } = await import("@/types/workspace");
+    const removed = await removeWorktreeWithConfirm({
+      repoRoot: ws.repoRoot,
+      path: wt.path,
+      label: worktreeLabel(wt),
+    });
+    if (removed) actions.removeWorktree(ws.id, wt.id);
   }
 
   function closeActiveTab() {
@@ -1398,6 +1472,7 @@ function AppInner(props: {
       main={
         <MainSurface
           onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
+          onOpenSettings={props.onOpenSettings}
         />
       }
       rightSidebar={isZen() ? null : state.sidebarsSwapped ? leftPane() : rightPane()}

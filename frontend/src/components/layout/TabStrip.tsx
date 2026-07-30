@@ -65,7 +65,8 @@ export type TabKind =
   | "history"
   | "preview"
   | "brain"
-  | "browser";
+  | "browser"
+  | "agent";
 
 /// One tab, flattened out of whatever the calling window keeps.
 export interface TabDescriptor {
@@ -1384,6 +1385,7 @@ const KIND_LABELS: Record<TabKind, string> = {
   preview: "Previews",
   brain: "Brain",
   browser: "Browser",
+  agent: "Agents",
 };
 
 /// Single right-click menu rendered as a portal so it escapes the strip's

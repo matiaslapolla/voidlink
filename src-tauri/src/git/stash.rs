@@ -136,7 +136,7 @@ pub(crate) fn git_stash_drop_impl(
 pub(crate) fn git_stash_show_impl(repo_path: String, index: usize) -> Result<DiffResult, String> {
     let head = format!("stash@{{{index}}}");
     let base = format!("stash@{{{index}}}^1");
-    git_diff_refs_impl(repo_path, base, head, false)
+    git_diff_refs_impl(repo_path, base, head, false, false)
 }
 
 #[cfg(test)]

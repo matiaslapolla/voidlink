@@ -7,7 +7,7 @@
 ///      on boot — including the three that were memory-only (terminal, history,
 ///      brain) and the workbench's active-tab pointer, which had never been
 ///      persisted at all.
-///   2. **Reopen-closed covers all ten kinds**, driven by the registry's
+///   2. **Reopen-closed covers all eleven kinds**, driven by the registry's
 ///      `closedSnapshot`, and the history outlives the reload.
 ///   3. **A corrupt or half-written blob costs exactly one key.** Not the boot,
 ///      not a white screen, and not the other nine keys.
@@ -132,12 +132,24 @@ describe("session restore", () => {
       STORAGE_KEYS.stackTabs,
       JSON.stringify({ [WT_ID]: [{ id: "st-1", trunk: "main", topBranch: "feat" }] }),
     );
+    backing.set(
+      STORAGE_KEYS.agentTabs,
+      JSON.stringify({
+        [WT_ID]: [{ id: "agent-1", agentId: "claude-sonnet", title: "Reviewer" }],
+      }),
+    );
 
     await withStoreAsync(async (store) => {
       expect(store.state.historyTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(store.state.brainTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(store.state.browserTabsByWorktree[WT_ID][0].url).toBe("https://example.com");
       expect(store.state.stackTabsByWorktree[WT_ID][0].topBranch).toBe("feat");
+      // Same tab id, so the thread's transcript — which is keyed by it — is
+      // still reachable after the reload.
+      const agent = store.state.agentTabsByWorktree[WT_ID][0];
+      expect(agent.id).toBe("agent-1");
+      expect(agent.agentId).toBe("claude-sonnet");
+      expect(agent.title).toBe("Reviewer");
 
       // The terminal's PTY is spawned, so it arrives a tick later.
       await Promise.resolve();
@@ -189,11 +201,11 @@ describe("session restore", () => {
 });
 
 describe("reopen closed tabs", () => {
-  it("reopens all ten kinds, one pop each, most recent first", async () => {
+  it("reopens all eleven kinds, one pop each, most recent first", async () => {
     await withStoreAsync(async (store) => {
       const { actions, state } = store;
       // Open one of every kind. Files/diffs/conflicts/previews live in the
-      // editor window's pointer; the other six in the workbench's.
+      // editor window's pointer; the other seven in the workbench's.
       actions.openFileTab(WT_ID, "/repo/a.ts");
       await actions.spawnTerminal(WT_ID);
       actions.openDiffTab(WT_ID, "/repo/b.ts");
@@ -204,6 +216,7 @@ describe("reopen closed tabs", () => {
       actions.openPreviewTab(WT_ID, "/repo/README.md");
       actions.openBrainTab(WT_ID);
       actions.openBrowserTab(WT_ID, "https://example.com");
+      actions.openAgentTab(WT_ID, "claude-sonnet", "Reviewer");
 
       const ids = {
         file: state.openFilesByWorktree[WT_ID][0].id,
@@ -216,6 +229,7 @@ describe("reopen closed tabs", () => {
         preview: state.previewTabsByWorktree[WT_ID][0].id,
         brain: state.brainTabsByWorktree[WT_ID][0].id,
         browser: state.browserTabsByWorktree[WT_ID][0].id,
+        agent: state.agentTabsByWorktree[WT_ID][0].id,
       };
 
       actions.closeFileTab(WT_ID, ids.file);
@@ -228,16 +242,18 @@ describe("reopen closed tabs", () => {
       actions.closePreviewTab(WT_ID, ids.preview);
       actions.closeBrainTab(WT_ID, ids.brain);
       actions.closeBrowserTab(WT_ID, ids.browser);
+      actions.closeAgentTab(WT_ID, ids.agent);
 
-      expect(state.closedTabsByWorktree[WT_ID]).toHaveLength(10);
+      expect(state.closedTabsByWorktree[WT_ID]).toHaveLength(11);
 
       const popped: ClosedTab["type"][] = [];
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 11; i++) {
         const tab = actions.reopenLastClosedTab(WT_ID);
         expect(tab, `pop ${i} came back empty`).not.toBeNull();
         popped.push(tab!.type);
       }
       expect(popped).toEqual([
+        "agent",
         "browser",
         "brain",
         "preview",
@@ -263,6 +279,10 @@ describe("reopen closed tabs", () => {
       expect(state.brainTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.browserTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.terminalsByWorktree[WT_ID]).toHaveLength(1);
+      // A fresh thread on the same agent, under the title it was closed with.
+      expect(state.agentTabsByWorktree[WT_ID]).toHaveLength(1);
+      expect(state.agentTabsByWorktree[WT_ID][0].agentId).toBe("claude-sonnet");
+      expect(state.agentTabsByWorktree[WT_ID][0].title).toBe("Reviewer");
     });
   });
 

@@ -45,6 +45,7 @@ import {
   TagsPane,
   WorktreesPane,
 } from "@/components/git/GitSidebar";
+import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { CompareTab } from "@/components/git/compare/CompareTab";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
@@ -163,6 +164,13 @@ export function GitSurface(props: {
   const [repoInfo, setRepoInfo] = createSignal<{
     currentBranch: string | null;
     isClean: boolean;
+    /// Carried so `BranchesPane` can disable the mutations a merge or rebase
+    /// would corrupt. Without it this window left every branch's delete button
+    /// live mid-rebase while the workbench disabled it — and the backend guard
+    /// that now refuses those deletes is a wall to walk into, not a reason to
+    /// keep offering the button.
+    operation: string | null;
+    isDetached: boolean;
   } | null>(null);
 
   async function refreshAll() {
@@ -178,7 +186,12 @@ export function GitSurface(props: {
         gitApi.repoInfo(path),
       ]);
       setStatus(s);
-      setRepoInfo({ currentBranch: info.currentBranch, isClean: info.isClean });
+      setRepoInfo({
+        currentBranch: info.currentBranch,
+        isClean: info.isClean,
+        operation: info.operation,
+        isDetached: info.isDetached,
+      });
     } catch (e) {
       // A repository that vanished under us needs no toast — but an index.lock
       // collision or a corrupt ref does, and the old bare `catch {}` made every
@@ -328,49 +341,78 @@ export function GitSurface(props: {
                 when={comparing() && activeCompare()}
                 fallback={
                   <div class="flex-1 overflow-y-auto scrollbar-thin">
+                    {/* One boundary per section, not one around the lot.
+                        These panes read resources straight inside JSX and
+                        memos, and a resource rethrows on read — with nothing
+                        above them this window went white on a repository that
+                        moved, a corrupt ref, or the worktree enrichment
+                        timeout, and offered no way back. Per-section means
+                        switching away and back also clears the caught state,
+                        so "Try again" is not the only escape. The workbench
+                        sidebar has had this since its own white-screen bug;
+                        this window never got it. */}
                     <Show when={section() === "changes"}>
-                      <ChangesPane
-                        repoPath={path()}
-                        worktreeId={worktreeId()}
-                        status={status()}
-                        onRefresh={refreshAll}
-                        selectedFile={null}
-                      />
+                      <GitErrorBoundary surface="Changes" onRetry={refreshAll}>
+                        <ChangesPane
+                          repoPath={path()}
+                          worktreeId={worktreeId()}
+                          status={status()}
+                          onRefresh={refreshAll}
+                          selectedFile={null}
+                        />
+                      </GitErrorBoundary>
                     </Show>
                     <Show when={section() === "branches"}>
-                      <BranchesPane
-                        repoPath={path()}
-                        worktreeId={worktreeId()}
-                        onCheckout={refreshAll}
-                      />
+                      <GitErrorBoundary surface="Branches" onRetry={refreshAll}>
+                        <BranchesPane
+                          repoPath={path()}
+                          worktreeId={worktreeId()}
+                          onCheckout={refreshAll}
+                          operation={repoInfo()?.operation ?? null}
+                          detached={repoInfo()?.isDetached ?? false}
+                          showTags={false}
+                        />
+                      </GitErrorBoundary>
                     </Show>
                     <Show when={section() === "worktrees"}>
-                      <WorktreesPane repoPath={path()} />
+                      <GitErrorBoundary surface="Worktrees" onRetry={refreshAll}>
+                        <WorktreesPane repoPath={path()} />
+                      </GitErrorBoundary>
                     </Show>
                     <Show when={section() === "stack"}>
-                      <StackSidebarSection
-                        repoPath={path()}
-                        worktreeId={worktreeId()}
-                      />
+                      <GitErrorBoundary surface="The stack" onRetry={refreshAll}>
+                        <StackSidebarSection
+                          repoPath={path()}
+                          worktreeId={worktreeId()}
+                        />
+                      </GitErrorBoundary>
                     </Show>
                     <Show when={section() === "stashes"}>
-                      <StashesPane repoPath={path()} worktreeId={worktreeId()} />
+                      <GitErrorBoundary surface="Stashes" onRetry={refreshAll}>
+                        <StashesPane repoPath={path()} worktreeId={worktreeId()} />
+                      </GitErrorBoundary>
                     </Show>
                     <Show when={section() === "history"}>
-                      <HistoryPane repoPath={path()} worktreeId={worktreeId()} />
+                      <GitErrorBoundary surface="History" onRetry={refreshAll}>
+                        <HistoryPane repoPath={path()} worktreeId={worktreeId()} />
+                      </GitErrorBoundary>
                     </Show>
                     <Show when={section() === "tags"}>
-                      <TagsPane repoPath={path()} />
+                      <GitErrorBoundary surface="Tags" onRetry={refreshAll}>
+                        <TagsPane repoPath={path()} />
+                      </GitErrorBoundary>
                     </Show>
                   </div>
                 }
               >
                 {(tab) => (
-                  <CompareTab
-                    repoPath={path()}
-                    tab={tab()}
-                    worktreeId={worktreeId()}
-                  />
+                  <GitErrorBoundary surface="This comparison">
+                    <CompareTab
+                      repoPath={path()}
+                      tab={tab()}
+                      worktreeId={worktreeId()}
+                    />
+                  </GitErrorBoundary>
                 )}
               </Show>
             </main>

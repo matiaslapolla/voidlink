@@ -38,6 +38,19 @@ pub struct WorktreeInfo {
     /// gone, the `git status` there failed or timed out). `is_dirty` is false in
     /// that case, and false must not be read as "clean".
     pub status_unknown: bool,
+    /// Git considers this worktree removable by `git worktree prune` — almost
+    /// always because its directory no longer exists. Dropping this from the
+    /// parse made a worktree whose directory had been deleted render as an
+    /// ordinary row, and "open this worktree" then registered a workspace
+    /// pointing at nothing, where every terminal spawned there fails.
+    pub is_prunable: bool,
+    /// Why git calls it prunable, verbatim from the porcelain, when it says.
+    pub prunable_reason: Option<String>,
+    /// A bare repository entry. It has no working tree, so it can never be
+    /// dirty, opened or removed, and counting it as a worktree made the
+    /// "create your first worktree" empty state disappear in a repo that has
+    /// none.
+    pub is_bare: bool,
 }
 
 /// Parse `git worktree list --porcelain`. Records are blank-line separated;
@@ -75,6 +88,9 @@ pub(crate) fn git_list_worktrees_impl(repo_path: String) -> Result<Vec<WorktreeI
                 ahead: 0,
                 behind: 0,
                 status_unknown: false,
+                is_prunable: false,
+                prunable_reason: None,
+                is_bare: false,
             });
             first = false;
         } else if let Some(wt) = cur.as_mut() {
@@ -86,6 +102,14 @@ pub(crate) fn git_list_worktrees_impl(repo_path: String) -> Result<Vec<WorktreeI
                 wt.is_detached = true;
             } else if line == "locked" || line.starts_with("locked ") {
                 wt.is_locked = true;
+            } else if line == "bare" {
+                wt.is_bare = true;
+            } else if line == "prunable" || line.starts_with("prunable ") {
+                wt.is_prunable = true;
+                wt.prunable_reason = line
+                    .strip_prefix("prunable ")
+                    .map(|r| r.trim().to_string())
+                    .filter(|r| !r.is_empty());
             }
         }
     }
@@ -104,36 +128,113 @@ pub(crate) fn git_list_worktrees_impl(repo_path: String) -> Result<Vec<WorktreeI
             (Some(a), Some(b)) => *a == b,
             _ => Path::new(&wt.path) == Path::new(&repo_path),
         };
+    }
 
-        // Dirty = any porcelain output (staged, unstaged, or untracked). A
-        // failure here used to degrade silently to "clean", so a stale worktree
-        // whose directory had been deleted confidently reported no changes.
-        match run_git_timeout(&wt.path, &["status", "--porcelain"], ENRICH_TIMEOUT) {
-            Ok(status) => wt.is_dirty = !status.trim().is_empty(),
-            Err(e) => {
-                log::warn!("status for worktree {} unavailable: {e}", wt.path);
-                wt.status_unknown = true;
-            }
+    // A bare entry has no working tree to inspect, so running `git status`
+    // there costs two subprocesses to learn nothing and exits 128 — which the
+    // enrichment then reports as `status_unknown`, painting a spurious "?" on
+    // a row that is definitionally clean.
+    let paths: Vec<String> = out
+        .iter()
+        .filter(|wt| !wt.is_bare)
+        .map(|wt| wt.path.clone())
+        .collect();
+    let mut enriched = enrich_all(&paths).into_iter();
+    for wt in out.iter_mut() {
+        if wt.is_bare {
+            continue;
         }
-
-        // Ahead/behind vs upstream. `<upstream>...HEAD` with `--left-right
-        // --count` prints "<behind>\t<ahead>" (left = commits only on upstream,
-        // right = commits only on HEAD). Fails with no upstream / detached HEAD,
-        // which we let fall through to the 0/0 default.
-        if let Ok(counts) = run_git_timeout(
-            &wt.path,
-            &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
-            ENRICH_TIMEOUT,
-        ) {
-            let mut parts = counts.split_whitespace();
-            if let (Some(behind), Some(ahead)) = (parts.next(), parts.next()) {
-                wt.behind = behind.parse().unwrap_or(0);
-                wt.ahead = ahead.parse().unwrap_or(0);
-            }
-        }
+        let Some(e) = enriched.next() else { break };
+        wt.is_dirty = e.is_dirty;
+        wt.status_unknown = e.status_unknown;
+        wt.ahead = e.ahead;
+        wt.behind = e.behind;
     }
 
     Ok(out)
+}
+
+#[derive(Default)]
+struct Enrichment {
+    is_dirty: bool,
+    status_unknown: bool,
+    ahead: u32,
+    behind: u32,
+}
+
+/// How many worktrees are enriched at once.
+///
+/// Bounded rather than "spawn one thread per worktree": the count is
+/// user-controlled, and a repository with fifty worktrees would otherwise put
+/// a hundred `git` processes on the machine in one go. Eight keeps a normal
+/// listing fully parallel while capping the pathological case.
+const ENRICH_CONCURRENCY: usize = 8;
+
+/// Run the per-worktree enrichment concurrently, in input order.
+///
+/// This used to be a serial loop, which mattered more than it looks: it is two
+/// `git` subprocesses per worktree, and the whole listing runs inside
+/// `blocking_git!`'s per-repo mutex — so every other git surface waited behind
+/// the *sum* of them. With the filesystem watcher now emitting a pulse whenever
+/// the repository changes, that cost is paid far more often than it used to be.
+///
+/// Concurrency is safe here because each call targets a different worktree
+/// directory and only reads: `status --porcelain` and `rev-list --count` take
+/// no locks in the repositories they run against.
+fn enrich_all(paths: &[String]) -> Vec<Enrichment> {
+    let mut out = Vec::with_capacity(paths.len());
+    for chunk in paths.chunks(ENRICH_CONCURRENCY) {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|path| scope.spawn(move || enrich_one(path)))
+                .collect();
+            for handle in handles {
+                // A panicked enrichment thread degrades that one row to
+                // "unknown" rather than taking the listing down. `false` for
+                // `is_dirty` must never be read as clean, which is exactly what
+                // `status_unknown` is for.
+                out.push(handle.join().unwrap_or_else(|_| Enrichment {
+                    status_unknown: true,
+                    ..Enrichment::default()
+                }));
+            }
+        });
+    }
+    out
+}
+
+fn enrich_one(path: &str) -> Enrichment {
+    let mut enriched = Enrichment::default();
+
+    // Dirty = any porcelain output (staged, unstaged, or untracked). A
+    // failure here used to degrade silently to "clean", so a stale worktree
+    // whose directory had been deleted confidently reported no changes.
+    match run_git_timeout(path, &["status", "--porcelain"], ENRICH_TIMEOUT) {
+        Ok(status) => enriched.is_dirty = !status.trim().is_empty(),
+        Err(e) => {
+            log::warn!("status for worktree {path} unavailable: {e}");
+            enriched.status_unknown = true;
+        }
+    }
+
+    // Ahead/behind vs upstream. `<upstream>...HEAD` with `--left-right
+    // --count` prints "<behind>\t<ahead>" (left = commits only on upstream,
+    // right = commits only on HEAD). Fails with no upstream / detached HEAD,
+    // which we let fall through to the 0/0 default.
+    if let Ok(counts) = run_git_timeout(
+        path,
+        &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+        ENRICH_TIMEOUT,
+    ) {
+        let mut parts = counts.split_whitespace();
+        if let (Some(behind), Some(ahead)) = (parts.next(), parts.next()) {
+            enriched.behind = behind.parse().unwrap_or(0);
+            enriched.ahead = ahead.parse().unwrap_or(0);
+        }
+    }
+
+    enriched
 }
 
 /// Create a worktree at `path`. Three shapes, matching `git worktree add`:
@@ -211,5 +312,100 @@ pub(crate) fn git_remove_worktree_impl(
                 "Worktree removed, but pruning stale entries failed: {e}"
             ))
         }
+    }
+}
+
+/// `git worktree unlock`.
+///
+/// Without it a locked worktree was a dead end: `remove` refuses, `--force`
+/// refuses too (git wants `remove -f -f` for a lock, which nothing here sends),
+/// and there was no other command anywhere in the app that could clear the
+/// lock. The only way out was to leave voidlink and use the CLI.
+pub(crate) fn git_unlock_worktree_impl(repo_path: String, path: String) -> Result<(), String> {
+    run_git(&repo_path, &["worktree", "unlock", &path]).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::testfix::{commit_all, init_repo, write_file};
+
+    /// A worktree whose directory was deleted is still listed by git, marked
+    /// `prunable`. Dropping that flag made it render as an ordinary row, and
+    /// opening it registered a workspace pointing at nothing.
+    #[test]
+    fn a_deleted_worktree_directory_comes_back_marked_prunable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("main");
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = init_repo(&root);
+        write_file(&root, "a.txt", "one\n");
+        commit_all(&repo, "base");
+
+        let linked = dir.path().join("linked");
+        crate::git::cmd::run_git(
+            &root.to_string_lossy(),
+            &["worktree", "add", &linked.to_string_lossy(), "-b", "topic"],
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&linked).unwrap();
+
+        let list = git_list_worktrees_impl(root.to_string_lossy().into_owned()).unwrap();
+        let gone = list
+            .iter()
+            .find(|w| !w.is_main)
+            .expect("git still lists a worktree whose directory is gone");
+        assert!(
+            gone.is_prunable,
+            "an unopenable worktree must say so: {gone:?}"
+        );
+    }
+
+    /// `git_list_worktrees_impl` zips this result straight onto the parsed
+    /// worktrees, so a reordering would silently attach one worktree's dirty
+    /// flag and ahead/behind counts to another — the kind of wrong that looks
+    /// like a UI bug for weeks. Chunked concurrency makes that a real risk, so
+    /// it is pinned here rather than assumed.
+    #[test]
+    fn enrichment_comes_back_in_input_order() {
+        let dir = tempfile::tempdir().unwrap();
+        // More than one chunk, so the boundary is exercised too.
+        let count = ENRICH_CONCURRENCY + 3;
+
+        let mut paths = Vec::new();
+        let mut expected_dirty = Vec::new();
+        for i in 0..count {
+            let root = dir.path().join(format!("repo{i}"));
+            std::fs::create_dir_all(&root).unwrap();
+            let repo = init_repo(&root);
+            write_file(&root, "a.txt", "one\n");
+            commit_all(&repo, "base");
+
+            // Alternate, so an order slip cannot pass by coincidence.
+            let dirty = i % 2 == 0;
+            if dirty {
+                write_file(&root, "a.txt", "two\n");
+            }
+            paths.push(root.to_string_lossy().into_owned());
+            expected_dirty.push(dirty);
+        }
+
+        let enriched = enrich_all(&paths);
+        assert_eq!(enriched.len(), count);
+        let got: Vec<bool> = enriched.iter().map(|e| e.is_dirty).collect();
+        assert_eq!(got, expected_dirty);
+        assert!(
+            enriched.iter().all(|e| !e.status_unknown),
+            "every repo here is readable",
+        );
+    }
+
+    /// A worktree whose directory is gone must report `status_unknown`, not
+    /// `is_dirty: false` — the UI treats the latter as "clean, safe to remove".
+    #[test]
+    fn a_missing_directory_is_unknown_not_clean() {
+        let enriched = enrich_one("/nonexistent/path/that/cannot/be/read");
+        assert!(enriched.status_unknown);
+        assert!(!enriched.is_dirty);
     }
 }

@@ -68,6 +68,28 @@ export const STORAGE_KEYS = {
   /// `commands/snapshots.ts` *through this module* — it is layout state, and
   /// the no-other-module-touches-localStorage rule has no exceptions.
   snapshots: "voidlink-snapshots",
+  /// `Record<worktreeId, AgentTab[]>` — the agent *threads that are open*, as
+  /// tabs. Separate from the transcripts below because the two have different
+  /// write rhythms: the tab list changes when somebody opens or closes a thread,
+  /// the transcript changes on every streamed token. Sharing one key would
+  /// rewrite the whole conversation history every time a tab moved.
+  agentTabs: "voidlink-agent-tabs",
+  /// `Record<worktreeId, Record<tabId, AgentMessage[]>>` — the conversations
+  /// themselves. Read and written by `commands/agent.ts` *through this module*,
+  /// the arrangement `snapshots` and `layoutPresets` already have: the
+  /// no-module-outside-this-one-touches-localStorage rule has no exceptions.
+  ///
+  /// Keyed by *tab* id, not by agent id — two threads with the same agent are two
+  /// conversations, and that is the normal case. One reserved constant tab id
+  /// holds the slide-over's thread, which has no tab of its own but wants the
+  /// same durability.
+  ///
+  /// This is a tab's contents and deliberately not an event log: what is stored
+  /// is the transcript as the panel would re-render it, so a boot is one read and
+  /// not a replay. Nothing here is authoritative about what an agent *did* — a
+  /// reset clearing it costs the scrollback, which is the same trade every other
+  /// tab kind makes.
+  agentThreads: "voidlink-agent-threads",
 } as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];

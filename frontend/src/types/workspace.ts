@@ -30,6 +30,16 @@ export interface Worktree {
   behind: number;
   isLocked: boolean;
   isDetached: boolean;
+  /// The dirty flag could not be read — an unmounted volume, a deleted
+  /// directory, a `git status` that timed out. Carried all the way here
+  /// because `isDirty: false` must not render as "clean": the rail and the
+  /// worktree switcher were showing a confident no-badge for a worktree whose
+  /// state nobody knows, and the removal flow then discards work on that
+  /// basis.
+  statusUnknown: boolean;
+  /// Git would prune this entry — its directory is gone. Opening it produces a
+  /// workspace pointing at nothing.
+  isPrunable: boolean;
 }
 
 /// A workspace is a repository (or a plain folder) that owns N worktrees.
@@ -88,6 +98,8 @@ export function makeWorktree(init: {
     ahead: 0,
     behind: 0,
     isLocked: false,
+    statusUnknown: false,
+    isPrunable: false,
     isDetached: false,
   };
 }

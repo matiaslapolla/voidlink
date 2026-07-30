@@ -15,6 +15,7 @@ import { ChangedFileTree } from "./ChangedFileTree";
 import { CompareDiffPane } from "./CompareDiffPane";
 import { RefPicker } from "./RefPicker";
 import { branchMruFor } from "@/commands/branchMru";
+import { onGitRefsChanged } from "@/commands/gitEvents";
 import { clearTabActivity, noteRunning } from "@/store/activity";
 
 // Top-level layout for the Compare tab:
@@ -46,17 +47,20 @@ function loadTreeWidth(): number {
 }
 
 export function CompareTab(props: Props) {
-  const { actions } = useAppStore();
+  const { state, actions } = useAppStore();
   const [treeWidth, setTreeWidth] = createSignal(loadTreeWidth());
 
   // ─── Refs (autocomplete data) ───────────────────────────────────────
-  const [refs] = createResource(() => props.repoPath, (p) => gitApi.listRefs(p));
+  const [refs, { refetch: refetchRefs }] = createResource(
+    () => props.repoPath,
+    (p) => gitApi.listRefs(p),
+  );
 
   /// Branch metadata for ahead/behind chips in the picker dropdown.
   /// listBranches is a heavier call than listRefs (it computes upstream
   /// counts) — keep it cached at the tab level so swapping ref dropdowns
   /// doesn't refetch.
-  const [branchInfo] = createResource(
+  const [branchInfo, { refetch: refetchBranches }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listBranches(p, false),
   );
@@ -79,13 +83,43 @@ export function CompareTab(props: Props) {
           baseRef: props.tab.baseRef,
           headRef: props.tab.headRef,
           useMergeBase: props.tab.useMergeBase,
+          // Part of the key, because it is part of the *question*. It used to
+          // be applied to the answer afterwards, which left the tree, the
+          // counts and the footer describing a different diff from the one on
+          // screen.
+          ignoreWhitespace: state.ignoreWhitespace,
         }
       : null,
   );
 
   const [diff, { refetch }] = createResource(refsKey, async (k) => {
-    return gitApi.diffRefs(k.repoPath, k.baseRef, k.headRef, k.useMergeBase);
+    return gitApi.diffRefs(
+      k.repoPath,
+      k.baseRef,
+      k.headRef,
+      k.useMergeBase,
+      k.ignoreWhitespace,
+    );
   });
+
+  /// A compare tab is keyed on ref *names*, which do not change when the
+  /// commits under them do.
+  ///
+  /// So committing, fetching, resetting, rebasing or amending left the resource
+  /// source identical and the tab kept rendering a diff of commits that were no
+  /// longer at either ref, with the manual Refresh button as the only way back.
+  /// The pickers were stale in the same way: keyed on `repoPath` alone, a branch
+  /// created anywhere was absent from both dropdowns until the tab was closed
+  /// and reopened, and the ahead/behind chips went stale after any push.
+  onMount(() =>
+    onCleanup(
+      onGitRefsChanged(() => {
+        void refetch();
+        void refetchRefs();
+        void refetchBranches();
+      }),
+    ),
+  );
 
   // §7.5.3: a compare that is re-diffing is a *running* tab, and the badge has
   // to be readable from the strip of a group the user isn't in. `noteRunning`
@@ -94,7 +128,32 @@ export function CompareTab(props: Props) {
   createEffect(() => noteRunning(props.tab.id, diff.loading));
   onCleanup(() => clearTabActivity(props.tab.id));
 
-  const files = createMemo(() => diff()?.files ?? []);
+  /// True only while the resource is settled on a rejection.
+  ///
+  /// This guard is load-bearing, and the reason is worth spelling out. A Solid
+  /// resource *rethrows* the fetcher's rejection from `diff()` — and from
+  /// `diff.latest` — whenever it is read with no fetch in flight. Reading it
+  /// bare inside `files` below threw from within a reactive update, and Solid's
+  /// update loop discards the whole pending effects queue on the way out while
+  /// leaving those effects marked stale. They are never re-queued. So one
+  /// unresolvable ref did not merely fail this diff, it killed every
+  /// computation downstream of it *for the life of the tab*: the tree kept
+  /// rendering the previous file list, Refresh and Retry and the merge-base
+  /// toggle all re-ran the fetch and moved nothing on screen, and — because
+  /// `noteRunning` reads `diff.loading` rather than `files()` — the tab's
+  /// activity dot went on spinning over frozen content.
+  ///
+  /// `diff.error` and `diff.state` are plain signal reads and never throw, so
+  /// short-circuiting on them keeps the error out of the update entirely. That
+  /// is what makes the `errMessage()` UI below reachable; it was always written
+  /// correctly and was simply never given a chance to render.
+  ///
+  /// `"errored"` rather than `!!diff.error`: a refetch after a failure keeps
+  /// the old error hanging around while it is in flight, and during that window
+  /// Solid itself does not throw.
+  const failed = () => diff.state === "errored";
+
+  const files = createMemo(() => (failed() ? [] : (diff()?.files ?? [])));
 
   const selectedFile = createMemo(() => {
     const path = props.tab.selectedFilePath;
@@ -104,11 +163,27 @@ export function CompareTab(props: Props) {
     );
   });
 
-  // After a fresh load with no current selection, pick the first file so
-  // the diff pane shows something instead of the placeholder.
+  // Keep a file selected whenever there is one to select.
+  //
+  // The condition used to be "no selection at all", which could never recover
+  // from a selection that pointed at a file the current diff does not contain —
+  // and there are four ordinary ways to get one:
+  //
+  //   * toggling merge-base (`setCompareRefs` clears the selection only when
+  //     the *refs* change, and a file can differ two-dot but not three-dot),
+  //   * reloading the app, since `deserializeCompare` restores the path
+  //     verbatim while the refs may have moved underneath it,
+  //   * "Compare with…" from the file tree, which sets a working-tree path that
+  //     need not appear in the diff at all,
+  //   * a refresh after the file simply stopped differing.
+  //
+  // In all four the tree filled with files while the pane said "select a file",
+  // and clicking one was the only way out. Testing whether the selection
+  // *resolves* rather than whether it exists makes the stale case self-heal.
   createEffect(() => {
     const list = files();
-    if (props.tab.selectedFilePath || list.length === 0) return;
+    if (list.length === 0) return;
+    if (props.tab.selectedFilePath && selectedFile()) return;
     const path = list[0].newPath ?? list[0].oldPath;
     if (path) {
       actions.setCompareSelectedFile(props.worktreeId, props.tab.id, path);
@@ -278,7 +353,11 @@ export function CompareTab(props: Props) {
             style={{ width: `${treeWidth()}px` }}
           >
             <Show
-              when={!diff.loading || diff.latest}
+              // `failed()` first, and the short-circuit is the point: reaching
+              // `diff.latest` on an errored resource rethrows exactly like
+              // `diff()` does, which would put the throw back into the update
+              // this guard exists to keep it out of.
+              when={failed() || !diff.loading || diff.latest}
               fallback={
                 <div class="h-full flex items-center justify-center text-muted-foreground text-[11px]">
                   Computing diff…

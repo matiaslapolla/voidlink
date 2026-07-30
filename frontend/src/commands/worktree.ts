@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { pushToast } from "@/commands/toast";
 import { isGitWindow, requestWorktreeWizardOnMain } from "@/api/windows";
 
 /// Cross-component request channel for the new-worktree flow, mirroring the
@@ -42,7 +43,13 @@ export function requestNewWorktree(opts: {
     });
     return;
   }
-  if (request()) return;
+  // A wizard is already up. Silently dropping the second click made the
+  // button look broken when the wizard was behind another window or simply
+  // not where the user was looking.
+  if (request()) {
+    pushToast("The new-worktree wizard is already open", "info", 2500);
+    return;
+  }
   setRequest({
     id: nextId++,
     workspaceId: opts.workspaceId,

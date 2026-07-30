@@ -90,7 +90,8 @@ use tag::{
 };
 use push::git_push_impl;
 use worktree::{
-    git_add_worktree_impl, git_list_worktrees_impl, git_remove_worktree_impl, WorktreeInfo,
+    git_add_worktree_impl, git_list_worktrees_impl, git_remove_worktree_impl,
+    git_unlock_worktree_impl, WorktreeInfo,
 };
 use worktree_setup::{
     apply_setup, build_plan, write_defaults, DepAction, WorktreeDefaults, WorktreeSetupPlan,
@@ -215,6 +216,18 @@ pub struct FileDiff {
     pub is_binary: bool,
     pub additions: u32,
     pub deletions: u32,
+    /// Blob oid of the **old** side, i.e. the content this diff was computed
+    /// against. `None` for an added or untracked file, which has no old side.
+    ///
+    /// Exists for hunk-level staging. A hunk patch is built from the diff the
+    /// user is looking at, and nothing guaranteed the file on disk still
+    /// matched it — a `git checkout` in the terminal, another editor writing,
+    /// or simply a diff left open for a while. libgit2's context matching
+    /// usually rejects a misfitting patch, but "usually" is libgit2 defending
+    /// us, not us being careful, and the action on the other end of that is
+    /// *discard*. Sending the oid back with the patch lets Rust refuse
+    /// outright when the basis has moved.
+    pub old_blob_oid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -483,10 +496,12 @@ pub async fn git_discard_hunk(
 pub async fn git_diff_working(
     repo_path: String,
     staged_only: Option<bool>,
+    ignore_whitespace: Option<bool>,
     state: tauri::State<'_, GitState>,
 ) -> Result<DiffResult, String> {
     let staged = staged_only.unwrap_or(false);
-    blocking_git!(state, repo_path, git_diff_working_impl(repo_path, staged))
+    let ws = ignore_whitespace.unwrap_or(false);
+    blocking_git!(state, repo_path, git_diff_working_impl(repo_path, staged, ws))
 }
 
 #[tauri::command]
@@ -495,10 +510,16 @@ pub async fn git_diff_refs(
     base_ref: String,
     head_ref: String,
     use_merge_base: Option<bool>,
+    ignore_whitespace: Option<bool>,
     state: tauri::State<'_, GitState>,
 ) -> Result<DiffResult, String> {
     let merge_base = use_merge_base.unwrap_or(true);
-    blocking_git!(state, repo_path, git_diff_refs_impl(repo_path, base_ref, head_ref, merge_base))
+    let ws = ignore_whitespace.unwrap_or(false);
+    blocking_git!(
+        state,
+        repo_path,
+        git_diff_refs_impl(repo_path, base_ref, head_ref, merge_base, ws)
+    )
 }
 
 #[tauri::command]
@@ -965,6 +986,17 @@ pub async fn git_remove_worktree(
 ) -> Result<String, String> {
     let f = force.unwrap_or(false);
     blocking_git!(state, repo_path, git_remove_worktree_impl(repo_path, path, f))
+}
+
+#[tauri::command]
+/// Clear a worktree's lock, so it can be removed or pruned again.
+#[allow(clippy::used_underscore_binding)]
+pub async fn git_unlock_worktree(
+    repo_path: String,
+    path: String,
+    state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(state, repo_path, git_unlock_worktree_impl(repo_path, path))
 }
 
 // ─── Worktree setup (env files, dependency dirs, per-repo defaults) ──────────

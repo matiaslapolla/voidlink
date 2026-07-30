@@ -258,6 +258,7 @@ already using, so naming them changed no stacking order anywhere.
 | Token | Value | Surface |
 |---|---|---|
 | — | `z-0/10/20/30` | in-island stacking: base / raised / sticky / dropdown. Tailwind's own scale; leave as is. |
+| `--z-panel` | 50 | edge slide-overs — the agent panel. Above the workbench, below the window frame: it is chrome the user opened, not an overlay that blocks them. |
 | `--z-frame` | 60 | native window-resize strips |
 | `--z-modal` | 70 | settings, snapshot manager |
 | `--z-overlay` | 80 | palette, quick pick, cheat sheet, pickers |

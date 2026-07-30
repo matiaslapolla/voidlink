@@ -1,13 +1,11 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import { Plus, X, FolderOpen, TerminalSquare, Files, ChevronRight, ChevronDown, GitBranchPlus } from "lucide-solid";
-import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "@/store/LayoutContext";
 import { terminalApi } from "@/api/terminal";
-import { fsApi } from "@/api/fs";
 import type { TerminalSession } from "@/types/workspace";
 import { FileTree } from "@/components/files/FileTree";
-import { pushToast } from "@/commands/toast";
+import { pickWorkspaceFolder } from "@/commands/openFolder";
 import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
 import { LedSlot, ledLabel, terminalSignal } from "@/components/layout/StatusLed";
@@ -22,24 +20,8 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
   async function chooseRepo() {
     const ws = activeWorkspace();
     if (!ws) return;
-    const selected = await open({ directory: true, multiple: false, title: "Select repository root" });
-    if (!selected || Array.isArray(selected)) return;
-    // Walk upward for a .git so picking any subdir of a repo Just Works.
-    // If the picked dir already is the root, we still get back the same path.
-    try {
-      const detected = await fsApi.findRepoRoot(selected);
-      if (detected && detected !== selected) {
-        pushToast(
-          `Using repo root: ${detected.split("/").pop()} (detected from selected folder)`,
-          "info",
-        );
-        actions.setRepoRoot(ws.id, detected);
-        return;
-      }
-    } catch {
-      // Detection failure is non-fatal — fall through and use the raw pick.
-    }
-    actions.setRepoRoot(ws.id, selected);
+    const picked = await pickWorkspaceFolder();
+    if (picked) actions.setRepoRoot(ws.id, picked);
   }
 
   const activeTerminalId = () => {
@@ -63,10 +45,11 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
           fallback={
             <button
               onClick={() => void chooseRepo()}
+              title="Open a folder in this workspace"
               class="w-full flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/40"
             >
               <FolderOpen class="w-3.5 h-3.5" />
-              Select repository
+              Open folder
             </button>
           }
         >
@@ -74,7 +57,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             <button
               onClick={() => void chooseRepo()}
               class="w-full flex items-center gap-2 text-xs truncate"
-              title={repo()}
+              title={`${repo()}\nClick to open a different folder`}
             >
               <FolderOpen class="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
               <span class="truncate font-medium text-foreground">
@@ -104,7 +87,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
               fallback={
                 <div class="px-2 py-4 text-center text-[13px] text-muted-foreground">
                   <Files class="w-5 h-5 mx-auto mb-2 opacity-60" />
-                  Select a repository first.
+                  Open a folder to browse its files.
                 </div>
               }
             >
@@ -155,7 +138,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
                   <TerminalSquare class="w-4 h-4 mx-auto mb-1.5 opacity-60" />
                   {activeRepoPath()
                     ? "No terminals. Click + to start one."
-                    : "Select a repository first."}
+                    : "Open a folder to start a shell."}
                 </div>
               }
             >

@@ -12,6 +12,7 @@ import { emptyTabGroupState, type TabGroupState } from "./tabGroups";
 import { emptyNavHistory, type GroupMru, type NavHistory } from "./navigation";
 import type {
   ActiveItem,
+  AgentTab,
   BrainTab,
   BrowserTab,
   ClosedTab,
@@ -52,6 +53,10 @@ export interface AppStoreState {
   previewTabsByWorktree: Record<string, PreviewTab[]>;
   brainTabsByWorktree: Record<string, BrainTab[]>;
   browserTabsByWorktree: Record<string, BrowserTab[]>;
+  /// AI agent threads, several per worktree. The tabs only; each thread's
+  /// transcript lives under `STORAGE_KEYS.agentThreads` keyed by tab id, because
+  /// a conversation is far larger than a tab and is written far more often.
+  agentTabsByWorktree: Record<string, AgentTab[]>;
   /// LIFO stack of recently closed tabs, capped at CLOSED_TAB_HISTORY_LIMIT.
   /// Persisted since Wave 4 (`voidlink-closed-tabs`): the tab you closed by
   /// accident five minutes before a reload is the same mistake on either side
@@ -61,7 +66,7 @@ export interface AppStoreState {
   /// and render leftmost in the tab strip.
   pinnedTabsByWorktree: Record<string, string[]>;
   /// Which tab is in front *in the workbench* — terminals, compares, stacks,
-  /// the commit graph, brain and browser tabs.
+  /// the commit graph, brain, browser and agent tabs.
   activeItemByWorktree: Record<string, ActiveItem | null>;
   /// Which tab is in front *in the editor window* — files, diffs, conflicts and
   /// previews. Two pointers rather than one because the windows focus

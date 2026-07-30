@@ -427,72 +427,6 @@ function SplitCell(props: {
   );
 }
 
-// ─── Ignore-whitespace transform ─────────────────────────────────────────────
-
-/**
- * Return a copy of the file diff with whitespace-only changes stripped.
- * Mirrors `git diff -w`: paired -/+ that match after collapsing whitespace are
- * dropped (not reclassified as context). Lone blank-only additions/deletions
- * are dropped too. Recomputes per-file +/- counts.
- */
-export function applyIgnoreWhitespace(file: FileDiff): FileDiff {
-  const normalize = (s: string) => s.replace(/\s+/g, "");
-
-  const newHunks: DiffHunk[] = file.hunks.map((hunk) => {
-    const lines: DiffLine[] = [];
-    let i = 0;
-    while (i < hunk.lines.length) {
-      const l = hunk.lines[i];
-      if (l.origin === " " || l.origin === "~") {
-        lines.push(l);
-        i++;
-        continue;
-      }
-      const dels: DiffLine[] = [];
-      while (i < hunk.lines.length && hunk.lines[i].origin === "-") {
-        dels.push(hunk.lines[i]);
-        i++;
-      }
-      const adds: DiffLine[] = [];
-      while (i < hunk.lines.length && hunk.lines[i].origin === "+") {
-        adds.push(hunk.lines[i]);
-        i++;
-      }
-      const max = Math.max(dels.length, adds.length);
-      for (let k = 0; k < max; k++) {
-        const d = dels[k];
-        const a = adds[k];
-        if (d && a && normalize(d.content) === normalize(a.content)) continue;
-        if (d && !a && normalize(d.content) === "") continue;
-        if (a && !d && normalize(a.content) === "") continue;
-        if (d) lines.push(d);
-        if (a) lines.push(a);
-      }
-    }
-    return { ...hunk, lines };
-  });
-
-  const keptHunks = newHunks.filter((h) =>
-    h.lines.some((l) => l.origin === "+" || l.origin === "-"),
-  );
-
-  let totalAdd = 0;
-  let totalDel = 0;
-  for (const h of keptHunks) {
-    for (const l of h.lines) {
-      if (l.origin === "+") totalAdd++;
-      else if (l.origin === "-") totalDel++;
-    }
-  }
-
-  return {
-    ...file,
-    hunks: keptHunks,
-    additions: totalAdd,
-    deletions: totalDel,
-  };
-}
-
 // ─── Public renderer ─────────────────────────────────────────────────────────
 
 export function DiffRenderer(props: {
@@ -510,11 +444,46 @@ export function DiffRenderer(props: {
       }
     >
       <Show
-        when={props.mode === "split"}
-        fallback={<InlineDiff file={props.file} hunkActions={props.hunkActions} />}
+        when={props.file.hunks.length > 0}
+        fallback={<NoTextChange file={props.file} />}
       >
-        <SplitDiff file={props.file} hunkActions={props.hunkActions} />
+        <Show
+          when={props.mode === "split"}
+          fallback={<InlineDiff file={props.file} hunkActions={props.hunkActions} />}
+        >
+          <SplitDiff file={props.file} hunkActions={props.hunkActions} />
+        </Show>
       </Show>
     </Show>
+  );
+}
+
+/// A file that changed without any line changing.
+///
+/// A non-binary file with zero hunks used to render `<For each={[]}>` — an
+/// empty white pane with nothing to explain it, reachable in three ordinary
+/// ways: a mode change (`chmod +x`), a submodule pointer move, and a file whose
+/// only edit was whitespace when `ignoreWhitespace` filtered every hunk away.
+/// The row above it says the file changed, so silence here reads as the diff
+/// viewer being broken rather than as an answer.
+///
+/// §7.5.2/§7.5.4: never blank a region to say something about it.
+function NoTextChange(props: { file: FileDiff }) {
+  const reason = () => {
+    switch (props.file.status) {
+      case "typechange":
+        return "Its type changed — between a regular file, a symlink and a directory.";
+      case "renamed":
+      case "copied":
+        return "Only its path changed; the contents are identical.";
+      default:
+        return "Its mode or the commit it points at changed, but no line did.";
+    }
+  };
+  return (
+    <div class="p-4 text-xs text-muted-foreground space-y-1">
+      <p class="italic">No line changes to show.</p>
+      <p>{reason()}</p>
+    </div>
   );
 }

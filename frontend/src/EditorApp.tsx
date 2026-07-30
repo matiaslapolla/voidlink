@@ -237,6 +237,20 @@ export function EditorSurface(props: {
     return item?.type === "file" ? item.path : null;
   };
 
+  /// Which diff the changes list should highlight as open.
+  ///
+  /// Not `activeFilePath()`, which this used to be: that is the active *file*
+  /// tab's absolute path, while the changes list keys on repo-relative paths,
+  /// so the highlight could never match and no row was ever marked open. The
+  /// diff tab's `filePath` is already repo-relative, and its `staged` flag
+  /// picks which of the file's two possible rows is the one showing.
+  const activeDiffTarget = () => {
+    const item = activeItem();
+    if (item?.type !== "diff") return null;
+    const tab = snapshot().diffs.find((t) => t.id === item.id);
+    return tab ? { path: tab.filePath, staged: !!tab.staged } : null;
+  };
+
   // ── Editor groups ────────────────────────────────────────────────────────
   //
   // Local to this window, and deliberately not part of the broadcast snapshot:
@@ -1055,7 +1069,11 @@ export function EditorSurface(props: {
                       class="absolute inset-0"
                       style={{ display: tab.id === activeIdOf("diff") ? "block" : "none" }}
                     >
-                      <DiffTabView repoPath={path()} filePath={tab.filePath} />
+                      <DiffTabView
+                        repoPath={path()}
+                        filePath={tab.filePath}
+                        staged={tab.staged}
+                      />
                     </div>
                   )}
                 </For>
@@ -1121,7 +1139,7 @@ export function EditorSurface(props: {
                       void refreshGit();
                       emitGitRefsChanged();
                     }}
-                    selectedFile={activeFilePath()}
+                    selectedFile={activeDiffTarget()}
                   />
                 </div>
               </aside>

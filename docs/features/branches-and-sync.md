@@ -99,27 +99,40 @@ push fails, or the reverse.
   an `auto_pop` parameter that does not exist in the signature. Switch back and
   your work is still in the stash list — run `git stash pop`, or use the Stashes
   pane.
-- **Clicking a remote-tracking branch fails.** The list includes remotes and
-  their rows are clickable, but safe checkout only resolves `refs/heads/<name>`,
-  so `origin/foo` becomes `refs/heads/origin/foo` and errors. There is no
-  detached-HEAD or create-tracking-branch path.
 - **Checkout errors are not toasts.** They render as red text under the branch
   filter box.
 - **Push errors render under the commit box**, not as a toast.
-- **Push cannot force, cannot set upstream, and cannot push to a
-  differently-named remote branch.** No `--force`, no `--force-with-lease`, no
-  `-u`.
-- **`origin` is hard-coded** for the repo header's remote URL, for fetch, for
-  push, and for tag push.
+- **Push cannot force.** No `--force`, no `--force-with-lease` — a diverged
+  branch just errors. It *can* set upstream (only when absent; it never
+  clobbers an existing one).
+- **`origin` is hard-coded** for the repo header's remote URL, for push, and for
+  tag push. **Fetch is not**: with no remote named it fetches every configured
+  remote, and prunes.
 - **New branches get no upstream.** `git_create_branch` creates the ref only.
-- **The "is it merged?" test for delete compares against `HEAD`**, not against
-  the branch's upstream, despite the doc comment saying otherwise. A branch
-  merged into `origin/main` but not into your current branch reads as unmerged.
-- **Conflict detection after a pull is an English substring match** on
-  `CONFLICT` in git's combined output. Under a non-English locale a conflicted
-  pull is reported as a plain failure.
-- **`git_checkout_branch`, the non-stashing variant, still exists** and is
-  registered and exposed on the TS API, but nothing in the UI calls it.
+- **A deleted upstream ref reads as "unknown", not as "no upstream"** — the row
+  shows `?` when `branch.<name>.remote`/`.merge` still name one whose ref is
+  gone.
+- **`origin/HEAD` is filtered out of the branch list.** It is a symbolic pointer
+  at the remote's default branch, not a branch: it could never be checked out,
+  and its context menu used to offer a merge that silently operated on
+  `origin/main` under a misleading name.
+- **The unborn branch is listed.** A fresh `git init -b main` shows `main` with
+  no commit behind it.
+- **Deleting a branch is refused during a rebase, merge or cherry-pick**, in the
+  backend rather than only by a disabled button — HEAD is detached during a
+  rebase, so the "is this branch checked out?" guard does not fire and the
+  replayed commits would be reachable only from the reflog.
+- **The "is it merged?" test compares against every branchy ref**, not just
+  `HEAD`, and skips only the branch itself and its own remote counterparts.
+- **Conflict detection after a pull asks the index for unmerged paths**, not
+  git's prose, so it is locale-independent.
+- **`git_checkout_branch`, the non-stashing variant, is called by `StackTab`.**
+- **Remotes:** URLs and names are validated before they reach libgit2, which
+  otherwise accepts any string as a URL. Adding a remote fetches it immediately
+  — without that, adding one produced no visible change at all. Removing one
+  warns that every branch tracking it loses its upstream.
+- **The Remotes dialog is reachable only from the workbench sidebar.** The
+  standalone git window has no fetch, pull, push or remotes controls.
 - **Branch filtering is fuzzy** (substring first, then in-order subsequence);
   the branch list is sorted HEAD-first, then by MRU, then alphabetically.
 - **The branch context menu is attached to every row, including remotes** — so

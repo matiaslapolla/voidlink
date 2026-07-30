@@ -104,6 +104,7 @@
    * them changed no stacking order anywhere. `z-0/10/20/30` (Tailwind's own
    * scale) stay as the in-island stacking steps: base / raised / sticky /
    * dropdown. Anything that escapes an island uses a name below. */
+  --z-panel: 50; /* edge slide-overs — the agent panel         */
   --z-frame: 60; /* native window-resize strips                */
   --z-modal: 70; /* settings, snapshot manager                 */
   --z-overlay: 80; /* palette, quick pick, cheat sheet, pickers  */

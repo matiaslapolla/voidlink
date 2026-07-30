@@ -33,6 +33,7 @@ function fileDiff(hunks: DiffHunk[], overrides: Partial<FileDiff> = {}): FileDif
     status: "modified",
     hunks,
     isBinary: false,
+    oldBlobOid: null,
     additions: 0,
     deletions: 0,
     ...overrides,

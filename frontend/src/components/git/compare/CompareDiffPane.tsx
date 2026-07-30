@@ -4,7 +4,6 @@ import { useAppStore } from "@/store/LayoutContext";
 import type { FileDiff } from "@/types/git";
 import {
   DiffRenderer,
-  applyIgnoreWhitespace,
 } from "@/components/git/shared/SplitDiffRenderer";
 
 // Right-hand side of the Compare tab. Receives a single FileDiff and
@@ -30,11 +29,10 @@ function displayPath(file: FileDiff): { primary: string; rename: string | null }
 export function CompareDiffPane(props: Props) {
   const { state } = useAppStore();
 
-  const transformed = createMemo<FileDiff | null>(() => {
-    const f = props.file;
-    if (!f) return null;
-    return state.ignoreWhitespace ? applyIgnoreWhitespace(f) : f;
-  });
+  /// The file exactly as the backend produced it. "Ignore whitespace" is now a
+  /// diff option rather than a post-hoc filter here, so what this renders and
+  /// what the tree counts are the same diff.
+  const transformed = createMemo<FileDiff | null>(() => props.file ?? null);
 
   return (
     <div class="flex flex-col h-full bg-background min-w-0">
@@ -48,15 +46,25 @@ export function CompareDiffPane(props: Props) {
         }
       >
         {(f) => {
-          const path = displayPath(f());
+          // A function, not `const path = displayPath(f())`.
+          //
+          // A non-keyed `<Show>` runs this callback inside `untrack()` and
+          // re-runs it only when the condition flips falsy→truthy — its
+          // condition memo compares `!a === !b`, so file → *different* file is
+          // not a change it reacts to. Computing the path once therefore froze
+          // the header on whichever file was selected first: the +/− counts and
+          // the diff body updated (they read `f()` during render, which does
+          // track), while the name above them kept naming a file you were no
+          // longer looking at.
+          const path = () => displayPath(f());
           return (
             <>
               <div class="flex items-center gap-3 px-3 py-1.5 border-b border-border shrink-0 text-[11px]">
                 <div class="flex-1 min-w-0">
-                  <div class="font-medium truncate">{path.primary}</div>
-                  <Show when={path.rename}>
+                  <div class="font-medium truncate">{path().primary}</div>
+                  <Show when={path().rename}>
                     <div class="text-muted-foreground/80 truncate">
-                      renamed from <span class="font-mono">{path.rename}</span>
+                      renamed from <span class="font-mono">{path().rename}</span>
                     </div>
                   </Show>
                 </div>

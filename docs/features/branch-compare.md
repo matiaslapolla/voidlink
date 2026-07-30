@@ -72,10 +72,6 @@ The tree pane width (default 320, clamped 220–600) persists too, but **globall
 
 ## Gotchas and limits
 
-- **Renames are never detected.** `find_similar` is not called anywhere in the
-  backend, and `diff_tree_to_tree` does not detect renames by default. The `R`
-  and `C` status icons exist but will not fire for a compare diff — a rename
-  shows up as an add plus a delete. The design doc promised otherwise.
 - **Unrelated histories silently degrade.** With merge-base on, if
   `merge_base()` fails the code falls back to the base commit's own tree — you
   get a two-dot diff with no indication that the toggle didn't apply.
@@ -84,11 +80,24 @@ The tree pane width (default 320, clamped 220–600) persists too, but **globall
   `/\bbase\b/i` and `/\bhead\b/i` against the message. A ref literally named
   `base` or `head` mis-highlights.
 - **No caps on diff size.** The entire tree diff, including every line, is
-  materialised and sent over IPC. A huge diff is unbounded.
-- **The tab does not react to `voidlink:refresh-git`.** Branches created
-  elsewhere won't appear in the ref picker until the tab remounts.
+  materialised and sent over IPC. A huge diff is unbounded, and it holds the
+  per-repo lock while it runs.
+- **Renames and copies *are* detected** (`find_similar`), and a typechange is
+  one delta rather than an add/delete pair sharing a path.
+- **A stash compare includes its untracked files.** `stash@{N}^1..stash@{N}`
+  cannot reach them — they live in a third parent — so this one pairing is
+  widened to match `git stash show -u`. Any other pair of refs gets plain
+  two-tree semantics.
+- **Ignore-whitespace is a diff option, not a filter.** A whitespace-only change
+  disappears from the file list entirely, exactly as `git diff -w` does, so the
+  tree, the counts and the body always describe the same diff. A mode-only
+  change survives it and renders an explanation rather than a blank pane.
 - **The diff mode and ignore-whitespace settings are global**, not per compare
-  tab.
+  tab. Ignore-whitespace is part of the resource key, so toggling it refetches.
+- **Compare tabs dedupe** on (base, head, merge-base). Ten clicks in the commit
+  graph reuse one tab; a blank picker tab is exempt.
+- **Folder expand/collapse survives a refetch**, because the state is keyed on
+  folder path rather than living in rows that are rebuilt on every pulse.
 - **Compact folder chains are one non-splittable row.** A chain like `a/b/c` is
   collapsed into a single row you cannot expand segment by segment. Only
   folders with exactly one folder child collapse — a folder with one file child
@@ -97,5 +106,7 @@ The tree pane width (default 320, clamped 220–600) persists too, but **globall
   tree order.
 - **Binary files render `Binary file — no diff preview.`**
 - **No hunk staging in this pane** — see [git staging](./git-staging.md).
-- Clicking a **root commit** from the commit graph opens `<oid>^ .. <oid>`,
-  which cannot resolve and produces a `base: could not resolve …` error.
+- Clicking a **root commit** from the commit graph or the sidebar diffs it
+  against git's empty tree, which is what it introduced. Two other call sites
+  (`EditorApp`, `MainSurface`) still build `<oid>^` from a bare SHA found in
+  text and still fail on a root commit — they have no parent list to hand.

@@ -25,6 +25,31 @@ import type {
 } from "@/types/git";
 import type { GraphCommit } from "@/types/history";
 
+/// Calls in flight, keyed by what they are asking for.
+const inFlight = new Map<string, Promise<unknown>>();
+
+/// Share one round trip between callers that ask for the same thing at the same
+/// time.
+///
+/// Deliberately *not* a cache: nothing is retained past settlement, so this can
+/// never serve a stale answer. It only collapses the window in which two
+/// subscribers, woken by the same refresh pulse, would each start their own
+/// identical request.
+///
+/// Rejections are shared too — a caller that would have failed on its own
+/// still fails, with the same error.
+export function coalesceInFlight<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const existing = inFlight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const promise = run().finally(() => {
+    // Only clear our own entry: a later call that started after this one
+    // settled owns the key now, and deleting it would orphan its followers.
+    if (inFlight.get(key) === promise) inFlight.delete(key);
+  });
+  inFlight.set(key, promise);
+  return promise;
+}
+
 export const gitApi = {
   repoInfo(repoPath: string): Promise<GitRepoInfo> {
     return invoke<GitRepoInfo>("git_repo_info", { repoPath });
@@ -292,8 +317,20 @@ export const gitApi = {
     return invoke<void>("git_discard_hunk", { repoPath, file, hunkIndex });
   },
 
-  diffWorking(repoPath: string, stagedOnly?: boolean): Promise<DiffResult> {
-    return invoke<DiffResult>("git_diff_working", { repoPath, stagedOnly });
+  /// `ignoreWhitespace` is a property of the diff, not of the render: it goes
+  /// to libgit2 so the file list, the counts and the content all come from one
+  /// diff. It used to be applied client-side after the fact, which left the
+  /// three disagreeing.
+  diffWorking(
+    repoPath: string,
+    stagedOnly?: boolean,
+    ignoreWhitespace?: boolean,
+  ): Promise<DiffResult> {
+    return invoke<DiffResult>("git_diff_working", {
+      repoPath,
+      stagedOnly,
+      ignoreWhitespace: ignoreWhitespace ?? false,
+    });
   },
 
   diffRefs(
@@ -301,12 +338,14 @@ export const gitApi = {
     baseRef: string,
     headRef: string,
     useMergeBase?: boolean,
+    ignoreWhitespace?: boolean,
   ): Promise<DiffResult> {
     return invoke<DiffResult>("git_diff_refs", {
       repoPath,
       baseRef,
       headRef,
       useMergeBase: useMergeBase ?? true,
+      ignoreWhitespace: ignoreWhitespace ?? false,
     });
   },
 
@@ -393,8 +432,19 @@ export const gitApi = {
     return invoke<void>("git_resolve_conflict", { repoPath, filePath, content });
   },
 
+  /// Enumerate a repository's worktrees.
+  ///
+  /// Concurrent calls for the same repository share one round trip — see
+  /// `coalesceInFlight`. This is the most expensive read in the app (two `git`
+  /// subprocesses per worktree, all inside the per-repo lock) and it has two
+  /// independent callers that both wake on the same refresh pulse: the sidebar's
+  /// `WorktreesPane` and the rail's `hydrateAllWorktrees`. Every pulse therefore
+  /// paid for it twice, which was tolerable while pulses only followed a button
+  /// press and is not now that a filesystem watcher emits them.
   listWorktrees(repoPath: string): Promise<WorktreeInfo[]> {
-    return invoke<WorktreeInfo[]>("git_list_worktrees", { repoPath });
+    return coalesceInFlight(`worktrees:${repoPath}`, () =>
+      invoke<WorktreeInfo[]>("git_list_worktrees", { repoPath }),
+    );
   },
 
   addWorktree(
@@ -417,6 +467,13 @@ export const gitApi = {
   /// not a rejection.
   removeWorktree(repoPath: string, path: string, force?: boolean): Promise<string> {
     return invoke<string>("git_remove_worktree", { repoPath, path, force: force ?? false });
+  },
+
+  /// Clear a worktree's lock. Without this a locked worktree was a dead end:
+  /// `remove` refuses, `--force` refuses too (git wants `remove -f -f` for a
+  /// lock), and nothing in the app could clear it.
+  unlockWorktree(repoPath: string, path: string): Promise<void> {
+    return invoke<void>("git_unlock_worktree", { repoPath, path });
   },
 
   /// Read-only inspection of what a new worktree would need. `sourcePath`

@@ -179,6 +179,7 @@ const ITEM_TYPES = new Set([
   "preview",
   "brain",
   "browser",
+  "agent",
 ]);
 
 function parseItem(raw: unknown): ActiveItem | null {

@@ -244,6 +244,16 @@ describe("persistence", () => {
     expect(parsed.index).toBe(0);
   });
 
+  it("keeps a persisted pointer at an agent thread", () => {
+    // Agent tabs are navigable peers of terminals, so back/forward has to
+    // survive a reload pointed at one rather than silently dropping the row.
+    const parsed = parseNavHistory({
+      entries: [{ groupId: "g1", item: { type: "agent", id: "a1" } }],
+      index: 0,
+    });
+    expect(parsed.entries.map((e) => e.item.type)).toEqual(["agent"]);
+  });
+
   it("clamps an out-of-range stored cursor", () => {
     const parsed: NavHistory = parseNavHistory({
       entries: [{ groupId: null, item: { type: "terminal", id: "a" } }],

@@ -38,6 +38,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emitRemoteGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
+import { GIT_CHANGED_EVENT } from "@/api/watch";
 import type {
   ActiveItem,
   ConflictTab,
@@ -239,6 +240,34 @@ export function onWorktreeWizardRequest(
   return listenLoudly<WorktreeWizardRequest>(WORKTREE_WIZARD_EVENT, handler);
 }
 
+const OPEN_WORKTREE_EVENT = "voidlink://open-worktree";
+
+/// Payload for "focus this worktree". The path is git's, so the workbench
+/// matches it against its own list and registers it when it is one git knows
+/// about but the store has not seen yet.
+export interface OpenWorktreeRequest {
+  path: string;
+  branch: string | null;
+}
+
+/// Ask the workbench to open a worktree, and focus it.
+///
+/// Same reason as the wizard: the git window's store is a private, unpersisted
+/// copy with no rail attached, so selecting a worktree there changed a store
+/// nobody renders — the button was a **silent no-op** in that window, which is
+/// the worst possible outcome for a button that looks like it works.
+export async function requestOpenWorktreeOnMain(req: OpenWorktreeRequest): Promise<void> {
+  await emit(OPEN_WORKTREE_EVENT, req);
+  await focusMainWindow();
+}
+
+/// Subscribe to forwarded open-worktree requests. Workbench side.
+export function onOpenWorktreeRequest(
+  handler: (req: OpenWorktreeRequest) => void,
+): Promise<UnlistenFn> {
+  return listenLoudly<OpenWorktreeRequest>(OPEN_WORKTREE_EVENT, handler);
+}
+
 // ─── Context: main broadcasts, satellites consume ───────────────────────────
 
 /// Fire-and-forget emit.
@@ -343,6 +372,20 @@ export function bridgeGitRefsAcrossWindows(): () => void {
     else unlisten = fn;
   });
 
+  // The filesystem watcher → local. Rust broadcasts to *every* window, so each
+  // one hears this directly and there is nothing to re-publish.
+  //
+  // Marked remote for exactly that reason: publishing it would send a pulse to
+  // windows that already got the same news straight from Rust, and the
+  // `remote` flag is what stops that second lap.
+  let unlistenWatch: UnlistenFn | null = null;
+  void listenLoudly<string>(GIT_CHANGED_EVENT, () => {
+    emitRemoteGitRefsChanged();
+  }).then((fn) => {
+    if (disposed) void fn();
+    else unlistenWatch = fn;
+  });
+
   // Local → remote. Anything that originated here is published; anything that
   // arrived from another window is not.
   const offLocal = onGitRefsChanged((pulse) => {
@@ -354,6 +397,7 @@ export function bridgeGitRefsAcrossWindows(): () => void {
     disposed = true;
     offLocal();
     if (unlisten) void unlisten();
+    if (unlistenWatch) void unlistenWatch();
   };
 }
 
@@ -479,7 +523,10 @@ export interface EditorTabsSnapshot {
 /// what actually updates the editor window's UI.
 export type EditorRequest =
   | { kind: "open-file"; path: string }
-  | { kind: "open-diff"; filePath: string }
+  // `staged` picks the side of the index — `git diff --cached` vs `git diff`.
+  // Optional so a request serialized by an older window still applies; absent
+  // means the unstaged view, which is the only one that used to exist.
+  | { kind: "open-diff"; filePath: string; staged?: boolean }
   | { kind: "open-conflict"; filePath: string }
   | { kind: "open-preview"; filePath: string }
   | { kind: "close"; tab: EditorTabKind; id: string }

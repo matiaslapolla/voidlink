@@ -204,12 +204,42 @@ export const AI_KEY_PRESETS: readonly AiKeyBinding[] = [
   { id: "openrouter", envVar: "OPENROUTER_API_KEY", label: "OpenRouter" },
 ];
 
+/// One named agent in the workspace roster. `commandTemplate` is a shell
+/// command the grounded prompt is piped to on stdin — same BYO-CLI contract
+/// as `commitCommand`.
+///
+/// The name exists so two entries pointing at differently-configured CLIs are
+/// distinguishable in a tab title. Anonymity was the whole limitation of the
+/// single-command agent: there was exactly one, so it never needed a label.
+export interface AgentRosterEntry {
+  id: string;
+  name: string;
+  commandTemplate: string;
+}
+
+/// The id the silent migration gives the entry built from `ai.agentCommand`.
+///
+/// A stable literal rather than a fresh uuid so the migration is idempotent:
+/// a payload that has already been through it is recognisable, and anything
+/// that persisted a binding to the pre-roster agent still resolves.
+export const DEFAULT_AGENT_ID = "default";
+
 /// AI is BYO-CLI: voidlink shells out to whatever generative-text command the
 /// user already has installed. `commitCommand` is the shell template; the
 /// staged diff is piped to stdin and stdout becomes the suggested message.
-/// `agentCommand` is the (optional) template for the repo agent — a grounded
-/// prompt is piped to stdin. When empty, the agent falls back to
-/// `commitCommand` so a single configured CLI powers both.
+///
+/// `agents` is the per-workspace roster: each entry is a named agent an agent
+/// tab can be bound to, so two differently-configured CLIs can run side by
+/// side. It is never empty — `parseSettings` synthesizes a one-entry roster
+/// from `agentCommand` rather than allowing a state in which every bound tab
+/// points at nothing.
+///
+/// `agentCommand` survives the roster as the shared fallback, and is the
+/// reason the fallback chain has three links: an entry's own
+/// `commandTemplate`, else `agentCommand`, else `commitCommand`. Deleting it
+/// would have been tidier and would have silently unconfigured everyone whose
+/// roster entry leaves its template blank. `resolveAgentCommand` is the one
+/// place the chain is walked.
 ///
 /// `customKeys` extends `AI_KEY_PRESETS` with user-defined provider keys. Like
 /// the presets it holds only the id → env-var mapping; values are in the OS
@@ -217,6 +247,7 @@ export const AI_KEY_PRESETS: readonly AiKeyBinding[] = [
 export interface AiSettings {
   commitCommand: string;
   agentCommand: string;
+  agents: AgentRosterEntry[];
   customKeys: AiKeyBinding[];
 }
 
@@ -310,6 +341,9 @@ const DEFAULTS: AppSettings = {
   ai: {
     commitCommand: "",
     agentCommand: "",
+    // Not `[]`. A fresh install and a migrated one land on the same shape, so
+    // no caller anywhere has to handle an empty roster.
+    agents: [{ id: DEFAULT_AGENT_ID, name: "Repo agent", commandTemplate: "" }],
     customKeys: [],
   },
   brain: {
@@ -323,6 +357,45 @@ const DEFAULTS: AppSettings = {
 function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | undefined): T {
   if (!partial) return { ...defaults };
   return { ...defaults, ...partial };
+}
+
+/// Validate a persisted roster row by row, and synthesize the one-entry roster
+/// when nothing usable survives.
+///
+/// Malformed rows are **dropped, not thrown on**. This is user-editable JSON on
+/// disk (Settings → JSON writes the same file), so a hand-edited entry with a
+/// numeric name is a realistic input, and the per-row policy the rest of this
+/// codebase applies — one bad row costs one row — is the only one that doesn't
+/// turn a typo into a settings reset.
+///
+/// Ids are deduped keeping the first occurrence: a later duplicate is
+/// unreachable anyway, because every lookup goes through `agentById`, which
+/// returns the first match.
+function parseAgentRoster(raw: unknown, agentCommand: string): AgentRosterEntry[] {
+  const entries: AgentRosterEntry[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(raw)) {
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const { id, name, commandTemplate } = row as Record<string, unknown>;
+      if (typeof id !== "string" || typeof name !== "string") continue;
+      if (typeof commandTemplate !== "string") continue;
+      if (!id.trim() || seen.has(id)) continue;
+      seen.add(id);
+      entries.push({ id, name, commandTemplate });
+    }
+  }
+  if (entries.length > 0) return entries;
+  // The silent migration: an install whose only agent config is the old single
+  // `agentCommand` boots into a roster of exactly that command, under the name
+  // the slide-over header already showed, so nothing about its behaviour or
+  // vocabulary changes.
+  return [{ id: DEFAULT_AGENT_ID, name: "Repo agent", commandTemplate: agentCommand.trim() }];
+}
+
+function parseAiSettings(partial: Partial<AiSettings> | undefined): AiSettings {
+  const ai = mergeDefaults(DEFAULTS.ai, partial);
+  return { ...ai, agents: parseAgentRoster(partial?.agents, ai.agentCommand) };
 }
 
 /// Fold a persisted payload into a complete settings object.
@@ -347,7 +420,11 @@ export function parseSettings(raw: string | null): AppSettings {
       // Absent in every payload saved before the editor became configurable,
       // which is every payload on disk today.
       editor: parseEditorSettings(parsed.editor),
-      ai: mergeDefaults(DEFAULTS.ai, parsed.ai),
+      // The one section besides `editor` that validates rather than merging:
+      // the agent roster has to be non-empty for every caller downstream, and
+      // has to absorb a payload saved before it existed. See
+      // `parseAgentRoster`.
+      ai: parseAiSettings(parsed.ai),
       brain: mergeDefaults(DEFAULTS.brain, parsed.brain),
       git: mergeDefaults(DEFAULTS.git, parsed.git),
     };
@@ -393,6 +470,26 @@ export function useSettings() {
     },
     updateAi(patch: Partial<AiSettings>) {
       setSettings("ai", patch);
+    },
+    /// Append a roster entry and return its id, so the caller can bind a tab to
+    /// the agent it just created without re-reading the roster to find it.
+    addAgent(name: string, commandTemplate: string): string {
+      const id = crypto.randomUUID();
+      setSettings("ai", "agents", (agents) => [...agents, { id, name, commandTemplate }]);
+      return id;
+    },
+    updateAgent(id: string, patch: Partial<Omit<AgentRosterEntry, "id">>) {
+      setSettings("ai", "agents", (agents) =>
+        agents.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
+      );
+    },
+    /// Remove an entry. Refuses to remove the last one — a roster of zero would
+    /// leave every agent tab bound to nothing, and there is no UI state that
+    /// recovers from that except re-adding an agent, which the user would have
+    /// to guess at.
+    removeAgent(id: string) {
+      if (settings.ai.agents.length <= 1) return;
+      setSettings("ai", "agents", (agents) => agents.filter((entry) => entry.id !== id));
     },
     /// Save a per-repo identity override. Trims both fields; passing a blank
     /// name or email clears the override instead of storing an unusable one.
@@ -445,6 +542,43 @@ export function aiKeyBindings(): AiKeyBinding[] {
 /// keychain at spawn time, so no secret ever passes through here.
 export function aiSecretBindings(): { id: string; envVar: string }[] {
   return aiKeyBindings().map(({ id, envVar }) => ({ id, envVar }));
+}
+
+/// The workspace's agent roster. Non-reactive snapshot — safe to call from the
+/// command layer outside a tracking scope, like `aiKeyBindings()`.
+///
+/// Copied rather than returned as-is: the store's array is what Solid tracks,
+/// and handing it to a caller that might sort it in place is a mutation of
+/// persisted state that no `setSettings` call would explain.
+export function agentRoster(): AgentRosterEntry[] {
+  return [...settings.ai.agents];
+}
+
+/// One entry by id, or `null` when the id is stale — a tab bound to an agent
+/// the user has since removed. Callers render that as an unconfigured agent
+/// rather than crashing. Non-reactive.
+export function agentById(id: string): AgentRosterEntry | null {
+  return settings.ai.agents.find((entry) => entry.id === id) ?? null;
+}
+
+/// The roster entry a new agent tab binds to when the caller has no preference:
+/// the first entry. `parseSettings` guarantees there is one; the `??` is for the
+/// type, not for a state that can occur.
+export function defaultAgentId(): string {
+  return settings.ai.agents[0]?.id ?? DEFAULT_AGENT_ID;
+}
+
+/// The shell template to actually run for `entry`: its own template, else the
+/// shared `ai.agentCommand`, else `ai.commitCommand` — the same two fallbacks
+/// the single-command agent already had, with the per-entry template layered on
+/// top. Returns `""` when nothing is configured, which callers render as the
+/// "no AI command configured" notice rather than spawning an empty shell.
+export function resolveAgentCommand(entry: AgentRosterEntry | null): string {
+  const own = entry?.commandTemplate.trim() ?? "";
+  if (own) return own;
+  const shared = settings.ai.agentCommand.trim();
+  if (shared) return shared;
+  return settings.ai.commitCommand.trim();
 }
 
 /// The saved identity override for `repoRoot`, or `null` when that repo has

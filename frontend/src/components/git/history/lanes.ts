@@ -8,8 +8,13 @@ import type { GraphCommit } from "@/types/history";
 export interface LaneSegment {
   top: number;
   bottom: number;
-  /// The lane's colour index (its column at the top), used so a lane keeps
-  /// a stable colour as it shifts across columns.
+  /// The lane's colour index: the column the lane itself occupies.
+  ///
+  /// Not `top`, and deliberately so — a connector drawn from a merge commit's
+  /// dot into an existing lane has a `top` of the dot's column but belongs to
+  /// the lane it is joining, and should be stroked in that lane's colour. A
+  /// lane never changes column once allocated (the trim below only ever drops
+  /// trailing nulls), so this is stable for the lane's whole life.
   lane: number;
 }
 
@@ -25,6 +30,14 @@ export interface GraphLayout {
   rows: GraphRow[];
   /// Number of columns in use — drives the gutter width.
   maxCols: number;
+  /// Lanes still carrying an unreached parent after the last row.
+  ///
+  /// Non-empty means the window ends mid-history: those lines continue into
+  /// commits we did not fetch. The last row used to emit no segments at all
+  /// (`if (i < n - 1)`), so every in-flight lane simply stopped one row early
+  /// with nothing distinguishing "history ends here" from "we asked for 200".
+  /// The UI draws these to the bottom edge and fades them.
+  truncatedLanes: number[];
 }
 
 /// Find the first free (null) lane slot, or the end of the array.
@@ -46,13 +59,36 @@ function firstFree(lanes: (string | null)[]): number {
 /// parent keeps its assigned column until it is itself reached, the column
 /// we route a parent to is exactly where its dot will later render — so
 /// edges connect correctly across the whole DAG.
+///
+/// One thing this deliberately does *not* promise: that the first parent
+/// inherits the commit's own column. When some other child already opened a
+/// lane to that parent, the commit connects sideways into that lane instead,
+/// because two columns waiting on the same oid would draw the same commit
+/// twice. So the mainline is usually vertical and is not guaranteed to be.
 export function computeLanes(commits: GraphCommit[]): GraphLayout {
   const n = commits.length;
   // Snapshot of lane occupancy leaving each row (i.e. entering the next).
   const laneStates: (string | null)[][] = new Array(n);
-  // Columns at each row whose lane originated from *this* commit's dot
-  // (its parents) — those edges start at the dot, not straight down.
-  const dotOrigin: Set<number>[] = new Array(n);
+
+  // A commit's dot relates to a column below it in one of two ways, and
+  // collapsing them into a single set is what used to break every fork point
+  // in every repository.
+  //
+  //   `sprang`  — the lane in this column was created by this dot. Nothing was
+  //               flowing through that column above this row, so the gap holds
+  //               exactly one segment and it starts at the dot.
+  //
+  //   `joined`  — the lane was already there, routed to the same parent by an
+  //               earlier child, and this dot *also* connects into it. The gap
+  //               needs *two* segments: the pass-through that was already
+  //               flowing down that column, plus the connector from this dot.
+  //
+  // Emitting one segment for a `joined` column overwrote the pass-through with
+  // the connector, so the earlier child's edge to the shared parent simply
+  // stopped in mid-air at this row. Against this repository's own history that
+  // was 12 broken edges in 155 rows.
+  const sprang: Set<number>[] = new Array(n);
+  const joined: Set<number>[] = new Array(n);
   const cols: number[] = new Array(n);
 
   let lanes: (string | null)[] = [];
@@ -76,28 +112,48 @@ export function computeLanes(commits: GraphCommit[]): GraphLayout {
       if (after[k] === c.oid) after[k] = null;
     }
 
-    const origin = new Set<number>();
+    const sprangHere = new Set<number>();
+    const joinedHere = new Set<number>();
     c.parentOids.forEach((p, pi) => {
       const existing = after.indexOf(p);
       if (existing !== -1) {
-        // A lane already heads to this parent (another child reached it
-        // first) — merge into it. The connector still starts at our dot.
-        origin.add(existing);
+        // A lane already heads to this parent — another child reached it
+        // first, or an earlier entry in our own parent list did (a merge can
+        // legitimately list the same oid twice). Connect into it rather than
+        // opening a second lane to the same commit.
+        //
+        // `sprangHere` wins: if *we* created that lane a moment ago it is not
+        // a pass-through, and recording it as joined would draw the connector
+        // twice on top of itself.
+        if (!sprangHere.has(existing)) joinedHere.add(existing);
         return;
       }
       if (pi === 0) {
+        // The first parent continues this dot's own column, which is what
+        // keeps a linear history drawing as one straight line.
+        //
+        // Except when the branch above already claimed it — the `existing`
+        // path returned above. The mainline then bends into that lane instead
+        // of staying vertical, which is not a bug to fix but a fact to state:
+        // two children of one parent cannot both keep their column, and the
+        // one that got there first owns it. The connector is drawn either way
+        // (see `joined`), so the edge is complete; it is diagonal rather than
+        // straight. Trying to move a claimed lane sideways instead would
+        // strand the earlier child's already-emitted segments in the old
+        // column — a broken edge, which is strictly worse than a kink.
         after[col] = p;
-        origin.add(col);
+        sprangHere.add(col);
       } else {
         const k = firstFree(after);
         if (k === after.length) after.push(null);
         after[k] = p;
-        origin.add(k);
+        sprangHere.add(k);
       }
     });
 
     cols[i] = col;
-    dotOrigin[i] = origin;
+    sprang[i] = sprangHere;
+    joined[i] = joinedHere;
     laneStates[i] = after;
     maxCols = Math.max(maxCols, lanes.length, after.length);
 
@@ -117,17 +173,47 @@ export function computeLanes(commits: GraphCommit[]): GraphLayout {
       for (let k = 0; k < state.length; k++) {
         const oid = state[k];
         if (oid == null) continue;
-        // Where the lane connects at the top of the gap: its own column,
-        // unless it just sprang from this commit's dot.
-        const top = dotOrigin[i].has(k) ? cols[i] : k;
-        // Where it connects at the bottom: converge onto the next dot if
+        // Where the lane connects at the bottom: converge onto the next dot if
         // that's the commit we're waiting for, else stay in its column.
         const bottom = oid === nextOid ? nextCol : k;
-        segments.push({ top, bottom, lane: k });
+        if (sprang[i].has(k)) {
+          // Created by this dot, so there is nothing above to pass through.
+          segments.push({ top: cols[i], bottom, lane: k });
+        } else {
+          // The lane's own continuation. It flows through this row whether or
+          // not our dot has anything to do with it.
+          segments.push({ top: k, bottom, lane: k });
+          // …and, if our dot also feeds this lane, the connector into it. Both
+          // land on the same `bottom`, which is what makes them read as a
+          // merge rather than as two unrelated lines.
+          if (joined[i].has(k)) {
+            segments.push({ top: cols[i], bottom, lane: k });
+          }
+        }
+      }
+    } else {
+      // The last row. Every lane still occupied here is waiting on a parent
+      // outside the window, so its line genuinely continues — it is drawn to
+      // the bottom edge rather than stopped, and reported in `truncatedLanes`
+      // so the UI can fade it and say the history is cut off.
+      //
+      // A lane the *last dot itself* created gets its segment from the dot, so
+      // the line leaves the dot rather than materialising beside it.
+      for (let k = 0; k < laneStates[i].length; k++) {
+        if (laneStates[i][k] == null) continue;
+        segments.push({ top: sprang[i].has(k) ? cols[i] : k, bottom: k, lane: k });
       }
     }
     rows[i] = { commit: commits[i], col: cols[i], segments };
   }
 
-  return { rows, maxCols: Math.max(1, maxCols) };
+  const truncatedLanes: number[] = [];
+  if (n > 0) {
+    const last = laneStates[n - 1];
+    for (let k = 0; k < last.length; k++) {
+      if (last[k] != null) truncatedLanes.push(k);
+    }
+  }
+
+  return { rows, maxCols: Math.max(1, maxCols), truncatedLanes };
 }

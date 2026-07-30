@@ -40,7 +40,12 @@ import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu"
 import { StatusBadge } from "@/components/git/shared/StatusBadge";
 import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
-import { openEditorTab, openGitWindow } from "@/api/windows";
+import {
+  isGitWindow,
+  openEditorTab,
+  openGitWindow,
+  requestOpenWorktreeOnMain,
+} from "@/api/windows";
 import { openMerge } from "@/components/git/openMerge";
 import { Splitter } from "@/components/layout/Splitter";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
@@ -66,6 +71,12 @@ import { useAppStore } from "@/store/LayoutContext";
 import { samePath, type GitSectionKey } from "@/store/layout";
 
 import { requestNewWorktree } from "@/commands/worktree";
+import {
+  isValidRemoteName,
+  isValidRemoteUrl,
+  normalizeRemoteName,
+} from "@/commands/remoteUrl";
+import { removeWorktreeWithConfirm } from "@/commands/worktreeRemove";
 import { useSettings } from "@/store/settings";
 import { scanStagedDiff, type SecretFinding } from "@/commands/secretScan";
 import { SecretScanDialog } from "@/commands/SecretScanDialog";
@@ -73,6 +84,8 @@ import { pushToast } from "@/commands/toast";
 import { shortcutLabel } from "@/commands/shortcuts";
 import { textPrompt } from "@/commands/prompt";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
+import { registerGitSidebarActions } from "@/commands/gitSidebarActions";
+import { commitDiffBase } from "@/commands/commitDiff";
 import { createInFlight, dedupeConcurrent } from "@/commands/inflight";
 import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
@@ -158,6 +171,11 @@ function Section(props: {
   open: boolean;
   isLast: boolean;
   onToggle: () => void;
+  /// Shown beside the label. Its only job so far is saying that a *collapsed*
+  /// section has something in it — a collapsed Stashes section unmounts its
+  /// pane, so twelve stashes looked exactly like zero and stashed work is
+  /// precisely the kind that gets forgotten.
+  badge?: JSX.Element;
   actions?: JSX.Element;
   children: JSX.Element;
   contentHeight: number;
@@ -181,6 +199,11 @@ function Section(props: {
         </span>
         {props.icon}
         <span class="flex-1 tracking-wide text-xs truncate">{props.label}</span>
+        <Show when={!props.open && props.badge}>
+          <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/80 px-1 rounded bg-muted/60">
+            {props.badge}
+          </span>
+        </Show>
       </button>
       {/* Reserved at rest: the arrows fade in but the box they sit in is
           always there, so a hover never nudges the label (§7.6). */}
@@ -260,15 +283,33 @@ export function GitSidebar(props: GitSidebarProps) {
   /// Which changed file's diff is currently open, so the list can highlight it.
   /// Diffs render in the editor window now, so this reads that window's pointer
   /// rather than the workbench's.
+  /// Its `staged` flag comes along because the same file can have both a
+  /// staged and an unstaged diff tab, and only one of them is open.
   const activeFilePath = createMemo(() => {
     const item = editorActiveItem();
     if (item?.type !== "diff") return null;
-    return activeDiffTabs().find((t) => t.id === item.id)?.filePath ?? null;
+    const tab = activeDiffTabs().find((t) => t.id === item.id);
+    return tab ? { path: tab.filePath, staged: !!tab.staged } : null;
   });
 
   const activeDiffId = () => {
     const a = editorActiveItem();
     return a?.type === "diff" ? a.id : null;
+  };
+
+  /// How many stashes exist, but only while the Stashes section is collapsed.
+  ///
+  /// Open, the pane lists them and this would be a second identical call on
+  /// every pulse. Collapsed, the pane is unmounted and nothing else knows —
+  /// which is the case worth paying one cheap `stash_foreach` for.
+  const [stashTick, setStashTick] = createSignal(0);
+  const [stashCount] = createResource(
+    () => (state.gitSections.stashes ? null : { path: props.repoPath, tick: stashTick() }),
+    (k) => gitApi.stashList(k.path).then((l) => l.length),
+  );
+  const collapsedStashCount = () => {
+    const n = stashCount.state === "errored" ? undefined : stashCount();
+    return n && n > 0 ? String(n) : undefined;
   };
 
   const isRefreshing = () => repoInfo.loading || status.loading;
@@ -306,6 +347,9 @@ export function GitSidebar(props: GitSidebarProps) {
   /// that ask while a refresh is already in flight — a mutation typically calls
   /// `props.onRefresh()` *and* emits the shared pulse this same handler answers.
   const refreshAll = dedupeConcurrent(async () => {
+    // The collapsed-stash badge re-reads on the same pulse, via its own tick
+    // rather than a refetch handle, so it stays inert while the section is open.
+    setStashTick((t) => t + 1);
     await Promise.all([refetchStatus(), refetchInfo()]);
   });
 
@@ -315,17 +359,19 @@ export function GitSidebar(props: GitSidebarProps) {
   onMount(() => {
     const handler = () => void refreshAll();
     window.addEventListener("voidlink:refresh-git", handler);
-    const fetchHandler = () => void doFetch();
-    const pullHandler = () => void doPull();
-    const remotesHandler = () => setRemotesOpen(true);
-    window.addEventListener("voidlink:git-fetch", fetchHandler);
-    window.addEventListener("voidlink:git-pull", pullHandler);
-    window.addEventListener("voidlink:git-remotes", remotesHandler);
+    // Fetch / pull / remotes go through a registry rather than window events:
+    // this component is unmounted while the panel is collapsed, and an event
+    // dispatched then was simply lost. Registering also replays a request made
+    // while we were away, so the shortcut that reveals the panel performs the
+    // action too.
+    const unregister = registerGitSidebarActions({
+      fetch: () => void doFetch(),
+      pull: () => void doPull(),
+      remotes: () => setRemotesOpen(true),
+    });
     onCleanup(() => {
       window.removeEventListener("voidlink:refresh-git", handler);
-      window.removeEventListener("voidlink:git-fetch", fetchHandler);
-      window.removeEventListener("voidlink:git-pull", pullHandler);
-      window.removeEventListener("voidlink:git-remotes", remotesHandler);
+      unregister();
     });
   });
 
@@ -345,10 +391,16 @@ export function GitSidebar(props: GitSidebarProps) {
       );
       return;
     }
+    // Merge-base, because the pill this opens shows the **symmetric**
+    // difference: at ↑1 ↓12 you click "↑1" expecting one commit and a two-dot
+    // diff gave you thirteen, with upstream's twelve commits rendered as
+    // deletions of your colleagues' work. Three-dot answers the question the
+    // arrow actually asked — "what is on my branch that upstream does not
+    // have".
     actions.openCompareTab(props.worktreeId, {
       baseRef: current.upstream,
       headRef: current.currentBranch,
-      useMergeBase: false,
+      useMergeBase: true,
     });
   }
 
@@ -373,8 +425,11 @@ export function GitSidebar(props: GitSidebarProps) {
   async function doFetch() {
     setSyncing(true);
     try {
+      // No remote name: fetch every configured remote. Passing none used to
+      // mean "origin" in Rust, so a remote added through the Remotes dialog
+      // was never fetched by anything and its branches never appeared.
       await gitApi.fetch(props.repoPath);
-      pushToast("Fetched from origin", "success", 2000);
+      pushToast("Fetched all remotes", "success", 2000);
     } catch (e) {
       pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
     } finally {
@@ -435,6 +490,7 @@ export function GitSidebar(props: GitSidebarProps) {
             worktreeId={props.worktreeId}
             onCheckout={() => void refreshAll()}
             operation={info()?.operation ?? null}
+            detached={info()?.isDetached ?? false}
           />
         );
       case "worktrees":
@@ -617,6 +673,7 @@ export function GitSidebar(props: GitSidebarProps) {
               open={state.gitSections[key]}
               isLast={lastOpenSection() === key}
               onToggle={() => actions.toggleGitSection(key)}
+              badge={key === "stashes" ? collapsedStashCount() : undefined}
               contentHeight={sectionHeights()[key]}
               onResizeStart={startSectionResize(key)}
               onMove={(delta) => actions.moveGitSection(key, delta)}
@@ -658,7 +715,7 @@ export function ChangesPane(props: {
   repoPath: string;
   worktreeId: string;
   status: { path: string; status: string; staged: boolean }[] | undefined;
-  selectedFile: string | null;
+  selectedFile: { path: string; staged: boolean } | null;
   onRefresh: () => void;
 }) {
   const { actions } = useAppStore();
@@ -749,7 +806,6 @@ export function ChangesPane(props: {
   };
 
   const staged = () => (props.status ?? []).filter((f) => f.staged && f.status !== "conflicted");
-  const conflicted = () => (props.status ?? []).filter((f) => f.status === "conflicted");
 
   // ── Filter and keyboard cursor ───────────────────────────────────────────
   // The three lists behave as one keyboard surface: arrows walk from the last
@@ -759,14 +815,17 @@ export function ChangesPane(props: {
   let filterRef: HTMLInputElement | undefined;
   let listRef: HTMLDivElement | undefined;
   const [filter, setFilter] = createSignal("");
-  const [focusPath, setFocusPath] = createSignal<string | null>(null);
+  /// The cursor is a `ChangeRow.key`, not a path. A file that is staged and
+  /// then edited again is now two rows with the same path and opposite
+  /// actions, so a path could no longer say which one the cursor was on.
+  const [focusKey, setFocusKey] = createSignal<string | null>(null);
 
   const rows = createMemo(() => flattenChanges(props.status ?? [], filter()));
   const conflictRows = () => rowsIn(rows(), "conflicted");
   const stagedRows = () => rowsIn(rows(), "staged");
   const unstagedRows = () => rowsIn(rows(), "unstaged");
 
-  const rowDomId = (path: string) => `change-row-${path.replace(/[^\w-]/g, "_")}`;
+  const rowDomId = (key: string) => `change-row-${key.replace(/[^\w-]/g, "_")}`;
 
   /// Keep the cursor on something real. Staging a file moves it between
   /// sections and typing into the filter can remove it entirely; in both cases
@@ -774,31 +833,31 @@ export function ChangesPane(props: {
   /// key rather than reaching for the mouse to find it again.
   createEffect(() => {
     const list = rows();
-    const current = untrack(focusPath);
+    const current = untrack(focusKey);
     if (!current) return;
     const previousIndex = untrack(() => lastIndex);
     const next = reconcileFocus(list, current, previousIndex);
-    if (next !== current) setFocusPath(next);
+    if (next !== current) setFocusKey(next);
   });
   let lastIndex = 0;
   createEffect(() => {
-    const idx = rows().findIndex((r) => r.entry.path === focusPath());
+    const idx = rows().findIndex((r) => r.key === focusKey());
     if (idx !== -1) lastIndex = idx;
   });
 
   function onListKeyDown(e: KeyboardEvent) {
     const list = rows();
-    const current = focusPath();
-    const row = list.find((r) => r.entry.path === current);
+    const current = focusKey();
+    const row = list.find((r) => r.key === current);
     const action = actionForKey(e.key, row?.section ?? "unstaged");
     if (action.kind === "none") return;
     e.preventDefault();
     switch (action.kind) {
       case "move":
-        setFocusPath(moveFocus(list, current, action.delta));
+        setFocusKey(moveFocus(list, current, action.delta));
         break;
       case "open":
-        if (row) selectFile(row.entry.path);
+        if (row) selectFile(row.entry.path, row.section === "staged");
         break;
       case "resolve":
         if (row) openConflict(`${props.repoPath}/${row.entry.path}`);
@@ -877,9 +936,15 @@ export function ChangesPane(props: {
   /// are now their own explicit question, because deleting files git does not
   /// know about is a different decision from reverting tracked ones.
   async function discardAllChanges() {
+    // Counted over distinct *paths*, not rows: a file that is staged and then
+    // edited again contributes two rows, and "Discard all changes to 2 tracked
+    // file(s)" for one file is the kind of number that makes a destructive
+    // confirm untrustworthy.
     const all = props.status ?? [];
-    const untracked = all.filter((f) => f.status === "untracked");
-    const tracked = all.filter((f) => f.status !== "untracked");
+    const pathsWhere = (keep: (status: string) => boolean) =>
+      new Set(all.filter((f) => keep(f.status)).map((f) => f.path));
+    const untracked = pathsWhere((s) => s === "untracked");
+    const tracked = pathsWhere((s) => s !== "untracked");
 
     if (all.length === 0) {
       pushToast("Nothing to discard — the working tree is clean.", "info", 2500);
@@ -887,20 +952,20 @@ export function ChangesPane(props: {
     }
 
     let includeUntracked = false;
-    if (tracked.length > 0) {
+    if (tracked.size > 0) {
       const ok = await dialogConfirm(
-        `Discard all changes to ${tracked.length} tracked file(s)? Staged and unstaged edits both revert to HEAD. This cannot be undone.`,
+        `Discard all changes to ${tracked.size} tracked file(s)? Staged and unstaged edits both revert to HEAD. This cannot be undone.`,
         { title: "Discard tracked changes", kind: "warning" },
       );
       if (!ok) return;
     }
-    if (untracked.length > 0) {
+    if (untracked.size > 0) {
       includeUntracked = await dialogConfirm(
-        `Also delete ${untracked.length} untracked file(s) from disk? They are not in git, so this cannot be undone.`,
+        `Also delete ${untracked.size} untracked file(s) from disk? They are not in git, so this cannot be undone.`,
         { title: "Delete untracked files", kind: "warning" },
       );
       // Nothing at all was confirmed — don't run a no-op that reports success.
-      if (!includeUntracked && tracked.length === 0) return;
+      if (!includeUntracked && tracked.size === 0) return;
     }
 
     await run(async () => {
@@ -1119,9 +1184,12 @@ export function ChangesPane(props: {
   /// Diffs render in the editor window now, so clicking a changed file hands
   /// it over there rather than opening a tab in whichever window this sidebar
   /// happens to be mounted in.
-  const selectFile = (path: string) => {
-    void openEditorTab({ kind: "open-diff", filePath: path }, () =>
-      actions.openDiffTab(props.worktreeId, path),
+  /// `staged` follows the section the row was clicked in, and it has to: a
+  /// file that is both staged and modified appears in both lists with two
+  /// different diffs behind it, and the tab is keyed on the pair.
+  const selectFile = (path: string, staged: boolean) => {
+    void openEditorTab({ kind: "open-diff", filePath: path, staged }, () =>
+      actions.openDiffTab(props.worktreeId, path, staged),
     );
   };
 
@@ -1375,7 +1443,7 @@ export function ChangesPane(props: {
               // them would defeat the point of having a filter.
               if (e.key === "ArrowDown" || e.key === "Enter") {
                 e.preventDefault();
-                setFocusPath(moveFocus(rows(), null, 1));
+                setFocusKey(moveFocus(rows(), null, 1));
                 listRef?.focus();
               } else if (e.key === "Escape" && filter()) {
                 e.preventDefault();
@@ -1394,11 +1462,16 @@ export function ChangesPane(props: {
         tabIndex={0}
         role="listbox"
         aria-label="Changed files"
-        aria-activedescendant={focusPath() ? rowDomId(focusPath()!) : undefined}
+        aria-activedescendant={focusKey() ? rowDomId(focusKey()!) : undefined}
         onKeyDown={onListKeyDown}
         class="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <Show when={conflicted().length > 0}>
+        {/* Gated on the *filtered* rows, like its own count. Gating on the
+            unfiltered list while counting the filtered one rendered a
+            "Conflicts (0)" header above an empty section whenever the filter
+            excluded every conflict — a header asserting there are no conflicts
+            while a real one exists. */}
+        <Show when={conflictRows().length > 0}>
           <div class="border-b border-border/50">
             <SectionLabel class="text-warning/90">
               <GitCompare class="w-3 h-3" />
@@ -1407,16 +1480,16 @@ export function ChangesPane(props: {
             <For each={conflictRows()}>
               {(row) => (
                 <button
-                  id={rowDomId(row.entry.path)}
+                  id={rowDomId(row.key)}
                   role="option"
-                  aria-selected={focusPath() === row.entry.path}
+                  aria-selected={focusKey() === row.key}
                   onClick={() => {
-                    setFocusPath(row.entry.path);
+                    setFocusKey(row.key);
                     openConflict(`${props.repoPath}/${row.entry.path}`);
                   }}
                   title={`Resolve conflict in ${row.entry.path}`}
                   class={`w-full flex items-center gap-2 px-2.5 h-6 text-[13px] text-left text-warning hover:bg-warning/10 transition-colors ${
-                    focusPath() === row.entry.path ? "bg-warning/15" : ""
+                    focusKey() === row.key ? "bg-warning/15" : ""
                   }`}
                 >
                   <StatusBadge status={row.entry.status} />
@@ -1437,11 +1510,11 @@ export function ChangesPane(props: {
             </SectionLabel>
             <VirtualFileList
               rows={stagedRows()}
-              focusPath={focusPath()}
+              focusKey={focusKey()}
               selectedFile={props.selectedFile}
               rowId={rowDomId}
-              onFocusRow={setFocusPath}
-              onSelect={(path) => selectFile(path)}
+              onFocusRow={setFocusKey}
+              onSelect={(path) => selectFile(path, true)}
               actionIcon={Minus}
               actionTitle="Unstage"
               onAction={(path) => void unstageFile(path)}
@@ -1492,11 +1565,11 @@ export function ChangesPane(props: {
         >
           <VirtualFileList
             rows={unstagedRows()}
-            focusPath={focusPath()}
+            focusKey={focusKey()}
             selectedFile={props.selectedFile}
             rowId={rowDomId}
-            onFocusRow={setFocusPath}
-            onSelect={(path) => selectFile(path)}
+            onFocusRow={setFocusKey}
+            onSelect={(path) => selectFile(path, false)}
             actionIcon={Plus}
             actionTitle="Stage"
             onAction={(path) => void stageFile(path)}
@@ -1536,6 +1609,17 @@ export function BranchesPane(props: {
   /// the UI first means the user reads the reason on the button instead of in a
   /// toast after the click.
   operation?: string | null;
+  /// Render the tags list underneath the branches.
+  ///
+  /// True for the workbench sidebar, which has no Tags section of its own.
+  /// False for the standalone git window, which does — there, embedding it
+  /// here put the same list in two places and fetched `git_list_refs` for
+  /// whichever one happened to be showing.
+  showTags?: boolean;
+  /// HEAD is detached — no branch is checked out. Passed in because the branch
+  /// list alone cannot say so: every row simply has `isHead: false`, which is
+  /// indistinguishable from a list that failed to mark the current one.
+  detached?: boolean;
 }) {
   const { actions } = useAppStore();
   const { busy, run } = createInFlight();
@@ -1677,9 +1761,20 @@ export function BranchesPane(props: {
     });
   }
 
+  /// Confirm outside the gate, mutate inside it.
+  ///
+  /// This was the one branch action not routed through `run()`, so `busy()`
+  /// stayed false for the whole delete and a checkout could start on top of
+  /// it — the exact overlap `commands/inflight` exists to prevent. The confirm
+  /// stays outside because holding the gate across a modal would block every
+  /// other button for as long as the dialog is up.
   async function deleteBranch(name: string) {
     const ok = await dialogConfirm(`Delete branch ${name}?`, { title: "Delete branch", kind: "warning" });
     if (!ok) return;
+    await run(() => performDelete(name));
+  }
+
+  async function performDelete(name: string) {
     try {
       await gitApi.deleteBranch(props.repoPath, name, false);
       pushToast(`Deleted branch ${name}`, "info", 2500);
@@ -1726,8 +1821,13 @@ export function BranchesPane(props: {
     return true;
   }
 
+  /// The list, or `undefined` — never a throw. A Solid resource rethrows its
+  /// rejection from every read, and this one is read inside a memo; see the
+  /// same guard in `CommitGraph`.
+  const settled = () => (branches.state === "errored" ? undefined : branches());
+
   const filtered = createMemo(() => {
-    const all = branches() ?? [];
+    const all = settled() ?? [];
     const sorted = sortBranchesByMru(all, props.repoPath);
     const q = filter().trim();
     return q ? sorted.filter((b) => fuzzy(b.name, q)) : sorted;
@@ -1756,6 +1856,48 @@ export function BranchesPane(props: {
       </div>
       <Show when={error()}>
         <p class="text-xs text-destructive px-1">{error()}</p>
+      </Show>
+      {/* Without this the pane just loses its highlight: no row is marked, and
+          the missing highlight reads as a bug rather than as "you are not on a
+          branch". It also explains why every row, including the one you came
+          from, now offers delete. */}
+      <Show when={props.detached}>
+        <p class="text-[11px] text-warning px-1 py-1 rounded bg-warning/10 border border-warning/20">
+          HEAD is detached — no branch is checked out. Check one out to resume
+          normal work.
+        </p>
+      </Show>
+      {/* Three states this pane never had: while the first load is in flight,
+          when the fetch failed, and when the repository genuinely has no
+          branches, it rendered *nothing at all* — a blank rectangle that reads
+          as a broken panel rather than as any of the three facts. */}
+      <Show when={!branches.loading || settled()}>
+        <Show when={!branches.error}>
+          <Show when={(settled()?.length ?? 0) === 0}>
+            <p class="text-[11px] text-muted-foreground px-1 py-2">
+              No branches yet — the first commit creates one.
+            </p>
+          </Show>
+        </Show>
+      </Show>
+      <Show when={branches.loading && !settled()}>
+        <p class="text-[11px] text-muted-foreground px-1 py-2">Loading branches…</p>
+      </Show>
+      <Show when={branches.error}>
+        <div class="px-1 py-2 space-y-1">
+          <p class="text-[11px] text-destructive">Could not list branches.</p>
+          <p class="text-[11px] font-mono text-muted-foreground break-words">
+            {branches.error instanceof Error
+              ? branches.error.message
+              : String(branches.error)}
+          </p>
+          <button
+            onClick={() => void refetch()}
+            class="text-[11px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+          >
+            Try again
+          </button>
+        </div>
       </Show>
       <For each={filtered()}>
         {(b) => (
@@ -1829,11 +1971,13 @@ export function BranchesPane(props: {
           </div>
         )}
       </For>
-      <Show when={(branches()?.length ?? 0) > 0 && filtered().length === 0}>
+      <Show when={(settled()?.length ?? 0) > 0 && filtered().length === 0}>
         <p class="text-[11px] text-muted-foreground px-1 py-1">No matches.</p>
       </Show>
 
-      <TagsPane repoPath={props.repoPath} />
+      <Show when={props.showTags !== false}>
+        <TagsPane repoPath={props.repoPath} />
+      </Show>
 
       <Show when={menu()}>
         {(m) => (
@@ -1866,15 +2010,27 @@ export function WorktreesPane(props: { repoPath: string }) {
   );
   onMount(() => onCleanup(onGitRefsChanged(() => refetch())));
 
+  /// The repository this pane is actually showing, straight from git: the
+  /// listing's main entry. Authoritative in a way the layout store is not —
+  /// the standalone git window's store is a stale private copy.
+  const shownRepoRoot = () =>
+    (worktrees() ?? []).find((wt) => wt.isMain && !wt.isBare)?.path ?? props.repoPath;
+
   function addWorktree() {
     const ws = activeWorkspace();
     if (!ws?.repoRoot) {
-      pushToast("Select a repository for this workspace first", "warning");
+      pushToast("Open a folder in this workspace first", "warning");
       return;
     }
     requestNewWorktree({
       workspaceId: ws.id,
-      repoRoot: ws.repoRoot,
+      // The repo this pane is *showing*, not the one the local store happens
+      // to remember. In the standalone git window that store is hydrated from
+      // localStorage when the window opens and never updated by the context
+      // broadcast, so after switching the workbench to another workspace the
+      // panes followed — and this added the worktree to the previous
+      // repository while copying env files from the current one.
+      repoRoot: shownRepoRoot(),
       sourcePath: props.repoPath,
     });
   }
@@ -1883,6 +2039,14 @@ export function WorktreesPane(props: { repoPath: string }) {
   /// created outside voidlink (plain `git worktree add`) still opens without
   /// waiting for the next hydration pass.
   function openWorktree(path: string, branch: string | null) {
+    // In the standalone git window there is no rail and the store is a
+    // private, unpersisted copy — selecting a worktree there changed state
+    // nobody renders, so this button did nothing at all. Forward it, exactly
+    // as `requestNewWorktree` already does for the wizard.
+    if (isGitWindow()) {
+      void requestOpenWorktreeOnMain({ path, branch });
+      return;
+    }
     const ws = activeWorkspace();
     if (!ws) return;
     const existing = ws.worktrees.find((wt) => samePath(wt.path, path));
@@ -1890,55 +2054,28 @@ export function WorktreesPane(props: { repoPath: string }) {
     if (id) actions.selectWorktree(id);
   }
 
-  /// `git worktree remove` fails for several unrelated reasons, and `--force`
-  /// only answers one of them. Offering force on *every* failure meant a lock, a
-  /// missing directory or a permissions error led the user straight to a button
-  /// whose whole job is discarding changes.
-  function isDirtyRefusal(message: string): boolean {
-    const m = message.toLowerCase();
-    return (
-      m.includes("contains modified or untracked files") ||
-      m.includes("is dirty") ||
-      m.includes("use --force") ||
-      m.includes("use 'remove -f'")
-    );
-  }
-
-  async function remove(path: string, label: string) {
-    const ok = await dialogConfirm(`Remove worktree "${label}"? Its directory will be deleted.`, {
-      title: "Remove worktree",
-      kind: "warning",
-    });
-    if (!ok) return;
+  /// Clear a worktree's lock. Reachable only on a locked row, because that is
+  /// the only place it means anything — and before this there was no way to
+  /// clear a lock from inside the app at all: `remove` refuses, `--force`
+  /// refuses too, and the user had to go to the CLI.
+  async function unlock(path: string, label: string) {
     await run(async () => {
       try {
-        const warning = await gitApi.removeWorktree(props.repoPath, path, false);
-        pushToast(`Removed worktree ${label}`, "info", 2500);
-        if (warning) pushToast(warning, "warning", 6000);
-        emitGitRefsChanged();
+        await gitApi.unlockWorktree(props.repoPath, path);
+        pushToast(`Unlocked worktree ${label}`, "info", 2500);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (!isDirtyRefusal(msg)) {
-          pushToast(msg, "error", 7000);
-          emitGitRefsChanged();
-          return;
-        }
-        const force = await dialogConfirm(
-          `${msg}\n\nForce-remove anyway (discards uncommitted changes in that worktree)?`,
-          { title: "Force-remove worktree", kind: "warning" },
-        );
-        if (!force) return;
-        try {
-          const warning = await gitApi.removeWorktree(props.repoPath, path, true);
-          pushToast(`Removed worktree ${label}`, "info", 2500);
-          if (warning) pushToast(warning, "warning", 6000);
-        } catch (e2) {
-          pushToast(e2 instanceof Error ? e2.message : String(e2), "error", 6000);
-        } finally {
-          emitGitRefsChanged();
-        }
+        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+      } finally {
+        emitGitRefsChanged();
       }
     });
+  }
+
+  /// Confirm, remove, pulse — all of it in `commands/worktreeRemove`, which
+  /// the rail and the palette now share. This pane had the only correct
+  /// version of the flow; the fix was to stop it being the only one.
+  async function remove(path: string, label: string) {
+    await run(() => removeWorktreeWithConfirm({ repoRoot: props.repoPath, path, label }));
   }
 
   return (
@@ -1950,9 +2087,16 @@ export function WorktreesPane(props: { repoPath: string }) {
         <Plus class="w-3 h-3" /> New worktree
       </button>
       {/* "Only the main worktree" rather than "no worktrees": a repository
-          always has one, so a list showing a single entry — or, before the
-          first list lands, none — means the user has not branched out yet. */}
-      <Show when={(worktrees()?.length ?? 0) <= 1}>
+          always has one, so a list showing a single entry means the user has
+          not branched out yet.
+
+          Gated on `worktrees()` having actually arrived, and rendered as the
+          list's *fallback* rather than beside it: `?? 0` used to make the claim
+          during the first load, so a repo with six worktrees flashed "only the
+          main worktree exists" and then filled in. And bare entries are
+          excluded from the count — a bare repository is not a working tree, so
+          counting it suppressed this empty state in a repo that has none. */}
+      <Show when={(worktrees() ?? []).filter((wt) => !wt.isBare).length <= 1 && !!worktrees()}>
         <EmptyState
           id="worktreesSingle"
           action={
@@ -1962,7 +2106,7 @@ export function WorktreesPane(props: { repoPath: string }) {
           }
         />
       </Show>
-      <For each={worktrees() ?? []}>
+      <For each={(worktrees() ?? []).filter((wt) => !wt.isBare)}>
         {(wt) => {
           const label = () => wt.branch ?? (wt.isDetached ? "(detached)" : wt.path);
           return (
@@ -2022,8 +2166,32 @@ export function WorktreesPane(props: { repoPath: string }) {
                   ↓{wt.behind}
                 </span>
               </Show>
+              {/* Its directory is gone. Without this the row read as an
+                  ordinary worktree, and "open" registered a workspace pointing
+                  at nothing — where every terminal spawned there fails. */}
+              <Show when={wt.isPrunable}>
+                <span
+                  class="text-destructive shrink-0 text-[10px] font-mono"
+                  title={
+                    wt.prunableReason
+                      ? `git would prune this worktree: ${wt.prunableReason}`
+                      : "This worktree's directory is gone — git would prune it"
+                  }
+                  aria-label="missing"
+                >
+                  missing
+                </span>
+              </Show>
               <Show when={wt.isLocked}>
-                <Lock class="w-3 h-3 text-muted-foreground/70" aria-label="locked" />
+                <button
+                  onClick={() => void unlock(wt.path, label())}
+                  disabled={busy()}
+                  title="This worktree is locked — click to unlock it"
+                  aria-label={`Unlock worktree ${label()}`}
+                  class="p-0.5 rounded shrink-0 text-muted-foreground/70 hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Lock class="w-3 h-3" />
+                </button>
               </Show>
               <Show when={wt.isMain}>
                 <span class="text-[10px] tracking-wide text-primary/70">Main</span>
@@ -2031,9 +2199,14 @@ export function WorktreesPane(props: { repoPath: string }) {
               <Show when={!wt.isMain}>
                 <button
                   onClick={() => openWorktree(wt.path, wt.branch)}
-                  title="Open this worktree"
+                  disabled={wt.isPrunable}
+                  title={
+                    wt.isPrunable
+                      ? "This worktree's directory no longer exists"
+                      : "Open this worktree"
+                  }
                   aria-label={`Open worktree ${label()}`}
-                  class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
+                  class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <FolderOpen class="w-3 h-3" />
                 </button>
@@ -2355,14 +2528,50 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
   );
 
   async function addRemote() {
-    const name = await textPrompt({ title: "Add remote", label: "Remote name", placeholder: "origin", confirmLabel: "Next" });
-    if (!name) return;
-    const url = await textPrompt({ title: "Add remote", label: `URL for ${name}`, placeholder: "git@github.com:user/repo.git", confirmLabel: "Add" });
-    if (!url) return;
+    const rawName = await textPrompt({ title: "Add remote", label: "Remote name", placeholder: "origin", confirmLabel: "Next" });
+    if (!rawName) return;
+    // Trimmed before it reaches libgit2, which would otherwise answer `" origin"`
+    // with a raw "is not a valid remote name" naming a string the user did not
+    // knowingly type.
+    const name = normalizeRemoteName(rawName);
+    if (!isValidRemoteName(name)) {
+      pushToast(
+        `"${rawName}" is not a valid remote name — no spaces or slashes.`,
+        "error",
+        5000,
+      );
+      return;
+    }
+    const rawUrl = await textPrompt({ title: "Add remote", label: `URL for ${name}`, placeholder: "git@github.com:user/repo.git", confirmLabel: "Add" });
+    if (!rawUrl) return;
+    const url = rawUrl.trim();
+    // libgit2 accepts *any* string as a URL, so without this a typo produced a
+    // remote that looked entirely normal here and failed later with an error
+    // about the network rather than about the typo.
+    if (!isValidRemoteUrl(url)) {
+      pushToast(
+        `"${url}" doesn't look like a git URL. Expected something like git@host:user/repo.git or https://host/user/repo.git`,
+        "error",
+        7000,
+      );
+      return;
+    }
     await run(async () => {
       try {
         await gitApi.addRemote(props.repoPath, name, url);
         pushToast(`Added remote ${name}`, "success", 2500);
+        // Fetch it, or adding a remote produces no visible change at all: its
+        // branches only exist locally once they have been fetched, and nothing
+        // else in the app would ever fetch this one on its own.
+        try {
+          await gitApi.fetch(props.repoPath, name);
+        } catch (e) {
+          pushToast(
+            `Added ${name}, but fetching it failed: ${e instanceof Error ? e.message : String(e)}`,
+            "warning",
+            7000,
+          );
+        }
       } catch (e) {
         pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
       } finally {
@@ -2374,8 +2583,17 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
   }
 
   async function editUrl(r: RemoteInfo) {
-    const url = await textPrompt({ title: "Set remote URL", label: r.name, initialValue: r.url ?? "", confirmLabel: "Save" });
-    if (!url) return;
+    const raw = await textPrompt({ title: "Set remote URL", label: r.name, initialValue: r.url ?? "", confirmLabel: "Save" });
+    if (!raw) return;
+    const url = raw.trim();
+    if (!isValidRemoteUrl(url)) {
+      pushToast(
+        `"${url}" doesn't look like a git URL. Expected something like git@host:user/repo.git or https://host/user/repo.git`,
+        "error",
+        7000,
+      );
+      return;
+    }
     await run(async () => {
       try {
         await gitApi.setRemoteUrl(props.repoPath, r.name, url);
@@ -2423,7 +2641,16 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
   }
 
   async function removeRemote(r: RemoteInfo) {
-    const ok = await dialogConfirm(`Remove remote "${r.name}"?`, { title: "Remove remote", kind: "warning" });
+    // Says what it actually does. `remote_delete` also deletes every
+    // `refs/remotes/<name>/*` **and** every `branch.*.remote`/`.merge` config
+    // entry pointing at it — so afterwards every branch that tracked this
+    // remote silently loses its upstream, ahead/behind goes blank, and Pull
+    // starts answering "No upstream is set". The old one-line confirm warned
+    // about none of that.
+    const ok = await dialogConfirm(
+      `Remove remote "${r.name}"?\n\nIts remote-tracking branches are deleted, and every local branch tracking it loses its upstream — ahead/behind goes blank and Pull stops working for them until you set one again.`,
+      { title: "Remove remote", kind: "warning" },
+    );
     if (!ok) return;
     await run(async () => {
       try {
@@ -2654,19 +2881,13 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
     return e instanceof Error ? e.message : String(e);
   };
 
-  /// The empty tree. A root commit has no parent to diff against, and using the
-  /// commit itself as the base produced an empty diff — "this commit changed
-  /// nothing", the opposite of true for the commit that created the repository.
-  const EMPTY_TREE_OID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
   const [hoveredCommit, setHoveredCommit] = createSignal<GitCommitInfo | null>(null);
   const [hoverPos, setHoverPos] = createSignal({ x: 0, y: 0 });
   const [menu, setMenu] = createSignal<{ x: number; y: number; commit: GitCommitInfo } | null>(null);
 
   function openCommitCompare(c: GitCommitInfo) {
-    const base = c.parentOids[0] ?? EMPTY_TREE_OID;
     actions.openCompareTab(props.worktreeId, {
-      baseRef: base,
+      baseRef: commitDiffBase(c.parentOids),
       headRef: c.oid,
       useMergeBase: false,
     });
@@ -3034,10 +3255,14 @@ function SectionLabel(props: { children: JSX.Element; class?: string }) {
 /// for `FileTree`. Density still reaches everything around the list.
 function VirtualFileList(props: {
   rows: ChangeRow[];
-  focusPath: string | null;
-  selectedFile: string | null;
-  rowId: (path: string) => string;
-  onFocusRow: (path: string) => void;
+  /// A `ChangeRow.key`, not a path — the same file can be a row in both this
+  /// list and the other one.
+  focusKey: string | null;
+  /// Which diff is open in the editor window: a path *and* which side of it,
+  /// because staged and unstaged diffs of one file are two different tabs.
+  selectedFile: { path: string; staged: boolean } | null;
+  rowId: (key: string) => string;
+  onFocusRow: (key: string) => void;
   onSelect: (path: string) => void;
   actionIcon: LucideIcon;
   actionTitle: string;
@@ -3065,24 +3290,30 @@ function VirtualFileList(props: {
   /// navigation through a windowed list is that the row you moved to exists;
   /// without this the cursor walks off the bottom into unrendered rows.
   createEffect(() => {
-    const path = props.focusPath;
-    if (!path) return;
-    const idx = props.rows.findIndex((r) => r.entry.path === path);
+    const key = props.focusKey;
+    if (!key) return;
+    const idx = props.rows.findIndex((r) => r.key === key);
     if (idx === -1) return;
     if (props.rows.length > VIRTUALIZE_ABOVE) virtualizer.scrollToIndex(idx);
-    else scrollRef?.querySelector(`#${CSS.escape(props.rowId(path))}`)?.scrollIntoView({ block: "nearest" });
+    else scrollRef?.querySelector(`#${CSS.escape(props.rowId(key))}`)?.scrollIntoView({ block: "nearest" });
   });
 
   const row = (r: ChangeRow) => (
     <FileRow
-      id={props.rowId(r.entry.path)}
+      id={props.rowId(r.key)}
       file={r.entry.path}
       ranges={r.ranges}
       status={r.entry.status}
-      selected={props.selectedFile === r.entry.path}
-      cursor={props.focusPath === r.entry.path}
+      // Both halves of the path *and* the side: highlighting on path alone lit
+      // the staged and unstaged rows of one file together, saying two tabs were
+      // open when one was.
+      selected={
+        props.selectedFile?.path === r.entry.path &&
+        props.selectedFile.staged === (r.section === "staged")
+      }
+      cursor={props.focusKey === r.key}
       onSelect={() => {
-        props.onFocusRow(r.entry.path);
+        props.onFocusRow(r.key);
         props.onSelect(r.entry.path);
       }}
       actionIcon={props.actionIcon}

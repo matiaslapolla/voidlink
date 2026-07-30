@@ -1,3 +1,4 @@
+import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import {
   For,
   Index,
@@ -20,13 +21,19 @@ import {
   GitCommitHorizontal,
   Brain,
   Globe,
+  Bot,
 } from "lucide-solid";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTab";
 import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { CommitGraph } from "@/components/git/history/CommitGraph";
+import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
+import { commitDiffBase } from "@/commands/commitDiff";
 import { BrainSurface } from "@/components/brain/BrainSurface";
 import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
+import { AgentThreadView } from "@/components/agent/AgentThreadView";
+import { agentThread, dropAgentThread } from "@/commands/agent";
+import { agentById, defaultAgentId } from "@/store/settings";
 import {
   MenuItem,
   PaneDropOverlay,
@@ -73,6 +80,10 @@ interface MainSurfaceProps {
   /// any more, so every path that used to open a Monaco tab — a terminal
   /// deep-link, a new file from the "+" menu — routes through here.
   onOpenFile: (path: string, line?: number, column?: number) => void;
+  /// Open Settings → AI. An agent pane with no configured CLI has to be able to
+  /// send the user somewhere; the pane body is not allowed to reach for the
+  /// settings dialog itself.
+  onOpenSettings: () => void;
 }
 
 /// The workbench's tab surface: terminals, branch compares, stacks, the commit
@@ -110,6 +121,7 @@ export function MainSurface(props: MainSurfaceProps) {
     activeHistoryTabs,
     activeBrainTabs,
     activeBrowserTabs,
+    activeAgentTabs,
     activeItem,
     activePinnedTabs,
     workbenchTabIds,
@@ -216,8 +228,34 @@ export function MainSurface(props: MainSurfaceProps) {
         draggable: false,
       });
     }
+    for (const tab of activeAgentTabs()) {
+      out.push({
+        kind: "agent",
+        id: tab.id,
+        label: tab.title?.trim() || "Agent",
+        icon: <Bot class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
+        // The question the thread opened with, so two tabs on the same agent are
+        // told apart by what they are about rather than by position.
+        title: agentTabTitle(tab.id, tab.title),
+        activity: tabMark(tab.id),
+        labelWidth: "max-w-[160px]",
+        // Unlike brain and browser there is nothing structural stopping either:
+        // the thread is store state keyed by tab id, so it moves wherever the
+        // tab moves and survives being pinned.
+        pinnable: true,
+        draggable: true,
+      });
+    }
     return out;
   });
+
+  /// Tooltip for an agent tab: the agent's name, plus the first thing asked in
+  /// that thread. The label can only show one of the two.
+  function agentTabTitle(tabId: string, name: string | undefined): string {
+    const agent = name?.trim() || "Agent";
+    const first = agentThread(state.activeWorktreeId, tabId).find((m) => m.role === "user");
+    return first ? `${agent} — ${first.content}` : agent;
+  }
 
   // ── The pane tree ────────────────────────────────────────────────────────
 
@@ -531,6 +569,7 @@ export function MainSurface(props: MainSurfaceProps) {
       case "history": actions.selectHistoryTab(wtId, tab.id); break;
       case "brain": actions.selectBrainTab(wtId, tab.id); break;
       case "browser": actions.selectBrowserTab(wtId, tab.id); break;
+      case "agent": actions.selectAgentTab(wtId, tab.id); break;
     }
   }
 
@@ -546,6 +585,13 @@ export function MainSurface(props: MainSurfaceProps) {
       case "history": actions.closeHistoryTab(wtId, tab.id); break;
       case "brain": actions.closeBrainTab(wtId, tab.id); break;
       case "browser": actions.closeBrowserTab(wtId, tab.id); break;
+      case "agent":
+        actions.closeAgentTab(wtId, tab.id);
+        // Reopen-last-closed mints a fresh tab id by design, so nothing can
+        // address this conversation again; keeping it would only ride every
+        // future `voidlink-agent-threads` write.
+        dropAgentThread(wtId, tab.id);
+        break;
     }
   }
 
@@ -573,9 +619,7 @@ export function MainSurface(props: MainSurfaceProps) {
     void refreshBranchNames();
   });
   onMount(() => {
-    const handler = () => void refreshBranchNames();
-    window.addEventListener("voidlink:refresh-git", handler);
-    onCleanup(() => window.removeEventListener("voidlink:refresh-git", handler));
+    onCleanup(onGitRefsChanged(() => void refreshBranchNames()));
   });
 
   /// The ⌘K "Open commit graph" command (registered in commands/registry.ts)
@@ -612,7 +656,7 @@ export function MainSurface(props: MainSurfaceProps) {
         pushToast(`Switched to ${branch}.`, "info", 2500);
       }
       window.dispatchEvent(new CustomEvent("voidlink:refresh-files"));
-      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+      emitGitRefsChanged();
     } catch (e) {
       pushToast(e instanceof Error ? e.message : String(e), "error", 5000);
     }
@@ -671,7 +715,7 @@ export function MainSurface(props: MainSurfaceProps) {
       // A new file is invisible to the sidebar until the file tree re-lists
       // its dir and the git status re-runs (the file is untracked).
       window.dispatchEvent(new CustomEvent("voidlink:refresh-files"));
-      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+      emitGitRefsChanged();
       closeMenu();
     } catch (e) {
       setNewFileError(e instanceof Error ? e.message : String(e));
@@ -801,6 +845,14 @@ export function MainSurface(props: MainSurfaceProps) {
                   closeMenu();
                 }}
                 onNewBrowser={onNewBrowser}
+                onNewAgent={() => {
+                  actions.openAgentTab(
+                    state.activeWorktreeId,
+                    defaultAgentId(),
+                    agentById(defaultAgentId())?.name,
+                  );
+                  closeMenu();
+                }}
               />
             }
           />
@@ -966,11 +1018,21 @@ export function MainSurface(props: MainSurfaceProps) {
           <Show when={activeRepoPath()}>
             {(repo) => (
               <div class={paneClass()} style={paneStyle(tab.id)}>
-                <CompareTabView
-                  repoPath={repo()}
-                  tab={tab}
-                  worktreeId={state.activeWorktreeId}
-                />
+                {/* A rejected `git_compare` does not merely blank this pane: the
+                    throw aborts the update that was carrying it, and every
+                    effect downstream of `CompareTab`'s files memo stays marked
+                    stale forever. Refresh, Retry, the merge-base toggle and
+                    swapping base/head then all re-run the fetch and change
+                    nothing on screen, while the tab's activity dot keeps
+                    spinning. The boundary's reset is the only thing that
+                    rebuilds those computations. */}
+                <GitErrorBoundary surface="This comparison">
+                  <CompareTabView
+                    repoPath={repo()}
+                    tab={tab}
+                    worktreeId={state.activeWorktreeId}
+                  />
+                </GitErrorBoundary>
               </div>
             )}
           </Show>
@@ -1003,6 +1065,23 @@ export function MainSurface(props: MainSurfaceProps) {
         )}
       </For>
 
+      {/* Agent tabs. Kept mounted like every other pane body: a turn streams
+          into the store rather than into this component, so a tab in the
+          background keeps growing its answer and reports itself through the
+          strip's LED. */}
+      <For each={activeAgentTabs()}>
+        {(tab) => (
+          <div class={paneClass()} style={paneStyle(tab.id)}>
+            <AgentThreadView
+              wtId={state.activeWorktreeId}
+              tabId={tab.id}
+              agentId={tab.agentId}
+              onOpenSettings={props.onOpenSettings}
+            />
+          </div>
+        )}
+      </For>
+
       {/* Browser tabs. Kept mounted so the webview isn't torn down on every
           tab switch — BrowserPane hides it instead. `groupVisible` is the
           second half of that: the page is a child webview painting above the
@@ -1027,18 +1106,27 @@ export function MainSurface(props: MainSurfaceProps) {
           <Show when={activeRepoPath()}>
             {(repo) => (
               <div class={paneClass()} style={paneStyle(tab.id)}>
-                <CommitGraph
-                  repoPath={repo()}
-                  onOpenCommit={(oid) => {
-                    // Reuse the existing commit-diff path: a compare tab of
-                    // <oid>^..<oid> shows exactly what the commit changed.
-                    actions.openCompareTab(state.activeWorktreeId, {
-                      baseRef: `${oid}^`,
-                      headRef: oid,
-                      useMergeBase: false,
-                    });
-                  }}
-                />
+                {/* `CommitGraph` reads its resource inside the lane memo, so a
+                    repository that moved out from under us takes the whole
+                    window white rather than rendering the graph's own error
+                    state — which is unreachable without something above it to
+                    catch the throw. */}
+                <GitErrorBoundary surface="The commit graph">
+                  <CommitGraph
+                    repoPath={repo()}
+                    onOpenCommit={(oid, parentOids) => {
+                      // `commitDiffBase` rather than a literal `<oid>^`, which
+                      // does not resolve for a root commit — clicking the first
+                      // commit in a repository used to error here and error
+                      // *differently* from the sidebar's history section.
+                      actions.openCompareTab(state.activeWorktreeId, {
+                        baseRef: commitDiffBase(parentOids),
+                        headRef: oid,
+                        useMergeBase: false,
+                      });
+                    }}
+                  />
+                </GitErrorBoundary>
               </div>
             )}
           </Show>
@@ -1107,7 +1195,7 @@ export function MainSurface(props: MainSurfaceProps) {
       <Show when={!activeRepoPath()}>
         <div class="island absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-3 bg-background z-10">
           <TerminalSquare class="w-7 h-7 opacity-60" />
-          <p class="text-[13px]">Select a repository in the sidebar to start working.</p>
+          <p class="text-[13px]">Open a folder from the workspace rail to start working.</p>
         </div>
       </Show>
     </div>
@@ -1139,6 +1227,7 @@ function NewTabMenu(props: {
   onNewCompare: () => void;
   onOpenBrain: () => void;
   onNewBrowser: () => void;
+  onNewAgent: () => void;
 }) {
   // The parent tab bar uses `overflow-x-auto`, which clips any descendant
   // absolutely-positioned dropdown. Render the menu in a Portal and anchor
@@ -1208,7 +1297,7 @@ function NewTabMenu(props: {
         aria-label="New tab"
         aria-haspopup="menu"
         aria-expanded={props.open}
-        title={props.disabled ? "Select a repository first" : "New tab"}
+        title={props.disabled ? "Open a folder first" : "New tab"}
         class={`mx-1 p-1 rounded transition-colors shrink-0 ${
           props.disabled
             ? "text-muted-foreground/40 cursor-not-allowed"
@@ -1279,6 +1368,9 @@ function NewTabMenu(props: {
               </MenuItem>
               <MenuItem onClick={props.onNewBrowser} icon={<Globe class="w-3.5 h-3.5" />}>
                 New browser tab
+              </MenuItem>
+              <MenuItem onClick={props.onNewAgent} icon={<Bot class="w-3.5 h-3.5" />}>
+                New agent thread
               </MenuItem>
             </Show>
           </div>

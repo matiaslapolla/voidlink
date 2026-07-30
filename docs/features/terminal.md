@@ -252,13 +252,43 @@ collapsed.
   tab and the sidebar row show its name instead of `Terminal N`; the static
   label stays in the tooltip and returns when the process exits. The name is
   polled, so it lags a command's start by up to 1500 ms.
-- **The process name is a heuristic, not `comm`.** It is the foreground
+- **The process name is a heuristic, not `comm`.** It starts as the foreground
   process group's executable basename (`proc_pidpath` on macOS,
-  `/proc/{pid}/exe` on Linux). When that is a runtime — `node`, `python`,
-  `bun`, `env`, a shell — the first non-flag argv entry is used instead, so
-  `node .../cli.js` reads as the package directory (`claude-code`) rather than
-  `node`. argv comes from `sysctl kern.procargs2` on macOS and
-  `/proc/{pid}/cmdline` on Linux. Windows reports no name at all.
+  `/proc/{pid}/exe` on Linux) and is then refined three ways, because that
+  basename lies in three distinct situations. argv comes from
+  `sysctl kern.procargs2` on macOS and `/proc/{pid}/cmdline` on Linux. Windows
+  reports no name at all.
+
+  1. **The path names a release, not a program.** Both platforms' exec-path
+     primitives resolve symlinks, and version-pinned installers point a stable
+     `bin/` symlink at a file named after the version — Claude Code's
+     `~/.local/bin/claude` → `~/.local/share/claude/versions/2.1.220`. So the
+     one thing you wanted (`claude`) is the one thing that gets resolved away,
+     and the tab wore `2.1.220`. When the basename is version-shaped (optional
+     `v`, then digits and dots), `argv[0]` wins instead — it is what you
+     invoked, and it still says `claude`. `argv[0]` is normalised on the way
+     past: a login shell's leading dash goes, and only the first word is kept
+     (Claude Code's background helpers set `argv[0]` to `claude bg-pty-host`).
+     If `argv[0]` is version-shaped too, the package directory the release sits
+     in is read off the path — but only when the release file is directly
+     inside a version container (`versions/`, `releases/`, `installs/`…), so a
+     version-shaped binary in `/usr/local/bin` cannot report `local`.
+  2. **The binary is a runtime** — `node`, `python`, `bun`, `env`, a shell. Then
+     the first *meaningful* argv entry is the answer, so `node .../cli.js` reads
+     as the package directory (`claude-code`) rather than `node`. Flags are
+     skipped (which makes `python -m http.server` resolve to `http.server`) and
+     so are package-manager subcommand verbs, so `pnpm run dev` reads as `dev`
+     and `uv run pytest` as `pytest` rather than both reading as `run`.
+  3. **The runtime is a shell with `-c`.** Then there is no script, only a
+     command line, and the first word of it is the answer: `bash -c 'npm run
+     build'` reads as `npm`. Taking only the first word is the point — the rest
+     is a pipeline, a redirect or a quoted argument, and applying the path logic
+     to the whole string produced tab labels hundreds of characters long.
+
+  Every candidate is finally gated on looking like a program name at all: no
+  whitespace, no shell punctuation, at most 32 characters. A candidate that
+  fails the gate is discarded rather than truncated, and the tab keeps its own
+  label.
 - **cwd** comes from `proc_pidinfo(PROC_PIDVNODEPATHINFO)` on macOS and
   `/proc/{pid}/cwd` on Linux. The "busy" indicator, which uses `tcgetpgrp`,
   works on both.
@@ -303,6 +333,13 @@ collapsed.
       still green within ~1.5s of the last byte.
 - [ ] `claude` (or `vim`, or `lazygit`) sitting at its prompt: **green, still** —
       not orange, not pulsing. This is the reported bug.
+- [ ] Run `claude` from a version-pinned install (`~/.local/bin/claude`, a
+      symlink into `~/.local/share/claude/versions/<version>`), including via an
+      env-prefixed alias. The tab reads **`claude`**, not the version number.
+- [ ] `bash -c 'npm run build'`: the tab reads `npm`. No tab label is ever longer
+      than a program name, whatever you put after `-c`.
+- [ ] `pnpm run dev` (or `uv run pytest`): the tab reads `dev` (`pytest`), not
+      `run`.
 - [ ] Type into `claude` so it starts thinking: it goes to pulsing green, and
       back to still when it stops.
 - [ ] `sleep 30`: reads as idle. Expected — see the gotcha.
