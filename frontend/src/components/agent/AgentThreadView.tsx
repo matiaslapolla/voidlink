@@ -96,6 +96,10 @@ export function AgentThreadView(props: AgentThreadViewProps) {
     tabId: props.tabId,
     repoPath: repoPath() ?? "",
     commandTemplate: command(),
+    // For the event log's `actorName`. The roster name is what a cross-repo
+    // view can group by; the command template is an implementation detail that
+    // two differently-purposed agents can share.
+    agentName: agentName(),
     openFiles: activeOpenFiles().map((f) => f.path),
     activePath: activePath(),
   });

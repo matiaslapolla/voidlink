@@ -20,6 +20,8 @@ import {
   FilePlus2,
   GitCommitHorizontal,
   Brain,
+  History as TimelineIcon,
+  Radar as MissionIcon,
   Globe,
   Bot,
 } from "lucide-solid";
@@ -30,6 +32,8 @@ import { CommitGraph } from "@/components/git/history/CommitGraph";
 import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { commitDiffBase } from "@/commands/commitDiff";
 import { BrainSurface } from "@/components/brain/BrainSurface";
+import { TimelineSurface } from "@/components/timeline/TimelineSurface";
+import { MissionSurface } from "@/components/mission/MissionSurface";
 import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
 import { AgentThreadView } from "@/components/agent/AgentThreadView";
 import { agentThread, dropAgentThread } from "@/commands/agent";
@@ -120,6 +124,8 @@ export function MainSurface(props: MainSurfaceProps) {
     activeStackTabs,
     activeHistoryTabs,
     activeBrainTabs,
+    activeTimelineTabs,
+    activeMissionTabs,
     activeBrowserTabs,
     activeAgentTabs,
     activeItem,
@@ -197,6 +203,30 @@ export function MainSurface(props: MainSurfaceProps) {
         activity: tabMark(tab.id),
         // Repo-wide singletons: one per worktree, so there is nothing to sort
         // them against and nothing a pin would protect them from.
+        pinnable: false,
+        draggable: false,
+      });
+    }
+    for (const tab of activeTimelineTabs()) {
+      out.push({
+        kind: "timeline",
+        id: tab.id,
+        label: "timeline",
+        icon: <TimelineIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
+        title: "Timeline",
+        activity: tabMark(tab.id),
+        pinnable: false,
+        draggable: false,
+      });
+    }
+    for (const tab of activeMissionTabs()) {
+      out.push({
+        kind: "mission",
+        id: tab.id,
+        label: "mission",
+        icon: <MissionIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
+        title: "Mission Control",
+        activity: tabMark(tab.id),
         pinnable: false,
         draggable: false,
       });
@@ -568,6 +598,8 @@ export function MainSurface(props: MainSurfaceProps) {
       case "stack": actions.selectStackTab(wtId, tab.id); break;
       case "history": actions.selectHistoryTab(wtId, tab.id); break;
       case "brain": actions.selectBrainTab(wtId, tab.id); break;
+      case "timeline": actions.selectTimelineTab(wtId, tab.id); break;
+      case "mission": actions.selectMissionTab(wtId, tab.id); break;
       case "browser": actions.selectBrowserTab(wtId, tab.id); break;
       case "agent": actions.selectAgentTab(wtId, tab.id); break;
     }
@@ -584,6 +616,8 @@ export function MainSurface(props: MainSurfaceProps) {
       case "stack": actions.closeStackTab(wtId, tab.id); break;
       case "history": actions.closeHistoryTab(wtId, tab.id); break;
       case "brain": actions.closeBrainTab(wtId, tab.id); break;
+      case "timeline": actions.closeTimelineTab(wtId, tab.id); break;
+      case "mission": actions.closeMissionTab(wtId, tab.id); break;
       case "browser": actions.closeBrowserTab(wtId, tab.id); break;
       case "agent":
         actions.closeAgentTab(wtId, tab.id);
@@ -844,6 +878,14 @@ export function MainSurface(props: MainSurfaceProps) {
                   actions.openBrainTab(state.activeWorktreeId);
                   closeMenu();
                 }}
+                onOpenTimeline={() => {
+                  actions.openTimelineTab(state.activeWorktreeId);
+                  closeMenu();
+                }}
+                onOpenMission={() => {
+                  actions.openMissionTab(state.activeWorktreeId);
+                  closeMenu();
+                }}
                 onNewBrowser={onNewBrowser}
                 onNewAgent={() => {
                   actions.openAgentTab(
@@ -1056,6 +1098,42 @@ export function MainSurface(props: MainSurfaceProps) {
         )}
       </For>
 
+      {/* Timeline tabs (the event log) */}
+      <For each={activeTimelineTabs()}>
+        {(tab) => (
+          <div class={paneClass()} style={paneStyle(tab.id)}>
+            <TimelineSurface repoPath={activeRepoPath() ?? ""} />
+          </div>
+        )}
+      </For>
+
+      {/* Mission Control (the lineup, the check-in and the hills) */}
+      <For each={activeMissionTabs()}>
+        {(tab) => (
+          <div class={paneClass()} style={paneStyle(tab.id)}>
+            <MissionSurface
+              workspaceId={state.activeWorkspaceId}
+              repoPath={activeRepoPath() ?? undefined}
+              onOpen={(row) => {
+                // The Lineup spans every workspace, so a row's worktree is
+                // usually not the one this window is showing. `selectWorktree`
+                // switches workspaces too, which is exactly the navigation the
+                // surface exists to enable.
+                if (row.worktreeId) actions.selectWorktree(row.worktreeId);
+              }}
+              onInspectLeg={(leg) => {
+                // A leg's work is a branch. Comparing it against the branch it
+                // came from is how you read what the agent actually did.
+                actions.openCompareTab(state.activeWorktreeId, {
+                  headRef: leg.branch,
+                  useMergeBase: true,
+                });
+              }}
+            />
+          </div>
+        )}
+      </For>
+
       {/* Brain tabs */}
       <For each={activeBrainTabs()}>
         {(tab) => (
@@ -1226,6 +1304,8 @@ function NewTabMenu(props: {
   onNewTerminal: () => void;
   onNewCompare: () => void;
   onOpenBrain: () => void;
+  onOpenTimeline: () => void;
+  onOpenMission: () => void;
   onNewBrowser: () => void;
   onNewAgent: () => void;
 }) {
@@ -1362,6 +1442,12 @@ function NewTabMenu(props: {
               </MenuItem>
               <MenuItem onClick={props.onEnterFileMode} icon={<FilePlus2 class="w-3.5 h-3.5" />}>
                 New file at root…
+              </MenuItem>
+              <MenuItem onClick={props.onOpenTimeline} icon={<TimelineIcon class="w-3.5 h-3.5" />}>
+                Timeline
+              </MenuItem>
+              <MenuItem onClick={props.onOpenMission} icon={<MissionIcon class="w-3.5 h-3.5" />}>
+                Mission Control
               </MenuItem>
               <MenuItem onClick={props.onOpenBrain} icon={<Brain class="w-3.5 h-3.5" />}>
                 Brain

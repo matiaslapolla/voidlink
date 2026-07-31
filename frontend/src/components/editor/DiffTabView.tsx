@@ -329,7 +329,12 @@ export function DiffTabView(props: DiffTabViewProps) {
               }
             >
               {(f) => (
-                <DiffRenderer file={f()} mode={state.diffMode} hunkActions={hunkActions()} />
+                <DiffRenderer
+                  file={f()}
+                  mode={state.diffMode}
+                  hunkActions={hunkActions()}
+                  repoPath={props.repoPath}
+                />
               )}
             </Show>
           </div>

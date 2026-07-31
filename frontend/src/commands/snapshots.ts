@@ -52,7 +52,8 @@ export interface SnapshotAgent {
   title?: string;
 }
 
-/// All eleven kinds. The two repo-wide singletons (commit graph, brain) are
+/// All twelve kinds. The three repo-wide singletons (commit graph, brain,
+/// timeline) are
 /// booleans rather than arrays because there is never more than one of each.
 export interface SnapshotTabs {
   files: string[];
@@ -65,6 +66,8 @@ export interface SnapshotTabs {
   browsers: SnapshotBrowser[];
   history: boolean;
   brain: boolean;
+  timeline: boolean;
+  mission: boolean;
   agents: SnapshotAgent[];
 }
 
@@ -110,6 +113,8 @@ export function emptySnapshotTabs(): SnapshotTabs {
     browsers: [],
     history: false,
     brain: false,
+    timeline: false,
+    mission: false,
     agents: [],
   };
 }
@@ -181,6 +186,8 @@ function migrateTabs(raw: Record<string, unknown>): SnapshotTabs {
     browsers: migrateBrowsers(raw.browsers),
     history: raw.history === true,
     brain: raw.brain === true,
+    timeline: raw.timeline === true,
+    mission: raw.mission === true,
     // Absent from every snapshot saved before agent tabs existed, which is why a
     // missing list defaults to empty rather than rejecting the whole blob.
     agents: migrateAgents(raw.agents),
@@ -346,6 +353,8 @@ export function snapshotTabCount(snap: WorkspaceSnapshot): number {
     t.browsers.length +
     t.agents.length +
     (t.history ? 1 : 0) +
-    (t.brain ? 1 : 0)
+    (t.brain ? 1 : 0) +
+    (t.timeline ? 1 : 0) +
+    (t.mission ? 1 : 0)
   );
 }

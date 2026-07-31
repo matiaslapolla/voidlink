@@ -70,8 +70,8 @@ import {
 import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { requestAiCommitDraft } from "@/commands/aiCommit";
-import { toggleAgentPanel } from "@/commands/agent";
-import { agentById, defaultAgentId } from "@/store/settings";
+import { askAgent, toggleAgentPanel } from "@/commands/agent";
+import { agentById, defaultAgentId, resolveAgentCommand } from "@/store/settings";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, snapshotTabCount } from "@/commands/snapshots";
 import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
@@ -79,6 +79,8 @@ import { setOverlayOpen } from "@/commands/overlay";
 import { agentPanelOpen } from "@/commands/agent";
 import { browserApi } from "@/api/webview";
 import { applyEditorRequest } from "@/store/editorRequests";
+import { publishRepos, setJournalRepo } from "@/store/journal";
+import { armTriggers, setTriggerRunner } from "@/store/triggers";
 import {
   isStackedMode,
   setStackedView,
@@ -181,6 +183,54 @@ function AppInner(props: {
     worktreeLabel: activeWorktree()?.branch ?? activeWorktree()?.path ?? "",
   });
   createEffect(() => void publishWindowContext(satelliteContext()));
+
+  // The repository events default to when the recorder has no better idea —
+  // `store/journal.ts` explains why an ambient value is accurate here rather
+  // than a guess. Same source as the satellite context above, deliberately: a
+  // recorded event and the git window must never disagree about which repo the
+  // workbench is showing.
+  createEffect(() => setJournalRepo(activeRepoPath() || null));
+
+  // ── Triggers ────────────────────────────────────────────────────────────
+  // Armed from the workbench and from nowhere else: three windows each
+  // listening to the same broadcast would run every firing three times, which
+  // is the same argument that put the event log in Rust.
+  //
+  // The runner opens a real agent tab rather than running a turn invisibly. A
+  // process started on the user's behalf that leaves no window behind is one
+  // they cannot read, cancel, or learn from.
+  onMount(() => {
+    setTriggerRunner((firing) => {
+      const wtId = state.activeWorktreeId;
+      const agent = agentById(firing.rule.agentId);
+      const tabId = actions.openAgentTab(wtId, firing.rule.agentId, agent?.name);
+      if (!tabId) return;
+      void askAgent({
+        wtId,
+        tabId,
+        repoPath: firing.rule.repo,
+        commandTemplate: resolveAgentCommand(agent),
+        agentName: agent?.name,
+        question: firing.prompt,
+        openFiles: [],
+        activePath: null,
+        // The lineage the re-entrancy cutoff reads next time round. Without it
+        // a rule that reacts to its own work has nothing to recognise.
+        eventData: {
+          triggeredBy: firing.lineage.ruleId,
+          triggerDepth: firing.lineage.depth,
+        },
+      });
+    });
+    onCleanup(armTriggers());
+    onCleanup(() => setTriggerRunner(null));
+  });
+
+  // Publish the workspace/worktree map so Rust can stamp `workspace` onto the
+  // events it derives itself and answer cross-repo queries. From the workbench
+  // only: it is the window that owns the workspace model, and having all three
+  // publish would mean the satellites' narrower views racing to overwrite it.
+  createEffect(() => publishRepos(state.workspaces));
 
   // ── Standalone editor window ─────────────────────────────────────────────
   // The workbench owns the editor's four tab collections — it is the only
@@ -416,6 +466,24 @@ function AppInner(props: {
           if (isFileFinderOpen()) closeFileFinder();
           else openFileFinder();
         },
+      },
+      {
+        id: "view.timeline",
+        label: "Open the timeline",
+        description: "The event log: commits, agent turns and commands, newest first",
+        group: "View",
+        enabled: () => !!repo,
+        run: () => void actions.openTimelineTab(wtId),
+      },
+      {
+        id: "view.mission",
+        label: "Open Mission Control",
+        description: "Every workspace at once: what is running, what happened, and where it stands",
+        group: "View",
+        // Deliberately not gated on `repo`: the whole point is that it answers
+        // for workspaces other than the one you are standing in, and a
+        // workspace pointed at a plain folder still has a row.
+        run: () => void actions.openMissionTab(wtId),
       },
       {
         id: "terminal.new",
@@ -1080,7 +1148,7 @@ function AppInner(props: {
   });
 
   /// Build the ordered list of tabs in the same order MainSurface renders
-  /// them (terminals → compares → stacks → graph → brain → browser). Used by
+  /// them (terminals → compares → stacks → graph → brain → timeline → browser). Used by
   /// the Cmd+Alt+Arrow cycle shortcut so the wrap order matches what the user
   /// sees in the tab bar. Files, diffs, conflicts and previews are not here:
   /// they live in the editor window, which cycles its own.
@@ -1097,6 +1165,10 @@ function AppInner(props: {
       items.push({ type: "history", id: h.id });
     for (const b of state.brainTabsByWorktree[wtId] ?? [])
       items.push({ type: "brain", id: b.id });
+    for (const t of state.timelineTabsByWorktree[wtId] ?? [])
+      items.push({ type: "timeline", id: t.id });
+    for (const m of state.missionTabsByWorktree[wtId] ?? [])
+      items.push({ type: "mission", id: m.id });
     for (const b of state.browserTabsByWorktree[wtId] ?? [])
       items.push({ type: "browser", id: b.id });
     return items;
@@ -1147,6 +1219,22 @@ function AppInner(props: {
     }
     for (const b of state.brainTabsByWorktree[wtId] ?? []) {
       out.push({ id: b.id, label: "Brain", kind: "brain", open: go({ type: "brain", id: b.id }) });
+    }
+    for (const t of state.timelineTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: t.id,
+        label: "Timeline",
+        kind: "timeline",
+        open: go({ type: "timeline", id: t.id }),
+      });
+    }
+    for (const m of state.missionTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: m.id,
+        label: "Mission Control",
+        kind: "mission",
+        open: go({ type: "mission", id: m.id }),
+      });
     }
     for (const b of state.browserTabsByWorktree[wtId] ?? []) {
       out.push({
@@ -1282,6 +1370,12 @@ function AppInner(props: {
         break;
       case "brain":
         actions.selectBrainTab(wtId, item.id);
+        break;
+      case "timeline":
+        actions.selectTimelineTab(wtId, item.id);
+        break;
+      case "mission":
+        actions.selectMissionTab(wtId, item.id);
         break;
       case "browser":
         actions.selectBrowserTab(wtId, item.id);
@@ -1423,6 +1517,12 @@ function AppInner(props: {
         break;
       case "brain":
         actions.closeBrainTab(wtId, item.id);
+        break;
+      case "timeline":
+        actions.closeTimelineTab(wtId, item.id);
+        break;
+      case "mission":
+        actions.closeMissionTab(wtId, item.id);
         break;
       case "browser":
         actions.closeBrowserTab(wtId, item.id);

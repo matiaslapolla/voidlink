@@ -38,10 +38,19 @@ individual features, see [`../specs/`](../specs).
 | Page | Covers |
 |---|---|
 | [AI commit and repo agent](./ai-commit-and-agent.md) | The bring-your-own-CLI bridge, prompt assembly, failure modes |
+| [Event log](./event-log.md) | The append-only record of agent turns, commits and commands; its schema, attribution, and the timeline that reads it |
+| [Mission Control](./mission-control.md) | The Lineup across every workspace, automatic check-ins, and hill charts |
+| [Agent orchestration](./agent-orchestration.md) | Annotated diffs, fan-out to N worktrees, and "when X, run agent Y" |
 | [Secret scan](./secret-scan.md) | Pre-commit credential detection, the rule set, why it fails open |
 | [Workspace snapshots](./snapshots.md) | Saving and restoring tab layouts, and what they don't capture |
 | [Brain vault browser](./brain-vault.md) | Reading a `brain-kb` vault, quick capture, the `brain` CLI |
 | [Embedded browser](./browser.md) | Browser tabs as child webviews, in-place navigation, history, the compositing constraint |
+
+## Contributing
+
+| Page | Covers |
+|---|---|
+| [Testing](./testing.md) | The two vitest projects, writing render tests, what belongs where |
 
 ## Configuration
 

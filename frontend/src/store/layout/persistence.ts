@@ -58,6 +58,16 @@ export const STORAGE_KEYS = {
   /// without them a reload silently closes the commit graph you left open.
   historyTabs: "voidlink-history-tabs",
   brainTabs: "voidlink-brain-tabs",
+  /// `Record<worktreeId, TimelineTab[]>` — the event-log timeline, the third
+  /// singleton kind. Only the tab's existence is stored: its filters are view
+  /// state, and the events themselves are Rust's (`src-tauri/src/journal/`),
+  /// which is the whole reason this key is one id and not a cache.
+  timelineTabs: "voidlink-timeline-tabs",
+  /// `Record<worktreeId, MissionTab[]>` — Mission Control. One id per worktree,
+  /// like the three singletons above, and for the same reason: what the surface
+  /// shows lives in Rust, so the only thing worth persisting is that the tab was
+  /// open.
+  missionTabs: "voidlink-mission-tabs",
   /// `Record<worktreeId, ActiveItem | null>` — the *workbench's* front tab.
   /// The editor window's pointer rides inside `voidlink-editor-tabs`; this one
   /// had no key at all until session restore needed it.
@@ -90,6 +100,40 @@ export const STORAGE_KEYS = {
   /// reset clearing it costs the scrollback, which is the same trade every other
   /// tab kind makes.
   agentThreads: "voidlink-agent-threads",
+  /// `Record<workspaceId, HillScope[]>` — hill-chart scopes, keyed by
+  /// *workspace* rather than by worktree like almost everything else here.
+  ///
+  /// That break from the pattern is the model, not an oversight: a scope
+  /// routinely spans a main checkout and a worktree, and keying it by worktree
+  /// would show one piece of work as two dots that disagree with each other.
+  ///
+  /// The positions live here; the *history* of them lives in Rust's event log
+  /// as `hill.position.moved`. This key is the current state, and losing it
+  /// costs the dots but not the record of how they got there.
+  hills: "voidlink-hills",
+  /// `Record<repoPath, ReviewNote[]>` — comments left on diff hunks, which the
+  /// next agent turn reads as instructions.
+  ///
+  /// Keyed by repository path rather than by worktree id, unlike the tab
+  /// collections: a note is about the *code*, and the same note is equally true
+  /// whichever worktree you happen to have the file open in.
+  reviewNotes: "voidlink-review-notes",
+  /// `Record<repoPath, FanoutRun[]>` — one prompt sent to N agents in N
+  /// worktrees, and what each of them produced.
+  ///
+  /// A working set, not an archive: the durable record of a run is its events
+  /// in Rust's log, and this blob is trimmed to the most recent runs. Keyed by
+  /// repository for the same reason review notes are — a run is about the code.
+  fanoutRuns: "voidlink-fanout-runs",
+  /// `Record<repoPath, TriggerRule[]>` — "when X, run agent Y".
+  triggers: "voidlink-triggers",
+  /// The trigger kill switch, as `"true"`/`"false"`.
+  ///
+  /// A separate key from the rules on purpose: turning everything off has to be
+  /// a one-byte write that cannot fail because the rules blob is large or
+  /// malformed. Something that starts processes on the user's behalf needs an
+  /// off switch with no failure modes of its own.
+  triggersArmed: "voidlink-triggers-armed",
 } as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];

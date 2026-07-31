@@ -4,11 +4,52 @@ Source of truth for all UI in the VoidLink Tauri desktop app. Read this before b
 
 ## 1. Product context
 
-- **Type**: Desktop developer tool (Tauri + SolidJS webview, frameless window).
-- **Scope**: Three features — workspace tabs, terminal sidebar, git panel. No feature work outside this scope.
+- **Type**: Desktop developer tool (Tauri + SolidJS webview, frameless window). Three OS windows — workbench, editor, git — over one store.
 - **Density**: Information-dense IDE chrome. Pixel budget matters; padding and type should be tight but never below touch/readability floors.
 - **Platform**: Keyboard-first. Mouse is secondary. No touch.
 - **Audience**: Developers. They expect keyboard shortcuts, reversible actions, and JetBrains/VSCode-class polish.
+
+### Scope
+
+VoidLink is becoming an **AI Agent OS for engineers**: a workbench where agents
+are peers in the pane tree rather than a chat box bolted to the side, and where
+what everyone — human and agent — did is recorded and legible.
+
+This section used to read *"Three features — workspace tabs, terminal sidebar,
+git panel. No feature work outside this scope."* That stopped being true a while
+before it was corrected: the agent panel, the embedded browser, the brain vault
+and the event log all shipped against a document that said they were out of
+scope, which meant every one of them was designed with the rules bent rather
+than applied. **A scope statement the codebase contradicts does not restrain
+anything — it only teaches people to skip §1.**
+
+The surfaces this system governs, all of them equally:
+
+| Surface | What it is |
+|---|---|
+| Workspace, worktree, pane and tab chrome | The four containers and everything that arranges them |
+| Terminal | PTY panes and the terminal sidebar |
+| Git | Status, staging, branches, graph, compare, conflicts, worktrees, stacks |
+| Editor and diff | Monaco hosting, diff and merge views, blame, markdown preview |
+| Agent | The thread tab, the slide-over, the roster |
+| Event log | The timeline over what happened — commits, agent turns, commands |
+| Mission Control | The cross-workspace lineup, check-ins, hill charts, fan-out runs and triggers. The one surface deliberately **not** scoped to the active worktree |
+| Brain vault | The `brain-kb` reader |
+| Embedded browser | Browser tabs as child webviews |
+| Settings, palette, overlays | Configuration and the command surfaces |
+
+**The rule that replaces the old one.** Scope is not a fixed list of features —
+it is a constraint on how any new surface earns its place:
+
+1. It renders inside the island system (§6) as a peer of the surfaces above, or
+   it states in its own doc why it cannot.
+2. It obeys §7.5 liveness and §7.6 interaction states. A new surface is where
+   these are most often quietly skipped.
+3. It adds no new visual vocabulary — no new elevation, no new radius, no new
+   z-layer — without adding the token here first.
+
+A surface that cannot meet those three does not need a scope exemption; it needs
+a design.
 
 ## 2. Design principles
 

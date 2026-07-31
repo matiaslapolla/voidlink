@@ -14,6 +14,8 @@ import type {
   ActiveItem,
   AgentTab,
   BrainTab,
+  TimelineTab,
+  MissionTab,
   BrowserTab,
   ClosedTab,
   CompareTab,
@@ -52,6 +54,8 @@ export interface AppStoreState {
   historyTabsByWorktree: Record<string, HistoryTab[]>;
   previewTabsByWorktree: Record<string, PreviewTab[]>;
   brainTabsByWorktree: Record<string, BrainTab[]>;
+  timelineTabsByWorktree: Record<string, TimelineTab[]>;
+  missionTabsByWorktree: Record<string, MissionTab[]>;
   browserTabsByWorktree: Record<string, BrowserTab[]>;
   /// AI agent threads, several per worktree. The tabs only; each thread's
   /// transcript lives under `STORAGE_KEYS.agentThreads` keyed by tab id, because

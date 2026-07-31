@@ -1,7 +1,14 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { diffWordsWithSpace } from "diff";
-import { Check, Clipboard, Plus, Minus } from "lucide-solid";
+import { Check, Clipboard, MessageSquarePlus, Plus, Minus, X } from "lucide-solid";
 import type { DiffHunk, DiffLine, FileDiff } from "@/types/git";
+import {
+  addReviewNote,
+  anchorNotes,
+  resolveReviewNote,
+  reviewNotesForFile,
+  type ReviewNote,
+} from "@/store/reviewNotes";
 
 export interface HunkActions {
   /// Called when the user clicks "Stage hunk" / "Unstage hunk".
@@ -83,7 +90,7 @@ function inlineRowsForHunk(lines: DiffLine[]): InlineRowData[] {
   return out;
 }
 
-function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
+function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
   return (
     <div>
       <For each={props.file.hunks}>
@@ -98,6 +105,7 @@ function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
               file={props.file}
               hunkIndex={i()}
               actions={props.hunkActions}
+              repoPath={props.repoPath}
             />
             <For each={inlineRowsForHunk(hunk.lines)}>
               {(row) => (
@@ -223,9 +231,50 @@ function HunkHeader(props: {
   file: FileDiff;
   hunkIndex: number;
   actions?: HunkActions;
+  repoPath?: string;
 }) {
   const [copied, setCopied] = createSignal(false);
   const [running, setRunning] = createSignal(false);
+  const [composing, setComposing] = createSignal(false);
+  const [draft, setDraft] = createSignal("");
+
+  const filePath = () => props.file.newPath ?? props.file.oldPath ?? "";
+
+  /// The notes anchored to *this* hunk.
+  ///
+  /// Anchoring runs per hunk rather than once per file because the renderer has
+  /// no per-file component to hang it on — the cost is a header-string compare
+  /// per hunk, which is nothing next to the word-level diffing above.
+  const notes = createMemo<ReviewNote[]>(() => {
+    const repo = props.repoPath;
+    const path = filePath();
+    if (!repo || !path) return [];
+    const fileNotes = reviewNotesForFile(repo, path).filter((n) => !n.resolved);
+    if (fileNotes.length === 0) return [];
+    const headers = props.file.hunks.map((h) => h.header);
+    const anchored = anchorNotes(fileNotes, headers);
+    // Detached notes are shown against the first hunk, so a note whose anchor
+    // moved is still visible on the file rather than disappearing until the
+    // diff happens to line up again.
+    const own = anchored.byHunk.get(props.hunkIndex) ?? [];
+    return props.hunkIndex === 0 ? [...own, ...anchored.detached] : own;
+  });
+
+  function submitNote(e: Event) {
+    e.preventDefault();
+    const repo = props.repoPath;
+    const path = filePath();
+    if (!repo || !path) return;
+    const id = addReviewNote({
+      repo,
+      filePath: path,
+      hunkHeader: props.hunk.header,
+      body: draft(),
+    });
+    if (!id) return;
+    setDraft("");
+    setComposing(false);
+  }
 
   async function copyAsMarkdown() {
     const path = props.file.newPath ?? props.file.oldPath ?? "diff";
@@ -268,16 +317,37 @@ function HunkHeader(props: {
   }
 
   return (
-    // Sticky so the current hunk's `@@ … @@` context (file + enclosing
-    // function) stays pinned to the top of the scroll area as you read a
-    // long hunk, handing off to the next hunk's header as it scrolls in.
-    // `bg-background` makes the otherwise-translucent bar opaque so diff
-    // rows don't bleed through while it floats; z-10 keeps it above them.
+    <>
+    {/* Sticky so the current hunk's `@@ … @@` context (file + enclosing
+        function) stays pinned to the top of the scroll area as you read a
+        long hunk, handing off to the next hunk's header as it scrolls in.
+        `bg-background` makes the otherwise-translucent bar opaque so diff
+        rows don't bleed through while it floats; z-10 keeps it above them. */}
     <div class="flex group sticky top-0 z-10 bg-background">
       <div class="w-1 shrink-0 bg-primary/40" />
       <div class="flex-1 px-3 py-0.5 bg-muted/40 text-muted-foreground text-[11px] border-y border-border flex items-center gap-2">
         <span class="truncate">{props.hunk.header}</span>
+        {/* The note count sits outside the hover group: an existing comment has
+            to be discoverable without hovering the hunk that carries it, or a
+            review you left yesterday is invisible today. */}
+        <Show when={notes().length > 0}>
+          <span class="px-1 rounded bg-info/15 text-info text-[10px]">
+            {notes().length}
+          </span>
+        </Show>
         <div class="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <Show when={props.repoPath && filePath()}>
+            <button
+              onClick={() => setComposing((open) => !open)}
+              title="Comment on this hunk — the next agent turn reads it"
+              aria-label="Comment on this hunk"
+              aria-expanded={composing()}
+              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/60 hover:text-foreground transition-colors"
+            >
+              <MessageSquarePlus class="w-2.5 h-2.5" />
+              Comment
+            </button>
+          </Show>
           <Show when={props.actions?.onStageHunk}>
             <button
               onClick={() => void stage()}
@@ -321,10 +391,80 @@ function HunkHeader(props: {
         </div>
       </div>
     </div>
+
+    {/* Notes and the composer sit *below* the sticky bar, in normal flow, so a
+        long comment scrolls with its hunk instead of covering the code the
+        comment is about. */}
+    <Show when={notes().length > 0}>
+      <ul class="border-b border-border bg-info/5">
+        <For each={notes()}>
+          {(note) => (
+            <li class="flex items-start gap-2 px-3 py-1 text-[11px]">
+              <span class="flex-1 min-w-0 whitespace-pre-wrap break-words text-foreground/90">
+                {note.body}
+                <Show when={note.hunkHeader !== props.hunk.header}>
+                  {/* The note's anchor moved. Saying so beats letting a reader
+                      believe the comment is about the lines beneath it. */}
+                  <span
+                    class="ml-1 px-1 rounded bg-muted text-[10px] text-muted-foreground"
+                    title="The hunk this was written against has changed"
+                  >
+                    moved
+                  </span>
+                </Show>
+              </span>
+              <button
+                onClick={() => resolveReviewNote(props.repoPath ?? "", note.id)}
+                title="Resolve — stops sending it to the agent, keeps the note"
+                aria-label={`Resolve comment: ${note.body.split("\n")[0]}`}
+                class="shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Check class="w-2.5 h-2.5" />
+              </button>
+            </li>
+          )}
+        </For>
+      </ul>
+    </Show>
+
+    <Show when={composing()}>
+      <form class="flex items-start gap-2 px-3 py-1.5 border-b border-border bg-muted/20" onSubmit={submitNote}>
+        <textarea
+          value={draft()}
+          onInput={(e) => setDraft(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            // Enter submits, Shift+Enter is a newline: a review comment is one
+            // or two sentences, and a textarea that needs a mouse to submit is
+            // a textarea people stop using.
+            if (e.key === "Enter" && !e.shiftKey) submitNote(e);
+            if (e.key === "Escape") setComposing(false);
+          }}
+          rows="2"
+          placeholder="What should change here? The next agent turn reads this."
+          aria-label="Comment on this hunk"
+          class="flex-1 min-w-0 px-2 py-1 text-[11px] bg-background rounded border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        <button
+          type="submit"
+          class="px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/60 transition-colors"
+        >
+          Comment
+        </button>
+        <button
+          type="button"
+          onClick={() => setComposing(false)}
+          aria-label="Cancel this comment"
+          class="p-0.5 rounded text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <X class="w-2.5 h-2.5" />
+        </button>
+      </form>
+    </Show>
+    </>
   );
 }
 
-function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
+function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
   return (
     <div>
       <For each={props.file.hunks}>
@@ -335,6 +475,7 @@ function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
               file={props.file}
               hunkIndex={i()}
               actions={props.hunkActions}
+              repoPath={props.repoPath}
             />
             <For each={pairHunkLines(hunk.lines)}>
               {(pair) => <SplitRow pair={pair} />}
@@ -433,6 +574,11 @@ export function DiffRenderer(props: {
   file: FileDiff;
   mode: "inline" | "split";
   hunkActions?: HunkActions;
+  /// The repository this diff belongs to. Optional, and its absence is what
+  /// turns review comments off: the compare view diffs two refs and a note
+  /// written there would have nowhere to land in the working tree. A caller
+  /// that wants annotation opts in by passing the repo.
+  repoPath?: string;
 }) {
   return (
     <Show
@@ -449,9 +595,15 @@ export function DiffRenderer(props: {
       >
         <Show
           when={props.mode === "split"}
-          fallback={<InlineDiff file={props.file} hunkActions={props.hunkActions} />}
+          fallback={
+            <InlineDiff
+              file={props.file}
+              hunkActions={props.hunkActions}
+              repoPath={props.repoPath}
+            />
+          }
         >
-          <SplitDiff file={props.file} hunkActions={props.hunkActions} />
+          <SplitDiff file={props.file} hunkActions={props.hunkActions} repoPath={props.repoPath} />
         </Show>
       </Show>
     </Show>

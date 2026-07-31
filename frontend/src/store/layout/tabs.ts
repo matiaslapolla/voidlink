@@ -63,6 +63,25 @@ export interface BrainTab {
   id: string;
 }
 
+/// A Timeline (event log) tab. Like `BrainTab` and `HistoryTab` it carries no
+/// per-tab state — the filters live in the component and are not worth
+/// persisting — so one per worktree is all there ever needs to be.
+export interface TimelineTab {
+  id: string;
+}
+
+/// A Mission Control tab. Singleton and stateless like the three above: which
+/// section is showing is view state, and the lineup, check-in and hills all
+/// read from Rust rather than from anything worth persisting.
+///
+/// Held per worktree like every other collection here, but note that what it
+/// *renders* is not worktree-scoped — Mission Control deliberately spans every
+/// workspace. The per-worktree keying is about where the tab lives, not about
+/// what it shows.
+export interface MissionTab {
+  id: string;
+}
+
 export interface OpenFileTab {
   id: string;
   path: string;
@@ -133,6 +152,8 @@ export type ActiveItem =
   | { type: "history"; id: string }
   | { type: "preview"; id: string; path: string }
   | { type: "brain"; id: string }
+  | { type: "timeline"; id: string }
+  | { type: "mission"; id: string }
   | { type: "browser"; id: string }
   | { type: "agent"; id: string };
 
@@ -166,6 +187,8 @@ export type ClosedTab =
   | { type: "history" }
   | { type: "preview"; filePath: string }
   | { type: "brain" }
+  | { type: "timeline" }
+  | { type: "mission" }
   | { type: "browser"; url: string; title?: string }
   /// The thread's transcript is not in here. What a reopen brings back is a tab
   /// pointed at the same roster entry; the conversation itself lives under
@@ -184,6 +207,8 @@ export type TabKind =
   | "history"
   | "preview"
   | "brain"
+  | "timeline"
+  | "mission"
   | "browser"
   | "agent";
 
@@ -199,6 +224,8 @@ export interface TabTypes {
   history: HistoryTab;
   preview: PreviewTab;
   brain: BrainTab;
+  timeline: TimelineTab;
+  mission: MissionTab;
   browser: BrowserTab;
   agent: AgentTab;
 }
@@ -216,6 +243,8 @@ export type TabCollectionKey =
   | "historyTabsByWorktree"
   | "previewTabsByWorktree"
   | "brainTabsByWorktree"
+  | "timelineTabsByWorktree"
+  | "missionTabsByWorktree"
   | "browserTabsByWorktree"
   | "agentTabsByWorktree";
 
@@ -531,6 +560,30 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     closedSnapshot: () => ({ type: "brain" }),
   },
 
+  timeline: {
+    kind: "timeline",
+    stateKey: "timelineTabsByWorktree",
+    storage: { key: STORAGE_KEYS.timelineTabs },
+    serialize: (t) => ({ id: t.id }),
+    deserialize: (raw) => idOnlyTab<TimelineTab>(raw),
+    restore: async (raw) => idOnlyTab<TimelineTab>(raw),
+    equals: () => true,
+    label: () => "Timeline",
+    closedSnapshot: () => ({ type: "timeline" }),
+  },
+
+  mission: {
+    kind: "mission",
+    stateKey: "missionTabsByWorktree",
+    storage: { key: STORAGE_KEYS.missionTabs },
+    serialize: (t) => ({ id: t.id }),
+    deserialize: (raw) => idOnlyTab<MissionTab>(raw),
+    restore: async (raw) => idOnlyTab<MissionTab>(raw),
+    equals: () => true,
+    label: () => "Mission Control",
+    closedSnapshot: () => ({ type: "mission" }),
+  },
+
   browser: {
     kind: "browser",
     stateKey: "browserTabsByWorktree",
@@ -587,6 +640,8 @@ export const TAB_KIND_GROUP_LABELS: Record<TabKind, string> = {
   history: "Commit graph",
   preview: "Previews",
   brain: "Brain",
+  timeline: "Timeline",
+  mission: "Mission Control",
   browser: "Browser",
   agent: "Agents",
 };
@@ -603,6 +658,8 @@ export const TAB_KINDS: TabKind[] = [
   "history",
   "preview",
   "brain",
+  "timeline",
+  "mission",
   "browser",
   "agent",
 ];
@@ -678,6 +735,8 @@ export function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
     // Singletons: same type is same tab.
     case "history":
     case "brain":
+    case "timeline":
+    case "mission":
       return true;
   }
 }
@@ -747,6 +806,10 @@ export function deserializeClosedTab(raw: unknown): ClosedTab | null {
       return { type: "history" };
     case "brain":
       return { type: "brain" };
+    case "timeline":
+      return { type: "timeline" };
+    case "mission":
+      return { type: "mission" };
     default:
       return null;
   }
