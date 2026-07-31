@@ -57,6 +57,18 @@ function ToastRow(props: { toast: Toast }) {
     >
       <Icon />
       <span class="flex-1 leading-snug">{props.toast.message}</span>
+      {/* How many times this source has shouted. Rendered only above one, so a
+          normal toast is unchanged, and inside the same live region as the
+          message so the count is announced with it rather than as a second
+          bare number. */}
+      <Show when={props.toast.count > 1}>
+        <span
+          class="shrink-0 self-center px-1 rounded bg-accent/50 text-[10px] font-mono tabular-nums text-muted-foreground"
+          aria-label={`${props.toast.count} times`}
+        >
+          ×{props.toast.count}
+        </span>
+      </Show>
       <Show when={props.toast.action}>
         {(action) => (
           <button

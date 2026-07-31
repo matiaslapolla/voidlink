@@ -32,6 +32,7 @@ import { gitApi } from "@/api/git";
 import { STORAGE_KEYS, readJson, writeJson } from "@/store/layout/persistence";
 import { record } from "@/store/journal";
 import { aiSecretBindings } from "@/store/settings";
+import { dismissToastSource, pushToast } from "@/commands/toast";
 
 export type LegStatus =
   | "pending"
@@ -297,6 +298,7 @@ async function runLeg(run: FanoutRun, leg: RunLeg, baseRef?: string): Promise<vo
     const error = message(e);
     patchLeg(repo, runId, leg.id, { status: "failed", error, endedAt: Date.now() });
     recordLeg(run, leg, "failed", `could not create a worktree: ${error}`);
+    noteLegFailure(run, leg, error);
     return;
   }
 
@@ -353,9 +355,37 @@ async function runLeg(run: FanoutRun, leg: RunLeg, baseRef?: string): Promise<vo
       error,
     });
     recordLeg(run, leg, "failed", error);
+    noteLegFailure(run, leg, error);
   } finally {
     turnIds.delete(leg.id);
   }
+}
+
+/// Tell the user a leg died, without telling them N times.
+///
+/// A fan-out is the exact shape MASTER §7.5.5 does not cover: it assigns an
+/// interruption *level* per event and says nothing about rate, so five legs
+/// failing produced five stacked toasts describing one bad prompt. The attention
+/// budget did not grow by a factor of five.
+///
+/// Keyed on the run rather than the leg, so the count is the useful number —
+/// "this run is failing, 4 times" rather than four notices each naming a
+/// worktree the reader has never seen. The full detail is one click away in
+/// Mission Control and permanently in the journal, which is where per-leg
+/// errors belong.
+///
+/// No Retry affordance here, deliberately: there is no per-leg retry verb yet
+/// (re-running a leg means deciding what happens to the worktree and branch it
+/// already made), and a button that reruns the *whole* run would be a different
+/// and more expensive action than the word implies.
+function noteLegFailure(run: FanoutRun, leg: RunLeg, error: string): void {
+  pushToast(
+    `${leg.agentName} failed on “${firstLine(run.prompt)}” — ${firstLine(error)}`,
+    "error",
+    6000,
+    undefined,
+    `run:${run.id}`,
+  );
 }
 
 /// What each leg is actually asked.
@@ -483,6 +513,10 @@ export async function discardFanoutLeg(
 }
 
 export function removeFanoutRun(repo: string, runId: string): void {
+  // A complaint about a run the user has just deleted is not news. Without
+  // this, dismissing the run leaves its failure toast counting up on screen
+  // against a run that no longer exists.
+  dismissToastSource(`run:${runId}`);
   setRuns(
     produce((s) => {
       const list = s[repo];

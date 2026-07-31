@@ -40,6 +40,7 @@ import { createStore, produce } from "solid-js/store";
 import type { Actor, JournalEvent } from "@/api/journal";
 import { STORAGE_KEYS, readJson, readRaw, writeJson, writeRaw } from "@/store/layout/persistence";
 import { onJournalAppended, record } from "@/store/journal";
+import { pushToast } from "@/commands/toast";
 
 /// How many generations of trigger-caused work may chain before the chain is
 /// refused. Two: a rule may react to a rule's work, and that is the end of it.
@@ -339,6 +340,21 @@ export function armTriggers(): () => void {
           triggerDepth: firing.lineage.depth,
         },
       });
+      // Say so. A rule that fires an agent turn with no visible sign is the
+      // thing that makes automation frightening — you find out from the diff.
+      //
+      // Coalesced on the rule, because the failure mode this is most likely to
+      // surface is a rule matching more than the author expected, and ten
+      // separate toasts saying the same thing is how someone learns to ignore
+      // the channel that was supposed to warn them. `×4` on one toast is the
+      // same information and reads as a rate.
+      pushToast(
+        `“${firing.rule.name}” fired an agent turn`,
+        "info",
+        5000,
+        { label: "Disarm", run: () => setTriggersArmed(false) },
+        `trigger:${firing.rule.id}`,
+      );
       runner?.(firing);
     }
   });
