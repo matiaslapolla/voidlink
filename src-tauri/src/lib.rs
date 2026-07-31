@@ -10,6 +10,7 @@ mod browser;
 mod git;
 mod fs;
 mod journal;
+mod notify;
 mod lsp;
 mod brain;
 mod menu;
@@ -1152,6 +1153,10 @@ pub fn run() {
         .on_menu_event(menu::handle_event)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // Dispatch is Rust-only — see `notify/mod.rs`. No webview is granted a
+        // `notification:*` capability, and that absence is the enforcement of
+        // the decision rather than an oversight.
+        .plugin(tauri_plugin_notification::init())
         .manage(pty_store.clone())
         .manage(pty_channels)
         .manage(git_state)
@@ -1170,6 +1175,9 @@ pub fn run() {
             // After the log plugin so a failure to open the event log is
             // visible, and before anything that might record into it.
             journal::init(app.handle());
+            // After the journal: the notifier is a policy over what the journal
+            // writes, and has nothing to say before there is a log to read.
+            notify::init(app.handle());
 
             // tauri.conf.json is static, so the platform split for window chrome
             // lives here. macOS keeps the native decorations configured there —
@@ -1262,6 +1270,10 @@ pub fn run() {
             git::git_list_worktrees,
             watch::watch_repos,
             journal::journal_append,
+            notify::notify_visible,
+            notify::notify_config,
+            notify::notify_set_config,
+            notify::notify_test_cue,
             journal::journal_query,
             journal::journal_register_repos,
             journal::journal_repos,

@@ -52,6 +52,7 @@ import {
   type SettingHit,
 } from "@/store/settingsSearch";
 import { withLanguageOverride, withoutLanguageOverride } from "@/store/settingsJson";
+import { NotificationsPane } from "@/components/settings/NotificationsPane";
 import { SettingsJsonPane } from "./SettingsJsonPane";
 import { FuzzyText } from "@/commands/QuickPick";
 import { MONACO_LANGUAGE_IDS } from "@/components/editor/monaco";
@@ -81,7 +82,17 @@ interface SettingsDialogProps {
   gotoSetting?: string;
 }
 
-type Tab = "ui" | "theme" | "editor" | "terminal" | "keyboard" | "ai" | "git" | "stack" | "brain";
+type Tab =
+  | "ui"
+  | "theme"
+  | "editor"
+  | "terminal"
+  | "keyboard"
+  | "notifications"
+  | "ai"
+  | "git"
+  | "stack"
+  | "brain";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -165,6 +176,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "editor"} onClick={() => setTab("editor")}>Editor</TabButton>
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</TabButton>
+            <TabButton active={tab() === "notifications"} onClick={() => setTab("notifications")}>Notifications</TabButton>
             <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
             <TabButton active={tab() === "git"} onClick={() => setTab("git")}>Git</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
@@ -177,6 +189,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <Show when={tab() === "editor"}><EditorPane initialQuery={props.gotoSetting} /></Show>
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
             <Show when={tab() === "keyboard"}><KeyboardPane /></Show>
+            <Show when={tab() === "notifications"}><NotificationsPane /></Show>
             <Show when={tab() === "ai"}><AiPane /></Show>
             <Show when={tab() === "git"}><GitPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>

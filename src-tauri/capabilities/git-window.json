@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "git-window",
-  "description": "Permissions for the standalone git window's webview. Deliberately narrower than the main window's: this surface runs git operations and dialogs, but it never spawns child webviews (no browser tabs) and never writes app data, so the `core:webview:*` and `fs:*` grants are omitted.",
+  "description": "Permissions for the standalone git window's webview. Deliberately narrower than the main window's: this surface runs git operations and dialogs, but it never spawns child webviews (no browser tabs) and never writes app data, so the `core:webview:*` and `fs:*` grants are omitted. No `notification:*` permission appears here, and its absence is deliberate rather than an oversight: OS notifications are dispatched from Rust only (`src-tauri/src/notify`), because three windows share one origin and three webviews reacting to one `journal-appended` broadcast would produce three banners for one event. Granting a webview the capability would make that regression possible again, one `invoke` at a time.",
   "webviews": [
     "git"
   ],

@@ -48,13 +48,21 @@ let visible: ReadonlySet<string> = new Set();
 ///
 /// Defaults to focused, and to focused outside a browser (vitest), so a missing
 /// listener errs toward the old behaviour rather than badging everything.
-let windowFocused = true;
+///
+/// A signal rather than a plain `let` because the notifier's "what is the user
+/// looking at" feed has to be republished when focus changes, and an effect
+/// cannot depend on a variable. Every read below goes through the accessor, so
+/// there is still exactly one authority.
+const [windowFocused, setFocused] = createSignal(true);
+
+/// Whether this OS window has focus. Reactive.
+export const isWindowFocused = windowFocused;
 
 /// Publish OS window focus. Called once per window root; the DOM events are the
 /// authority, so this takes a value rather than reading `document.hasFocus()` on
 /// every check.
 export function setWindowFocused(focused: boolean): void {
-  windowFocused = focused;
+  setFocused(focused);
   if (!focused) return;
   // Coming back to the window is the same act of "seeing" as bringing a tab to
   // the front, so it clears the same signals on whatever is already in front.
@@ -125,7 +133,7 @@ export function setVisibleTabs(tabIds: Iterable<string>): void {
   visible = new Set(tabIds);
   // A tab in a window the user has switched away from is on screen but is not
   // being *seen*, so it clears nothing.
-  if (!windowFocused) return;
+  if (!windowFocused()) return;
   setSignals(produce((s) => {
     for (const id of Object.keys(s)) {
       if (!visible.has(id)) continue;
@@ -139,7 +147,7 @@ export function setVisibleTabs(tabIds: Iterable<string>): void {
 /// Is the user actually looking at this tab right now? On screen **and** in the
 /// focused OS window. Every "was this news?" decision below goes through it.
 export function isTabVisible(tabId: string): boolean {
-  return windowFocused && visible.has(tabId);
+  return windowFocused() && visible.has(tabId);
 }
 
 /// Acknowledge a failure. The only way `failed` clears.
@@ -200,7 +208,7 @@ export function resetActivity(): void {
     for (const id of Object.keys(s)) delete s[id];
   }));
   visible = new Set();
-  windowFocused = true;
+  setFocused(true);
 }
 
 // ── Escalation ──────────────────────────────────────────────────────────────

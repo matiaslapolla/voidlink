@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the app's own webview. Scoped by webview label rather than window label: browser tabs are child webviews of the same window, and scoping by window would hand every capability below to whatever page the user loads. (`local: true` already excludes remote origins, but relying on that alone would break the moment a browser tab pointed at a local dev server.) The `core:webview:*` grants are deliberately absent: browser-tab webviews are built and driven by `src-tauri/src/browser`, so no JavaScript in this app needs to create, move or close a webview through the core plugin.",
+  "description": "Permissions for the app's own webview. Scoped by webview label rather than window label: browser tabs are child webviews of the same window, and scoping by window would hand every capability below to whatever page the user loads. (`local: true` already excludes remote origins, but relying on that alone would break the moment a browser tab pointed at a local dev server.) The `core:webview:*` grants are deliberately absent: browser-tab webviews are built and driven by `src-tauri/src/browser`, so no JavaScript in this app needs to create, move or close a webview through the core plugin. No `notification:*` permission appears here, and its absence is deliberate rather than an oversight: OS notifications are dispatched from Rust only (`src-tauri/src/notify`), because three windows share one origin and three webviews reacting to one `journal-appended` broadcast would produce three banners for one event. Granting a webview the capability would make that regression possible again, one `invoke` at a time.",
   "webviews": [
     "main"
   ],

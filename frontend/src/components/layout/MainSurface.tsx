@@ -54,6 +54,7 @@ import {
   escalate,
   noteBell,
   noteFinished,
+  isWindowFocused,
   publishHiddenActivity,
   publishHiddenWorktreeActivity,
   publishWorktreeActivity,
@@ -63,6 +64,7 @@ import {
   tabSignals,
   trackWindowFocus,
 } from "@/store/activity";
+import { notifyApi } from "@/api/notify";
 import { notifyTerminal } from "@/commands/terminalNotify";
 import { watchTerminal } from "@/store/terminalWatch";
 import type { ActivitySignal } from "@/components/layout/StatusLed";
@@ -371,6 +373,22 @@ export function MainSurface(props: MainSurfaceProps) {
       if (tabId && visibleGroups().has(groupId)) seen.push(tabId);
     }
     setVisibleTabs(seen);
+
+    // The same set, told to Rust's notifier, so a banner is never raised for
+    // something the user is already looking at. Deliberately fed from *this*
+    // effect rather than computed separately: two notions of "visible" that can
+    // disagree is how you get a banner suppressed in one place and shown in the
+    // other for the same event.
+    //
+    // Repositories rather than tab ids, because an event carries a repo — and
+    // the tab→repo join belongs in the store that owns the mapping.
+    const repo = repoRoot();
+    void notifyApi
+      .setVisible(seen.length && repo ? [repo] : [], isWindowFocused())
+      // Fire-and-forget, like `record()`: failing to tell the notifier what is
+      // on screen costs one redundant banner, and is not worth propagating into
+      // a render effect.
+      .catch(() => {});
   });
 
   /// Whether this OS window has focus, which `setVisibleTabs` needs in order to

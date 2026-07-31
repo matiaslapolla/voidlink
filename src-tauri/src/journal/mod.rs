@@ -766,6 +766,16 @@ pub fn append(app: &AppHandle, incoming: Vec<NewEvent>) -> Vec<Event> {
     if let Err(e) = app.emit(JOURNAL_APPENDED_EVENT, &events) {
         log::warn!("could not broadcast {} event(s): {e}", events.len());
     }
+
+    // The notifier is a subscriber, not a call site. Every feature that records
+    // an event gets OS notifications for free and none of them can forget to —
+    // there is nothing to remember. It is handed the whole batch so coalescing
+    // sees a burst as a burst.
+    //
+    // After the broadcast, so a window's in-app mark never lags its banner, and
+    // outside every lock this function takes.
+    crate::notify::note(app, &events);
+
     events
 }
 
