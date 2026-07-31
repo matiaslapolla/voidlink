@@ -79,8 +79,52 @@ tab against the branch's merge base.
 once per run — two competing answers to one question merged on top of each other
 is painful to unpick — and it **does not touch the other worktrees**. Those
 branches are somebody's four minutes of work, and removing them is an explicit
-per-leg act, never a side effect of picking a winner. **Forget this run** drops
-the record and leaves every worktree and branch in place.
+per-leg act, never a side effect of picking a winner.
+
+It does, however, **say so**. After an adopt the card names the branches still
+on disk and states plainly that nothing will remove them for you. A destructive
+default is wrong; a silent non-destructive one is how a person ends up with six
+abandoned worktrees and finds out from `git worktree list` a month later.
+
+**Forget this run** drops the record and leaves every worktree and branch in
+place.
+
+### The comparison
+
+The mechanism was the easy half. Choosing between three branches by opening
+three compare tabs costs more time than the fan-out saved, so each run carries a
+comparison — and its unit is the **file**, not the leg. Per-leg counts cannot
+answer the question: two legs both reporting "3 files, +40 −12" are in
+completely different situations depending on whether it is the same three files.
+
+It reports three things, in this order:
+
+- **Agreement** — files every measured leg touched. Three agents independently
+  editing one file is the strongest available evidence that the change belongs
+  there, and a leg that *skipped* it is the one to look at hardest.
+- **Divergence** — files only some legs touched. This is where the approaches
+  actually differ, and it is the short list: usually two or three files out of
+  thirty.
+- **Size**, last, as a tie-breaker rather than a headline.
+
+The file matrix itself is collapsed by default. Opening with a grid of
+checkmarks would be showing the evidence before the finding.
+
+**"Worth reading first"** is the smallest diff that still touches every
+*consensus* file — consensus meaning a **majority** of legs, not all of them.
+That distinction is load-bearing: defining it as "every leg" is circular, since a
+leg that skips a file removes it from the set, so no leg can ever be penalised
+for skipping anything. The first version did exactly that and cheerfully
+recommended whoever had done the least work.
+
+It is labelled a guess from counts, not a verdict, everywhere it appears.
+Presenting a heuristic over line counts as a judgement about which answer is
+*correct* would be the same lie as unmarked inferred attribution.
+
+**There is no "tests passed" column**, and it would be the most useful one.
+Nothing here runs a leg's tests or knows what the test command is, and a column
+populated by guessing would be wrong often enough to make people distrust the
+columns that are right. It wants a real test-runner integration.
 
 ### The limit that matters
 
@@ -103,7 +147,18 @@ Other limits:
 - Runs are trimmed to the most recent 20 per repository. The durable record is
   the `run.*` events in the log.
 - Nothing cleans up worktrees on its own. That is deliberate; it is also why a
-  busy week leaves directories around.
+  busy week leaves directories around — and why the card says which ones after
+  an adopt.
+- A leg that failed or was stopped gets **no column** in the comparison, and is
+  named separately as "not in the comparison". A column of blanks would read as
+  "this agent chose to change nothing", which is a different and much more
+  misleading claim. A leg still running is neither: a verdict on work in flight
+  is one that will be wrong in thirty seconds.
+- Runs persisted before the comparison existed revive with their counts and no
+  paths, so they still show sizes and simply have nothing to compare.
+- **Leg failures raise one coalesced toast per run**, not one per leg — see
+  [Notifications and sound](./notifications.md) for the rate rule and for the
+  OS-level half.
 
 ---
 

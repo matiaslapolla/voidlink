@@ -387,3 +387,99 @@ Everything else is independent. The suggested opening: **B0, then A1+A2, then
 B1** — one one-way door closed, the test infrastructure in place before the
 surfaces that will use it, and then the first thing that makes the log pay for
 itself.
+
+---
+
+## Ledger — what shipped the same day
+
+This plan was drafted and then worked in the order it recommends, with one
+change: the user's ordering put the workbench-audit hygiene first, and the
+suggested opening (B0 → A1+A2 → B1) had already landed before the plan was
+written down.
+
+### Track A
+
+| | State |
+|---|---|
+| **A1** — the `browser` project | **not started.** Deliberate: it is a *capability* we lack, not a bug. See below for what it would buy. |
+| **A2** — the Tauri stub | **shipped.** `src/test/tauri.ts`, installed once from `setup.ts` for the whole render project. A render test now needs no `vi.mock` at all. |
+| **A3** — the coverage backlog | **partly.** `ChangedFileTree` (15) and `OperationBanner` (14) are mounted. `GitSidebar` needs both providers and is not done. The three geometry rows of that table need A1. |
+| **A4** — the runner as a thing you look at | **not started.** `@vitest/ui` and the script split. |
+| **A5** — visual regression, real E2E | deferred, as written. |
+
+**A2 paid for itself immediately, in the way the plan predicted and one it did
+not.** Migrating the timeline and Mission Control onto it surfaced a real
+ordering fact: `onJournalAppended` attaches across two awaits, so a surface that
+has painted its first query is not necessarily listening yet. The old
+hand-rolled mocks captured the handler synchronously and could never have shown
+it.
+
+The rule from §A1 is now written into `testing.md` and is being followed: use
+jsdom unless the assertion is about geometry.
+
+### Track B
+
+B0–B6 all shipped. Two things called out in the plan as the hard parts are now
+done rather than pending:
+
+- **B4's comparison surface** — the "hardest UI in the plan". It exists, and it
+  is files × legs rather than the summary matrix the plan sketched, because
+  counts alone cannot answer whether two legs did the same thing. Building it
+  exposed a circularity in the obvious ranking heuristic; see
+  [`../features/agent-orchestration.md`](../features/agent-orchestration.md).
+- **The adopt verb saying what happens to the other N−1 worktrees** — the plan
+  flagged this exactly ("deleting them silently is how someone loses work") and
+  the answer landed as: still never delete, but say what is left and that
+  nothing will remove it for you.
+
+**Still open in Track B**, and worth stating because the plan does not:
+
+- **Durability across a window close** is unchanged and remains the real limit
+  of fan-out. `store/fanout.ts`'s header says why. Moving orchestration into
+  Rust is the fix and it is a project, not a flag.
+- **B1's optional agent-written summary** was not built. The plan's own
+  labelling rule stands if it ever is.
+- **B7 (client mode)** still not planned.
+
+### Track C
+
+**C1–C4 all shipped**, including the settings matrix. Three notes where reality
+differed from the plan:
+
+- **`.sound(...)` on the notification builder was not confirmed** in the docs
+  for this version, so nothing depends on it. The split is instead: a banner
+  gets the platform's own sound (which respects Do Not Disturb) and we play a
+  `rodio` cue *only* when there is no banner. That is a better rule than the
+  plan's anyway — it makes double-sounding impossible.
+- **`rodio` 0.22's API is `MixerDeviceSink` + `Player`**, not
+  `OutputStream` + `Sink`. Worth recording because the plan's sketch would not
+  compile.
+- **Assets are generated, not sourced.** `tools/gen-sounds.py` synthesises all
+  five cues from sine partials, which sidesteps the CC0 sourcing problem
+  entirely: they are original to this repository. Provenance is in
+  `resources/sounds/LICENSE.md`, and the plan's insistence on recording it was
+  right.
+
+**Quiet hours are UTC.** Converting properly means a timezone dependency for one
+integer; the settings screen says so rather than letting the user discover it at
+22:00.
+
+### The one cross-track prediction that held
+
+> A2 (the Tauri test stub) unblocks cheap render tests for everything in B.
+
+It did. Every render test written after it — Mission Control, the notifications
+matrix, the operation banner — declares data rather than module mocks, and the
+last of those was 14 passing tests on the first run.
+
+### What is now the top of the list
+
+1. **A1 + A3's geometry rows.** Every remaining untested surface in this
+   codebase is untestable for the same reason: jsdom has no layout engine. This
+   is no longer a backlog of tests, it is one missing capability.
+2. **A5 from the 100x audit — run provenance on the diff.** Cheaper than when it
+   was ranked 13th, because the journal already does the attribution and already
+   labels it as inferred.
+3. **Fan-out durability in Rust**, if unattended overnight runs are the point.
+4. **C1 from the 100x audit** — cutting the browser tab kind, which is a product
+   decision that unpins Tauri.

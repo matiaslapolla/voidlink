@@ -161,9 +161,38 @@ left is redundant serialization: a `skip` parameter would not help, because
 libgit2 walks from the tips regardless, so the walk — the dominant cost — is
 paid either way. Recorded rather than papered over.
 
-**Still open:** GRAPH-P4 (no virtualization), CMP-F6/F10/F15/F16/F18–F22/F28–F32,
-WT-W3/W4/W6/W9, WT-S2–S6, WT-D3/D4, BR-A4/A5/A7/A8/A11/B3/C3–C6/D3/E2/F5/F6/F7/G8,
-DIFF-A7/A8, the Track 1 and Track 2 "Lower" lists, GRAPH-O4.
+**Still open after the second pass:** GRAPH-P4 (no virtualization),
+CMP-F6/F10/F15/F16/F18–F22/F28–F32, WT-W3/W4/W6/W9, WT-S2–S6, WT-D3/D4,
+BR-A4/A5/A7/A8/A11/B3/C3–C6/D3/E2/F5/F6/F7/G8, DIFF-A7/A8, the Track 1 and
+Track 2 "Lower" lists, GRAPH-O4.
+
+### #8 ledger — third pass (2026-07-31)
+
+| id | what |
+| --- | --- |
+| GRAPH-P4 | **fixed.** The graph is windowed above 60 rows — rows *and* gutter. The SVG keeps its full height and absolute coordinates, so only which elements exist changes; `gutterRange` draws one row past the viewport on each side, because a segment runs from row `i` to row `i+1` and a gutter drawn to exactly the visible rows looks severed at both edges while scrolling. That arithmetic lives in `lanes.ts` with unit tests; the measurement half needs a browser. |
+
+**Also closed from the coverage boundary rather than from a finding.** Two of
+the surfaces that carried the most findings are now mounted in tests for the
+first time:
+
+- `ChangedFileTree` — 15 tests, covering CMP-F25 (collapse state surviving a
+  rebuild, driven through a signal so the component genuinely re-renders against
+  fresh objects), the compaction rule and where it stops, rename/deletion
+  identity, rollups and filtering.
+- `OperationBanner` — 14 tests through the new Tauri stub, so `@/api/git` runs
+  for real. Includes the props-after-await bug its own header describes: a
+  successful continue must name the operation rather than saying "undefined
+  continued".
+
+Writing the first of those corrected an assumption in this document's own
+reading of the component: `a/b` and `a/c` do **not** compact into one row, since
+`a` has two children and merging there would lose the sibling relationship.
+
+**Still open, unchanged:** CMP-F6/F10/F15/F16/F18–F22/F28–F32, WT-W3/W4/W6/W9,
+WT-S2–S6, WT-D3/D4, BR-A4/A5/A7/A8/A11/B3/C3–C6/D3/E2/F5/F6/F7/G8, DIFF-A7/A8,
+the Track 1 and Track 2 "Lower" lists, GRAPH-O4. All MEDIUM or below; none is a
+correctness defect that loses work or misreports the repository.
 
 ### Notes from #7
 

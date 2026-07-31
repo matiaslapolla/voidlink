@@ -100,7 +100,20 @@ bottom columns match, otherwise a cubic S-curve. Five lane colours cycling
   column, and the one that got there first owns it.
 - **The gutter is capped at 180 px.** Beyond ~10 concurrent lanes the columns
   overlap rather than squeezing the commit summary to nothing.
-- **No virtualization.** At a limit of 5000 that is ~5000 rows and 15–25k SVG
-  paths, plus a full topological walk holding the per-repo lock.
+- **Windowed above 60 commits** — rows *and* gutter. Only the visible slice of
+  the SVG is drawn, which is the half that matters: the gutter emits a `<path>`
+  per lane segment and two `<circle>`s per commit, so windowing the rows alone
+  would have moved the cost rather than removed it. The SVG keeps its full
+  height and absolute coordinates, so the scrollbar stays honest and nothing is
+  translated.
+
+  The window is drawn **one row wider than the viewport on each side**, because
+  a lane segment runs from row `i` to row `i+1`: drawn to exactly the visible
+  rows, the graph would look severed at the top and bottom edges while
+  scrolling. `gutterRange` in `lanes.ts` is that arithmetic, and it is unit
+  tested — the measurement half needs a real browser and is not.
+
+  What is *not* windowed is the fetch: `Load more` still walks from the tips, so
+  the walk cost is unchanged. See below.
 - **Long ref names truncate** at 120 px.
 - Commits with an empty message render as italic `(no message)`.

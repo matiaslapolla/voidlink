@@ -259,6 +259,9 @@ Escalation, in order:
 4. A signal in a pane group that is **not on screen at all** — maximized away,
    or every group under zen — shows in the **status bar**, as a
    `n hidden panes` segment carrying the mark.
+5. A signal on a tab belonging to a **different worktree** shows on that
+   worktree's row in the rail. Under zen, where the rail is hidden, it moves to
+   a status-bar segment naming the worktrees instead.
 
 The steps compose rather than replace each other: a failure on a tab inside a
 collapsed group inside a maximized-away pane still reaches the status bar,
@@ -267,6 +270,18 @@ because the chip is off screen too.
 So: run a failing build in a terminal in group B, focus group A, and the failure
 is visible from A without opening B. Maximize A and it moves to the status bar.
 Enter zen and it stays there.
+
+**Step 5 was missing until 2026-07-31, and the failure mode was not "the mark
+went to the wrong place" — it was that the mark went nowhere.** `escalate()` had
+no concept of a worktree, and the pane tree it reasons over only exists for the
+worktree on screen, so a signal raised anywhere else matched no group, fell out
+of every branch and reached no surface at all. It went unnoticed for as long as
+it did because until agents ran in several worktrees at once, nothing ever
+signalled outside the one being looked at; fan-out ended that.
+
+The active worktree never gets a rail mark. Its signals are already resolved by
+steps 1–4, and a dot repeating them would be a fifth surface saying what four
+already say.
 
 `failed` never clears on focus alone — glancing at a pane is not the same as
 having read the error in it. `bell` and `finished` do clear when the tab comes
@@ -285,10 +300,18 @@ strip and the pane layer. It used to live in the strip; it had to move, because
 zen renders no strips and a shell watched only while its strip is mounted
 reports nothing exactly when you have the least chance of noticing.
 
-**Known gap:** a shell's *exit code* is not observable from the frontend —
-`pty-exit` is emitted with a unit payload — so `failed` is currently only
-raised by non-terminal work (a failed AI commit draft). Closing that gap needs
-the Rust side to report the exit status.
+**Escalation is in-app only.** For work you are not at the machine for, the
+same signals also drive OS notifications — as a separate policy over the event
+log, not as a second copy of this one. See
+[Notifications and sound](./notifications.md).
+
+**Known gap, narrowed but not closed.** `pty-exit` now carries the shell's exit
+status, so a shell that *died* can be reported as such. A foreground **command**
+finishing inside a live shell still cannot: `terminalWatch` infers completion
+from the process poll going idle, and idle carries no status — so
+`noteFinished(tabId, true)` is hardcoded and `failed` is still never raised by a
+terminal command. Reading a command's status needs shell integration (OSC 133,
+or a wrapper), which is a different piece of work from watching a PID.
 
 ## Layout presets
 
@@ -337,9 +360,21 @@ Two rules make it work on a narrow window:
   a window too narrow for even the top-priority chip, the bar overflows by a
   few pixels rather than showing nothing but a `⋯`.
 
-Resting priorities, highest first: background activity, focus mode (zen /
-maximized), branch, AI draft, ahead/behind, dirty, stack, blame, workspace
-count.
+Resting priorities, highest first: background activity, worktree activity, focus
+mode (zen / maximized), branch, ahead/behind, dirty, stack, AI draft.
+
+Two of those numbers are argued rather than assumed:
+
+- **AI draft sits below the standing facts, not above them.** Drafting a commit
+  message is a transient operation; ahead/behind and dirty are things that are
+  *true about the repository*. A resting rank above them meant a transient
+  outranked a fact for the whole life of the process. The draft segment carries
+  a live signal, so the first rule above already pulls it to the front while it
+  is happening — the signal does the work, and the resting rank goes last.
+- **There is no workspace-count chip any more.** It had the lowest priority, so
+  it was the first thing overflow collapsed into `⋯` and was almost never on
+  screen; and what it reported is in the rail, which is visible everywhere
+  except zen. Usually hidden and always redundant is a dead affordance.
 
 The bar also carries an off-screen `aria-live="polite"` region announcing
 escalated activity, because a badge that only exists visually is not proactive
