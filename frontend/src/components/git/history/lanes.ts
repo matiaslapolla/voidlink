@@ -217,3 +217,28 @@ export function computeLanes(commits: GraphCommit[]): GraphLayout {
 
   return { rows, maxCols: Math.max(1, maxCols), truncatedLanes };
 }
+
+/// Which rows the gutter has to draw, given the window the virtualizer is
+/// showing. Inclusive, clamped, and **one row wider on each side**.
+///
+/// The widening is the whole reason this is a named function with tests rather
+/// than two `Math.max` calls inline. A lane segment is drawn *from* row `i` *to*
+/// row `i+1`, so a gutter that drew exactly the visible rows would be missing
+/// the edge entering the top of the viewport and the one leaving the bottom —
+/// the graph would appear severed at both ends, and only while scrolling, which
+/// is the hardest kind of rendering bug to catch by looking.
+///
+/// Pure and exported because jsdom has no layout engine and therefore cannot
+/// exercise the virtualizer at all: this is the part of the windowing that can
+/// be proven without a browser.
+export function gutterRange(
+  rowCount: number,
+  firstVisible: number,
+  lastVisible: number,
+): [number, number] {
+  if (rowCount <= 0) return [0, -1];
+  return [
+    Math.max(0, firstVisible - 1),
+    Math.min(rowCount - 1, lastVisible + 1),
+  ];
+}

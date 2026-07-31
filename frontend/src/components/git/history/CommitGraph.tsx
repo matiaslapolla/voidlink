@@ -21,7 +21,8 @@ import {
 import { gitApi } from "@/api/git";
 import { onGitRefsChanged } from "@/commands/gitEvents";
 import type { GraphCommit } from "@/types/history";
-import { computeLanes } from "./lanes";
+import { createVirtualizer } from "@tanstack/solid-virtual";
+import { computeLanes, gutterRange, type GraphRow } from "./lanes";
 
 /// Fixed row geometry. Kept dense per MASTER.md — one commit reads as a
 /// single tight line with its dot aligned to the row's vertical centre.
@@ -126,6 +127,62 @@ export function CommitGraph(props: {
   const svgHeight = createMemo(() => (settled()?.length ?? 0) * ROW_H + ROW_H / 2);
   const x = (col: number) => PAD_L + col * COL_W + COL_W / 2;
 
+  // ── Windowing (GRAPH-P4) ─────────────────────────────────────────────────
+  //
+  // "Load more" adds 200 commits at a time and a real repository has tens of
+  // thousands. Every row was three DOM subtrees — an edge group, a dot group
+  // and the row itself — so the graph was the one surface in this app whose
+  // cost grew without bound while you used it.
+  //
+  // Windowing the **rows** is the obvious half. Windowing the **SVG** is the
+  // half that actually matters: the gutter drew a `<path>` per lane segment and
+  // two `<circle>`s per commit for the whole history, so a virtualized row list
+  // over an un-virtualized gutter would have moved the cost rather than removed
+  // it.
+  //
+  // The SVG keeps its full height and its absolute coordinates — `y` is a pure
+  // function of the row index — so nothing has to be translated and the
+  // scrollbar stays honest. Only *which* elements exist changes.
+
+  let scrollRef: HTMLDivElement | undefined;
+
+  /// Below this the list is shorter than a tall viewport and windowing costs
+  /// more than it saves. Matches `VirtualFileList`'s reasoning, with a larger
+  /// number because these rows are taller.
+  const VIRTUALIZE_ABOVE = 60;
+
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    get count() {
+      return layout().rows.length;
+    },
+    getScrollElement: () => scrollRef ?? null,
+    estimateSize: () => ROW_H,
+    overscan: 12,
+  });
+
+  const virtualized = createMemo(() => layout().rows.length > VIRTUALIZE_ABOVE);
+
+  /// The index range the gutter has to draw, inclusive.
+  ///
+  /// One row wider than the visible window on each side, because a segment is
+  /// drawn *from* row `i` *to* row `i+1`: without the extra row the edge
+  /// entering the top of the viewport and the one leaving the bottom would both
+  /// be missing, and the graph would look severed at both ends.
+  const drawRange = createMemo<[number, number]>(() => {
+    const rows = layout().rows.length;
+    if (!virtualized()) return [0, rows - 1];
+    const items = virtualizer.getVirtualItems();
+    if (items.length === 0) return gutterRange(rows, 0, VIRTUALIZE_ABOVE);
+    return gutterRange(rows, items[0].index, items[items.length - 1].index);
+  });
+
+  /// The rows the gutter draws, each carrying its true index — the y
+  /// coordinates are absolute, so a sliced array must not renumber itself.
+  const drawnRows = createMemo(() => {
+    const [first, last] = drawRange();
+    return layout().rows.slice(first, last + 1).map((row, i) => ({ row, index: first + i }));
+  });
+
   const [selected, setSelected] = createSignal<string | null>(null);
 
   /// Drop a selection whose commit is gone.
@@ -145,6 +202,77 @@ export function CommitGraph(props: {
     setSelected(c.oid);
     props.onOpenCommit?.(c.oid, c.parentOids);
   }
+
+
+  /// One commit row.
+  ///
+  /// A function rather than a component so both the windowed and unwindowed
+  /// branches above render the identical subtree — the alternative is two
+  /// copies of forty lines of JSX that drift the first time one is edited.
+  const commitRow = (row: GraphRow) => {
+    const c = row.commit;
+    const isSel = () => selected() === c.oid;
+    return (
+      <div
+      role="option"
+      tabindex={0}
+      aria-selected={isSel()}
+      onClick={() => openCommit(c)}
+      // A div with an onClick was unreachable without a
+      // mouse: no role, no tab stop, no key handler.
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openCommit(c);
+        }
+      }}
+      class={`group flex items-center gap-2 pr-4 cursor-pointer border-l-2 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+        isSel()
+          ? "bg-accent/50 border-primary"
+          : "border-transparent hover:bg-accent/30"
+      }`}
+      style={{ height: `${ROW_H}px` }}
+      title={`${c.shortOid} · ${c.summary}`}
+    >
+      <span class="font-mono text-[11px] text-muted-foreground tabular-nums shrink-0 w-[52px]">
+        {c.shortOid}
+      </span>
+      {/* Ref decoration chips. */}
+      <Show when={c.refs.length > 0}>
+        <span class="flex items-center gap-1 shrink-0">
+          <For each={c.refs}>
+            {(ref) => (
+              <RefChip
+                name={ref.name}
+                kind={ref.kind}
+                // Only the chip naming the ref HEAD is on.
+                // Passing `c.isHead` to every chip painted
+                // `main`, `origin/main` and `v2.0`
+                // identically on the HEAD commit, erasing
+                // the distinction exactly where the user
+                // most needs it.
+                isHead={ref.isHead}
+              />
+            )}
+          </For>
+        </span>
+      </Show>
+      <span
+        class={`flex-1 min-w-0 truncate text-[13px] ${
+          isSel() ? "text-foreground" : "text-foreground/90"
+        }`}
+      >
+        {c.summary || <span class="text-muted-foreground italic">(no message)</span>}
+      </span>
+      <span class="shrink-0 text-[11px] text-muted-foreground truncate max-w-[140px] hidden sm:inline">
+        {c.authorName}
+      </span>
+      <span class="shrink-0 text-[11px] text-muted-foreground tabular-nums w-[64px] text-right">
+        {relTime(c.commitTime, now())}
+      </span>
+      </div>
+    );
+  };
 
   return (
     <div class="flex flex-col h-full bg-background text-foreground">
@@ -191,7 +319,7 @@ export function CommitGraph(props: {
       </div>
 
       {/* Body */}
-      <div class="flex-1 overflow-auto scrollbar-thin">
+      <div ref={(el) => (scrollRef = el)} class="flex-1 overflow-auto scrollbar-thin">
         {/* `commits.loading` is true for *every* refetch, not just the first
             load — Solid sets the state to "refreshing" and `loading` reports
             it. Gating the whole graph on it meant that clicking "Load more",
@@ -254,12 +382,12 @@ export function CommitGraph(props: {
                 style={{ overflow: "visible" }}
               >
                 {/* Edges first so dots paint on top. */}
-                <For each={layout().rows}>
-                  {(row, i) => (
+                <For each={drawnRows()}>
+                  {({ row, index }) => (
                     <For each={row.segments}>
                       {(seg) => {
-                        const y1 = i() * ROW_H + ROW_H / 2;
-                        const y2 = (i() + 1) * ROW_H + ROW_H / 2;
+                        const y1 = index * ROW_H + ROW_H / 2;
+                        const y2 = (index + 1) * ROW_H + ROW_H / 2;
                         const xt = x(seg.top);
                         const xb = x(seg.bottom);
                         // Straight verticals stay crisp; shifts use a smooth
@@ -301,9 +429,9 @@ export function CommitGraph(props: {
                   }}
                 </For>
                 {/* Dots. */}
-                <For each={layout().rows}>
-                  {(row, i) => {
-                    const cy = i() * ROW_H + ROW_H / 2;
+                <For each={drawnRows()}>
+                  {({ row, index }) => {
+                    const cy = index * ROW_H + ROW_H / 2;
                     const cx = x(row.col);
                     return (
                       <>
@@ -332,74 +460,28 @@ export function CommitGraph(props: {
                 </For>
               </svg>
 
-              {/* Rows: dense one-liners offset past the gutter. */}
+              {/* Rows: dense one-liners offset past the gutter.
+                  Two branches over one `commitRow`, so the windowed and
+                  unwindowed paths cannot drift: a row that renders differently
+                  above and below the threshold is a bug nobody would look for. */}
               <div role="listbox" aria-label="Commits" style={{ "padding-left": `${gutterWidth()}px` }}>
-                <For each={layout().rows}>
-                  {(row) => {
-                    const c = row.commit;
-                    const isSel = () => selected() === c.oid;
-                    return (
-                      <div
-                        role="option"
-                        tabindex={0}
-                        aria-selected={isSel()}
-                        onClick={() => openCommit(c)}
-                        // A div with an onClick was unreachable without a
-                        // mouse: no role, no tab stop, no key handler.
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            openCommit(c);
-                          }
-                        }}
-                        class={`group flex items-center gap-2 pr-4 cursor-pointer border-l-2 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
-                          isSel()
-                            ? "bg-accent/50 border-primary"
-                            : "border-transparent hover:bg-accent/30"
-                        }`}
-                        style={{ height: `${ROW_H}px` }}
-                        title={`${c.shortOid} · ${c.summary}`}
-                      >
-                        <span class="font-mono text-[11px] text-muted-foreground tabular-nums shrink-0 w-[52px]">
-                          {c.shortOid}
-                        </span>
-                        {/* Ref decoration chips. */}
-                        <Show when={c.refs.length > 0}>
-                          <span class="flex items-center gap-1 shrink-0">
-                            <For each={c.refs}>
-                              {(ref) => (
-                                <RefChip
-                                  name={ref.name}
-                                  kind={ref.kind}
-                                  // Only the chip naming the ref HEAD is on.
-                                  // Passing `c.isHead` to every chip painted
-                                  // `main`, `origin/main` and `v2.0`
-                                  // identically on the HEAD commit, erasing
-                                  // the distinction exactly where the user
-                                  // most needs it.
-                                  isHead={ref.isHead}
-                                />
-                              )}
-                            </For>
-                          </span>
-                        </Show>
-                        <span
-                          class={`flex-1 min-w-0 truncate text-[13px] ${
-                            isSel() ? "text-foreground" : "text-foreground/90"
-                          }`}
+                <Show
+                  when={virtualized()}
+                  fallback={<For each={layout().rows}>{(row) => commitRow(row)}</For>}
+                >
+                  <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+                    <For each={virtualizer.getVirtualItems()}>
+                      {(item) => (
+                        <div
+                          class="absolute top-0 left-0 w-full"
+                          style={{ transform: `translateY(${item.start}px)` }}
                         >
-                          {c.summary || <span class="text-muted-foreground italic">(no message)</span>}
-                        </span>
-                        <span class="shrink-0 text-[11px] text-muted-foreground truncate max-w-[140px] hidden sm:inline">
-                          {c.authorName}
-                        </span>
-                        <span class="shrink-0 text-[11px] text-muted-foreground tabular-nums w-[64px] text-right">
-                          {relTime(c.commitTime, now())}
-                        </span>
-                      </div>
-                    );
-                  }}
-                </For>
+                          {commitRow(layout().rows[item.index])}
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
               </div>
             </div>
           </Show>

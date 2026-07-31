@@ -13,7 +13,7 @@
 /// through the first time.
 
 import { describe, expect, it } from "vitest";
-import { computeLanes, type GraphLayout } from "./lanes";
+import { computeLanes, type GraphLayout, gutterRange } from "./lanes";
 import type { GraphCommit } from "@/types/history";
 
 /// A DAG written as `oid: parents`, in the order the revwalk would emit it
@@ -288,5 +288,46 @@ describe("the truncation boundary", () => {
     const layout = computeLanes(graph({ a: [], b: ["parent-not-fetched"] }));
     const last = layout.rows[layout.rows.length - 1];
     expect(last.segments.every((seg) => seg.top === last.col)).toBe(true);
+  });
+});
+
+/// GRAPH-P4's windowing, at the one point that is provable without a browser.
+///
+/// jsdom has no layout engine, so `createVirtualizer` measures a zero-height
+/// scroll container and reports whatever it likes — the virtualization itself is
+/// browser-project work. What *is* testable here is the arithmetic that decides
+/// which rows the gutter draws, and that arithmetic is where the interesting bug
+/// lives: a gutter drawn to exactly the visible window loses the edge entering
+/// the top and the one leaving the bottom, so the graph looks severed at both
+/// ends — and only while scrolling.
+describe("gutterRange", () => {
+  it("draws one row past the window on each side", () => {
+    expect(gutterRange(100, 10, 20)).toEqual([9, 21]);
+  });
+
+  /// The bug the widening exists to prevent, stated as an invariant: every
+  /// visible row's *outgoing* segment has a row below it to land on.
+  it("always includes the row below the last visible one", () => {
+    const [, last] = gutterRange(100, 10, 20);
+    expect(last).toBeGreaterThan(20);
+  });
+
+  it("clamps at the top of the history", () => {
+    expect(gutterRange(100, 0, 9)).toEqual([0, 10]);
+  });
+
+  it("clamps at the bottom of the history", () => {
+    expect(gutterRange(100, 90, 99)).toEqual([89, 99]);
+  });
+
+  it("handles a window covering everything", () => {
+    expect(gutterRange(5, 0, 4)).toEqual([0, 4]);
+  });
+
+  /// An empty range rather than `[0, 0]`, so `slice(first, last + 1)` yields
+  /// nothing instead of one undefined row.
+  it("returns an empty range for an empty history", () => {
+    const [first, last] = gutterRange(0, 0, 0);
+    expect(last).toBeLessThan(first);
   });
 });
