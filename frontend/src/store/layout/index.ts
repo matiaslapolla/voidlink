@@ -1390,6 +1390,25 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       editTabGroups(wtId, (s) => dissolveTabGroup(s, groupId));
     },
 
+    /// Every workbench tab in the window, mapped to the worktree that owns it.
+    ///
+    /// Exists for §7.5.3 rule 1 across worktrees. Every other consumer of tab
+    /// state asks about the *active* worktree, because that is the only one
+    /// rendered — but a signal raised in a worktree the user is not in has to
+    /// reach a surface, and deciding that requires knowing which worktree each
+    /// signalling tab belongs to. Nothing else in the store answers that
+    /// question, because until agents ran in several worktrees at once nothing
+    /// needed to.
+    tabWorktreeMap(): Map<string, string> {
+      const out = new Map<string, string>();
+      for (const ws of state.workspaces) {
+        for (const wt of ws.worktrees) {
+          for (const id of worktreeTabIds(wt.id)) out.set(id, wt.id);
+        }
+      }
+      return out;
+    },
+
     /// The groups one pane group's strip should render, derivation applied.
     tabGroupsOfPane(paneGroupId: string): TabGroup[] {
       return tabGroupsByPane()[paneGroupId] ?? [];

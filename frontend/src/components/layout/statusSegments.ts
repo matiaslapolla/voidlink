@@ -76,6 +76,10 @@ export interface StatusSegment {
 ///     `StatusBar.tsx`.
 export const STATUS_PRIORITY = {
   backgroundActivity: 100,
+  /// Just below the hidden-pane mark and above everything else. Both are
+  /// §7.5.3's last stop; the pane-level one is more specific, so when the bar
+  /// is narrow enough to hold only one, it should be the one that names panes.
+  worktreeActivity: 95,
   focusMode: 90,
   branch: 80,
   aheadBehind: 60,

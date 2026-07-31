@@ -264,3 +264,124 @@ describe("running versus working", () => {
     expect(signalsOf("t1")).toEqual(["running"]);
   });
 });
+
+/// §7.5.3 rule 1 one container up.
+///
+/// The violation this closes is not "the mark went to the wrong surface" — it
+/// is that the mark went **nowhere**. `groupTabs` only ever describes the
+/// worktree on screen, because that is the only one with a pane tree, so a
+/// signal in any other worktree matched no group, fell out of every branch, and
+/// reached no surface at all. It went unnoticed because until agents ran in
+/// several worktrees at once, nothing ever signalled outside the one being
+/// looked at.
+describe("escalate across worktrees", () => {
+  const base = {
+    groupTabs: groups({ A: ["a1"] }),
+    visibleGroupIds: new Set(["A"]),
+    focusedGroupId: "A",
+    zen: false,
+    activeWorktreeId: "wt-main",
+    tabWorktree: new Map([
+      ["a1", "wt-main"],
+      ["x1", "wt-feature"],
+      ["x2", "wt-feature"],
+      ["y1", "wt-hotfix"],
+    ]),
+  };
+
+  it("marks the rail row of a worktree the user is not in", () => {
+    const out = escalate({ ...base, tabSignals: sig({ x1: ["failed"] }) });
+    expect(out.worktrees.get("wt-feature")).toBe("failed");
+  });
+
+  /// The regression guard for the actual bug: before the worktree axis existed
+  /// this signal produced an empty `groups`, a null `statusBar`, and nothing
+  /// else — three empty answers and no fourth place to look.
+  it("does not silently drop a signal that belongs to no rendered group", () => {
+    const out = escalate({ ...base, tabSignals: sig({ x1: ["failed"] }) });
+    expect(out.groups.size).toBe(0);
+    expect(out.statusBar).toBeNull();
+    expect(out.worktrees.size).toBe(1);
+  });
+
+  it("aggregates a worktree's tabs to the highest single mark", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ x1: ["finished"], x2: ["failed"] }),
+    });
+    expect(out.worktrees.get("wt-feature")).toBe("failed");
+  });
+
+  it("keeps two worktrees apart", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ x1: ["working"], y1: ["failed"] }),
+    });
+    expect(out.worktrees.get("wt-feature")).toBe("working");
+    expect(out.worktrees.get("wt-hotfix")).toBe("failed");
+  });
+
+  /// The active worktree's signals are already resolved by the tab, header and
+  /// status-bar rules. A rail dot repeating them would be a fourth surface
+  /// saying what three already say.
+  it("never marks the worktree that is on screen", () => {
+    const out = escalate({ ...base, tabSignals: sig({ a1: ["failed"] }) });
+    expect(out.worktrees.size).toBe(0);
+  });
+
+  /// A tab that closed between the snapshot and the call has no worktree. A
+  /// mark for a pane that no longer exists would escalate forever with nowhere
+  /// to send the user.
+  it("drops a signal from a tab with no known worktree", () => {
+    const out = escalate({ ...base, tabSignals: sig({ ghost: ["failed"] }) });
+    expect(out.worktrees.size).toBe(0);
+  });
+
+  it("does nothing when the caller has one worktree and passes no map", () => {
+    const out = escalate({
+      groupTabs: groups({ A: ["a1"] }),
+      visibleGroupIds: new Set(["A"]),
+      focusedGroupId: null,
+      zen: false,
+      tabSignals: sig({ a1: ["failed"] }),
+    });
+    expect(out.worktrees.size).toBe(0);
+    expect(out.worktreeStatusBar).toBeNull();
+  });
+
+  describe("the status-bar half", () => {
+    /// With the rail up, the rail is the right home — MASTER §7.6 is explicit
+    /// that a chip duplicating a visible surface is a dead affordance.
+    it("stays silent while the rail is on screen", () => {
+      const out = escalate({ ...base, tabSignals: sig({ x1: ["failed"] }) });
+      expect(out.worktrees.get("wt-feature")).toBe("failed");
+      expect(out.worktreeStatusBar).toBeNull();
+    });
+
+    /// Zen hides the rail, and then the status bar is the only surface left.
+    /// This is the case that makes the segment mandatory rather than
+    /// decorative.
+    it("carries the mark under zen, naming the worktrees", () => {
+      const out = escalate({
+        ...base,
+        zen: true,
+        tabSignals: sig({ x1: ["failed"], y1: ["working"] }),
+      });
+      expect(out.worktreeStatusBar?.signal).toBe("failed");
+      expect(new Set(out.worktreeStatusBar?.worktreeIds)).toEqual(
+        new Set(["wt-feature", "wt-hotfix"]),
+      );
+    });
+
+    /// Passed explicitly so a future focus mode that also hides the rail does
+    /// not silently strand the mark.
+    it("honours an explicit railVisible over the zen default", () => {
+      const out = escalate({
+        ...base,
+        railVisible: false,
+        tabSignals: sig({ x1: ["notify"] }),
+      });
+      expect(out.worktreeStatusBar?.signal).toBe("notify");
+    });
+  });
+});

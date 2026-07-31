@@ -55,6 +55,8 @@ import {
   noteBell,
   noteFinished,
   publishHiddenActivity,
+  publishHiddenWorktreeActivity,
+  publishWorktreeActivity,
   setVisibleTabs,
   signalsOf,
   tabMark,
@@ -423,12 +425,15 @@ export function MainSurface(props: MainSurfaceProps) {
   /// group membership, what is on screen or which group has focus.
   const escalation = createMemo(() => {
     void tabSignals();
+    const owner = actions.tabWorktreeMap();
+    // Every signalling tab in the window, not just the ones in the rendered
+    // worktree's pane tree. Walking `groupTabIds()` — as this used to — meant a
+    // signal in another worktree was never even in the input, which is why it
+    // reached no surface at all.
     const live = new Map<string, ActivitySignal[]>();
-    for (const [, ids] of groupTabIds()) {
-      for (const id of ids) {
-        const s = signalsOf(id);
-        if (s.length) live.set(id, s);
-      }
+    for (const id of Object.keys(tabSignals())) {
+      const s = signalsOf(id);
+      if (s.length) live.set(id, s);
     }
     return escalate({
       tabSignals: live,
@@ -437,15 +442,24 @@ export function MainSurface(props: MainSurfaceProps) {
       focusedGroupId: focusedGroupId(),
       collapsedTabGroups: collapsedTabGroups(),
       zen: isZen(),
+      tabWorktree: owner,
+      activeWorktreeId: state.activeWorktreeId,
     });
   });
 
 
-  /// Hand the off-screen half to the status bar. An effect rather than the
-  /// status bar reading `escalation()` directly, because the two components
-  /// are siblings in `AppShell` with no shared ancestor that knows geometry.
+  /// Hand the off-screen half to the status bar, and the per-worktree half to
+  /// the rail. Effects rather than the two components reading `escalation()`
+  /// directly, because all three are siblings in `AppShell` with no shared
+  /// ancestor that knows geometry.
   createEffect(() => publishHiddenActivity(escalation().statusBar));
-  onCleanup(() => publishHiddenActivity(null));
+  createEffect(() => publishWorktreeActivity(escalation().worktrees));
+  createEffect(() => publishHiddenWorktreeActivity(escalation().worktreeStatusBar));
+  onCleanup(() => {
+    publishHiddenActivity(null);
+    publishWorktreeActivity(new Map());
+    publishHiddenWorktreeActivity(null);
+  });
 
   // ── Group geometry ───────────────────────────────────────────────────────
   // Each group's body box, measured relative to this component's root, so the

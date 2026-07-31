@@ -17,6 +17,8 @@ import { requestNewWorktree } from "@/commands/worktree";
 import { removeWorktreeWithConfirm } from "@/commands/worktreeRemove";
 import { pushToast } from "@/commands/toast";
 import { worktreeLabel, type Workspace, type Worktree } from "@/types/workspace";
+import { LedSlot, ledLabel } from "@/components/layout/StatusLed";
+import { worktreeMark } from "@/store/activity";
 import { Splitter } from "@/components/layout/Splitter";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { PANEL_BOUNDS } from "@/store/layout";
@@ -328,7 +330,16 @@ export function WorkspaceRail() {
                             e.preventDefault();
                             setMenu({ x: e.clientX, y: e.clientY, workspace: ws, worktree: wt });
                           }}
-                          title={wt.path || "No folder selected"}
+                          title={
+                            worktreeMark(wt.id)
+                              ? `${wt.path || "No folder selected"} — ${ledLabel(worktreeMark(wt.id)!)}`
+                              : wt.path || "No folder selected"
+                          }
+                          aria-label={
+                            worktreeMark(wt.id)
+                              ? `${worktreeLabel(wt)} — ${ledLabel(worktreeMark(wt.id)!)}`
+                              : worktreeLabel(wt)
+                          }
                         >
                           <Show
                             when={wt.isMain}
@@ -337,6 +348,23 @@ export function WorkspaceRail() {
                             <FolderGit2 class="w-3 h-3 shrink-0 opacity-70" />
                           </Show>
                           <span class="truncate flex-1">{worktreeLabel(wt)}</span>
+                          {/* §7.5.3 rule 1, at the level the rule was missing.
+                              A tab signalling in a worktree the user is not in
+                              had nowhere to go: the pane tree only exists for
+                              the active worktree, so its mark matched no group
+                              header and never reached the status bar either.
+                              This row is the surface that was absent.
+
+                              A `LedSlot` rather than a `<Show>` so a mark
+                              arriving never reflows the row (rule 3), and
+                              silent because the row's own `aria-label` below
+                              names the state — otherwise a screen reader hears
+                              the signal twice. */}
+                          <LedSlot
+                            signal={worktreeMark(wt.id)}
+                            silent
+                            class="mr-0.5"
+                          />
                           <Show when={wt.isDirty}>
                             <span
                               class="text-warning shrink-0"

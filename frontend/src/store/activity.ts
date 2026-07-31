@@ -226,6 +226,27 @@ export interface EscalationInput {
   /// Zen hides every tab strip, so there is no group header to escalate *to* —
   /// everything goes one level further, to the status bar.
   zen: boolean;
+  /// Tab id → the worktree that owns it, **across every worktree**, not just
+  /// the rendered one. Optional so a caller that genuinely has one worktree
+  /// (the editor window) does not have to build an identity map.
+  ///
+  /// This is the axis §7.5.3 was missing. `groupTabs` only ever describes the
+  /// active worktree, because that is the only one with a pane tree on screen —
+  /// so a signal raised in a tab belonging to a *different* worktree matched no
+  /// group, fell out of every branch below, and reached nothing. Not "reached
+  /// the wrong surface": reached nothing. Rule 1 was being violated one level
+  /// above where it was implemented, and the reason it went unnoticed is that
+  /// until agents ran in several worktrees at once, no signal was ever raised
+  /// anywhere but the worktree the user was looking at.
+  tabWorktree?: ReadonlyMap<string, string>;
+  /// The worktree on screen. Its tabs escalate through the group/status rules
+  /// above; every other worktree's escalate to the rail and the status bar.
+  activeWorktreeId?: string | null;
+  /// Whether the workspace rail — where a per-worktree mark renders — is on
+  /// screen. Defaults to the inverse of `zen`, which is the only thing that
+  /// hides it today; passed explicitly so a future focus mode that also hides
+  /// it does not silently strand the mark.
+  railVisible?: boolean;
 }
 
 export interface Escalation {
@@ -239,6 +260,21 @@ export interface Escalation {
   /// segment's `aria-label` and tooltip can name them rather than saying
   /// "something happened somewhere").
   statusBar: { signal: ActivitySignal; tabIds: string[] } | null;
+  /// Worktree id → the aggregate mark for its rail row. Only worktrees that
+  /// are **not** the active one appear: the active worktree's signals are
+  /// already resolved by the three rules above, and a rail dot repeating them
+  /// would be a fourth surface saying what three already say.
+  worktrees: Map<string, ActivitySignal>;
+  /// The mark for a status-bar segment naming the worktrees involved, or
+  /// `null`.
+  ///
+  /// Emitted only when the rail is not on screen. When the rail is up it is
+  /// the right home for this — it is always visible, it is where worktrees
+  /// live, and MASTER §7.6 is explicit that a chip duplicating a visible
+  /// surface is a dead affordance. Under zen the rail is gone, and then the
+  /// status bar is the only surface left, which makes this mandatory rather
+  /// than decorative.
+  worktreeStatusBar: { signal: ActivitySignal; worktreeIds: string[] } | null;
 }
 
 /// Pure. Given who is signalling and what is on screen, decide what the group
@@ -261,6 +297,33 @@ export function escalate(input: EscalationInput): Escalation {
   const tabGroups = new Map<string, ActivitySignal>();
   const offScreen: ActivitySignal[] = [];
   const offScreenTabs: string[] = [];
+
+  // ── The worktree axis, first ──────────────────────────────────────────
+  // Before the pane rules, because a tab in another worktree has no pane group
+  // at all and would otherwise fall through every branch below and reach
+  // nothing. Grouping by worktree here also means the pane pass never has to
+  // ask whether a tab it is looking at belongs to the worktree on screen: by
+  // construction, `groupTabs` only contains tabs that do.
+  const worktreeLive = new Map<string, ActivitySignal[]>();
+  if (input.tabWorktree) {
+    for (const [tabId, live] of input.tabSignals) {
+      if (!live.length) continue;
+      const wtId = input.tabWorktree.get(tabId);
+      // A tab with no worktree is one that closed between the snapshot and
+      // this call. Dropping it is right: a mark for a pane that no longer
+      // exists escalates forever with nowhere to send the user.
+      if (!wtId || wtId === input.activeWorktreeId) continue;
+      const bucket = worktreeLive.get(wtId);
+      if (bucket) bucket.push(...live);
+      else worktreeLive.set(wtId, [...live]);
+    }
+  }
+
+  const worktrees = new Map<string, ActivitySignal>();
+  for (const [wtId, live] of worktreeLive) {
+    const mark = highestSignal(live);
+    if (mark) worktrees.set(wtId, mark);
+  }
 
   for (const [groupId, tabIds] of input.groupTabs) {
     const live: ActivitySignal[] = [];
@@ -299,10 +362,20 @@ export function escalate(input: EscalationInput): Escalation {
   }
 
   const statusMark = highestSignal(offScreen);
+
+  // The rail is the home for a worktree mark whenever it is on screen; the
+  // status segment exists for when it is not.
+  const railVisible = input.railVisible ?? !input.zen;
+  const worktreeMark = railVisible ? undefined : highestSignal([...worktrees.values()]);
+
   return {
     groups,
     tabGroups,
     statusBar: statusMark ? { signal: statusMark, tabIds: offScreenTabs } : null,
+    worktrees,
+    worktreeStatusBar: worktreeMark
+      ? { signal: worktreeMark, worktreeIds: [...worktrees.keys()] }
+      : null,
   };
 }
 
@@ -323,4 +396,53 @@ export const hiddenActivity = hidden;
 
 export function publishHiddenActivity(value: Escalation["statusBar"]): void {
   setHidden(value);
+}
+
+/// Per-worktree marks, published by `MainSurface` and read by `WorkspaceRail`
+/// (a row's dot) and `StatusBar` (the segment for when the rail is gone).
+///
+/// Same reasoning as `hiddenActivity`: the rail and the pane tree are siblings
+/// under `AppShell`, and threading pane geometry up through `App.tsx` to send
+/// it back down is worse than one module-level signal in the store that already
+/// owns activity.
+const [worktreeMarks, setWorktreeMarks] = createSignal<ReadonlyMap<string, ActivitySignal>>(
+  new Map(),
+  {
+    // Maps compare by identity, so without this every recompute of the
+    // escalation memo would notify the rail even when nothing changed. The
+    // comparison is over ids and marks because that is all the rail renders.
+    equals: (a, b) =>
+      a.size === b.size && [...a].every(([id, mark]) => b.get(id) === mark),
+  },
+);
+
+export const worktreeActivity = worktreeMarks;
+
+export function publishWorktreeActivity(
+  value: ReadonlyMap<string, ActivitySignal>,
+): void {
+  setWorktreeMarks(value);
+}
+
+/// The mark for one worktree's rail row, or `undefined` when it is quiet.
+export function worktreeMark(worktreeId: string): ActivitySignal | undefined {
+  return worktreeMarks().get(worktreeId);
+}
+
+/// The status-bar half: set only while the rail is hidden. See
+/// `Escalation.worktreeStatusBar`.
+const [hiddenWorktrees, setHiddenWorktrees] = createSignal<Escalation["worktreeStatusBar"]>(
+  null,
+  {
+    equals: (a, b) =>
+      a?.signal === b?.signal && a?.worktreeIds.length === b?.worktreeIds.length,
+  },
+);
+
+export const hiddenWorktreeActivity = hiddenWorktrees;
+
+export function publishHiddenWorktreeActivity(
+  value: Escalation["worktreeStatusBar"],
+): void {
+  setHiddenWorktrees(value);
 }
