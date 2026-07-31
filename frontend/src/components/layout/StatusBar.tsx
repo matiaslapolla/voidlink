@@ -135,7 +135,7 @@ function chordLabel(actionId: string): string {
 }
 
 export function StatusBar() {
-  const { state, activeRepoPath } = useAppStore();
+  const { activeRepoPath } = useAppStore();
   const repoPath = () => activeRepoPath() ?? null;
   const now = createFreshnessClock();
 
@@ -386,17 +386,12 @@ export function StatusBar() {
     // `EditorStatusBar`, next to the buffer it is about, and the toggle is the
     // `view.toggle-blame` command — already scoped to `window: "editor"`.
 
-    out.push({
-      id: "workspaces",
-      priority: STATUS_PRIORITY.workspaces,
-      align: "end",
-      label: `${state.workspaces.length} workspaces open`,
-      render: () => (
-        <span class="opacity-60 font-mono">
-          {state.workspaces.length} workspace{state.workspaces.length === 1 ? "" : "s"}
-        </span>
-      ),
-    });
+    // No workspace counter here either, and for a reason worth writing down.
+    // It had the lowest resting priority in the registry, so it was the first
+    // thing the overflow rule collapsed into `⋯` — and what it reported, how
+    // many workspaces exist, is on screen already in the rail, which is visible
+    // everywhere except zen. A chip that is usually hidden and always redundant
+    // is a dead affordance (MASTER §7.6).
 
     return out;
   });
