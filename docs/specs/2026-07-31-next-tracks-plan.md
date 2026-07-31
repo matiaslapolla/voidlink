@@ -483,3 +483,27 @@ last of those was 14 passing tests on the first run.
 3. **Fan-out durability in Rust**, if unattended overnight runs are the point.
 4. **C1 from the 100x audit** — cutting the browser tab kind, which is a product
    decision that unpins Tauri.
+
+---
+
+## Later the same day — C2, and a partial answer to A1
+
+**C2 shipped** (see the [100x audit's](./2026-07-29-workbench-100x.md) 07-31
+ledger). The brain tab is an overlay; ten tab kinds are nine.
+
+**A1 got a stopgap, not a solution.** Testing the overlay meant rendering a
+virtualized list, and a virtualizer told the viewport is 0px tall renders zero
+rows — the exact gap A1 names. `src/test/layout.ts` now fakes a viewport for the
+tests that opt in.
+
+It is worth being clear about what that buys, because it would be easy to read
+it as A1 being handled. It is not. The helper makes "which rows exist" testable
+and leaves "where they landed" as fiction — the coordinates are arithmetic over
+numbers the helper invented. Overlap, clipping, scroll anchoring and every other
+question A1 exists to answer are still unanswerable in jsdom. A1 stays first on
+this list.
+
+One thing the stopgap did catch on its own: the first draft installed the stubs
+once per `describe` with an `afterEach` restore, which held for the first test in
+the block and silently stopped applying to the rest. It read as "virtualized rows
+render once and then never again". Installed per-test now.

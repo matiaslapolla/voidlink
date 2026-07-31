@@ -177,7 +177,6 @@ const ITEM_TYPES = new Set([
   "conflict",
   "history",
   "preview",
-  "brain",
   "timeline",
   "mission",
   "browser",

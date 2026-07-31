@@ -11,7 +11,7 @@ workspace            a folder you opened — usually a git repo
 └── worktree         one checkout of that repo (the main one, plus any `git worktree add`)
     └── pane group   one tab strip and the area under it; 1–8 per worktree, in a split tree
         └── tab group   an optional named, coloured, collapsible set of tabs in that strip
-            └── tab      a terminal, a compare, a stack, the commit graph, brain, a browser page…
+            └── tab      a terminal, a compare, a stack, the commit graph, a browser page…
 ```
 
 Tab groups are the one optional level. A tab in no tab group renders exactly as
@@ -184,12 +184,16 @@ its storage key, serializer, closed-tab shape, equality function, label and
 | `compare` | workbench | yes | yes |
 | `stack` | workbench | yes | yes |
 | `history` (commit graph) | workbench | no (one per worktree) | no |
-| `brain` | workbench | no (one per worktree) | no |
 | `browser` | workbench | no | no (the page is a child webview keyed by tab id) |
 | `file` | editor | yes | yes |
 | `diff` | editor | yes | yes |
 | `conflict` | editor | yes | — |
 | `preview` | editor | yes | yes |
+
+`brain` was an eleventh kind until cut C2 of the
+[workbench audit](../specs/2026-07-29-workbench-100x.md). It is now a
+palette-invoked overlay — see [brain vault](./brain-vault.md) for why a surface
+that reports no state does not earn a strip slot.
 
 The workbench and the standalone editor window show different kinds out of
 different state, but through the *same* `TabStrip` component: callers flatten

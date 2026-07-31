@@ -54,11 +54,10 @@ export const STORAGE_KEYS = {
   /// what survives a reload is the cwd and the label, and boot spawns a fresh
   /// PTY under the same tab id (see `TAB_SPECS.terminal.restore`).
   terminalTabs: "voidlink-terminal-tabs",
-  /// The two repo-wide singleton kinds. One id each, per worktree — tiny, but
-  /// without them a reload silently closes the commit graph you left open.
+  /// The repo-wide singleton kind. One id per worktree — tiny, but without it a
+  /// reload silently closes the commit graph you left open.
   historyTabs: "voidlink-history-tabs",
-  brainTabs: "voidlink-brain-tabs",
-  /// `Record<worktreeId, TimelineTab[]>` — the event-log timeline, the third
+  /// `Record<worktreeId, TimelineTab[]>` — the event-log timeline, the second
   /// singleton kind. Only the tab's existence is stored: its filters are view
   /// state, and the events themselves are Rust's (`src-tauri/src/journal/`),
   /// which is the whole reason this key is one id and not a cache.
@@ -334,6 +333,7 @@ if (typeof window !== "undefined") {
 export function layoutKeyValueStore(): {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 } | null {
   const store = storage();
   if (!store) return null;
@@ -351,6 +351,15 @@ export function layoutKeyValueStore(): {
       } catch {
         // Migration writes are best-effort for the same reason ordinary writes
         // are: the in-memory state is correct either way.
+      }
+    },
+    // Retiring a cut feature's key (see `migrate.ts`'s v2 → v3). Best-effort
+    // like the write above: a key that survives is dead weight, not a bug.
+    removeItem: (key) => {
+      try {
+        store.removeItem(key);
+      } catch {
+        /* empty */
       }
     },
   };

@@ -31,7 +31,6 @@ import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { CommitGraph } from "@/components/git/history/CommitGraph";
 import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { commitDiffBase } from "@/commands/commitDiff";
-import { BrainSurface } from "@/components/brain/BrainSurface";
 import { TimelineSurface } from "@/components/timeline/TimelineSurface";
 import { MissionSurface } from "@/components/mission/MissionSurface";
 import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
@@ -77,11 +76,11 @@ import {
   type SplitOrientation,
 } from "@/store/layout";
 import { useAppStore } from "@/store/LayoutContext";
-import { useSettings } from "@/store/settings";
 import { fsApi } from "@/api/fs";
 import { gitApi } from "@/api/git";
 import { recordBranchUse } from "@/commands/branchMru";
 import { pushToast } from "@/commands/toast";
+import { openBrain } from "@/commands/registry";
 
 interface MainSurfaceProps {
   /// Hand a file to the editor window. The workbench has no editor of its own
@@ -95,7 +94,7 @@ interface MainSurfaceProps {
 }
 
 /// The workbench's tab surface: terminals, branch compares, stacks, the commit
-/// graph, brain and the embedded browser.
+/// graph and the embedded browser.
 ///
 /// Files, diffs, merges and markdown previews used to live here too. They moved
 /// to the editor window (`EditorApp.tsx`), which is why this component no longer
@@ -127,7 +126,6 @@ export function MainSurface(props: MainSurfaceProps) {
     activeCompareTabs,
     activeStackTabs,
     activeHistoryTabs,
-    activeBrainTabs,
     activeTimelineTabs,
     activeMissionTabs,
     activeBrowserTabs,
@@ -139,7 +137,6 @@ export function MainSurface(props: MainSurfaceProps) {
     focusedGroupId,
     actions,
   } = useAppStore();
-  const { settings } = useSettings();
 
   const isPinned = (id: string) => activePinnedTabs().includes(id);
 
@@ -235,18 +232,6 @@ export function MainSurface(props: MainSurfaceProps) {
         draggable: false,
       });
     }
-    for (const tab of activeBrainTabs()) {
-      out.push({
-        kind: "brain",
-        id: tab.id,
-        label: "brain",
-        icon: <Brain class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
-        title: "Brain",
-        activity: tabMark(tab.id),
-        pinnable: false,
-        draggable: false,
-      });
-    }
     for (const tab of activeBrowserTabs()) {
       out.push({
         kind: "browser",
@@ -273,7 +258,7 @@ export function MainSurface(props: MainSurfaceProps) {
         title: agentTabTitle(tab.id, tab.title),
         activity: tabMark(tab.id),
         labelWidth: "max-w-[160px]",
-        // Unlike brain and browser there is nothing structural stopping either:
+        // Unlike the browser there is nothing structural stopping either:
         // the thread is store state keyed by tab id, so it moves wherever the
         // tab moves and survives being pinned.
         pinnable: true,
@@ -629,7 +614,6 @@ export function MainSurface(props: MainSurfaceProps) {
       case "compare": actions.selectCompareTab(wtId, tab.id); break;
       case "stack": actions.selectStackTab(wtId, tab.id); break;
       case "history": actions.selectHistoryTab(wtId, tab.id); break;
-      case "brain": actions.selectBrainTab(wtId, tab.id); break;
       case "timeline": actions.selectTimelineTab(wtId, tab.id); break;
       case "mission": actions.selectMissionTab(wtId, tab.id); break;
       case "browser": actions.selectBrowserTab(wtId, tab.id); break;
@@ -647,7 +631,6 @@ export function MainSurface(props: MainSurfaceProps) {
       case "compare": actions.closeCompareTab(wtId, tab.id); break;
       case "stack": actions.closeStackTab(wtId, tab.id); break;
       case "history": actions.closeHistoryTab(wtId, tab.id); break;
-      case "brain": actions.closeBrainTab(wtId, tab.id); break;
       case "timeline": actions.closeTimelineTab(wtId, tab.id); break;
       case "mission": actions.closeMissionTab(wtId, tab.id); break;
       case "browser": actions.closeBrowserTab(wtId, tab.id); break;
@@ -907,7 +890,10 @@ export function MainSurface(props: MainSurfaceProps) {
                 onNewTerminal={() => void onNewTerminal()}
                 onNewCompare={onNewCompare}
                 onOpenBrain={() => {
-                  actions.openBrainTab(state.activeWorktreeId);
+                  // An overlay since cut C2, not a tab — but still reachable
+                  // from the same menu, because the menu is where somebody
+                  // looks for it.
+                  openBrain();
                   closeMenu();
                 }}
                 onOpenTimeline={() => {
@@ -1162,15 +1148,6 @@ export function MainSurface(props: MainSurfaceProps) {
                 });
               }}
             />
-          </div>
-        )}
-      </For>
-
-      {/* Brain tabs */}
-      <For each={activeBrainTabs()}>
-        {(tab) => (
-          <div class={paneClass()} style={paneStyle(tab.id)}>
-            <BrainSurface vaultPath={settings.brain.vaultPath} />
           </div>
         )}
       </For>

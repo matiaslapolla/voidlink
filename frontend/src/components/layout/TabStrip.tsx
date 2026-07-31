@@ -64,7 +64,6 @@ export type TabKind =
   | "conflict"
   | "history"
   | "preview"
-  | "brain"
   | "timeline"
   | "mission"
   | "browser"
@@ -104,7 +103,7 @@ export interface TabDescriptor {
   /// the strip owns that polling because the tab is the only place it shows.
   terminal?: TerminalSession;
   /// Terminals can't be reopened once their PTY is gone, so pinning them is
-  /// meaningless. Repo-wide singleton tabs (commit graph, brain) and browser
+  /// meaningless. Repo-wide singleton tabs (commit graph, timeline) and browser
   /// tabs are likewise neither pinnable nor draggable.
   pinnable?: boolean;
   draggable?: boolean;
@@ -1385,7 +1384,6 @@ const KIND_LABELS: Record<TabKind, string> = {
   conflict: "Conflicts",
   history: "Commit graph",
   preview: "Previews",
-  brain: "Brain",
   timeline: "Timeline",
   mission: "Mission Control",
   browser: "Browser",

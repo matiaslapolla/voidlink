@@ -44,7 +44,6 @@ const FIXTURES: { [K in TabKind]: TabTypes[K] } = {
   conflict: { id: "x1", filePath: "/repo/src/c.ts" },
   history: { id: "h1" },
   preview: { id: "p1", filePath: "/repo/README.md" },
-  brain: { id: "b1" },
   timeline: { id: "tl1" },
   mission: { id: "mc1" },
   browser: { id: "w1", url: "https://example.com/docs", title: "Docs" },

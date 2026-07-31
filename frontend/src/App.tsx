@@ -41,14 +41,17 @@ import { PromptHost } from "@/commands/PromptHost";
 import { textPrompt } from "@/commands/prompt";
 import {
   closeCheatSheet,
+  closeBrain,
   closeFileFinder,
   closePalette,
   getActions,
   isCheatSheetOpen,
+  isBrainOpen,
   isFileFinderOpen,
   isPaletteOpen,
   isTabSwitcherOpen,
   isWorktreeSwitcherOpen,
+  openBrain,
   openCheatSheet,
   openFileFinder,
   openPalette,
@@ -71,7 +74,8 @@ import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { requestAiCommitDraft } from "@/commands/aiCommit";
 import { askAgent, toggleAgentPanel } from "@/commands/agent";
-import { agentById, defaultAgentId, resolveAgentCommand } from "@/store/settings";
+import { agentById, defaultAgentId, resolveAgentCommand, useSettings } from "@/store/settings";
+import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, snapshotTabCount } from "@/commands/snapshots";
 import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
@@ -389,6 +393,7 @@ function AppInner(props: {
   // the whole app — the title bar, the git sidebar's file rows, the file tree,
   // the palette and the terminal deep-links included.
   const store = useAppStore();
+  const { settings } = useSettings();
   createEffect(() => {
     if (!isStackedMode()) {
       setStackedViewRouter(null);
@@ -882,6 +887,13 @@ function AppInner(props: {
         run: () => void removeActiveWorktree(),
       },
       {
+        id: "brain.open",
+        label: "Search brain…",
+        description: "Browse, read and capture entries in your second-brain vault",
+        group: "View",
+        run: () => openBrain(),
+      },
+      {
         id: "browser.new",
         label: "New browser tab",
         description: "Open a page in an embedded webview beside your code",
@@ -1148,7 +1160,7 @@ function AppInner(props: {
   });
 
   /// Build the ordered list of tabs in the same order MainSurface renders
-  /// them (terminals → compares → stacks → graph → brain → timeline → browser). Used by
+  /// them (terminals → compares → stacks → graph → timeline → browser). Used by
   /// the Cmd+Alt+Arrow cycle shortcut so the wrap order matches what the user
   /// sees in the tab bar. Files, diffs, conflicts and previews are not here:
   /// they live in the editor window, which cycles its own.
@@ -1163,8 +1175,6 @@ function AppInner(props: {
       items.push({ type: "stack", id: s.id });
     for (const h of state.historyTabsByWorktree[wtId] ?? [])
       items.push({ type: "history", id: h.id });
-    for (const b of state.brainTabsByWorktree[wtId] ?? [])
-      items.push({ type: "brain", id: b.id });
     for (const t of state.timelineTabsByWorktree[wtId] ?? [])
       items.push({ type: "timeline", id: t.id });
     for (const m of state.missionTabsByWorktree[wtId] ?? [])
@@ -1216,9 +1226,6 @@ function AppInner(props: {
         kind: "history",
         open: go({ type: "history", id: h.id }),
       });
-    }
-    for (const b of state.brainTabsByWorktree[wtId] ?? []) {
-      out.push({ id: b.id, label: "Brain", kind: "brain", open: go({ type: "brain", id: b.id }) });
     }
     for (const t of state.timelineTabsByWorktree[wtId] ?? []) {
       out.push({
@@ -1368,9 +1375,6 @@ function AppInner(props: {
       case "history":
         actions.selectHistoryTab(wtId, item.id);
         break;
-      case "brain":
-        actions.selectBrainTab(wtId, item.id);
-        break;
       case "timeline":
         actions.selectTimelineTab(wtId, item.id);
         break;
@@ -1515,9 +1519,6 @@ function AppInner(props: {
       case "history":
         actions.closeHistoryTab(wtId, item.id);
         break;
-      case "brain":
-        actions.closeBrainTab(wtId, item.id);
-        break;
       case "timeline":
         actions.closeTimelineTab(wtId, item.id);
         break;
@@ -1648,6 +1649,11 @@ function AppInner(props: {
       <TabSwitcher tabs={workbenchTargets} />
       {/* Held-modifier UI: no scrim, no transition, gone on the keyup. */}
       <TabCycleOverlay />
+      <BrainOverlayHost
+        open={isBrainOpen()}
+        vaultPath={settings.brain.vaultPath}
+        onClose={closeBrain}
+      />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />
       <ToastViewport />

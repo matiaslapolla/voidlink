@@ -56,14 +56,7 @@ export interface PreviewTab {
   filePath: string;
 }
 
-/// A Brain (second-brain vault browser) tab. Reads a single vault path from
-/// settings, not per-tab state, so — like HistoryTab — one per workspace is
-/// all we ever need.
-export interface BrainTab {
-  id: string;
-}
-
-/// A Timeline (event log) tab. Like `BrainTab` and `HistoryTab` it carries no
+/// A Timeline (event log) tab. Like `HistoryTab` it carries no
 /// per-tab state — the filters live in the component and are not worth
 /// persisting — so one per worktree is all there ever needs to be.
 export interface TimelineTab {
@@ -106,7 +99,7 @@ export interface BrowserTab {
 /// — none of which a bespoke panel would have had without reimplementing all of
 /// it.
 ///
-/// Modelled on `BrowserTab`, not on `BrainTab`: several threads per worktree is
+/// Modelled on `BrowserTab`, not on `HistoryTab`: several threads per worktree is
 /// the normal case (one asking about the diff, one refactoring), so this carries
 /// per-tab payload and is never deduped.
 export interface AgentTab {
@@ -151,7 +144,6 @@ export type ActiveItem =
   | { type: "conflict"; id: string }
   | { type: "history"; id: string }
   | { type: "preview"; id: string; path: string }
-  | { type: "brain"; id: string }
   | { type: "timeline"; id: string }
   | { type: "mission"; id: string }
   | { type: "browser"; id: string }
@@ -186,7 +178,6 @@ export type ClosedTab =
   | { type: "conflict"; filePath: string }
   | { type: "history" }
   | { type: "preview"; filePath: string }
-  | { type: "brain" }
   | { type: "timeline" }
   | { type: "mission" }
   | { type: "browser"; url: string; title?: string }
@@ -206,7 +197,6 @@ export type TabKind =
   | "conflict"
   | "history"
   | "preview"
-  | "brain"
   | "timeline"
   | "mission"
   | "browser"
@@ -223,7 +213,6 @@ export interface TabTypes {
   conflict: ConflictTab;
   history: HistoryTab;
   preview: PreviewTab;
-  brain: BrainTab;
   timeline: TimelineTab;
   mission: MissionTab;
   browser: BrowserTab;
@@ -242,7 +231,6 @@ export type TabCollectionKey =
   | "conflictTabsByWorktree"
   | "historyTabsByWorktree"
   | "previewTabsByWorktree"
-  | "brainTabsByWorktree"
   | "timelineTabsByWorktree"
   | "missionTabsByWorktree"
   | "browserTabsByWorktree"
@@ -548,18 +536,6 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     closedSnapshot: (t) => ({ type: "preview", filePath: t.filePath }),
   },
 
-  brain: {
-    kind: "brain",
-    stateKey: "brainTabsByWorktree",
-    storage: { key: STORAGE_KEYS.brainTabs },
-    serialize: (t) => ({ id: t.id }),
-    deserialize: (raw) => idOnlyTab<BrainTab>(raw),
-    restore: async (raw) => idOnlyTab<BrainTab>(raw),
-    equals: () => true,
-    label: () => "Brain",
-    closedSnapshot: () => ({ type: "brain" }),
-  },
-
   timeline: {
     kind: "timeline",
     stateKey: "timelineTabsByWorktree",
@@ -639,7 +615,6 @@ export const TAB_KIND_GROUP_LABELS: Record<TabKind, string> = {
   conflict: "Conflicts",
   history: "Commit graph",
   preview: "Previews",
-  brain: "Brain",
   timeline: "Timeline",
   mission: "Mission Control",
   browser: "Browser",
@@ -657,7 +632,6 @@ export const TAB_KINDS: TabKind[] = [
   "conflict",
   "history",
   "preview",
-  "brain",
   "timeline",
   "mission",
   "browser",
@@ -734,7 +708,6 @@ export function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
       return b.type === "agent" && a.agentId === b.agentId;
     // Singletons: same type is same tab.
     case "history":
-    case "brain":
     case "timeline":
     case "mission":
       return true;
@@ -804,8 +777,6 @@ export function deserializeClosedTab(raw: unknown): ClosedTab | null {
     }
     case "history":
       return { type: "history" };
-    case "brain":
-      return { type: "brain" };
     case "timeline":
       return { type: "timeline" };
     case "mission":

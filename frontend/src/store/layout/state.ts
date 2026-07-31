@@ -13,7 +13,6 @@ import { emptyNavHistory, type GroupMru, type NavHistory } from "./navigation";
 import type {
   ActiveItem,
   AgentTab,
-  BrainTab,
   TimelineTab,
   MissionTab,
   BrowserTab,
@@ -53,7 +52,6 @@ export interface AppStoreState {
   conflictTabsByWorktree: Record<string, ConflictTab[]>;
   historyTabsByWorktree: Record<string, HistoryTab[]>;
   previewTabsByWorktree: Record<string, PreviewTab[]>;
-  brainTabsByWorktree: Record<string, BrainTab[]>;
   timelineTabsByWorktree: Record<string, TimelineTab[]>;
   missionTabsByWorktree: Record<string, MissionTab[]>;
   browserTabsByWorktree: Record<string, BrowserTab[]>;
@@ -70,7 +68,7 @@ export interface AppStoreState {
   /// and render leftmost in the tab strip.
   pinnedTabsByWorktree: Record<string, string[]>;
   /// Which tab is in front *in the workbench* — terminals, compares, stacks,
-  /// the commit graph, brain, browser and agent tabs.
+  /// the commit graph, browser and agent tabs.
   activeItemByWorktree: Record<string, ActiveItem | null>;
   /// Which tab is in front *in the editor window* — files, diffs, conflicts and
   /// previews. Two pointers rather than one because the windows focus

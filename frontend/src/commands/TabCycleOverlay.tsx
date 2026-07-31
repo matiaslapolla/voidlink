@@ -14,7 +14,6 @@
 import { For, Match, Show, Switch } from "solid-js";
 import { Portal } from "solid-js/web";
 import {
-  Brain,
   GitBranchPlus,
   GitCommitHorizontal,
   Globe,
@@ -37,9 +36,6 @@ export function TabKindIcon(props: { kind: string; class?: string }) {
       </Match>
       <Match when={props.kind === "history"}>
         <GitCommitHorizontal class={cls()} />
-      </Match>
-      <Match when={props.kind === "brain"}>
-        <Brain class={cls()} />
       </Match>
       <Match when={props.kind === "browser"}>
         <Globe class={cls()} />

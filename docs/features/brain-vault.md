@@ -24,12 +24,34 @@ be pointed at each other by hand. The settings pane says as much.
 
 ## How to use it
 
-1. Open a Brain tab from the tab bar's `+` menu → `Brain`. There is one Brain
-   tab per workspace.
-2. With no path set you get
+It is an **overlay**, not a tab. Open it from the command palette
+(`Search brain…`) or from the tab bar's `+` menu → `Brain`; `ESC`, the close
+button or a click on the scrim dismisses it.
+
+1. With no path set you get
    `Set a vault path in Settings → Brain to browse your second brain.`
-3. Filter by type, or type in the search box.
-4. Click an entry to render it.
+2. Filter by type, or type in the search box.
+3. Click an entry to render it, in the same overlay.
+
+### Why it stopped being a tab
+
+It was one of ten tab kinds until cut C2 of the
+[2026-07-29 workbench audit](../specs/2026-07-29-workbench-100x.md). The
+argument: a tab-strip slot is for something that *reports state*. A terminal
+goes busy, a compare goes dirty, an agent run fails — a vault entry does none of
+that, so it held a slot and a persistence key while saying nothing, and every
+`+` on the strip pushed the tabs that did have something to say further along.
+
+The audit proposed demoting it onto `QuickPick`, the shared fuzzy-picker
+popover. That is the right shape for *searching* notes and the wrong one for
+this surface, which also reads them and writes them — a popover list holds
+neither a rendered markdown pane nor a form. So the demotion kept the surface
+whole and only changed what contains it. Nothing that worked as a tab stopped
+working.
+
+Old layout snapshots that recorded a Brain tab restore without one, and the
+`voidlink-brain-tabs` storage key is deleted on first launch by the layout
+migration (`store/migrate.ts`, v2 → v3).
 
 ### Entry types
 
@@ -59,8 +81,8 @@ ids. Saving writes the file and commits it with message `register: note <id>`.
 
 `cli/` at the repo root is a standalone Node package, relocated from its own
 repository. It owns the **contract** — the zod schemas, the type-to-folder map,
-and the id/frontmatter builders. The Tauri backend and the Brain tab each keep a
-narrow hand-synced copy for reading and note-only writing.
+and the id/frontmatter builders. The Tauri backend and the brain overlay each
+keep a narrow hand-synced copy for reading and note-only writing.
 
 ```
 brain add --type <t> --title "..." [flags]
@@ -74,7 +96,8 @@ fails, it deletes the file so a retry doesn't burn an id.
 
 ## Keyboard shortcuts
 
-None. There is no palette action and no keybinding that opens the Brain tab.
+No dedicated chord. It is reachable from the command palette as
+`Search brain…`, and `ESC` closes it.
 
 ## Gotchas and limits
 
@@ -97,5 +120,8 @@ None. There is no palette action and no keybinding that opens the Brain tab.
   (`[a, b]`) — a block list parses as empty.
 - **The created timestamp hard-codes a `-03:00` offset.**
 - **Saving does not refresh an open detail pane**, only the list.
+- **Closing the overlay discards what you were reading.** There is no persisted
+  state, which is the flip side of not being a tab: reopening lands on the
+  unfiltered list.
 - **Path traversal is rejected** at every IPC entry point with
   `Invalid entry path: <path>`.

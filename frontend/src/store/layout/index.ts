@@ -110,7 +110,6 @@ import type {
   ActiveItem,
   TabRestoreContext,
   AgentTab,
-  BrainTab,
   TimelineTab,
   MissionTab,
   BrowserTab,
@@ -140,7 +139,6 @@ import {
 export type {
   ActiveItem,
   AgentTab,
-  BrainTab,
   TimelineTab,
   MissionTab,
   BrowserTab,
@@ -348,7 +346,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       HistoryTab[]
     >,
     previewTabsByWorktree: editorTabs.previews,
-    brainTabsByWorktree: loadKindRecord("brain", worktreeIds) as Record<string, BrainTab[]>,
     timelineTabsByWorktree: loadKindRecord("timeline", worktreeIds) as Record<string, TimelineTab[]>,
     missionTabsByWorktree: loadKindRecord("mission", worktreeIds) as Record<string, MissionTab[]>,
     browserTabsByWorktree: loadKindRecord("browser", worktreeIds) as Record<
@@ -510,7 +507,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activeConflictTabs = activeOf<ConflictTab>("conflict");
   const activeHistoryTabs = activeOf<HistoryTab>("history");
   const activePreviewTabs = activeOf<PreviewTab>("preview");
-  const activeBrainTabs = activeOf<BrainTab>("brain");
   const activeTimelineTabs = activeOf<TimelineTab>("timeline");
   const activeMissionTabs = activeOf<MissionTab>("mission");
   const activeBrowserTabs = activeOf<BrowserTab>("browser");
@@ -527,7 +523,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     ...activeCompareTabs().map((t) => t.id),
     ...activeStackTabs().map((t) => t.id),
     ...activeHistoryTabs().map((t) => t.id),
-    ...activeBrainTabs().map((t) => t.id),
     ...activeTimelineTabs().map((t) => t.id),
     ...activeBrowserTabs().map((t) => t.id),
     ...activeAgentTabs().map((t) => t.id),
@@ -578,7 +573,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     "compare",
     "stack",
     "history",
-    "brain",
     "browser",
     "agent",
   ];
@@ -868,7 +862,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       case "stack": return { type: "stack", id };
       case "conflict": return { type: "conflict", id };
       case "history": return { type: "history", id };
-      case "brain": return { type: "brain", id };
       case "timeline": return { type: "timeline", id };
       case "mission": return { type: "mission", id };
       case "browser": return { type: "browser", id };
@@ -1704,9 +1697,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         case "mission":
           actions.openMissionTab(wtId);
           break;
-        case "brain":
-          actions.openBrainTab(wtId);
-          break;
         case "browser": {
           const id = actions.openBrowserTab(wtId, popped.url);
           if (popped.title) actions.setBrowserTitle(wtId, id, popped.title);
@@ -1833,48 +1823,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       setState("activeItemByWorktree", wtId, { type: "history", id: tabId });
     },
 
-    // ── Brain (second-brain vault browser) tab ──────────────────────────
-    /// Open the Brain tab for the workspace, focusing the existing one if
-    /// present. It reads from settings.brain.vaultPath, not per-tab state,
-    /// so a single tab per workspace is all we ever need.
-    openBrainTab(wtId: string) {
-      const existing = (state.brainTabsByWorktree[wtId] ?? [])[0];
-      if (existing) {
-        setState("activeItemByWorktree", wtId, { type: "brain", id: existing.id });
-        return existing.id;
-      }
-      const tab: BrainTab = { id: crypto.randomUUID() };
-      setState(produce((s) => {
-        s.brainTabsByWorktree[wtId] = [...(s.brainTabsByWorktree[wtId] ?? []), tab];
-        s.activeItemByWorktree[wtId] = { type: "brain", id: tab.id };
-      }));
-      return tab.id;
-    },
-
-    closeBrainTab(wtId: string, tabId: string) {
-      setState(produce((s) => {
-        const arr = s.brainTabsByWorktree[wtId] ?? [];
-        const idx = arr.findIndex((t) => t.id === tabId);
-        if (idx === -1) return;
-        recordClose(s, wtId, "brain", arr[idx]);
-        arr.splice(idx, 1);
-        const active = s.activeItemByWorktree[wtId];
-        if (active?.type === "brain" && active.id === tabId) {
-          const terms = s.terminalsByWorktree[wtId] ?? [];
-          s.activeItemByWorktree[wtId] = terms[0]
-            ? { type: "terminal", id: terms[0].id }
-            : null;
-        }
-      }));
-    },
-
-    selectBrainTab(wtId: string, tabId: string) {
-      setState("activeItemByWorktree", wtId, { type: "brain", id: tabId });
-    },
-
     // ── Timeline (event log) tab ────────────────────────────────────────
     /// Open the Timeline tab for the workspace, focusing the existing one if
-    /// present. A singleton for the same reason Brain is: it holds no per-tab
+    /// present. A singleton for the same reason the commit graph is: it holds no per-tab
     /// state, so a second one would be an identical view of identical data.
     openTimelineTab(wtId: string) {
       const existing = (state.timelineTabsByWorktree[wtId] ?? [])[0];
@@ -1913,7 +1864,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
     // ── Mission Control tab ─────────────────────────────────────────────
     /// Open Mission Control, focusing the existing one if present. A singleton
-    /// like Timeline and Brain — and more emphatically so, because what it
+    /// like Timeline — and more emphatically so, because what it
     /// shows is not scoped to this worktree at all: two of them would be two
     /// identical views of every workspace.
     openMissionTab(wtId: string) {
@@ -2009,8 +1960,8 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
     // ── Agent tabs (AI threads) ─────────────────────────────────────────
     /// Open a new agent thread in the active pane group. Like a browser tab and
-    /// unlike the Brain tab, this never dedupes: two threads on the same roster
-    /// entry are two conversations, and that is the normal case.
+    /// unlike the singleton kinds, this never dedupes: two threads on the same
+    /// roster entry are two conversations, and that is the normal case.
     ///
     /// `title` is the agent's display name snapshotted here, because the store
     /// cannot reach settings and the tab label has to say something.
@@ -2124,7 +2075,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const previews = state.previewTabsByWorktree[wtId] ?? [];
       const browsers = state.browserTabsByWorktree[wtId] ?? [];
       const histories = state.historyTabsByWorktree[wtId] ?? [];
-      const brains = state.brainTabsByWorktree[wtId] ?? [];
       const timelines = state.timelineTabsByWorktree[wtId] ?? [];
       const missions = state.missionTabsByWorktree[wtId] ?? [];
       const agents = state.agentTabsByWorktree[wtId] ?? [];
@@ -2147,7 +2097,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       for (const p of previews) keyByTabId.set(p.id, `preview:${p.filePath}`);
       browsers.forEach((b, i) => keyByTabId.set(b.id, `browser:${i}`));
       for (const h of histories) keyByTabId.set(h.id, "history:");
-      for (const b of brains) keyByTabId.set(b.id, "brain:");
       agents.forEach((a, i) => keyByTabId.set(a.id, `agent:${i}`));
 
       // A snapshot spans both windows, so it records whichever pointer is set.
@@ -2188,7 +2137,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           previews: previews.map((p) => p.filePath),
           browsers: browsers.map((b) => ({ url: b.url, title: b.title })),
           history: histories.length > 0,
-          brain: brains.length > 0,
           timeline: timelines.length > 0,
           mission: missions.length > 0,
           // The tab, not the conversation: a snapshot is a named arrangement of
@@ -2307,11 +2255,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           const tab: HistoryTab = { id: crypto.randomUUID() };
           s.historyTabsByWorktree[wtId].push(tab);
           idByKey.set("history:", tab.id);
-        }
-        if (snap.tabs.brain) {
-          const tab: BrainTab = { id: crypto.randomUUID() };
-          s.brainTabsByWorktree[wtId].push(tab);
-          idByKey.set("brain:", tab.id);
         }
         if (snap.tabs.timeline) {
           const tab: TimelineTab = { id: crypto.randomUUID() };
@@ -2510,7 +2453,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     activeConflictTabs,
     activeHistoryTabs,
     activePreviewTabs,
-    activeBrainTabs,
     activeTimelineTabs,
     activeMissionTabs,
     activeBrowserTabs,

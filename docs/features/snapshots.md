@@ -66,7 +66,7 @@ group. That is the layout it was taken in: v1 predates pane groups entirely.
 
 | Captured | Not captured |
 |---|---|
-| All ten tab kinds: files, terminals, diffs, compares, stacks, conflicts, previews, browsers, the commit graph, brain | Unsaved editor content |
+| All ten tab kinds: files, terminals, diffs, compares, stacks, conflicts, previews, browsers, the commit graph, the timeline | Unsaved editor content |
 | Terminal labels and cwds | Cursor and scroll positions |
 | Compare tabs (both refs, merge-base flag, selection, tree mode, filter) | Terminal scrollback and running processes |
 | Stack tabs (trunk + top branch) | The worktree's repo root |

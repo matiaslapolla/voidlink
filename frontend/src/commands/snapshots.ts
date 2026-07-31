@@ -52,9 +52,15 @@ export interface SnapshotAgent {
   title?: string;
 }
 
-/// All twelve kinds. The three repo-wide singletons (commit graph, brain,
-/// timeline) are
-/// booleans rather than arrays because there is never more than one of each.
+/// All eleven kinds. The repo-wide singletons (commit graph, timeline, Mission
+/// Control) are booleans rather than arrays because there is never more than one
+/// of each.
+///
+/// A snapshot saved before the 2026-07-29 audit's cut C2 also carries
+/// `brain: true`. `parseSnapshot` no longer reads it, so such a snapshot
+/// restores without a brain tab and is otherwise untouched — which is the
+/// intended outcome, since the surface is now an overlay that no arrangement
+/// needs to describe.
 export interface SnapshotTabs {
   files: string[];
   terminals: SnapshotTerminal[];
@@ -65,7 +71,6 @@ export interface SnapshotTabs {
   previews: string[];
   browsers: SnapshotBrowser[];
   history: boolean;
-  brain: boolean;
   timeline: boolean;
   mission: boolean;
   agents: SnapshotAgent[];
@@ -94,7 +99,7 @@ export interface WorkspaceSnapshot {
   /// Content key of the active item, `"kind:identifier"`. Identifiers: file →
   /// absolute path, terminal → index, diff/conflict/preview → filePath,
   /// compare → `baseRef..headRef`, stack → topBranch, browser/agent → index,
-  /// history/brain → empty (there is only one).
+  /// history/timeline/mission → empty (there is only one).
   active: string | null;
   /// Content keys of pinned tabs (same format as `active`).
   pinned: string[];
@@ -112,7 +117,6 @@ export function emptySnapshotTabs(): SnapshotTabs {
     previews: [],
     browsers: [],
     history: false,
-    brain: false,
     timeline: false,
     mission: false,
     agents: [],
@@ -185,7 +189,6 @@ function migrateTabs(raw: Record<string, unknown>): SnapshotTabs {
     previews: strings(raw.previews),
     browsers: migrateBrowsers(raw.browsers),
     history: raw.history === true,
-    brain: raw.brain === true,
     timeline: raw.timeline === true,
     mission: raw.mission === true,
     // Absent from every snapshot saved before agent tabs existed, which is why a
@@ -353,7 +356,6 @@ export function snapshotTabCount(snap: WorkspaceSnapshot): number {
     t.browsers.length +
     t.agents.length +
     (t.history ? 1 : 0) +
-    (t.brain ? 1 : 0) +
     (t.timeline ? 1 : 0) +
     (t.mission ? 1 : 0)
   );

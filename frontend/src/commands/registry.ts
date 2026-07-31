@@ -56,6 +56,7 @@ const [fileFinderOpen, setFileFinderOpen] = createSignal(false);
 const [cheatSheetOpen, setCheatSheetOpen] = createSignal(false);
 const [worktreeSwitcherOpen, setWorktreeSwitcherOpen] = createSignal(false);
 const [tabSwitcherOpen, setTabSwitcherOpen] = createSignal(false);
+const [brainOpen, setBrainOpen] = createSignal(false);
 
 // ─── Recently-used actions ────────────────────────────────────────────────
 /// Ids in most-recent-first order, capped. In memory rather than persisted: the
@@ -143,6 +144,24 @@ export function openCheatSheet() {
 
 export function closeCheatSheet() {
   setCheatSheetOpen(false);
+}
+
+/// The second-brain vault, as an overlay rather than a tab.
+///
+/// It was a tab kind until the 2026-07-29 audit's cut C2: a vault viewer
+/// reports no state, and the tab strip is for things that do. Held here beside
+/// the other palette-invoked surfaces because that is what it now is — the
+/// difference from those is only that its panel is large enough to read in.
+export function isBrainOpen() {
+  return brainOpen();
+}
+
+export function openBrain() {
+  setBrainOpen(true);
+}
+
+export function closeBrain() {
+  setBrainOpen(false);
 }
 
 /// The worktree/workspace switcher: every worktree across every workspace, with

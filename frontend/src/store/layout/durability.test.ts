@@ -117,13 +117,12 @@ afterEach(() => {
 });
 
 describe("session restore", () => {
-  it("brings back every persisted kind, including the three that were memory-only", async () => {
+  it("brings back every persisted kind, including the two that were memory-only", async () => {
     backing.set(
       STORAGE_KEYS.terminalTabs,
       JSON.stringify({ [WT_ID]: [{ id: "term-1", label: "build", cwd: "/repo" }] }),
     );
     backing.set(STORAGE_KEYS.historyTabs, JSON.stringify({ [WT_ID]: [{ id: "hist-1" }] }));
-    backing.set(STORAGE_KEYS.brainTabs, JSON.stringify({ [WT_ID]: [{ id: "brain-1" }] }));
     backing.set(
       STORAGE_KEYS.browserTabs,
       JSON.stringify({ [WT_ID]: [{ id: "web-1", url: "https://example.com" }] }),
@@ -141,7 +140,6 @@ describe("session restore", () => {
 
     await withStoreAsync(async (store) => {
       expect(store.state.historyTabsByWorktree[WT_ID]).toHaveLength(1);
-      expect(store.state.brainTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(store.state.browserTabsByWorktree[WT_ID][0].url).toBe("https://example.com");
       expect(store.state.stackTabsByWorktree[WT_ID][0].topBranch).toBe("feat");
       // Same tab id, so the thread's transcript — which is keyed by it — is
@@ -201,7 +199,7 @@ describe("session restore", () => {
 });
 
 describe("reopen closed tabs", () => {
-  it("reopens all eleven kinds, one pop each, most recent first", async () => {
+  it("reopens all ten kinds, one pop each, most recent first", async () => {
     await withStoreAsync(async (store) => {
       const { actions, state } = store;
       // Open one of every kind. Files/diffs/conflicts/previews live in the
@@ -214,7 +212,6 @@ describe("reopen closed tabs", () => {
       actions.openConflictTab(WT_ID, "/repo/c.ts");
       actions.openHistoryTab(WT_ID);
       actions.openPreviewTab(WT_ID, "/repo/README.md");
-      actions.openBrainTab(WT_ID);
       actions.openBrowserTab(WT_ID, "https://example.com");
       actions.openAgentTab(WT_ID, "claude-sonnet", "Reviewer");
 
@@ -227,7 +224,6 @@ describe("reopen closed tabs", () => {
         conflict: state.conflictTabsByWorktree[WT_ID][0].id,
         history: state.historyTabsByWorktree[WT_ID][0].id,
         preview: state.previewTabsByWorktree[WT_ID][0].id,
-        brain: state.brainTabsByWorktree[WT_ID][0].id,
         browser: state.browserTabsByWorktree[WT_ID][0].id,
         agent: state.agentTabsByWorktree[WT_ID][0].id,
       };
@@ -240,14 +236,13 @@ describe("reopen closed tabs", () => {
       actions.closeConflictTab(WT_ID, ids.conflict);
       actions.closeHistoryTab(WT_ID, ids.history);
       actions.closePreviewTab(WT_ID, ids.preview);
-      actions.closeBrainTab(WT_ID, ids.brain);
       actions.closeBrowserTab(WT_ID, ids.browser);
       actions.closeAgentTab(WT_ID, ids.agent);
 
-      expect(state.closedTabsByWorktree[WT_ID]).toHaveLength(11);
+      expect(state.closedTabsByWorktree[WT_ID]).toHaveLength(10);
 
       const popped: ClosedTab["type"][] = [];
-      for (let i = 0; i < 11; i++) {
+      for (let i = 0; i < 10; i++) {
         const tab = actions.reopenLastClosedTab(WT_ID);
         expect(tab, `pop ${i} came back empty`).not.toBeNull();
         popped.push(tab!.type);
@@ -255,7 +250,6 @@ describe("reopen closed tabs", () => {
       expect(popped).toEqual([
         "agent",
         "browser",
-        "brain",
         "preview",
         "history",
         "conflict",
@@ -276,7 +270,6 @@ describe("reopen closed tabs", () => {
       expect(state.conflictTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.historyTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.previewTabsByWorktree[WT_ID]).toHaveLength(1);
-      expect(state.brainTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.browserTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.terminalsByWorktree[WT_ID]).toHaveLength(1);
       // A fresh thread on the same agent, under the title it was closed with.
