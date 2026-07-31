@@ -214,6 +214,10 @@ describe("starting a run", () => {
       files: 1,
       additions: 10,
       deletions: 2,
+      // The paths, not just the count: the comparison matrix is files × legs,
+      // and two legs reporting "1 file" mean different things depending on
+      // whether it is the same file.
+      paths: ["a.rs"],
     });
   });
 
@@ -365,9 +369,9 @@ describe("reading a run", () => {
 
   it("reads the finished legs first, largest change first", () => {
     const sorted = [
-      leg({ id: "small", agentName: "S", stat: { files: 1, additions: 2, deletions: 0 } }),
+      leg({ id: "small", agentName: "S", stat: { files: 1, additions: 2, deletions: 0, paths: [] } }),
       leg({ id: "running", agentName: "R", status: "running" }),
-      leg({ id: "big", agentName: "B", stat: { files: 9, additions: 90, deletions: 5 } }),
+      leg({ id: "big", agentName: "B", stat: { files: 9, additions: 90, deletions: 5, paths: [] } }),
       leg({ id: "failed", agentName: "F", status: "failed" }),
     ].sort(compareLegs);
     expect(sorted.map((l) => l.id)).toEqual(["big", "small", "running", "failed"]);
@@ -376,7 +380,7 @@ describe("reading a run", () => {
   it("puts an unmeasured leg below a measured one", () => {
     const sorted = [
       leg({ id: "none", agentName: "N", stat: null }),
-      leg({ id: "some", agentName: "S", stat: { files: 1, additions: 0, deletions: 0 } }),
+      leg({ id: "some", agentName: "S", stat: { files: 1, additions: 0, deletions: 0, paths: [] } }),
     ].sort(compareLegs);
     expect(sorted.map((l) => l.id)).toEqual(["some", "none"]);
   });

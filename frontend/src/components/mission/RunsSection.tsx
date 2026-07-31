@@ -14,6 +14,7 @@ import {
   type RunLeg,
 } from "@/store/fanout";
 import { agentRoster, resolveAgentCommand } from "@/store/settings";
+import { RunMatrix } from "./RunMatrix";
 
 /// Fan-out: one prompt, N agents, N worktrees, N diffs.
 ///
@@ -309,6 +310,46 @@ function RunCard(props: { run: FanoutRun; onInspect?: (leg: RunLeg) => void }) {
           )}
         </For>
       </ul>
+
+      {/* What happened to everything the user did *not* adopt.
+          `adoptFanoutLeg` deliberately leaves the other worktrees alone — see
+          the module comment in `store/fanout.ts` — but leaving them alone and
+          saying nothing is how somebody accumulates six abandoned worktrees and
+          finds out from `git worktree list` a month later. The rule the rest of
+          this app follows applies here too: a destructive default is wrong, and
+          so is a silent non-destructive one. */}
+      <Show when={props.run.adoptedLegId}>
+        {(adoptedId) => {
+          const leftovers = createMemo(() =>
+            props.run.legs.filter((l) => l.id !== adoptedId() && isLegDone(l.status)),
+          );
+          return (
+            <Show when={leftovers().length > 0}>
+              <p class="mt-1 text-[11px] text-muted-foreground">
+                {leftovers().length} other worktree{leftovers().length === 1 ? "" : "s"} and
+                branch{leftovers().length === 1 ? "" : "es"} are still on disk —{" "}
+                <For each={leftovers()}>
+                  {(l, i) => (
+                    <>
+                      <span class="font-mono">{l.branch}</span>
+                      {i() < leftovers().length - 1 ? ", " : ""}
+                    </>
+                  )}
+                </For>
+                . Remove them one at a time with the bin above; nothing here deletes
+                an agent's work for you.
+              </p>
+            </Show>
+          );
+        }}
+      </Show>
+
+      {/* The comparison, under the legs rather than above them: the list
+          answers "what happened", and this answers "which one", which is only a
+          question once something has happened. */}
+      <Show when={props.run.legs.some((l) => l.stat)}>
+        <RunMatrix run={props.run} onInspect={props.onInspect} />
+      </Show>
 
       <Show when={error()}>
         <p class="mt-1 text-[11px] text-destructive">{error()}</p>

@@ -59,7 +59,7 @@ function leg(partial: Partial<RunLeg> = {}): RunLeg {
     endedAt: 1,
     answer: "",
     error: null,
-    stat: { files: 3, additions: 40, deletions: 5 },
+    stat: { files: 3, additions: 40, deletions: 5, paths: [] },
     ...partial,
   };
 }
@@ -200,8 +200,8 @@ describe("reading a run", () => {
     runs = [
       run({
         legs: [
-          leg({ id: "small", agentName: "Small", stat: { files: 1, additions: 2, deletions: 0 } }),
-          leg({ id: "big", agentName: "Big", stat: { files: 9, additions: 90, deletions: 1 } }),
+          leg({ id: "small", agentName: "Small", stat: { files: 1, additions: 2, deletions: 0, paths: [] } }),
+          leg({ id: "big", agentName: "Big", stat: { files: 9, additions: 90, deletions: 1, paths: [] } }),
         ],
       }),
     ];
@@ -289,5 +289,137 @@ describe("acting on a leg", () => {
     expect(forget).toHaveAttribute("title", expect.stringMatching(/worktrees and branches stay/i));
     await user.click(forget);
     expect(removeFanoutRun).toHaveBeenCalledWith(REPO, "r1");
+  });
+});
+
+/// Choosing between N branches is the half of fan-out that the mechanism does
+/// not solve. `compareModel.test.ts` proves the comparison is right; these prove
+/// the surface leads with the finding rather than the evidence, and that it
+/// never presents a heuristic as a verdict.
+describe("the comparison", () => {
+  const compared = () =>
+    run({
+      legs: [
+        leg({
+          id: "l1",
+          agentName: "Refactorer",
+          branch: "fanout/x/refactorer",
+          stat: { files: 2, additions: 40, deletions: 5, paths: ["src/parser.ts", "src/a.ts"] },
+        }),
+        leg({
+          id: "l2",
+          agentName: "Reviewer",
+          worktreePath: "/repos/api-leg-2",
+          branch: "fanout/x/reviewer",
+          stat: { files: 2, additions: 90, deletions: 0, paths: ["src/parser.ts", "src/b.ts"] },
+        }),
+      ],
+    });
+
+  it("leads with what the legs agreed on", async () => {
+    runs = [compared()];
+    render(() => <RunsSection repoPath={REPO} />);
+    expect(
+      await screen.findByText(/1 file touched by every leg, 2 where they differ/i),
+    ).toBeInTheDocument();
+  });
+
+  it("names the files where they diverge", async () => {
+    runs = [compared()];
+    render(() => <RunsSection repoPath={REPO} />);
+    expect(await screen.findByText("src/a.ts")).toBeInTheDocument();
+    expect(screen.getByText("src/b.ts")).toBeInTheDocument();
+  });
+
+  /// The matrix is evidence. Opening with a grid of checkmarks would be showing
+  /// the working before the answer.
+  it("keeps the matrix collapsed until asked", async () => {
+    runs = [compared()];
+    const user = userEvent.setup();
+    render(() => <RunsSection repoPath={REPO} />);
+
+    const toggle = await screen.findByRole("button", { name: /show the file matrix/i });
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    // `src/parser.ts` is in both legs, so it is a row with two ticks.
+    expect(screen.getAllByLabelText("touched")).toHaveLength(4);
+    expect(screen.getAllByLabelText("not touched")).toHaveLength(2);
+  });
+
+  /// Presenting a heuristic over line counts as a judgement about which answer
+  /// is *correct* is the same lie as unmarked inferred attribution.
+  it("labels the suggestion as a guess", async () => {
+    runs = [compared()];
+    render(() => <RunsSection repoPath={REPO} />);
+    expect(await screen.findByText(/worth reading first/i)).toBeInTheDocument();
+    expect(screen.getByText(/a guess from counts, not a verdict/i)).toBeInTheDocument();
+  });
+
+  /// A leg that silently vanishes from the comparison reads as one that was
+  /// never started.
+  it("says which legs are not in the comparison and why", async () => {
+    runs = [
+      run({
+        legs: [
+          leg({ id: "l1", stat: { files: 1, additions: 1, deletions: 0, paths: ["a.ts"] } }),
+          leg({ id: "l2", agentName: "Reviewer", status: "failed", stat: null }),
+        ],
+      }),
+    ];
+    render(() => <RunsSection repoPath={REPO} />);
+    expect(await screen.findByText(/not in the comparison/i)).toBeInTheDocument();
+    expect(screen.getByText(/Reviewer \(failed\)/)).toBeInTheDocument();
+  });
+
+  it("shows nothing to compare before any leg has a diff", async () => {
+    runs = [run({ legs: [leg({ status: "running", stat: null })] })];
+    render(() => <RunsSection repoPath={REPO} />);
+    await screen.findByText(/working/i);
+    expect(screen.queryByText(/file matrix/i)).not.toBeInTheDocument();
+  });
+});
+
+/// Adopting leaves the other worktrees alone — deliberately, see the module
+/// comment in `store/fanout.ts`. Leaving them alone *and saying nothing* is how
+/// someone accumulates six abandoned worktrees and finds out from
+/// `git worktree list` a month later.
+describe("after an adopt", () => {
+  it("says what is still on disk, and names it", async () => {
+    runs = [
+      run({
+        adoptedLegId: "l1",
+        legs: [
+          leg({ id: "l1" }),
+          leg({ id: "l2", agentName: "Reviewer", branch: "fanout/x/reviewer" }),
+        ],
+      }),
+    ];
+    render(() => <RunsSection repoPath={REPO} />);
+    expect(await screen.findByText(/1 other worktree and branch are still on disk/i)).toBeInTheDocument();
+    expect(screen.getByText("fanout/x/reviewer")).toBeInTheDocument();
+  });
+
+  /// It has to be clear the app is not going to tidy up on its own — that is
+  /// the whole point of saying anything.
+  it("says nothing will be deleted for you", async () => {
+    runs = [
+      run({
+        adoptedLegId: "l1",
+        legs: [leg({ id: "l1" }), leg({ id: "l2", agentName: "Reviewer" })],
+      }),
+    ];
+    render(() => <RunsSection repoPath={REPO} />);
+    expect(
+      await screen.findByText(/nothing here deletes an agent's work for you/i),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing when there was only one leg", async () => {
+    runs = [run({ adoptedLegId: "l1", legs: [leg({ id: "l1" })] })];
+    render(() => <RunsSection repoPath={REPO} />);
+    await screen.findByText("adopted");
+    expect(screen.queryByText(/still on disk/i)).not.toBeInTheDocument();
   });
 });

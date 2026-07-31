@@ -67,9 +67,25 @@ export interface RunLeg {
   answer: string;
   /// Why it failed, when it did.
   error: string | null;
-  /// Lines changed in the leg's worktree once it finished. `null` until then,
-  /// and `null` for a leg that never got to run.
-  stat: { files: number; additions: number; deletions: number } | null;
+  /// What the leg produced, measured once it finished. `null` until then, and
+  /// `null` for a leg that never got to run.
+  ///
+  /// `paths` is what makes the comparison matrix possible: counts alone say how
+  /// *much* each leg did, and the question a fan-out actually poses is whether
+  /// they did the same thing. Two legs both reporting "3 files" is a different
+  /// situation depending on whether it is the same three.
+  stat: LegStat | null;
+}
+
+/// What one leg changed.
+export interface LegStat {
+  files: number;
+  additions: number;
+  deletions: number;
+  /// Repo-relative paths, sorted. Absent on runs persisted before the matrix
+  /// existed — `reviveLeg` fills an empty array rather than dropping the stat,
+  /// so an old run still shows its counts and simply has nothing to compare.
+  paths: string[];
 }
 
 export interface FanoutRun {
@@ -114,10 +130,22 @@ function reviveLeg(raw: unknown): RunLeg | null {
     endedAt: typeof r.endedAt === "number" ? r.endedAt : null,
     answer: typeof r.answer === "string" ? r.answer : "",
     error: typeof r.error === "string" ? r.error : null,
-    stat:
-      r.stat && typeof r.stat === "object"
-        ? (r.stat as RunLeg["stat"])
-        : null,
+    stat: reviveStat(r.stat),
+  };
+}
+
+/// A stat, defensively. An old run has counts but no `paths`; keeping the
+/// counts and defaulting the paths is strictly better than dropping the whole
+/// stat, which would make a finished leg read as "not measured".
+function reviveStat(raw: unknown): LegStat | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    files: num(r.files),
+    additions: num(r.additions),
+    deletions: num(r.deletions),
+    paths: Array.isArray(r.paths) ? r.paths.filter((p): p is string => typeof p === "string") : [],
   };
 }
 
@@ -409,7 +437,7 @@ function legPrompt(prompt: string, baseRef?: string): string {
 /// that committed its work would show an empty working-tree diff, and reporting
 /// "0 files changed" for the leg that did the most work is the single most
 /// misleading thing this surface could do.
-async function legStat(worktreePath: string, baseRef?: string): Promise<RunLeg["stat"]> {
+async function legStat(worktreePath: string, baseRef?: string): Promise<LegStat | null> {
   try {
     const diff = baseRef
       ? await gitApi.diffRefs(worktreePath, baseRef, "HEAD", true)
@@ -424,7 +452,15 @@ async function legStat(worktreePath: string, baseRef?: string): Promise<RunLeg["
       deletions += working.totalDeletions;
       for (const f of working.files) files.add(f.newPath ?? f.oldPath ?? "");
     }
-    return { files: files.size, additions, deletions };
+    files.delete("");
+    return {
+      files: files.size,
+      additions,
+      deletions,
+      // Sorted here rather than at render time so every consumer sees one
+      // order, and a diff of two legs' paths is a diff of two sorted lists.
+      paths: [...files].sort(),
+    };
   } catch {
     // A stat we could not take is `null`, which the surface renders as "not
     // measured" — not as zero.
