@@ -9,6 +9,7 @@ mod agent;
 mod browser;
 mod git;
 mod fs;
+mod journal;
 mod lsp;
 mod brain;
 mod menu;
@@ -1156,6 +1157,7 @@ pub fn run() {
         .manage(git_state)
         .manage(browser::new_store())
         .manage(watch::WatchState::default())
+        .manage(journal::JournalState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1164,6 +1166,10 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // After the log plugin so a failure to open the event log is
+            // visible, and before anything that might record into it.
+            journal::init(app.handle());
 
             // tauri.conf.json is static, so the platform split for window chrome
             // lives here. macOS keeps the native decorations configured there —
@@ -1255,6 +1261,11 @@ pub fn run() {
             git::git_agent_query,
             git::git_list_worktrees,
             watch::watch_repos,
+            journal::journal_append,
+            journal::journal_query,
+            journal::journal_register_repos,
+            journal::journal_repos,
+            journal::journal_active_agents,
             git::git_add_worktree,
             git::git_remove_worktree,
             git::git_unlock_worktree,

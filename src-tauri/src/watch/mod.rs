@@ -252,6 +252,10 @@ fn start_watching(app: &AppHandle, repo_path: &str) -> Result<Watched, String> {
             if let Err(e) = handle.emit(GIT_CHANGED_EVENT, &repo_for_event) {
                 log::warn!("could not broadcast a git change for {repo_for_event}: {e}");
             }
+            // Strictly after the pulse. Working out *what* changed costs a
+            // couple of ref reads, and a refresh the user is watching for must
+            // never queue behind bookkeeping.
+            crate::journal::note_repo_change(&handle, &repo_for_event);
         },
     )
     .map_err(|e| format!("could not start a watcher for {repo_path}: {e}"))?;

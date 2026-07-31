@@ -48,6 +48,12 @@ export interface AgentStreamOptions {
   /// and exports the value into the child's environment; no value passes
   /// through JS in either direction.
   secretBindings: { id: string; envVar: string }[];
+  /// The agent's roster name. Rust registers it against the repository for the
+  /// life of the child process, so the filesystem watcher can credit the
+  /// commits and branch moves this turn causes to *this* agent rather than
+  /// filing them as "something changed". Optional: without it the log falls
+  /// back to the command's first token.
+  agentName?: string;
   /// Caller-minted id, and the only handle `cancelTurn` has. Must be unique
   /// among turns in flight — Rust rejects a duplicate rather than silently
   /// replacing the turn a later cancel would then miss.
@@ -74,6 +80,7 @@ export const agentApi = {
       prompt: opts.prompt,
       secretBindings: opts.secretBindings,
       turnId: opts.turnId,
+      agentName: opts.agentName ?? null,
       onEvent,
     });
   },

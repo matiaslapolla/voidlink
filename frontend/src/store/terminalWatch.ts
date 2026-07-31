@@ -38,6 +38,7 @@
 import { createSignal, onCleanup, type Accessor } from "solid-js";
 import { terminalApi } from "@/api/terminal";
 import { noteFinished, noteWorking } from "@/store/activity";
+import { record } from "@/store/journal";
 
 const POLL_MS = 1500;
 
@@ -96,6 +97,11 @@ interface PtyState {
   /// the whole span because by the falling edge the app has already restored the
   /// normal buffer.
   busySpanAlt: boolean;
+  /// The foreground process's name, captured *during* the span. By the falling
+  /// edge the shell is idle again and `info.name` is null, so the one piece of
+  /// information that makes a completion worth recording has to be kept as it
+  /// goes past.
+  busyName: string | null;
 
   // ── Poll lifetime
   refs: number;
@@ -126,6 +132,7 @@ function stateFor(ptyId: string): PtyState {
     busySamples: 0,
     busyPid: null,
     busySpanAlt: false,
+    busyName: null,
     refs: 0,
     timer: null,
     tabId: null,
@@ -225,6 +232,7 @@ async function poll(ptyId: string, state: PtyState) {
       state.busySamples = 1;
       state.busyPid = info.pid ?? null;
       state.busySpanAlt = state.altScreen;
+      state.busyName = info.name;
     } else {
       state.busySamples += 1;
       if ((info.pid ?? null) !== state.busyPid) {
@@ -232,6 +240,9 @@ async function poll(ptyId: string, state: PtyState) {
         state.busySamples = 1;
         state.busyPid = info.pid ?? null;
         state.busySpanAlt = state.altScreen;
+        state.busyName = info.name;
+      } else if (info.name) {
+        state.busyName = info.name;
       }
     }
     if (state.altScreen) state.busySpanAlt = true;
@@ -247,9 +258,34 @@ async function poll(ptyId: string, state: PtyState) {
     samples: state.busySamples,
     wasFullScreen: state.busySpanAlt,
   });
+  // Recorded before the badge decision, and on the *same* rule.
+  //
+  // `completionIsNews` is the right gate for the log too, for a reason worth
+  // stating: it is what separates "a command ran" from "the shell was busy for
+  // a moment". Everything it rejects is a sub-second command or somebody
+  // quitting an editor, and a log full of those is a log nobody reads. The
+  // badge and the record are the same event seen at two zoom levels, so they
+  // must not be able to disagree about whether it happened.
+  if (news && state.busyName) {
+    record({
+      kind: "terminal.command.finished",
+      subject: state.busyName,
+      // The poll cannot see the exit status — only that the foreground process
+      // went away — so the summary claims completion and not success.
+      summary: `${state.busyName} finished`,
+      data: {
+        process: state.busyName,
+        tabId: state.tabId,
+        // Lower bound: the span was observed for this long. The command started
+        // at some point in the poll interval before the first busy sample.
+        approxMs: state.busySamples * POLL_MS,
+      },
+    });
+  }
   state.busySamples = 0;
   state.busyPid = null;
   state.busySpanAlt = false;
+  state.busyName = null;
   if (!state.tabId) return;
   if (news) {
     // `noteFinished` decides whether that is a badge (the user was elsewhere) or

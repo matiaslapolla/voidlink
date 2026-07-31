@@ -413,6 +413,10 @@ fn run_turn(
 /// silent replace — two children on one id would interleave their answers into
 /// the same bubble and only one of them could be cancelled.
 ///
+/// `agent_name` is the roster name, recorded against the git events this turn
+/// causes. Optional because the transport does not need it; without one the log
+/// falls back to the command's first token.
+///
 /// Empty output is *not* an error here, unlike the one-shot path: a turn the
 /// user stopped after zero tokens is a legitimate empty result, and the
 /// frontend already has the stream to judge by.
@@ -423,6 +427,7 @@ pub async fn agent_stream_query(
     prompt: String,
     secret_bindings: Vec<SecretBinding>,
     turn_id: String,
+    agent_name: Option<String>,
     on_event: Channel<AgentStreamEvent>,
 ) -> Result<AgentTurnResult, String> {
     if prompt.trim().is_empty() {
@@ -441,10 +446,29 @@ pub async fn agent_stream_query(
     }
     let guard = TurnGuard(turn_id.clone());
 
+    // Marks the repository as having this agent working in it, so the filesystem
+    // watcher can credit the commits and branch moves the child makes. Held for
+    // the life of the turn and released — with a grace window — on any exit
+    // path, exactly like `TurnGuard` above. See `journal::agent_working`.
+    let name = agent_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            command_template
+                .split_whitespace()
+                .next()
+                .unwrap_or("agent")
+                .to_string()
+        });
+    let work = crate::journal::agent_working(&repo_path, &name);
+
     tauri::async_runtime::spawn_blocking(move || {
         // Moved in so the entry is released when the turn ends by *any* path,
         // including a panic inside the body.
         let _guard = guard;
+        let _work = work;
         run_turn(
             &repo_path,
             &command_template,
@@ -571,6 +595,7 @@ mod tests {
             "  \n ".to_string(),
             Vec::new(),
             "blank-prompt-turn".to_string(),
+            None,
             null_channel(),
         ));
         assert_eq!(result.err().as_deref(), Some("Empty prompt."));
@@ -599,6 +624,7 @@ mod tests {
             "héllo".to_string(),
             Vec::new(),
             "echo-turn".to_string(),
+            None,
             channel,
         ))
         .expect("turn must succeed");
@@ -630,6 +656,7 @@ mod tests {
                 "prompt".to_string(),
                 Vec::new(),
                 id.to_string(),
+                None,
                 null_channel(),
             ))
         });
@@ -644,6 +671,7 @@ mod tests {
             "prompt".to_string(),
             Vec::new(),
             id.to_string(),
+            None,
             null_channel(),
         ));
         assert_eq!(
@@ -668,6 +696,7 @@ mod tests {
                 "prompt".to_string(),
                 Vec::new(),
                 id.to_string(),
+                None,
                 null_channel(),
             ))
         });
