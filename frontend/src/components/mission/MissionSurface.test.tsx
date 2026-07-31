@@ -5,36 +5,44 @@
 /// events reach the lineup without a refetch, and that the three sections do
 /// not all mount at once. Every one of those is an integration fact no pure
 /// test can reach.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+///
+/// Nothing below mocks a module: only `invoke` is faked, so `@/api/journal` and
+/// `@/store/journal` — argument shaping, batching, the async subscribe — are
+/// under test rather than replaced. See `@/test/tauri`.
+import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
-import type { ActiveAgent, JournalEvent, RepoIdentity } from "@/api/journal";
-
-const query = vi.fn();
-const repos = vi.fn();
-const activeAgents = vi.fn();
-let broadcast: ((events: JournalEvent[]) => void) | null = null;
-const unsubscribe = vi.fn();
-
-vi.mock("@/api/journal", () => ({
-  JOURNAL_APPENDED_EVENT: "voidlink://journal-appended",
-  journalApi: {
-    query: (q: unknown) => query(q),
-    repos: () => repos(),
-    activeAgents: () => activeAgents(),
-    append: vi.fn(),
-  },
-}));
-
-vi.mock("@/store/journal", () => ({
-  onJournalAppended: (handler: (events: JournalEvent[]) => void) => {
-    broadcast = handler;
-    return unsubscribe;
-  },
-  record: vi.fn(),
-}));
+import {
+  emitTauriEvent,
+  lastInvokeArgs,
+  mockTauri,
+  tauriCalls,
+  tauriListenerCount,
+} from "@/test/tauri";
+import {
+  JOURNAL_APPENDED_EVENT,
+  type ActiveAgent,
+  type JournalEvent,
+  type RepoIdentity,
+} from "@/api/journal";
 
 import { MissionSurface } from "./MissionSurface";
+
+/// What Rust answers with. Set per test, read by the handlers below.
+let storedEvents: JournalEvent[] = [];
+let storedRepos: RepoIdentity[] = [];
+let storedAgents: ActiveAgent[] = [];
+
+const queries = () => tauriCalls("journal_query");
+const repoCalls = () => tauriCalls("journal_repos");
+
+/// Deliver a batch as Rust's broadcast would. Waits for the subscription
+/// first — it attaches across two awaits, so a painted surface is not yet
+/// necessarily a listening one.
+async function broadcast(events: JournalEvent[]): Promise<void> {
+  await waitFor(() => expect(tauriListenerCount(JOURNAL_APPENDED_EVENT)).toBe(1));
+  emitTauriEvent(JOURNAL_APPENDED_EVENT, events);
+}
 
 function identity(path: string, workspace: string, isMain = false): RepoIdentity {
   return {
@@ -66,14 +74,17 @@ function agent(repo: string, name: string): ActiveAgent {
 }
 
 beforeEach(() => {
-  broadcast = null;
-  unsubscribe.mockReset();
-  query.mockReset().mockResolvedValue([]);
-  repos.mockReset().mockResolvedValue([]);
-  activeAgents.mockReset().mockResolvedValue([]);
+  storedEvents = [];
+  storedRepos = [];
+  storedAgents = [];
+  mockTauri({
+    journal_query: () => storedEvents,
+    journal_repos: () => storedRepos,
+    journal_active_agents: () => storedAgents,
+    journal_append: [],
+    journal_register_repos: undefined,
+  });
 });
-
-afterEach(() => vi.clearAllMocks());
 
 describe("the shell", () => {
   it("opens on the lineup", async () => {
@@ -82,7 +93,7 @@ describe("the shell", () => {
       "aria-pressed",
       "true",
     );
-    await waitFor(() => expect(repos).toHaveBeenCalled());
+    await waitFor(() => expect(repoCalls().length).toBeGreaterThan(0));
   });
 
   /// Three live subscriptions where the user can read one is the kind of cost
@@ -90,13 +101,15 @@ describe("the shell", () => {
   it("mounts only the section being read", async () => {
     const user = userEvent.setup();
     render(() => <MissionSurface workspaceId="ws-api" />);
-    await waitFor(() => expect(repos).toHaveBeenCalled());
-    const lineupCalls = query.mock.calls.length;
+    await waitFor(() => expect(repoCalls().length).toBeGreaterThan(0));
+    const lineupCalls = queries().length;
 
     await user.click(screen.getByRole("button", { name: "Check-in" }));
-    // The lineup's subscription is released the moment it unmounts.
-    expect(unsubscribe).toHaveBeenCalled();
-    await waitFor(() => expect(query.mock.calls.length).toBeGreaterThan(lineupCalls));
+    // The lineup's subscription is released the moment it unmounts — asserted
+    // against the real listener registry, so an unsubscribe that is called but
+    // detaches nothing still fails.
+    await waitFor(() => expect(tauriListenerCount(JOURNAL_APPENDED_EVENT)).toBe(0));
+    await waitFor(() => expect(queries().length).toBeGreaterThan(lineupCalls));
   });
 
   it("reports the selected section to assistive technology", async () => {
@@ -116,11 +129,11 @@ describe("the shell", () => {
 
 describe("the lineup", () => {
   it("lists every registered checkout under its workspace", async () => {
-    repos.mockResolvedValue([
+    storedRepos = [
       identity("/api", "api", true),
       identity("/api-hotfix", "api"),
       identity("/site", "site", true),
-    ]);
+    ];
     render(() => <MissionSurface workspaceId="ws-api" />);
 
     // By role, because a workspace and its main checkout legitimately share a
@@ -139,7 +152,7 @@ describe("the lineup", () => {
   /// A checkout with no history still exists. A missing row reads as a missing
   /// worktree.
   it("shows a checkout with an empty log rather than omitting it", async () => {
-    repos.mockResolvedValue([identity("/api", "api", true)]);
+    storedRepos = [identity("/api", "api", true)];
     render(() => <MissionSurface workspaceId="ws-api" />);
     expect(await screen.findByText("Nothing recorded")).toBeInTheDocument();
   });
@@ -152,9 +165,9 @@ describe("the lineup", () => {
   /// Live state, not the log — turns are recorded on their end, so there is no
   /// "started" event and the running agent has to come from Rust's registry.
   it("reports a running agent ahead of the last recorded event", async () => {
-    repos.mockResolvedValue([identity("/api", "api", true)]);
-    query.mockResolvedValue([event({ id: "c", summary: "Committed “x”" })]);
-    activeAgents.mockResolvedValue([agent("/api", "Refactorer")]);
+    storedRepos = [identity("/api", "api", true)];
+    storedEvents = [event({ id: "c", summary: "Committed “x”" })];
+    storedAgents = [agent("/api", "Refactorer")];
     render(() => <MissionSurface workspaceId="ws-api" />);
 
     expect(await screen.findByText(/Refactorer working/)).toBeInTheDocument();
@@ -163,22 +176,22 @@ describe("the lineup", () => {
 
   /// MASTER §7.5.2: never blank a rendered region to show it is updating.
   it("appends a broadcast event without re-querying", async () => {
-    repos.mockResolvedValue([identity("/api", "api", true)]);
+    storedRepos = [identity("/api", "api", true)];
     render(() => <MissionSurface workspaceId="ws-api" />);
     await screen.findByText("Nothing recorded");
-    const before = query.mock.calls.length;
+    const before = queries().length;
 
-    broadcast?.([event({ id: "fresh", summary: "Committed “fresh”" })]);
+    await broadcast([event({ id: "fresh", summary: "Committed “fresh”" })]);
 
     await waitFor(() => expect(screen.getByText(/Committed “fresh”/)).toBeInTheDocument());
-    expect(query.mock.calls.length).toBe(before);
+    expect(queries()).toHaveLength(before);
   });
 
   it("releases its subscription on unmount", async () => {
     const { unmount } = render(() => <MissionSurface workspaceId="ws-api" />);
-    await waitFor(() => expect(repos).toHaveBeenCalled());
+    await waitFor(() => expect(tauriListenerCount(JOURNAL_APPENDED_EVENT)).toBe(1));
     unmount();
-    expect(unsubscribe).toHaveBeenCalled();
+    await waitFor(() => expect(tauriListenerCount(JOURNAL_APPENDED_EVENT)).toBe(0));
   });
 });
 
@@ -193,13 +206,13 @@ describe("the check-in", () => {
   it("queries a bounded window rather than the whole log", async () => {
     await openCheckin();
     await waitFor(() => {
-      const q = query.mock.calls.at(-1)?.[0] as { since?: number };
+      const q = lastInvokeArgs("journal_query")?.query as { since?: number } | undefined;
       expect(q?.since).toBeTypeOf("number");
     });
   });
 
   it("groups what happened by repository and by who did it", async () => {
-    query.mockResolvedValue([
+    storedEvents = [
       event({
         id: "a",
         actor: "agent",
@@ -208,7 +221,7 @@ describe("the check-in", () => {
         subject: "Extract the parser",
       }),
       event({ id: "b", actor: "user", kind: "terminal.command.finished" }),
-    ]);
+    ];
     await openCheckin();
 
     expect(await screen.findByText("Refactorer")).toBeInTheDocument();
@@ -225,9 +238,9 @@ describe("the check-in", () => {
 
   it("re-queries when the window changes", async () => {
     const user = await openCheckin();
-    await waitFor(() => expect(query).toHaveBeenCalled());
-    const before = query.mock.calls.length;
+    await waitFor(() => expect(queries().length).toBeGreaterThan(0));
+    const before = queries().length;
     await user.click(screen.getByRole("button", { name: "Last 7 days" }));
-    await waitFor(() => expect(query.mock.calls.length).toBeGreaterThan(before));
+    await waitFor(() => expect(queries().length).toBeGreaterThan(before));
   });
 });
