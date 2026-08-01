@@ -12,6 +12,16 @@ export type UiDensity = "compact" | "normal" | "comfortable";
 /// ("stacked"). See `commands/environment.ts` for how the choice is routed.
 export type EnvironmentMode = "stacked" | "detached";
 
+/// Which way a pane's tab strip runs. `horizontal` is the row above the pane
+/// body that shipped; `vertical` is a column down its left edge.
+///
+/// It is a genuine layout mode, not a skin: a vertical strip gives a tab room
+/// for a full path instead of 140px of truncation, but it also puts a third
+/// navigation column at the left edge of the window, beside the rail and the
+/// file tree. `App.tsx` is where that second consequence is dealt with — see
+/// the note on the file explorer's placement there.
+export type TabOrientation = "horizontal" | "vertical";
+
 export interface TerminalSettings {
   fontFamily: string;
   fontSize: number;
@@ -176,6 +186,15 @@ export interface UiSettings {
   textSize: UiTextSize;
   density: UiDensity;
   environmentMode: EnvironmentMode;
+  /// Which way every pane's tab strip runs. Applies to the workbench and to
+  /// the detached editor window alike — the strip is one component and a
+  /// preference that held in one window and not the other would read as a bug.
+  tabOrientation: TabOrientation;
+  /// Width of the vertical tab column, in px. Ignored while the strip is
+  /// horizontal. Persisted here rather than in the layout store because it is
+  /// a property of the *preference* — resetting the layout must not silently
+  /// take the column back to its default width.
+  verticalTabWidth: number;
   /// Surface gitignored files in the file tree and Cmd+P. Off by default —
   /// the point of the ignore list is that build output stays out of the way —
   /// but a repo's `.env` is gitignored and still needs editing, which is the
@@ -302,6 +321,10 @@ const DEFAULTS: AppSettings = {
     // opts in. `mergeDefaults` fills the key in for settings saved before it
     // existed.
     environmentMode: "detached",
+    // Horizontal is what shipped, so an existing install sees no change until
+    // it opts in — the same rule `environmentMode` follows.
+    tabOrientation: "horizontal",
+    verticalTabWidth: 200,
     showIgnoredFiles: false,
   },
   terminal: {

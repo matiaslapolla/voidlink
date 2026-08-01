@@ -93,7 +93,12 @@ import { MergeEditor } from "@/components/editor/MergeEditor";
 import { FileTree } from "@/components/files/FileTree";
 import { FindPanel } from "@/components/search/FindPanel";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
-import { TabStrip, type TabDescriptor, type TabKind } from "@/components/layout/TabStrip";
+import {
+  TabStrip,
+  VERTICAL_TAB_WIDTH,
+  type TabDescriptor,
+  type TabKind,
+} from "@/components/layout/TabStrip";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { PromptHost } from "@/commands/PromptHost";
 import { textPrompt } from "@/commands/prompt";
@@ -387,6 +392,18 @@ export function EditorSurface(props: {
   // today's editor: no session, no status segment, no error.
 
   const { settings: appSettings } = useSettings();
+
+  /// Tab strip orientation, read from the same preference the workbench reads.
+  /// The width is clamped here for the same reason it is clamped there: the
+  /// settings file is hand-editable, and a 4px strip is a window with no
+  /// visible way back. See `VERTICAL_TAB_WIDTH`.
+  const verticalTabs = () => appSettings.ui.tabOrientation === "vertical";
+  const verticalTabWidth = () =>
+    Math.min(
+      VERTICAL_TAB_WIDTH.max,
+      Math.max(VERTICAL_TAB_WIDTH.min, appSettings.ui.verticalTabWidth),
+    );
+
   const [lspBridge, setLspBridge] = createSignal<LspBridge>(INERT_LSP_BRIDGE);
   const [lspLog, setLspLog] = createSignal<
     { server: string; binary: string; lines: string[] } | null
@@ -980,8 +997,20 @@ export function EditorSurface(props: {
             </Show>
 
             {/* Tabs + surfaces */}
-            <main class="island flex-1 min-w-0 flex flex-col bg-background">
+            {/* Same fork the workbench's pane groups take — see `renderGroup`
+                in `MainSurface.tsx`. The strip is one component and the
+                preference is one preference; a vertical strip in one window
+                and a horizontal one in the other would read as a bug. */}
+            <main
+              class="island flex-1 min-w-0 flex bg-background"
+              classList={{
+                "flex-col": !verticalTabs(),
+                "flex-row": verticalTabs(),
+              }}
+            >
               <TabStrip
+                orientation={appSettings.ui.tabOrientation}
+                width={verticalTabWidth()}
                 tabs={tabs()}
                 activeId={activeItem()?.id ?? null}
                 isPinned={isPinned}
@@ -1022,7 +1051,10 @@ export function EditorSurface(props: {
                 }
               />
 
-              <div class="flex-1 relative overflow-hidden">
+              {/* `min-w-0 min-h-0`: this is a flex child on either axis now,
+                  and without it a wide editor would push past the island
+                  rather than being clipped by it. */}
+              <div class="flex-1 relative overflow-hidden min-w-0 min-h-0">
                 {/* Always mounted so Monaco initialises on window load rather
                     than on the first click. */}
                 <div

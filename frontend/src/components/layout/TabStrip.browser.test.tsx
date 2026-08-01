@@ -78,6 +78,68 @@ describe("overflow: the chevron reflects real scrollWidth vs clientWidth", () =>
   });
 });
 
+/// The vertical strip belongs in the browser project for the same reason
+/// overflow does: both of its claims are about real geometry. jsdom reports 0
+/// for `scrollHeight`, `clientHeight`, `offsetTop` and `offsetHeight` alike, so
+/// a render test could not tell a column from a row.
+describe("vertical orientation", () => {
+  it("overflows down its own axis rather than across", async () => {
+    const tabs = Array.from({ length: 15 }, (_, i) => tab(`file-${i}.ts`));
+    render(() => (
+      // Tall enough that a *row* of these tabs would overflow and a column of
+      // them would not: the assertion only holds if the strip switched axes.
+      <div style={{ width: "220px", height: "2000px", display: "flex" }}>
+        <TabStrip {...baseProps(tabs)} orientation="vertical" width={220} />
+      </div>
+    ));
+
+    await waitFor(() => expect(screen.getByText("file-0.ts")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /show all tabs/i })).not.toBeInTheDocument();
+  });
+
+  it("puts the active indicator on the vertical axis, at the active card", async () => {
+    const tabs = [tab("first.ts"), tab("second.ts"), tab("third.ts")];
+    render(() => (
+      <div style={{ width: "220px", height: "600px", display: "flex" }}>
+        <TabStrip
+          {...baseProps(tabs)}
+          activeId="third.ts"
+          orientation="vertical"
+          width={220}
+        />
+      </div>
+    ));
+
+    const rule = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-motion="tab-indicator"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+
+    // A vertical rule is placed by `translateY` and sized by `height`; the
+    // horizontal one is the transpose. Asserting both is what catches a
+    // half-converted indicator, which renders as a 0×0 element that is easy to
+    // miss by eye.
+    await waitFor(() => expect(rule.style.transform).toMatch(/translateY\((?!0px)/));
+    expect(rule.style.height).not.toBe("0px");
+    expect(rule.style.width).toBe("");
+  });
+
+  it("gives a vertical tab the column's width instead of the row's 140px cap", async () => {
+    const long = tab("a/very/deeply/nested/path/to/a/component.tsx");
+    render(() => (
+      <div style={{ width: "300px", height: "400px", display: "flex" }}>
+        <TabStrip {...baseProps([long])} orientation="vertical" width={300} />
+      </div>
+    ));
+
+    const label = await waitFor(() => screen.getByText(long.label));
+    // The single reason to want vertical tabs. A row caps the label at 140px;
+    // in a 300px column it must be free to use what is there.
+    expect(label.getBoundingClientRect().width).toBeGreaterThan(140);
+  });
+});
+
 describe("drag between groups", () => {
   it("moves a tab from one pane group's strip onto another's with a real DataTransfer", async () => {
     const onMoveTabA = vi.fn();

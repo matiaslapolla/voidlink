@@ -1,10 +1,10 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import { Plus, X, FolderOpen, TerminalSquare, Files, ChevronRight, ChevronDown, GitBranchPlus } from "lucide-solid";
+import { Plus, X, FolderOpen, TerminalSquare, ChevronRight, ChevronDown, GitBranchPlus } from "lucide-solid";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "@/store/LayoutContext";
 import { terminalApi } from "@/api/terminal";
 import type { TerminalSession } from "@/types/workspace";
-import { FileTree } from "@/components/files/FileTree";
+import { FilesPanel } from "@/components/files/FilesPanel";
 import { pickWorkspaceFolder } from "@/commands/openFolder";
 import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
@@ -14,7 +14,12 @@ import { PANEL_BOUNDS } from "@/store/layout";
 import { tabMark } from "@/store/activity";
 import { watchTerminal } from "@/store/terminalWatch";
 
-export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) {
+export function TerminalSidebar(props: {
+  onOpenFile?: (path: string) => void;
+  /// Render the Files section. `false` under the vertical-tabs layout, where
+  /// the explorer lives in the right column instead — see `FilesPanel`.
+  files?: boolean;
+}) {
   const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
 
   async function chooseRepo() {
@@ -29,7 +34,6 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
     return a?.type === "terminal" ? a.id : null;
   };
 
-  const filesOpen = () => state.sidebarSections.files;
   const terminalsOpen = () => state.sidebarSections.terminals;
 
   return (
@@ -68,34 +72,14 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
         </Show>
       </div>
 
-      {/* Files section — fills remaining height when open */}
-      <div class={`flex flex-col border-b border-border/50 min-h-0 ${filesOpen() ? "flex-1" : "shrink-0"}`}>
-        <button
-          onClick={() => actions.toggleSidebarSection("files")}
-          class="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-accent/30 transition-colors w-full"
-        >
-          <span class="w-3 h-3 shrink-0 text-muted-foreground">
-            {filesOpen() ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
-          </span>
-          <Files class="w-3 h-3 text-muted-foreground" />
-          <span class="flex-1 tracking-wide text-body text-muted-foreground font-semibold">Files</span>
-        </button>
-        <Show when={filesOpen()}>
-          <div class="flex-1 overflow-hidden min-h-0">
-            <Show
-              when={activeRepoPath()}
-              fallback={
-                <div class="px-2 py-4 text-center text-ui text-muted-foreground">
-                  <Files class="w-5 h-5 mx-auto mb-2 opacity-60" />
-                  Open a folder to browse its files.
-                </div>
-              }
-            >
-              {(root) => <FileTree root={root()} onOpenFile={props.onOpenFile} />}
-            </Show>
-          </div>
-        </Show>
-      </div>
+      {/* Files section — fills remaining height when open.
+          `props.files === false` is the vertical-tabs case: the explorer has
+          moved to the right column and rendering it here as well would be two
+          trees over one directory. The section is *absent*, not empty — an
+          empty disclosure that never opens is worse than no disclosure. */}
+      <Show when={props.files !== false}>
+        <FilesPanel class="border-b border-border/50" onOpenFile={props.onOpenFile} />
+      </Show>
 
       {/* Terminals section */}
       <div class="flex flex-col shrink-0">

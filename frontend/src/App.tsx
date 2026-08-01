@@ -70,7 +70,8 @@ import { TAB_SELECT_COUNT, tabSelectId } from "@/commands/actionIds";
 import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { askAgent, registerAgentActions } from "@/commands/agent";
-import { agentById, resolveAgentCommand } from "@/store/settings";
+import { agentById, resolveAgentCommand, useSettings } from "@/store/settings";
+import { FilesPanel } from "@/components/files/FilesPanel";
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { createOverlay, setOverlayOpen } from "@/commands/overlay";
@@ -132,6 +133,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     canGoForward,
     actions,
   } = useAppStore();
+  const { settings } = useSettings();
 
   // ── Feature-owned palette entries ────────────────────────────────────────
   // Each of these registers its own slice of the catalog at the point the
@@ -1079,12 +1081,37 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   const bindings = keymapBindings();
   useKeybindings(() => bindings);
 
-  const leftPane = () =>
-    state.leftSidebarCollapsed
-      ? null
-      : <TerminalSidebar onOpenFile={(path) => void openInEditorWindow(path)} />;
+  // ── Where the file explorer lives ────────────────────────────────────────
+  //
+  // Under horizontal tabs, exactly where it always has: the first section of
+  // the left sidebar, above the terminals list.
+  //
+  // Under **vertical** tabs it moves to the right column, above the git panel,
+  // and the left sidebar goes away entirely. That is not decoration; it is the
+  // consequence of the preference. A vertical tab strip is a third navigation
+  // column at the left edge, behind the workspace rail and the file tree, and
+  // three parallel vertical lists at one edge is one more than the eye scans.
+  // Splitting them by *kind* is what the window has room for: the left edge
+  // answers "which thing am I looking at" (workspaces, then tabs) and the
+  // right edge answers "what is in this repo" (its files, then its changes).
+  //
+  // The left sidebar's other two sections survive the move because neither is
+  // lost. The terminals list is a second rendering of the terminal *tabs*, and
+  // a vertical strip shows those with their full labels — better than the list
+  // it duplicates. "Compare branches" is a row in the "+" menu and an action
+  // in the palette. The repo picker is on the workspace rail.
+  //
+  // `Mod+B` keeps meaning "show or hide the file explorer" in both layouts,
+  // which is why `leftSidebarCollapsed` gates the right-column placement too:
+  // the binding names an intent, not a screen edge.
+  const verticalTabs = () => settings.ui.tabOrientation === "vertical";
 
-  const rightPane = () => (
+  const leftPane = () =>
+    verticalTabs() || state.leftSidebarCollapsed ? null : (
+      <TerminalSidebar onOpenFile={(path) => void openInEditorWindow(path)} />
+    );
+
+  const gitPane = () => (
     <Show when={activeRepoPath()}>
       {(repo) => (
         <Show
@@ -1094,6 +1121,26 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
           <GitSidebar repoPath={repo()} worktreeId={state.activeWorktreeId} />
         </Show>
       )}
+    </Show>
+  );
+
+  const rightPane = () => (
+    <Show when={verticalTabs()} fallback={gitPane()}>
+      {/* One column, two stacked panels. It takes its width from whichever
+          child declares one — `GitSidebar` does, off `panels.gitSidebar`, and
+          its splitter therefore resizes the column as a whole. `FilesPanel`
+          is `w-full` inside it rather than carrying a width of its own, so
+          the two can never disagree about how wide the column is. */}
+      <div class="flex flex-col min-h-0 bg-sidebar">
+        <Show when={!state.leftSidebarCollapsed}>
+          <div class="flex-1 min-h-0 flex flex-col border-b border-border/60 w-full">
+            <FilesPanel onOpenFile={(path) => void openInEditorWindow(path)} />
+          </div>
+        </Show>
+        {/* `flex` rather than `contents`: the git panel is an `<aside>` with
+            its own width and expects to be laid out as a flex child. */}
+        <div class="flex-1 min-h-0 flex">{gitPane()}</div>
+      </div>
     </Show>
   );
 

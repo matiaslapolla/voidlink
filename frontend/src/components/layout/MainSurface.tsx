@@ -36,11 +36,12 @@ import { MissionSurface } from "@/components/mission/MissionSurface";
 import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
 import { AgentThreadView } from "@/components/agent/AgentThreadView";
 import { agentThread, dropAgentThread } from "@/commands/agent";
-import { agentById, defaultAgentId } from "@/store/settings";
+import { agentById, defaultAgentId, useSettings } from "@/store/settings";
 import {
   MenuItem,
   PaneDropOverlay,
   TabStrip,
+  VERTICAL_TAB_WIDTH,
   type TabDescriptor,
   type TabDragPayload,
 } from "@/components/layout/TabStrip";
@@ -139,6 +140,7 @@ export function MainSurface(props: MainSurfaceProps) {
     focusedGroupId,
     actions,
   } = useAppStore();
+  const { settings } = useSettings();
 
   const isPinned = (id: string) => activePinnedTabs().includes(id);
 
@@ -807,6 +809,22 @@ export function MainSurface(props: MainSurfaceProps) {
   // primary entry point for opening terminals / compares / files.
   const showTabBar = () => hasAnyTab() || !!repoRoot();
 
+  // ── Tab strip orientation ────────────────────────────────────────────────
+  // A `ui` preference rather than layout state: it is a statement about how
+  // you like to read tabs, not about this window's arrangement, so it survives
+  // a layout reset and applies to every pane group at once.
+  //
+  // The width is clamped on read rather than on write. The settings file is
+  // user-editable JSON (Settings → JSON writes it), so `verticalTabWidth: 4`
+  // is a realistic input, and a strip four pixels wide is a workbench with no
+  // visible way back.
+  const verticalTabs = () => settings.ui.tabOrientation === "vertical";
+  const verticalTabWidth = () =>
+    Math.min(
+      VERTICAL_TAB_WIDTH.max,
+      Math.max(VERTICAL_TAB_WIDTH.min, settings.ui.verticalTabWidth),
+    );
+
   // ── Rendering the tree ───────────────────────────────────────────────────
 
   /// Group ids, split ids and orientations — no ratios, no tab claims.
@@ -865,9 +883,19 @@ export function MainSurface(props: MainSurfaceProps) {
       // One pane group = one island (D1). The radius and the clipping come
       // from `.island` in `index.css`; this component owns *where* islands sit
       // (the gaps between them, below) and nothing else owns either.
-      <div class="island flex-1 flex flex-col min-w-0 min-h-0 bg-background">
+      //
+      // `flex-row` under the vertical tab preference: the strip and the body
+      // are the same two children in the same order, read left-to-right
+      // instead of top-to-bottom. The island itself is unchanged, so a split
+      // still looks like the diagram in the directions spec.
+      <div
+        class="island flex-1 flex min-w-0 min-h-0 bg-background"
+        classList={{ "flex-col": !verticalTabs(), "flex-row": verticalTabs() }}
+      >
         <Show when={showTabBar() && !isZen()}>
           <TabStrip
+            orientation={settings.ui.tabOrientation}
+            width={verticalTabWidth()}
             tabs={tabsOf(groupId)}
             activeId={frontTabIds().get(groupId) ?? null}
             isPinned={isPinned}
@@ -950,10 +978,15 @@ export function MainSurface(props: MainSurfaceProps) {
           />
         </Show>
         {/* The body is deliberately empty: it is a measuring box, and the pane
-            that fills it lives in the flat layer below. */}
+            that fills it lives in the flat layer below.
+            `min-w-0 min-h-0` because it is now a flex child on *either* axis:
+            without it a wide tab label or a tall pane would push the box past
+            the island rather than being clipped by it, and the flat layer
+            would then position panes against a rectangle bigger than the one
+            they are drawn in. */}
         <div
           ref={(el) => registerBody(groupId, el)}
-          class="flex-1 relative overflow-hidden"
+          class="flex-1 relative overflow-hidden min-w-0 min-h-0"
         />
       </div>
     );
@@ -1483,28 +1516,65 @@ function NewTabMenu(props: {
                 </div>
               }
             >
-              <MenuItem onClick={props.onNewTerminal} icon={<TerminalSquare class="w-3.5 h-3.5" />}>
+              {/* Every row carries a tooltip, and none of them restates its
+                  label. Half this menu opens surfaces whose names mean nothing
+                  until you have already met them — "Timeline", "Brain",
+                  "Mission Control" — so the row's job is only to be findable
+                  and the tooltip's is to say what lands. */}
+              <MenuItem
+                onClick={props.onNewTerminal}
+                icon={<TerminalSquare class="w-3.5 h-3.5" />}
+                tooltip="A shell in this worktree's root, as a tab in this pane."
+              >
                 New terminal
               </MenuItem>
-              <MenuItem onClick={props.onNewCompare} icon={<GitBranchPlus class="w-3.5 h-3.5" />}>
+              <MenuItem
+                onClick={props.onNewCompare}
+                icon={<GitBranchPlus class="w-3.5 h-3.5" />}
+                tooltip="Diff any two refs — branches, tags, SHAs, HEAD~3 — with a changed-file tree beside the diff."
+              >
                 New branch compare
               </MenuItem>
-              <MenuItem onClick={props.onEnterFileMode} icon={<FilePlus2 class="w-3.5 h-3.5" />}>
+              <MenuItem
+                onClick={props.onEnterFileMode}
+                icon={<FilePlus2 class="w-3.5 h-3.5" />}
+                tooltip="Create an empty file at the workspace root and open it in the editor."
+              >
                 New file at root…
               </MenuItem>
-              <MenuItem onClick={props.onOpenTimeline} icon={<TimelineIcon class="w-3.5 h-3.5" />}>
+              <MenuItem
+                onClick={props.onOpenTimeline}
+                icon={<TimelineIcon class="w-3.5 h-3.5" />}
+                tooltip="The event log for this repo: agent turns, finished commands, commits, branch switches, rebases."
+              >
                 Timeline
               </MenuItem>
-              <MenuItem onClick={props.onOpenMission} icon={<MissionIcon class="w-3.5 h-3.5" />}>
+              <MenuItem
+                onClick={props.onOpenMission}
+                icon={<MissionIcon class="w-3.5 h-3.5" />}
+                tooltip="What is happening across every workspace, not just this one — plus fan-out and triggers."
+              >
                 Mission Control
               </MenuItem>
-              <MenuItem onClick={props.onOpenBrain} icon={<Brain class="w-3.5 h-3.5" />}>
+              <MenuItem
+                onClick={props.onOpenBrain}
+                icon={<Brain class="w-3.5 h-3.5" />}
+                tooltip="This repo's own notes and decisions, kept as markdown in .voidlink/brain/. Opens as an overlay, not a tab."
+              >
                 Brain
               </MenuItem>
-              <MenuItem onClick={props.onNewBrowser} icon={<Globe class="w-3.5 h-3.5" />}>
+              <MenuItem
+                onClick={props.onNewBrowser}
+                icon={<Globe class="w-3.5 h-3.5" />}
+                tooltip="A real webview with its own cookie jar — a logged-in page stays logged in, and no site can refuse to be framed."
+              >
                 New browser tab
               </MenuItem>
-              <MenuItem onClick={props.onNewAgent} icon={<Bot class="w-3.5 h-3.5" />}>
+              <MenuItem
+                onClick={props.onNewAgent}
+                icon={<Bot class="w-3.5 h-3.5" />}
+                tooltip="A thread against your configured AI CLI, grounded in this repo's files and diff."
+              >
                 New agent thread
               </MenuItem>
             </Show>

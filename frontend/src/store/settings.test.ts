@@ -43,6 +43,12 @@ describe("parseSettings", () => {
     expect(parsed.terminal.fontSize).toBe(15);
     // …and without dropping the keys the old payload never had.
     expect(parsed.ui.showIgnoredFiles).toBe(DEFAULT_SETTINGS.ui.showIgnoredFiles);
+    // The tab orientation is the newest of those, and it is the one whose
+    // absence would be *visible*: an install that upgraded into a vertical
+    // strip and a relocated file explorer without asking would read as the
+    // app having rearranged itself overnight.
+    expect(parsed.ui.tabOrientation).toBe("horizontal");
+    expect(parsed.ui.verticalTabWidth).toBe(DEFAULT_SETTINGS.ui.verticalTabWidth);
   });
 
   it("fills in individual editor keys added after the section shipped", () => {

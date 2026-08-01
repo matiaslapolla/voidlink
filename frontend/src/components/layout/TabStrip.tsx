@@ -45,8 +45,13 @@ import {
   type ActivitySignal,
 } from "@/components/layout/StatusLed";
 import { watchTerminal, type TerminalWatch } from "@/store/terminalWatch";
+// `void tooltip` keeps the import alive: Solid erases a `use:` directive whose
+// symbol it cannot see referenced as a value.
+import { tooltip } from "@/components/ui/Tooltip";
+void tooltip;
 import { dropIntentAt, type DropIntent } from "@/components/layout/paneDrop";
 import type { SplitOrientation, TabGroup, TabGroupColor } from "@/store/layout";
+import type { TabOrientation } from "@/store/settings";
 // Values come straight from the reducer module rather than through the store's
 // barrel: the strip has to keep working in the editor window, which has no
 // store, and `tabGroups.ts` is pure and DOM-free.
@@ -139,29 +144,46 @@ export interface TabDescriptor {
 /// `--island-radius-inner` corners instead of poking past them.
 const RULE_INSET = 6;
 
+/// Where the active card sits along the strip's own axis, in px. `start` is
+/// `offsetLeft` in a horizontal strip and `offsetTop` in a vertical one, and
+/// `extent` is the matching width or height — which is the whole of what the
+/// two orientations differ by, so the measuring code stays single.
+interface IndicatorRect {
+  start: number;
+  extent: number;
+}
+
 function ActiveIndicator(props: {
-  /// Offset from the strip's left edge, in px, and the width to draw. `null`
-  /// when nothing is active — a strip with no active tab (an editor window
-  /// showing nothing) shows no rule.
-  rect: { left: number; width: number } | null;
+  /// `null` when nothing is active — a strip with no active tab (an editor
+  /// window showing nothing) shows no rule.
+  rect: IndicatorRect | null;
   /// Suppresses the transition for the first placement. Sliding in from x=0 on
   /// mount is motion that describes a journey that never happened.
   instant: boolean;
+  /// A vertical strip's rule runs down the card's *leading* edge rather than
+  /// under its bottom one. It is the same element with the same
+  /// transform-driven placement — only the axis changes, so a strip that is
+  /// re-oriented while a tab is active does not destroy and recreate it.
+  vertical: boolean;
 }) {
+  const extent = () => (props.rect ? Math.max(0, props.rect.extent - RULE_INSET * 2) : 0);
+  const offset = () => (props.rect?.start ?? 0) + RULE_INSET;
   return (
     <span
       aria-hidden="true"
       data-motion="tab-indicator"
       class={[
-        "pointer-events-none absolute bottom-0 left-0 h-0.5 bg-primary",
+        "pointer-events-none absolute bg-primary",
+        props.vertical ? "top-0 left-0 w-0.5" : "bottom-0 left-0 h-0.5",
         props.instant
           ? ""
-          : "transition-[transform,width,opacity] duration-[var(--dur-short)] ease-out",
+          : "transition-[transform,width,height,opacity] duration-[var(--dur-short)] ease-out",
       ].join(" ")}
       style={{
         opacity: props.rect ? 1 : 0,
-        width: `${props.rect ? Math.max(0, props.rect.width - RULE_INSET * 2) : 0}px`,
-        transform: `translateX(${(props.rect?.left ?? 0) + RULE_INSET}px)`,
+        ...(props.vertical
+          ? { height: `${extent()}px`, transform: `translateY(${offset()}px)` }
+          : { width: `${extent()}px`, transform: `translateX(${offset()}px)` }),
       }}
     />
   );
@@ -227,7 +249,20 @@ export interface TabStripProps {
   onTogglePin: (id: string) => void;
   /// Buttons pinned to the right edge, after the overflow chevron — the "+"
   /// menu in the workbench, the markdown-preview eye in the editor window.
+  /// A vertical strip puts them in a footer row along its bottom edge instead,
+  /// which is the same place relative to the *reading order* of the strip.
   trailing?: JSX.Element;
+
+  /// Which way the strip runs. Absent means horizontal, so every existing
+  /// caller keeps the strip it had. See `TabOrientation` in `store/settings.ts`.
+  ///
+  /// The type is imported for its shape only — this module still takes no
+  /// store, because the editor window has none. Both callers read the
+  /// preference and pass it down.
+  orientation?: TabOrientation;
+  /// The column's width in px while `orientation` is `vertical`; ignored
+  /// otherwise. The caller owns it because the caller owns the preference.
+  width?: number;
 
   // ── Pane groups ────────────────────────────────────────────────────────
   // All optional: a window with one group (or none at all, like the editor)
@@ -282,6 +317,16 @@ export interface TabStripProps {
 
 /// The colour dot's fill, per token. A static map so Tailwind's scanner sees
 /// every class literal — a computed `bg-${color}` would be purged.
+/// Bounds for the vertical tab column, in px, and the width a fresh install
+/// gets. The floor is where a tab card stops being able to show an icon, a
+/// readable label and its trailing slot at once; the ceiling is where the
+/// column stops being a strip and starts being a second sidebar.
+///
+/// Here rather than in `store/layout`'s `PANEL_BOUNDS` because the width is a
+/// property of the *preference* (`ui.verticalTabWidth`), not of the layout — a
+/// layout reset must not silently take the column back to 200px.
+export const VERTICAL_TAB_WIDTH = { min: 140, max: 400, default: 200 };
+
 const GROUP_DOT: Record<TabGroupColor, string> = {
   "chart-1": "bg-chart-1",
   "chart-2": "bg-chart-2",
@@ -291,6 +336,12 @@ const GROUP_DOT: Record<TabGroupColor, string> = {
 };
 
 export function TabStrip(props: TabStripProps) {
+  /// The one predicate the whole orientation fork hangs off. Everything below
+  /// that differs between a row of tabs and a column of them reads this rather
+  /// than re-deriving it, so there is exactly one place the default (absent
+  /// prop ⇒ horizontal) is decided.
+  const vertical = () => props.orientation === "vertical";
+
   /// Group by kind (in the order the caller first mentions each kind), then
   /// sort pinned tabs to the front of their own group. Sorting at render time
   /// rather than in the underlying lists is what lets drag-and-drop keep
@@ -545,8 +596,17 @@ export function TabStrip(props: TabStripProps) {
   /// The insertion caret: 2px `--primary` on the edge the tab would land on.
   /// It is an inset shadow rather than an element, so the row it marks does not
   /// move by a single pixel while the caret is on it.
-  const CARET_BEFORE = "shadow-[inset_2px_0_0_0_var(--color-primary,theme(colors.primary))]";
-  const CARET_AFTER = "shadow-[inset_-2px_0_0_0_var(--color-primary,theme(colors.primary))]";
+  ///
+  /// "Before" and "after" are along the strip's own axis — a leading edge is
+  /// the card's left in a row and its top in a column. A caret that stayed on
+  /// the left edge in a vertical strip would point across the direction the
+  /// tab is actually about to move.
+  const CARET_BEFORE_X = "shadow-[inset_2px_0_0_0_var(--color-primary,theme(colors.primary))]";
+  const CARET_AFTER_X = "shadow-[inset_-2px_0_0_0_var(--color-primary,theme(colors.primary))]";
+  const CARET_BEFORE_Y = "shadow-[inset_0_2px_0_0_var(--color-primary,theme(colors.primary))]";
+  const CARET_AFTER_Y = "shadow-[inset_0_-2px_0_0_var(--color-primary,theme(colors.primary))]";
+  const caretBefore = () => (vertical() ? CARET_BEFORE_Y : CARET_BEFORE_X);
+  const caretAfter = () => (vertical() ? CARET_AFTER_Y : CARET_AFTER_X);
 
   /// One tab, as a **contained card** (Direction D1, wave 2).
   ///
@@ -570,20 +630,30 @@ export function TabStrip(props: TabStripProps) {
   ///     the cards 1px past it at each end. Centring absorbs it. The strip's
   ///     height itself is load-bearing — it lines up with the rail and both
   ///     sidebar headers across all three columns (§5's density audit).
+  ///
+  /// A vertical strip changes exactly two things about the card: the
+  /// separation moves to the cross axis (`my-` rather than `mx-`), and the
+  /// card stops being `shrink-0`-in-a-row and instead fills the column's
+  /// width. Its height, its radius, its border discipline and its states are
+  /// untouched, which is the point — the card is the same object seen from a
+  /// different axis, not a second design.
   function tabClasses(tab: TabDescriptor, active: boolean) {
     const base =
-      "group relative flex items-center gap-1.5 px-2.5 h-7 mx-[var(--space-3xs)] rounded-[var(--island-radius-inner)] border shrink-0 text-ui cursor-pointer select-none transition-colors";
+      "group relative flex items-center gap-1.5 px-2.5 h-7 rounded-[var(--island-radius-inner)] border shrink-0 text-ui cursor-pointer select-none transition-colors";
+    const axis = vertical()
+      ? "my-[var(--space-3xs)] mx-[var(--space-2xs)] w-auto"
+      : "mx-[var(--space-3xs)]";
     const tone = active
       ? "bg-background text-foreground border-border"
       : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60";
     const drag = tabDrag();
     const dim = drag && drag.id === tab.id ? "opacity-50" : "";
     const indicator = dropRef() === tab.id
-      ? CARET_BEFORE
+      ? caretBefore()
       : dropAtEnd() && lastTabId() === tab.id
-        ? CARET_AFTER
+        ? caretAfter()
         : "";
-    return `${base} ${tone} ${dim} ${indicator}`;
+    return `${base} ${axis} ${tone} ${dim} ${indicator}`;
   }
 
   // ── Overflow detection ───────────────────────────────────────────────────
@@ -595,7 +665,11 @@ export function TabStrip(props: TabStripProps) {
 
   function recomputeOverflow() {
     if (!scrollRef) return;
-    setOverflowing(scrollRef.scrollWidth > scrollRef.clientWidth + 1);
+    setOverflowing(
+      vertical()
+        ? scrollRef.scrollHeight > scrollRef.clientHeight + 1
+        : scrollRef.scrollWidth > scrollRef.clientWidth + 1,
+    );
   }
 
   // ── The shared active indicator (MOTION-PLAN F15) ────────────────────────
@@ -606,7 +680,7 @@ export function TabStrip(props: TabStripProps) {
   // also why no `scrollLeft` correction appears anywhere here: the indicator
   // lives inside the scroller and scrolls with the tab it marks, which is the
   // only behaviour that stays truthful when the strip overflows.
-  const [indicator, setIndicator] = createSignal<{ left: number; width: number } | null>(null);
+  const [indicator, setIndicator] = createSignal<IndicatorRect | null>(null);
   /// True until the indicator has been placed once. A rule that slides in from
   /// the strip's left edge on mount is describing a journey that never
   /// happened.
@@ -626,7 +700,11 @@ export function TabStrip(props: TabStripProps) {
       setIndicator(null);
       return;
     }
-    setIndicator({ left: el.offsetLeft, width: el.offsetWidth });
+    setIndicator(
+      vertical()
+        ? { start: el.offsetTop, extent: el.offsetHeight }
+        : { start: el.offsetLeft, extent: el.offsetWidth },
+    );
   }
 
   function remeasure() {
@@ -657,6 +735,11 @@ export function TabStrip(props: TabStripProps) {
   createEffect(() => {
     void ordered().length;
     void props.activeId;
+    // Flipping the orientation moves every card and changes which axis is
+    // measured; changing the column's width moves them again. Neither resizes
+    // the *scroller*, so the `ResizeObserver` above does not see either.
+    void props.orientation;
+    void props.width;
     // Wait a microtask so layout has settled before measuring.
     queueMicrotask(remeasure);
   });
@@ -717,13 +800,24 @@ export function TabStrip(props: TabStripProps) {
       // No `border-b`: the strip sits at the top of an island whose body is a
       // different surface, and that colour step is the separation. A hairline
       // here would be a second edge competing with the tab cards' (D1).
-      class="flex items-center bg-sidebar shrink-0 h-9"
+      //
+      // The group-focus rule follows the strip: it is the strip's *outer* edge
+      // in both orientations — the top of a row, the left of a column — so it
+      // still reads as the pane's own frame rather than as a divider between
+      // the strip and the body. Same 2px either way, so focus moving between
+      // groups still costs no layout.
+      class="flex bg-sidebar shrink-0"
       classList={{
-        // Same 2px in both states — see `groupHeader`. Only the colour moves.
-        "border-t-2": !!props.groupHeader,
-        "border-t-primary": props.groupHeader === "focused",
-        "border-t-border": props.groupHeader === "unfocused",
+        "items-center h-9": !vertical(),
+        "flex-col h-full": vertical(),
+        "border-t-2": !!props.groupHeader && !vertical(),
+        "border-t-primary": props.groupHeader === "focused" && !vertical(),
+        "border-t-border": props.groupHeader === "unfocused" && !vertical(),
+        "border-l-2": !!props.groupHeader && vertical(),
+        "border-l-primary": props.groupHeader === "focused" && vertical(),
+        "border-l-border": props.groupHeader === "unfocused" && vertical(),
       }}
+      style={vertical() ? { width: `${props.width ?? VERTICAL_TAB_WIDTH.default}px` } : undefined}
       onMouseDown={() => props.onFocusGroup?.()}
     >
       <div
@@ -734,7 +828,16 @@ export function TabStrip(props: TabStripProps) {
         // cards' `offsetParent` (so `measureIndicator` needs no coordinate
         // arithmetic) and it is what the shared indicator is positioned
         // against.
-        class="relative flex items-center overflow-x-auto scrollbar-none flex-1 min-w-0 h-full"
+        //
+        // `items-stretch` in the column is what gives a vertical tab the whole
+        // width to put a label in — the single reason to want vertical tabs at
+        // all, and it is lost the moment a stray `items-center` creeps back.
+        class="relative flex scrollbar-none flex-1"
+        classList={{
+          "items-center overflow-x-auto overflow-y-hidden min-w-0 h-full": !vertical(),
+          "flex-col items-stretch overflow-y-auto overflow-x-hidden min-h-0 w-full py-[var(--space-3xs)]":
+            vertical(),
+        }}
       >
         {/*
           `Index` rather than `For`: descriptors are rebuilt from scratch on
@@ -753,6 +856,7 @@ export function TabStrip(props: TabStripProps) {
                   activeId={props.activeId}
                   isPinned={props.isPinned}
                   canDrag={canDrag}
+                  vertical={vertical()}
                   tabClasses={tabClasses}
                   onSelect={props.onSelect}
                   onClose={props.onClose}
@@ -770,6 +874,7 @@ export function TabStrip(props: TabStripProps) {
                   count={chip().count}
                   activity={props.tabGroupActivity?.(chip().group.id)}
                   dragging={tabDrag()?.tabGroupId === chip().group.id}
+                  vertical={vertical()}
                   onToggle={() => props.onToggleTabGroup?.(chip().group.id)}
                   onRename={(label) => props.onRenameTabGroup?.(chip().group.id, label)}
                   onContextMenu={(e) => openGroupCtx(e, chip().group)}
@@ -792,26 +897,50 @@ export function TabStrip(props: TabStripProps) {
           )}
         </Index>
         {/* Last child, so it paints over the cards rather than under them. */}
-        <ActiveIndicator rect={indicator()} instant={indicatorInstant()} />
+        <ActiveIndicator
+          rect={indicator()}
+          instant={indicatorInstant()}
+          vertical={vertical()}
+        />
       </div>
 
-      {props.trailing}
+      {/* The strip's controls: the "+" menu, the group's aggregate mark, the
+          overflow chevron.
+          A row keeps them inline at its right end. A column cannot — they would
+          each become a full-width row in the tab list — so it gives them a
+          fixed footer along its bottom edge, which is the same position in the
+          strip's own reading order and lands them beside the status bar rather
+          than adrift in the tab column. The hairline is the only border either
+          orientation draws inside the strip, and it exists because the footer
+          is a different kind of thing from the tabs above it. */}
+      <div
+        class="flex items-center shrink-0"
+        classList={{
+          // `h-full` in a row so the overflow chevron's `self-end mb-1` still
+          // measures against the strip's own 9-unit height, exactly as it did
+          // when these three were direct children of it.
+          "h-full": !vertical(),
+          "justify-end gap-0.5 h-9 px-1 border-t border-border/50 w-full": vertical(),
+        }}
+      >
+        {props.trailing}
 
-      {/* The group's aggregate activity mark. Reserved, not conditional: it
-          occupies its 8px whether or not a signal is live, so a background
-          pane lighting up never nudges the "+" button sideways (§7.5.3 rule
-          3). Wave 5 is what starts passing `groupActivity`. */}
-      <Show when={props.groupHeader}>
-        <LedSlot signal={props.groupActivity} class="mx-1.5" />
-      </Show>
+        {/* The group's aggregate activity mark. Reserved, not conditional: it
+            occupies its 8px whether or not a signal is live, so a background
+            pane lighting up never nudges the "+" button sideways (§7.5.3 rule
+            3). Wave 5 is what starts passing `groupActivity`. */}
+        <Show when={props.groupHeader}>
+          <LedSlot signal={props.groupActivity} class="mx-1.5" />
+        </Show>
 
-      <Show when={overflowing()}>
-        <TabOverflowMenu
-          tabs={props.tabs}
-          activeId={props.activeId}
-          onJump={(tab) => props.onSelect(tab)}
-        />
-      </Show>
+        <Show when={overflowing()}>
+          <TabOverflowMenu
+            tabs={props.tabs}
+            activeId={props.activeId}
+            onJump={(tab) => props.onSelect(tab)}
+          />
+        </Show>
+      </div>
 
       <TabGroupContextMenu
         ctx={groupCtx()}
@@ -873,6 +1002,9 @@ function TabRow(props: {
   activeId: string | null;
   isPinned: (id: string) => boolean;
   canDrag: (tab: TabDescriptor) => boolean;
+  /// Only reaches the label: a vertical card has the column's whole width, so
+  /// the fixed `max-w` truncation that a row needs is exactly wrong there.
+  vertical: boolean;
   tabClasses: (tab: TabDescriptor, active: boolean) => string;
   onSelect: (tab: TabDescriptor) => void;
   onClose: (tab: TabDescriptor) => void;
@@ -891,6 +1023,7 @@ function TabRow(props: {
           tab={props.tab}
           active={active()}
           pinned={props.isPinned(props.tab.id)}
+          vertical={props.vertical}
           draggable={props.canDrag(props.tab)}
           class={props.tabClasses(props.tab, active())}
           onSelect={() => props.onSelect(props.tab)}
@@ -908,6 +1041,7 @@ function TabRow(props: {
           session={session()}
           tab={props.tab}
           active={active()}
+          vertical={props.vertical}
           draggable={props.canDrag(props.tab)}
           class={props.tabClasses(props.tab, active())}
           onSelect={() => props.onSelect(props.tab)}
@@ -938,6 +1072,7 @@ function TabGroupChip(props: {
   count: number;
   activity?: ActivitySignal;
   dragging: boolean;
+  vertical: boolean;
   onToggle: () => void;
   onRename: (label: string) => void;
   onContextMenu: (e: MouseEvent) => void;
@@ -978,8 +1113,13 @@ function TabGroupChip(props: {
       // permanent transparent border for the same reason the cards do — state
       // moves `border-color` and `background-color` only, never
       // `border-width`, so hovering a chip cannot reflow the strip (§7.6).
-      class="flex items-center gap-1.5 pl-2 pr-1.5 h-7 mx-[var(--space-3xs)] rounded-[var(--island-radius-inner)] border border-transparent shrink-0 text-body select-none cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60 transition-colors"
-      classList={{ "opacity-50": props.dragging }}
+      // Same geometry fork the tab cards take — see `tabClasses`.
+      class="flex items-center gap-1.5 pl-2 pr-1.5 h-7 rounded-[var(--island-radius-inner)] border border-transparent shrink-0 text-body select-none cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60 transition-colors"
+      classList={{
+        "opacity-50": props.dragging,
+        "mx-[var(--space-3xs)]": !props.vertical,
+        "my-[var(--space-3xs)] mx-[var(--space-2xs)]": props.vertical,
+      }}
       title={
         props.group.collapsed
           ? `${props.group.label} — ${props.count} tab${props.count === 1 ? "" : "s"}, collapsed`
@@ -1002,7 +1142,17 @@ function TabGroupChip(props: {
       </Show>
       <Show
         when={editing()}
-        fallback={<span class="truncate max-w-[120px]">{props.group.label}</span>}
+        fallback={
+          <span
+            class="truncate"
+            classList={{
+              "max-w-[120px]": !props.vertical,
+              "flex-1 min-w-0": props.vertical,
+            }}
+          >
+            {props.group.label}
+          </span>
+        }
       >
         <input
           ref={inputRef}
@@ -1127,6 +1277,8 @@ function TabGroupContextMenu(props: {
 interface TabChromeProps {
   tab: TabDescriptor;
   active: boolean;
+  /// See `TabRow.vertical`.
+  vertical: boolean;
   /// Resolved by the strip, because it depends on whether the strip has a pane
   /// group as well as on the descriptor.
   draggable: boolean;
@@ -1172,10 +1324,16 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
       <Show when={props.pinned} fallback={props.tab.icon}>
         <Pin class="w-3 h-3 shrink-0 text-primary" />
       </Show>
+      {/* In a column the label takes the space that is there — `flex-1
+          min-w-0` — instead of the 140px a row can spare. `labelWidth` is a
+          per-kind override of that row budget and has nothing to say about a
+          column, so it is ignored there rather than fought with. */}
       <span
-        class={`truncate ${props.tab.labelWidth ?? "max-w-[140px]"} ${
-          props.tab.mono ? "font-mono text-body" : ""
-        }`}
+        class={`truncate ${
+          props.vertical
+            ? "flex-1 min-w-0"
+            : (props.tab.labelWidth ?? "max-w-[140px]")
+        } ${props.tab.mono ? "font-mono text-body" : ""}`}
         classList={{ italic: props.tab.preview }}
       >
         <Show when={props.tab.prefix}>
@@ -1331,7 +1489,12 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
           The tradeoff inherited from that choice: the trailing slot is
           hover-shared with the close button, so a marked tab hides its × until
           you hover it. */}
-      <span class="max-w-[140px] truncate">{displayLabel()}</span>
+      <span
+        class="truncate"
+        classList={{ "max-w-[140px]": !props.vertical, "flex-1 min-w-0": props.vertical }}
+      >
+        {displayLabel()}
+      </span>
       <TabTrailing
         tab={props.tab}
         signal={terminalSignal({ working: working(), focused: props.active })}
@@ -1730,14 +1893,22 @@ export function PaneDropOverlay(props: {
 
 /// Row in a portal menu. Exported because the workbench's "+" menu and the
 /// editor window's file menu render the same kind of row.
+///
+/// `tooltip` is the row's *explanation*, never a restatement of its label — a
+/// tooltip that repeats the text it is anchored to is noise (§7.3.12). It goes
+/// through `use:tooltip` rather than `title` for the reasons in `Tooltip.tsx`:
+/// the native attribute never fires on keyboard focus, and a menu whose rows
+/// are reached with the arrow keys is exactly where that matters.
 export function MenuItem(props: {
   onClick: () => void;
   icon: JSX.Element;
   children: JSX.Element;
+  tooltip?: string;
 }) {
   return (
     <button
       role="menuitem"
+      use:tooltip={props.tooltip}
       onClick={props.onClick}
       class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
     >

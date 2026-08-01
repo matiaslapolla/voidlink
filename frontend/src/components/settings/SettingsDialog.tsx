@@ -32,9 +32,11 @@ import {
   type EditorCoreSettings,
   type EditorSettings,
   type EnvironmentMode,
+  type TabOrientation,
   type UiDensity,
   type UiTextSize,
 } from "@/store/settings";
+import { VERTICAL_TAB_WIDTH } from "@/components/layout/TabStrip";
 import {
   EDITOR_SETTING_LIST,
   asEnumSetting,
@@ -53,6 +55,10 @@ import {
 } from "@/store/settingsSearch";
 import { withLanguageOverride, withoutLanguageOverride } from "@/store/settingsJson";
 import { NotificationsPane } from "@/components/settings/NotificationsPane";
+// `void tooltip` keeps the import: Solid erases a `use:` directive whose symbol
+// it cannot see referenced as a value.
+import { tooltip } from "@/components/ui/Tooltip";
+void tooltip;
 import { SettingsJsonPane } from "./SettingsJsonPane";
 import { FuzzyText } from "@/commands/QuickPick";
 import { MONACO_LANGUAGE_IDS } from "@/components/editor/monaco";
@@ -91,7 +97,8 @@ type Tab =
   | "notifications"
   | "ai"
   | "git"
-  | "stack";
+  | "stack"
+  | "help";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -187,9 +194,22 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</TabButton>
             <TabButton active={tab() === "notifications"} onClick={() => setTab("notifications")}>Notifications</TabButton>
-            <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
+            {/* AI is parked, not deleted. `AiPane` and everything under it is
+                still mounted below on a branch `tab()` can no longer reach, so
+                turning it back on is deleting `disabledReason` here — not
+                resurrecting a pane from git. §7.6: a disabled control that does
+                not say why is a dead end, so the reason is on the face of the
+                tab as well as in its tooltip. */}
+            <TabButton
+              active={false}
+              onClick={() => {}}
+              disabledReason="The AI pane is being reworked — provider keys, the agent roster and the commit command are all moving. Nothing here is configurable in this build."
+            >
+              AI <span class="text-micro opacity-70">— coming soon</span>
+            </TabButton>
             <TabButton active={tab() === "git"} onClick={() => setTab("git")}>Git</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
+            <TabButton active={tab() === "help"} onClick={() => setTab("help")}>Help</TabButton>
           </div>
 
           <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-body">
@@ -202,6 +222,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <Show when={tab() === "ai"}><AiPane /></Show>
             <Show when={tab() === "git"}><GitPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>
+            <Show when={tab() === "help"}><HelpPane /></Show>
           </div>
 
           <div class="flex items-center justify-between px-4 py-2.5 border-t border-border">
@@ -232,14 +253,33 @@ export function SettingsDialog(props: SettingsDialogProps) {
 ///
 /// `focus-visible:ring-inset` rather than an outward ring: these sit flush
 /// against the dialog's own edge, where an outward ring is clipped in half.
-function TabButton(props: { active: boolean; onClick: () => void; children: JSX.Element }) {
+/// `disabledReason` follows the same contract as `MenuItem`'s: presence *is*
+/// the disabled state, and the string is the only place the reason lives. It
+/// stays focusable — `aria-disabled` rather than `disabled` — so a keyboard
+/// user can land on the tab and be told why it refuses, which a `disabled`
+/// button skipped by the tab order never gets to do.
+function TabButton(props: {
+  active: boolean;
+  onClick: () => void;
+  children: JSX.Element;
+  disabledReason?: string;
+}) {
   return (
     <button
       role="tab"
       aria-selected={props.active}
-      onClick={props.onClick}
+      aria-disabled={props.disabledReason ? true : undefined}
+      use:tooltip={props.disabledReason}
+      onClick={() => {
+        if (props.disabledReason) return;
+        props.onClick();
+      }}
       class={`px-3 py-1 rounded shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
-        props.active ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+        props.disabledReason
+          ? "text-muted-foreground/40 cursor-not-allowed"
+          : props.active
+            ? "bg-primary/15 text-primary"
+            : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
       }`}
     >
       {props.children}
@@ -257,6 +297,10 @@ const TEXT_SIZES: { id: UiTextSize; label: string }[] = [
 const ENVIRONMENT_MODES: { id: EnvironmentMode; label: string }[] = [
   { id: "detached", label: "Detached" },
   { id: "stacked", label: "Stacked" },
+];
+const TAB_ORIENTATIONS: { id: TabOrientation; label: string }[] = [
+  { id: "horizontal", label: "Horizontal" },
+  { id: "vertical", label: "Vertical" },
 ];
 const DENSITIES: { id: UiDensity; label: string }[] = [
   { id: "compact", label: "Compact" },
@@ -295,6 +339,35 @@ function UiPane() {
           way to edit a repo's <code>.env</code>. Build output directories
           (node_modules, dist, target…) stay out of Cmd+P either way.
         </p>
+      </div>
+      <div>
+        <SegmentedRow
+          label="Tabs"
+          value={settings.ui.tabOrientation}
+          options={TAB_ORIENTATIONS}
+          onChange={(v) => updateUi({ tabOrientation: v })}
+        />
+        <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
+          Vertical runs the tab strip down the left edge of each pane, which
+          gives a tab room for a whole path instead of 140px of it. It also
+          moves the <strong class="font-medium">file explorer</strong> to the
+          right of the window, above the git panel — three navigation columns
+          stacked against the left edge is one more than the eye can scan.
+          Both windows follow this setting.
+        </p>
+        <Show when={settings.ui.tabOrientation === "vertical"}>
+          <div class="mt-2">
+            <SliderRow
+              label="Tab column"
+              value={settings.ui.verticalTabWidth}
+              min={VERTICAL_TAB_WIDTH.min}
+              max={VERTICAL_TAB_WIDTH.max}
+              step={10}
+              format={(v) => `${v}px`}
+              onInput={(v) => updateUi({ verticalTabWidth: v })}
+            />
+          </div>
+        </Show>
       </div>
       <div>
         <SegmentedRow
@@ -2526,5 +2599,204 @@ function StackPane() {
         </Section>
       </div>
     </Show>
+  );
+}
+
+// ─── Help Pane ──────────────────────────────────────────────────────────────
+
+/// What the app can do, in the app.
+///
+/// It exists because every other answer to "what is this thing" lives outside
+/// the binary: `docs/features/` is twenty-six reference pages written against
+/// the source, and a user who has just opened Settings is not going to go and
+/// read them. This is the index they get instead — one line per capability,
+/// enough to know a surface exists and what to search the palette for.
+///
+/// Two rules keep it from rotting, and both are the reason it is a component
+/// rather than a markdown blob:
+///
+///   • **No hardcoded shortcuts.** Every chord comes from `shortcutLabel`,
+///     which reads the same table that fires the binding, so a rebinding or a
+///     platform difference cannot make this page lie. An action with no chord
+///     renders no key — most of the catalog is palette-only, and inventing a
+///     shortcut here is worse than omitting one.
+///   • **It claims only what ships.** Nothing aspirational, nothing behind a
+///     flag. The AI row says the settings pane is parked, because it is.
+function HelpPane() {
+  return (
+    <div class="space-y-6">
+      <p class="text-label text-muted-foreground leading-relaxed">
+        VoidLink is a free, open-source workbench that puts an editor, real
+        terminals, a full git client and an embedded browser in one window, and
+        keeps a durable record of what happened across all of them. It is
+        keyboard-first: almost everything below is reachable from the command
+        palette{" "}
+        <Show when={shortcutLabel("palette.open")}>
+          {(chord) => <kbd class={HELP_KBD}>{chord()}</kbd>}
+        </Show>
+        , whether or not it has a chord of its own.
+      </p>
+
+      <Section title="Shell and navigation">
+        <HelpRow
+          title="Workspaces and worktrees"
+          action="workspace.new"
+          body="The far-left rail. A workspace points at one folder; each of its git worktrees keeps its own tabs, panes and terminals, so switching between them restores a whole desk rather than a path."
+        />
+        <HelpRow
+          title="Panes, splits and tab groups"
+          body="Drag a tab to a pane's edge to split (up to four), or onto another pane to move it. Tabs can be collected into named, coloured, collapsible groups from the right-click menu."
+        />
+        <HelpRow
+          title="File finder and command palette"
+          action="file.open"
+          body="Fuzzy-open any file in the repo; the palette runs every action in the catalog, including the ones with no shortcut."
+        />
+        <HelpRow
+          title="Zen and maximize"
+          action="ui.zen"
+          body="Zen hides the rail, both sidebars, the strips and the status bar. Maximize gives one pane the whole surface without disturbing the split tree."
+        />
+        <HelpRow
+          title="Workspace snapshots"
+          body="Save the current tab and pane layout under a name and restore it later. Snapshots survive a layout reset; they do not capture terminal scrollback or unsaved buffers."
+        />
+      </Section>
+
+      <Section title="Editing">
+        <HelpRow
+          title="The editor"
+          body="Monaco, with language detection, format-on-save, autosave, per-language overrides and an optional Vim mode. Every key on the Editor tab applies to a live editor — nothing here needs a restart."
+        />
+        <HelpRow
+          title="Language servers"
+          body="A server starts for files that have one, if its binary is already installed. Nothing is downloaded on your behalf; override a path on the Editor tab when it is not on PATH."
+        />
+        <HelpRow
+          title="Search across files"
+          action="editor.find-in-files"
+          body="Repo-wide search, and go-to-symbol within the open file."
+        />
+        <HelpRow
+          title="Inline blame"
+          action="view.toggle-blame"
+          body="Per-line authorship in the gutter, and markdown files get a live preview pane beside them."
+        />
+      </Section>
+
+      <Section title="Terminals">
+        <HelpRow
+          title="Shells as tabs"
+          action="terminal.new"
+          body="Real PTYs, not a log view. A tab wears the name of whatever command is running in it, and lights up when that command finishes while you are looking elsewhere."
+        />
+        <HelpRow
+          title="Shell integration"
+          body="Sourcing the optional script (see the Terminal tab) is what lets voidlink tell a shell that is genuinely working from one that is merely open."
+        />
+      </Section>
+
+      <Section title="Git">
+        <HelpRow
+          title="Staging, down to the hunk"
+          body="Stage, unstage and discard individual hunks; commit, amend, and stash. A per-repo commit identity can override git config without writing to it."
+        />
+        <HelpRow
+          title="Branches and sync"
+          action="git.pull"
+          body="Branch CRUD with auto-stash on switch, plus fetch, pull, push and remote management."
+        />
+        <HelpRow
+          title="Compare and graph"
+          action="git.compare"
+          body="Diff any two refs — branches, tags, short SHAs, HEAD~3 — with a changed-file tree, and read history as a commit DAG."
+        />
+        <HelpRow
+          title="Conflicts and history rewriting"
+          body="Merge, rebase, cherry-pick, revert, reset and tags, with a dedicated conflict tab that knows which operation is in flight and can continue or abort it."
+        />
+        <HelpRow
+          title="Worktrees and stacked PRs"
+          body="Create and remove worktrees with status badges; build a stack of dependent branches, restack it after a change, and submit the lot to GitHub."
+        />
+        <HelpRow
+          title="Secret scan"
+          body="Staged changes are checked for credentials before a commit lands. It fails open — a scanner that blocks your commit when it breaks is worse than no scanner."
+        />
+        <HelpRow
+          title="A git window of its own"
+          action="git.open-window"
+          body="The whole git client as a separate OS window, or as a switchable view in this one — see Environment mode on the UI tab."
+        />
+      </Section>
+
+      <Section title="Beyond git">
+        <HelpRow
+          title="Embedded browser"
+          body="Browser tabs backed by real child webviews with their own cookie jars, so a page you log into stays logged in and no site can refuse to be framed."
+        />
+        <HelpRow
+          title="Event log and timeline"
+          body="An append-only record across every repo you have open — agent turns, finished commands, commits, branch switches, rebases — kept on disk for six weeks and readable as a timeline tab."
+        />
+        <HelpRow
+          title="Mission Control"
+          body="The one surface that is not scoped to the active worktree: what is in flight across every workspace, automatic check-ins, hill charts, fan-out to N worktrees, and 'when X, run agent Y' triggers."
+        />
+        <HelpRow
+          title="Project brain"
+          body="Per-repo notes and decisions kept as markdown under .voidlink/brain/. Every repository has its own; nothing is shared between projects and nothing leaves the folder."
+        />
+        <HelpRow
+          title="Notifications and sound"
+          body="OS banners and sound cues, configured as a policy over the event log rather than per feature — see the Notifications tab for the matrix and the suppression rules."
+        />
+        <HelpRow
+          title="AI, bring your own CLI"
+          action="git.ai-draft-commit"
+          body="voidlink shells out to whichever generative-text CLI you already have; it ships no model and no key. The AI settings tab is parked while that surface is reworked."
+        />
+      </Section>
+
+      <Section title="Where your data lives">
+        <HelpRow
+          title="On this machine, and nowhere else"
+          body="Settings, themes and layout are in this window's local storage; provider keys are in the OS keychain and never reach the frontend; the event log and the brain are plain files on disk. Git config edits go to the repository, and are the one thing here another git client will see."
+        />
+        <HelpRow
+          title="If the layout breaks"
+          body="Reset layout, on the UI tab, clears the pane tree and panel sizes only — settings, themes, provider keys and saved snapshots all survive it."
+        />
+      </Section>
+
+      <p class="text-label text-muted-foreground/70 leading-relaxed">
+        Every one of these has a reference page under{" "}
+        <span class="font-mono">docs/features/</span> in the repository, written
+        against the source and covering the limits as well as the behaviour.
+        There is a guided walkthrough in Spanish at{" "}
+        <span class="font-mono">docs/manual-de-uso.md</span>.
+      </p>
+    </div>
+  );
+}
+
+const HELP_KBD =
+  "mx-1 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-label font-mono text-foreground/80";
+
+/// One capability. `action` is a keymap action id, not a chord — see the
+/// no-hardcoded-shortcuts rule in `HelpPane`. An id with no binding renders
+/// nothing rather than an empty key cap.
+function HelpRow(props: { title: string; body: string; action?: string }) {
+  const chord = () => (props.action ? shortcutLabel(props.action) : undefined);
+  return (
+    <div class="flex items-start gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="text-foreground/90">{props.title}</div>
+        <p class="text-label text-muted-foreground/80 leading-snug">{props.body}</p>
+      </div>
+      <Show when={chord()}>
+        {(c) => <kbd class={`${HELP_KBD} shrink-0`}>{c()}</kbd>}
+      </Show>
+    </div>
   );
 }

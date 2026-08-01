@@ -22,9 +22,9 @@
 /// information rather than decorating a state change. Everything else here
 /// stays at `--dur-tint`.
 
-import { For, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { STACKED_VIEWS, setStackedView, stackedView } from "@/commands/environment";
-import { LedSlot, ledLabel } from "@/components/layout/StatusLed";
+import { StatusLed, ledLabel } from "@/components/layout/StatusLed";
 import { viewMark } from "@/store/activity";
 
 export function ViewSwitcher() {
@@ -108,7 +108,7 @@ export function ViewSwitcher() {
             // segment's fill is the thumb's job now; the hover tint stays on
             // the button, and only inactive segments take it — a hover fill on
             // the active segment would paint over the thumb it is sitting on.
-            class="relative flex items-center gap-1 px-1.5 h-[18px] rounded text-label transition-[color,background-color] duration-[var(--dur-tint)] ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            class="relative flex items-center px-1.5 h-[18px] rounded text-label transition-[color,background-color] duration-[var(--dur-tint)] ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             classList={{
               "text-foreground": stackedView() === view.id,
               "text-muted-foreground hover:text-foreground hover:bg-accent/50":
@@ -116,12 +116,29 @@ export function ViewSwitcher() {
             }}
           >
             {view.label}
-            {/* A `LedSlot` rather than a `<Show>`: the box is reserved at rest,
-                so a mark arriving never re-lays-out the segmented control and
-                shifts the button the user was about to click (§7.5.3 rule 3).
-                `silent` because the button's own accessible name already says
-                what the mark says. */}
-            <LedSlot signal={viewMark(view.id)} silent />
+            {/* The mark is an **overlay**, not a slot in the flex row.
+                Reserving an 8px box in-flow (a `LedSlot` after the label) held
+                that box open on all three segments at all times, and since the
+                marks are almost always absent what it actually rendered was a
+                permanent blank gutter to the right of every label — the
+                control read as three mis-padded buttons rather than as a
+                segmented control.
+                Taking it out of flow keeps §7.5.3 rule 3 intact for the reason
+                the slot existed: an absolutely-positioned mark changes no
+                sibling's geometry when it arrives, so the button the user was
+                about to click still does not move. It is nudged half over the
+                segment's top-right corner, which is where a badge belongs and
+                is clear of the label's own box.
+                `silent` because the button's accessible name already says it. */}
+            <Show when={viewMark(view.id)}>
+              {(signal) => (
+                <StatusLed
+                  signal={signal()}
+                  silent
+                  class="pointer-events-none absolute -top-0.5 -right-0.5"
+                />
+              )}
+            </Show>
           </button>
         )}
       </For>

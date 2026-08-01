@@ -20,6 +20,30 @@ Open with `Mod+,`, the palette's `Open settings…`, or the gear in the title ba
 |---|---|---|---|
 | `Text size` | Small / Base / XL | Base | Sets the root font size to 14 / 16 / 18 px. |
 | `Spacing` | Compact / Normal / Comfortable | Normal | Sets `data-density` on `<html>`, driving row padding, row gap, and section padding. |
+| `Tabs` | Horizontal / Vertical | Horizontal | Which way every pane's tab strip runs, in the workbench and the editor window alike. Vertical also **relocates the file explorer** — see below. |
+| `Tab column` | 140–400 px | 200 px | Width of the vertical strip. Only shown while `Tabs` is Vertical. Clamped on read, because the settings file is hand-editable and a 4 px strip is a window with no visible way back. |
+
+#### What Vertical does to the layout
+
+The switch is a layout mode, not a skin. A vertical strip is a third
+navigation column at the left edge of the window, behind the workspace rail
+and the file tree, and three parallel vertical lists at one edge is one more
+than the eye scans. So under Vertical:
+
+- The **file explorer moves to the right column**, above the git panel. The
+  left edge then answers *which thing am I looking at* (workspaces, then tabs)
+  and the right edge answers *what is in this repo* (its files, then its
+  changes). Both placements render the same `FilesPanel`.
+- The **left sidebar goes away**. Neither of its other two sections is lost:
+  the terminals list is a second rendering of the terminal *tabs*, which the
+  vertical strip already shows with full labels rather than 140 px of them,
+  and `Compare branches` is a row in the `+` menu and an action in `Mod+K`.
+  The repo picker is on the workspace rail.
+- `Mod+B` keeps meaning **show or hide the file explorer**, wherever it is —
+  the binding names an intent, not a screen edge.
+- The strip's `+` menu, group mark and overflow chevron move to a footer row
+  along the column's bottom edge, which is the same place in the strip's own
+  reading order.
 
 ### Theme
 
@@ -109,10 +133,20 @@ table that fires them. Rows whose binding is scoped show why underneath. See
 Rebinding is not offered — the keymap is structured to allow it later, but the
 editor UI is separate work.
 
-### AI
+### AI — parked
 
-Two command templates. See
-[AI commit and agent](./ai-commit-and-agent.md).
+The tab is **disabled and labelled "coming soon"** while the surface is
+reworked. It stays focusable rather than `disabled` so a keyboard user lands on
+it and is told why, per §7.6's no-silent-disabled-control rule; the reason is
+on the face of the tab and in its tooltip.
+
+Nothing was deleted: `AiPane` and everything under it — the agent roster, the
+provider keys, the two command templates — is still mounted on a branch `tab()`
+can no longer reach, so re-enabling it is deleting one `disabledReason` prop.
+Values already saved are still read and still used; they simply cannot be
+edited from this dialog in this build.
+
+See [AI commit and agent](./ai-commit-and-agent.md) for what those settings do.
 
 ### Git
 
@@ -160,6 +194,24 @@ commit time from voidlink's own settings. See
 Comma-separated trunk overrides for the **active repo**, stored in that repo's
 `.git/config`. See [stacked PRs](./stacked-prs.md). Without a repo open it shows
 `Select a workspace with a repo to configure its stack settings.`
+
+### Help
+
+A one-line-per-capability index of what the app does, grouped into shell and
+navigation, editing, terminals, git, beyond git, and where your data lives.
+
+It exists because every other answer to *what is this thing* lives outside the
+binary — these twenty-six reference pages — and someone who has just opened
+Settings is not going to go and read them.
+
+Two rules keep it honest, and both are why it is a component rather than a
+markdown blob:
+
+- **No hardcoded shortcuts.** Every chord comes from `shortcutLabel`, which
+  reads the same table that fires the binding, so a rebinding or a platform
+  difference cannot make the page lie. An action with no chord renders no key.
+- **It claims only what ships.** Nothing aspirational, nothing behind a flag.
+  The AI row says the settings pane is parked, because it is.
 
 ## Keyboard shortcuts
 
