@@ -1,10 +1,12 @@
-import { Show, createMemo } from "solid-js";
+import { Show, createMemo, createResource } from "solid-js";
 import { GitCompare } from "lucide-solid";
 import { useAppStore } from "@/store/LayoutContext";
 import type { FileDiff } from "@/types/git";
 import {
   DiffRenderer,
 } from "@/components/git/shared/SplitDiffRenderer";
+import { ProvenanceNote } from "@/components/git/shared/ProvenanceNote";
+import { isCommitOid, loadCommitProvenance } from "@/components/git/shared/provenance";
 
 // Right-hand side of the Compare tab. Receives a single FileDiff and
 // delegates to the shared renderer. Inherits the global diffMode and
@@ -33,6 +35,20 @@ export function CompareDiffPane(props: Props) {
   /// diff option rather than a post-hoc filter here, so what this renders and
   /// what the tree counts are the same diff.
   const transformed = createMemo<FileDiff | null>(() => props.file ?? null);
+
+  /// The agent the journal already credited this commit to, if any.
+  ///
+  /// Only asked when the head is a full oid — which is what
+  /// `commands/commitDiff.ts` puts there when a commit's own diff is opened. A
+  /// compare of two *branches* spans many commits, and naming one agent over a
+  /// range that several of them contributed to would be a claim the log does
+  /// not support: there is no per-hunk evidence to say which commit inside the
+  /// range a given hunk came from. So that case shows nothing rather than
+  /// something plausible.
+  const [provenance] = createResource(
+    () => (isCommitOid(props.headRef) ? props.headRef : null),
+    (oid) => loadCommitProvenance(oid).catch(() => null),
+  );
 
   return (
     <div class="flex flex-col h-full bg-background min-w-0">
@@ -82,6 +98,7 @@ export function CompareDiffPane(props: Props) {
                   </span>
                 </div>
               </div>
+              <ProvenanceNote provenance={provenance()} />
               <div class="flex-1 overflow-auto scrollbar-thin font-mono text-[12px] leading-[1.5]">
                 <DiffRenderer file={f()} mode={state.diffMode} />
               </div>

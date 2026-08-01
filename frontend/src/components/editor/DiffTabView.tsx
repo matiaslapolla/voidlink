@@ -32,6 +32,8 @@ import {
   DiffRenderer,
   type HunkActions,
 } from "@/components/git/shared/SplitDiffRenderer";
+import { ProvenanceNote } from "@/components/git/shared/ProvenanceNote";
+import { loadFileProvenance } from "@/components/git/shared/provenance";
 import { workingTreeSides } from "./diffModel";
 import { MonacoDiffPane } from "./MonacoPanes";
 import type { FileDiff } from "@/types/git";
@@ -96,7 +98,30 @@ export function DiffTabView(props: DiffTabViewProps) {
   /// button, a commit, a checkout, another window. Without this the tab only
   /// ever refreshed on its own two buttons, which is why staging from the
   /// sidebar appeared to leave the diff untouched.
-  onMount(() => onCleanup(onGitRefsChanged(() => void refetch())));
+  /// Who the journal thinks last wrote this file — file-level and inferred, and
+  /// the note says both. See `git/shared/provenance.ts` for why no hunk-level
+  /// claim is available to make here.
+  ///
+  /// Separate from the diff resource rather than folded into it: a failure to
+  /// answer "who" must not be able to take the diff down with it, which is the
+  /// same reason `record()` cannot throw. `null` on rejection means the note
+  /// simply does not render.
+  const [provenance, { refetch: refetchProvenance }] = createResource(
+    () => ({ repo: props.repoPath, abs: absPath() }),
+    ({ repo, abs }) => loadFileProvenance(repo, abs).catch(() => null),
+  );
+
+  onMount(() =>
+    onCleanup(
+      onGitRefsChanged(() => {
+        void refetch();
+        // The mtime the claim rests on moves whenever the file does, so a stale
+        // attribution would keep naming the agent that wrote the *previous*
+        // version — §7.5.4's stale-value failure, with a name attached.
+        void refetchProvenance();
+      }),
+    ),
+  );
 
   /// Exactly what the backend returned. Nothing filters it here any more,
   /// which is also what makes hunk indices safe to send back: the renderer
@@ -314,6 +339,11 @@ export function DiffTabView(props: DiffTabViewProps) {
           </button>
         </div>
       </div>
+
+      {/* Above the body rather than inside the renderer: the claim is about the
+          file, and a row that scrolled with the hunks would be read as being
+          about whichever hunk it happened to sit beside. */}
+      <ProvenanceNote provenance={provenance()} />
 
       <div class="flex-1 min-h-0">
         <Show when={!hunkMode()} fallback={

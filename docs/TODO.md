@@ -40,7 +40,7 @@ file exists to prevent.
 | # | Item | Why here |
 |---|---|---|
 | 1 | **BR-O1 — the overlay tax** | Ten hand-written `setOverlayOpen` effects in `App.tsx`, one per modal surface, each there because a child webview composites above the DOM. One self-registration mechanism — the shape `TAB_SPECS` already uses for tabs — makes the count one and the growth zero. |
-| 2 | **Run provenance on the diff** | "Which agent wrote this hunk", inline. Was ranked 13th of 14 when proposed and is now near the top: the journal already does the attribution and already labels it as inferred, so what is left is the surface. |
+| 2 | ~~**Run provenance on the diff**~~ | **Shipped, one resolution coarser than proposed.** See "Provenance on a diff" in [the event log](./features/event-log.md). There is no honest hunk-level answer: the journal attributes by overlapping *time*, not by authorship, so the claim is file-level over the working tree and commit-level over a commit's own diff, and the note says which. **What is left:** an ordinary agent-panel turn writes no `agent.turn.*` record when it ends — the docs have described one for a while and the code has never emitted it — so a finished non-fan-out turn leaves no durable window and its files are un-attributable once it is over. Recording the interval would close that; it also starts firing the default `agent.turn.finished` notification rule, which is why it was not done under this item. |
 
 **Done — fan-out durability in Rust.** `src-tauri/src/fanout/mod.rs`: a
 supervisor that owns spawning, concurrency, per-leg cancel and terminal
@@ -130,7 +130,7 @@ once the first geometry test needed `overflow-auto` to actually clip.
 
 | Item | Notes |
 |---|---|
-| **Run provenance on the diff** | Item 2 above. |
+| **Run provenance on the diff** | Shipped — item 2 above. |
 | **Fan-out durability** | Done — see "The top of the list" above. |
 | **Palette action sources** | Unchanged since it was proposed: let features contribute action sources to the palette rather than the palette knowing every feature. |
 | **Keyboard navigation over N worktrees' changed files** | All that is left of a "review across worktrees" proposal that Mission Control's Lineup otherwise superseded. Re-scope before building — most of what it was for now has a home. |
