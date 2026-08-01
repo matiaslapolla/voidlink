@@ -82,7 +82,7 @@ use staging::{
 };
 use stash::{
     git_stash_apply_impl, git_stash_drop_impl, git_stash_list_impl, git_stash_pop_impl,
-    git_stash_save_impl, git_stash_show_impl, StashEntry,
+    git_stash_save_impl, StashEntry,
 };
 use status::{git_file_status_impl, git_log_impl};
 use tag::{
@@ -739,7 +739,7 @@ pub async fn git_stash_apply(
     index: usize,
     oid: String,
     state: tauri::State<'_, GitState>,
-) -> Result<(), String> {
+) -> Result<OpResult, String> {
     blocking_git!(state, repo_path, git_stash_apply_impl(repo_path, index, oid))
 }
 
@@ -749,7 +749,7 @@ pub async fn git_stash_pop(
     index: usize,
     oid: String,
     state: tauri::State<'_, GitState>,
-) -> Result<(), String> {
+) -> Result<OpResult, String> {
     blocking_git!(state, repo_path, git_stash_pop_impl(repo_path, index, oid))
 }
 
@@ -761,15 +761,6 @@ pub async fn git_stash_drop(
     state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
     blocking_git!(state, repo_path, git_stash_drop_impl(repo_path, index, oid))
-}
-
-#[tauri::command]
-pub async fn git_stash_show(
-    repo_path: String,
-    index: usize,
-    state: tauri::State<'_, GitState>,
-) -> Result<DiffResult, String> {
-    blocking_git!(state, repo_path, git_stash_show_impl(repo_path, index))
 }
 
 // ─── Remotes ─────────────────────────────────────────────────────────────────

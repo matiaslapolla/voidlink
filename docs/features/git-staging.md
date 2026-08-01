@@ -131,6 +131,18 @@ a discard that did not happen.
 The archive icon opens a prompt with message `WIP` and two toggles:
 `Keep staged changes in the index` (off) and `Include untracked files` (**on**).
 
+In the Stashes section, clicking a stash's message opens its diff in a compare
+tab. The tab addresses the stash by **commit oid**, not by `stash@{N}`: a
+compare tab re-resolves its refs on every refresh, so a positional ref would
+silently start describing a different stash the moment anything pushed onto the
+stack. The tab's name (`stash@{1} WIP`) is a snapshot of what was clicked and
+*can* go stale; the diff underneath it cannot.
+
+Apply and pop are merges, so they can stop on conflicts. When they do, the
+conflicted files open in the merge editor — the same route pull, merge and
+rebase take — rather than reporting a bare error. A conflicted pop leaves the
+stash in place; drop it once you have resolved.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |

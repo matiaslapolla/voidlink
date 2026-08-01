@@ -1301,7 +1301,6 @@ pub fn run() {
             git::git_stash_apply,
             git::git_stash_pop,
             git::git_stash_drop,
-            git::git_stash_show,
             git::git_list_remotes,
             git::git_add_remote,
             git::git_remove_remote,

@@ -227,6 +227,39 @@ describe("editor tab pointer", () => {
     });
   });
 
+  /// A stash diff addresses its trees by raw oid, because a positional
+  /// `stash@{N}` ref silently retargets when the stack shifts. That makes the
+  /// refs unreadable, so the tab carries its own name — and it has to survive a
+  /// close/reopen, which is the one path that rebuilds the tab from a snapshot.
+  it("keeps a compare tab's own label across close and reopen", () => {
+    withStore((store, wtId) => {
+      const oid = "c".repeat(40);
+      const id = store.actions.openCompareTab(wtId, {
+        baseRef: `${oid}^1`,
+        headRef: oid,
+        useMergeBase: false,
+        label: "stash@{1} older work",
+      });
+      store.actions.closeCompareTab(wtId, id);
+      store.actions.reopenLastClosedTab(wtId);
+
+      const tab = store.state.compareTabsByWorktree[wtId][0];
+      expect(tab.label).toBe("stash@{1} older work");
+      expect(tab.headRef).toBe(oid);
+    });
+  });
+
+  /// The label is decoration, not identity: two tabs on the same pair of refs
+  /// are still one question however they are named.
+  it("does not let a label split the dedupe", () => {
+    withStore((store, wtId) => {
+      const refs = { baseRef: "main", headRef: "HEAD", useMergeBase: false };
+      const a = store.actions.openCompareTab(wtId, { ...refs, label: "one" });
+      const b = store.actions.openCompareTab(wtId, { ...refs, label: "two" });
+      expect(b).toBe(a);
+    });
+  });
+
   it("closing a workbench tab leaves the editor's focus alone", () => {
     withStore((store, wtId) => {
       const file = store.actions.openFileTab(wtId, "/repo/a.ts");

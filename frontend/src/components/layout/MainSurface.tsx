@@ -174,10 +174,16 @@ export function MainSurface(props: MainSurfaceProps) {
       out.push({
         kind: "compare",
         id: tab.id,
-        label: `${short(tab.baseRef) || "?"}..${short(tab.headRef) || "?"}`,
+        // A tab that named itself keeps its name: a stash diff addresses its
+        // trees by oid, and the derived label would be two shas the user never
+        // saw. The refs still show in the tooltip, which is where "what is this
+        // actually diffing" belongs.
+        label: tab.label || `${short(tab.baseRef) || "?"}..${short(tab.headRef) || "?"}`,
         prefix: "compare · ",
         icon: <GitBranchPlus class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
-        title: `Compare: ${tab.baseRef || "?"}..${tab.headRef || "?"}`,
+        title: tab.label
+          ? `${tab.label} — ${tab.baseRef || "?"}..${tab.headRef || "?"}`
+          : `Compare: ${tab.baseRef || "?"}..${tab.headRef || "?"}`,
         activity: tabMark(tab.id),
         mono: true,
         labelWidth: "max-w-[200px]",
