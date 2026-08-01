@@ -309,31 +309,79 @@ segment the day something raises one.
 having read the error in it. `bell` and `finished` do clear when the tab comes
 to the front.
 
-Where the terminal's three events come from:
+Where the terminal's events come from:
 
 | Event | Source | Signal |
 |---|---|---|
 | Bell (`BEL`) | xterm's `onBell` | `bell` |
 | A foreground command started | the PTY process poll going busy | `running` |
 | A foreground command ended | the poll going idle | `finished`, and only if you were looking elsewhere |
+| A command ended **with a status** | `OSC 133 ; D ; <code>` from the shell | `failed` on non-zero, otherwise `finished` |
 
 The poll is refcounted in `store/terminalWatch.ts` and shared between the tab
 strip and the pane layer. It used to live in the strip; it had to move, because
 zen renders no strips and a shell watched only while its strip is mounted
 reports nothing exactly when you have the least chance of noticing.
 
+### `failed`, from a command inside a live shell
+
+The last row is [shell integration](../../shell-integration/README.md), and it
+closed the oldest hole in this vocabulary. The poll can see *that* a foreground
+process went away and never *how* — so `noteFinished(tabId, true)` was
+hardcoded, and `failed`, the top of the precedence chain, was unreachable from
+the surface you spend the most time in. A `cargo build` that failed in an open
+shell raised the same mark as one that succeeded.
+
+Only the shell knows `$?`. So it says so, in the OSC 133 semantic prompt
+sequences every terminal that solved this consumes: `C` before a command runs,
+`D ; <exit-code>` after. `store/semanticPrompt.ts` parses them,
+`store/terminalWatch.ts` turns them into the same `noteFinished` call the poll
+makes — with the truth for its `ok` argument instead of an assumption.
+
+Three rules keep the red mark meaning something, all of them pure and tested:
+
+* **Under a second is not news.** Unlike the poll, integration sees *every*
+  command. `grep` finding nothing exits 1, and so does half of what a shell
+  script does. A failure gets no easier a gate than a success here, deliberately:
+  `failed` is the only signal that must be acknowledged rather than dismissed by
+  looking, so a spurious one costs strictly more.
+* **A `D` with no `C` is not news.** We attached mid-command and know only that
+  something ended.
+* **The alternate screen is not news.** `:cq` exits non-zero; leaving vim the
+  deliberate way is not a build failing. Same rule the poll already had.
+
+**One command, one source.** A shell that has proved it emits marks takes the
+completion event over entirely and the poll stands down — it keeps only the job
+the marks cannot do, turning `working` back off. Two sources would put a
+`terminal.command.failed` *and* a `terminal.command.finished` in the log for one
+build, and fire two OS banners saying opposite things.
+
+**You have to set it up, and that is a decision rather than an omission.** VS
+Code and Kitty inject their integration by pointing `ZDOTDIR` at a generated
+directory. VoidLink does not: `create_pty` goes out of its way to make the
+shell's environment identical to how Terminal.app spawns one, a mis-ordered
+`ZDOTDIR` breaks your prompt and your plugin manager to earn a badge, and it
+could not be done for fish or nushell at all. The reasoning is written where the
+PTY is spawned. What the app *does* export is a marker,
+`VOIDLINK_SHELL_INTEGRATION`, which is what makes the snippet a no-op in every
+other terminal.
+
+**It only ever adds.** A shell without integration behaves exactly as it did
+before this existed — poll-inferred `finished`, never a claimed status. Settings
+→ Terminal → Shell integration reports how many open shells are actually
+emitting, which is the only honest thing that surface can say: there is no way
+to ask a shell what it sourced.
+
 **Escalation is in-app only.** For work you are not at the machine for, the
 same signals also drive OS notifications — as a separate policy over the event
 log, not as a second copy of this one. See
 [Notifications and sound](./notifications.md).
 
-**Known gap, narrowed but not closed.** `pty-exit` now carries the shell's exit
-status, so a shell that *died* can be reported as such. A foreground **command**
-finishing inside a live shell still cannot: `terminalWatch` infers completion
-from the process poll going idle, and idle carries no status — so
-`noteFinished(tabId, true)` is hardcoded and `failed` is still never raised by a
-terminal command. Reading a command's status needs shell integration (OSC 133,
-or a wrapper), which is a different piece of work from watching a PID.
+**What remains uncovered**, now that shell integration closed the main gap: a
+shell whose rc has not been set up, and any shell there is no snippet for (fish,
+nushell). Both fall back to poll-inferred `finished`, which is what this app did
+for everything until 2026-08-01 — a smaller silence than "`failed` is
+unreachable", and one the user can end in one line.
 
 ## Layout presets
 

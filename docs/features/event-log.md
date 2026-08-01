@@ -42,7 +42,7 @@ for git events is the filesystem watcher rather than the UI.
 | `git.branch.switched` | watcher | `agent` or `system` |
 | `git.operation.started` / `.ended` | watcher | `agent` or `system` |
 | `agent.turn.finished` / `.cancelled` / `.failed` | `commands/agent.ts` | `agent` |
-| `terminal.command.finished` | `store/terminalWatch.ts` | `user` |
+| `terminal.command.finished` / `.failed` | `store/terminalWatch.ts` | `user` |
 | `review.note.added` / `.resolved` / `.reopened` | `store/reviewNotes.ts` | `user` |
 | `hill.scope.added` / `.finished` / `.reopened` / `.removed` | `store/hills.ts` | `user` |
 | `hill.position.moved` | `store/hills.ts` | `user` |
@@ -110,11 +110,27 @@ lists the old one as a parent. A reset, an amend, a rebase or a force-move is
 therefore never reported as a commit — reporting a `git reset` as work done is
 worse than reporting nothing.
 
-`terminal.command.finished` uses the same gate as the terminal activity badge
-(`completionIsNews`): two consecutive busy samples with the same pid, and never
+`terminal.command.finished` uses the same gate as the terminal activity badge,
+and there are two of them because there are two sources.
+
+In a shell **without** [shell integration](../../shell-integration/README.md) it
+is `completionIsNews`: two consecutive busy samples with the same pid, and never
 a full-screen app. Sub-second commands and quitting `vim` are not events. The
 poll cannot see an exit status, so the summary says a command *finished*, never
 that it succeeded.
+
+In a shell **with** it, the shell's own `OSC 133 ; D ; <code>` is the source and
+`commandIsNews` is the gate: a real C→D span of a second or more, a `D` we saw
+the matching `C` for, and never a full-screen app. That path emits
+`terminal.command.failed` for a non-zero status, carries `exitCode` and a real
+`durationMs` in `data`, and tags `data.source: "osc133"` so a reader can tell a
+measured span from the poll's `approxMs` lower bound. A shell that emits marks
+takes the event over completely — the poll stands down rather than recording the
+same command twice with two different kinds.
+
+An exit status the shell did not report (a bare `D`) stays
+`terminal.command.finished`. "It ended" and "it succeeded" are different claims,
+and the log never makes the second one on evidence for the first.
 
 ## The record
 

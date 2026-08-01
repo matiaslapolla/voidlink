@@ -294,6 +294,45 @@ async fn create_pty(
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
 
+        // ── Shell integration, and why this is a marker and not an install ──
+        //
+        // VoidLink reads OSC 133 semantic prompts to learn a command's exit
+        // status — the only way the `failed` signal is reachable from a
+        // terminal, since the process poll sees a foreground process vanish and
+        // never how it went. A shell emits those sequences only if its startup
+        // files set up the hooks, so *something* has to arrange that.
+        //
+        // **The deliberate choice: we set a marker and stop there.** The
+        // alternative — the one VS Code and Kitty take — is to point `ZDOTDIR`
+        // at a generated directory (or bash at a generated `--rcfile`) that
+        // sources the user's real config and appends the hooks. It is more
+        // convenient and it is rejected here for three reasons:
+        //
+        //   1. It contradicts the block directly above. This code goes out of
+        //      its way to make the PTY's environment *identical to how
+        //      Terminal.app spawns a shell*, because anything else silently
+        //      changes which `node` or `claude` the user gets. Hijacking the
+        //      startup path is a much larger version of the same lie.
+        //   2. The failure mode is catastrophic and silent. A `ZDOTDIR` that
+        //      does not correctly re-source `.zshenv`/`.zprofile`/`.zshrc` in
+        //      the right order breaks the user's prompt, their completions and
+        //      their plugin manager — to earn a badge. That is a trade nobody
+        //      would accept if asked, so it must not be made on their behalf.
+        //   3. It cannot be honest about coverage. There is no rcfile hook for
+        //      fish, nushell or an arbitrary `$SHELL`, so "automatic" would
+        //      really mean "automatic for two shells and silence for the rest",
+        //      and the user would have no way to tell which they were in.
+        //
+        // So: the user sources one line, and this variable is what makes that
+        // line a no-op in every other terminal they use. Its absence is also
+        // the honest default — a shell that has not been set up behaves exactly
+        // as it did before this existed, reporting `finished` from the poll and
+        // never claiming a status nobody gave it.
+        //
+        // See `shell-integration/` for the snippets, and the settings screen's
+        // Terminal tab for whether any live shell is actually emitting.
+        cmd.env("VOIDLINK_SHELL_INTEGRATION", "1");
+
         let child = pair
             .slave
             .spawn_command(cmd)

@@ -10,7 +10,12 @@ import "@xterm/xterm/css/xterm.css";
 import { useSettings } from "@/store/settings";
 import { useTheme } from "@/store/theme";
 import { markActive, recordKeystroke } from "@/commands/terminalHistory";
-import { noteTerminalAltScreen, noteTerminalOutput } from "@/store/terminalWatch";
+import {
+  noteSemanticPrompt,
+  noteTerminalAltScreen,
+  noteTerminalOutput,
+} from "@/store/terminalWatch";
+import { parseSemanticPrompt, SEMANTIC_PROMPT_OSC } from "@/store/semanticPrompt";
 import { lastGridSize, rememberGridSize, sizeForPty } from "@/commands/terminalSize";
 
 // Prior perf learning (commit 0b9bfe7): in Tauri's WebKitGTK webview, xterm
@@ -804,6 +809,33 @@ export function TerminalPane(props: TerminalPaneProps) {
       const sub = term.parser.registerOscHandler(ident, (payload) => {
         const body = oscNotificationBody(ident, payload);
         if (body !== null) props.onNotify?.(body);
+        return false;
+      });
+      ownedCleanup(() => sub.dispose());
+    }
+
+    // ── Shell integration (OSC 133) ───────────────────────────────────────
+    //
+    // The sequences a shell's prompt hooks emit around every command, and the
+    // only way `failed` is reachable from a terminal at all: `D;<code>` carries
+    // the exit status that the process poll — which sees a foreground process
+    // vanish and nothing else — structurally cannot. See
+    // `store/semanticPrompt.ts` for the sequence set and
+    // `store/terminalWatch.ts` for what is done with it.
+    //
+    // Gated on `replaying`, and that gate is load-bearing rather than tidy.
+    // Re-attaching a pane re-feeds the whole scrollback through the parser, so
+    // every `D` the session ever wrote would arrive again — switching worktrees
+    // would repaint the morning's failures as fresh red marks, on tabs whose
+    // shells are sitting at an idle prompt.
+    //
+    // `false` so xterm's own handling (none) still runs, matching the OSC 9/777
+    // observers below: we are reading these, not claiming them.
+    {
+      const sub = term.parser.registerOscHandler(SEMANTIC_PROMPT_OSC, (payload) => {
+        if (replaying) return false;
+        const mark = parseSemanticPrompt(payload);
+        if (mark) noteSemanticPrompt(ptyId, mark);
         return false;
       });
       ownedCleanup(() => sub.dispose());
