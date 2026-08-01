@@ -180,7 +180,7 @@ describe("reading a run", () => {
   it("says an interrupted leg was interrupted, in those words", () => {
     runs = [run({ legs: [leg({ status: "interrupted", stat: null })] })];
     render(() => <RunsSection repoPath={REPO} />);
-    expect(screen.getByText(/interrupted when the window closed/i)).toBeInTheDocument();
+    expect(screen.getByText(/interrupted — no longer tracked/i)).toBeInTheDocument();
   });
 
   /// Reporting a stat we failed to take as "0 files changed" would be the most
