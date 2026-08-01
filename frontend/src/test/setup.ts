@@ -82,3 +82,25 @@ if (!window.ResizeObserver) {
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = vi.fn();
 }
+
+/// Pointer capture, which jsdom does not implement at all.
+///
+/// The fourth of exactly the same shape as the three above, found by the first
+/// render test that ever clicked a `Splitter`: `onPointerDown` calls
+/// `setPointerCapture` on its first line, so *any* click on a splitter — in its
+/// own test or in a test of a pane that happens to contain one — threw a
+/// `TypeError` out of an event handler. Vitest reports that as an unhandled
+/// error beside a suite that otherwise passes, which is the least readable
+/// failure mode available: the test that clicked is green and the error names a
+/// different one.
+///
+/// No-ops rather than a real implementation. Capture only decides *routing* for
+/// subsequent pointer events, and `Splitter` attaches its `pointermove` and
+/// `pointerup` listeners to the handle itself, so nothing in jsdom depends on
+/// the routing that capture would have set up. A test that needs a real drag
+/// belongs in the browser project anyway.
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = vi.fn();
+  Element.prototype.releasePointerCapture = vi.fn();
+  Element.prototype.hasPointerCapture = vi.fn(() => false);
+}

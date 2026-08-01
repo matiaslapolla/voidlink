@@ -39,7 +39,7 @@ import { render, screen } from "@solidjs/testing-library";
 /// and therefore never trigger CSS `:hover` — a hover test built on it would
 /// pass or fail for reasons unrelated to the stylesheet. This one goes through
 /// Playwright and moves the actual mouse.
-import { userEvent } from "@vitest/browser/context";
+import { userEvent } from "vitest/browser";
 import type { DiffHunk, DiffLine, FileDiff } from "@/types/git";
 
 import { DiffRenderer } from "./SplitDiffRenderer";

@@ -14,7 +14,7 @@
 /// the app asks the stylesheet for the same number at runtime.
 import { describe, expect, it, vi } from "vitest";
 import { render, within } from "@solidjs/testing-library";
-import { userEvent } from "@vitest/browser/context";
+import { userEvent } from "vitest/browser";
 
 import { Splitter, islandGapPx, type SplitterProps } from "./Splitter";
 
