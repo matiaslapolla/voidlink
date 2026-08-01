@@ -24,6 +24,7 @@
 ///      `layout.test.ts` hydrates a store from `voidlink-editor-tabs` by name.
 import type { TerminalSession } from "@/types/workspace";
 import { STORAGE_KEYS } from "./persistence";
+import type { DiffMode } from "./prefs";
 
 // ── Tab shapes ────────────────────────────────────────────────────────────
 
@@ -158,6 +159,17 @@ export interface CompareTab {
   /// stash they opened. Optional, so tabs persisted before it existed still
   /// deserialize and fall back to the derived label.
   label?: string;
+  /// Per tab, deliberately not the global `diffMode` the working-tree diff
+  /// toolbar uses. Optional and `undefined` at the shipped default ("inline")
+  /// so an ordinary compare tab's persisted blob doesn't grow just for opening
+  /// it — only a tab someone actually switched to split carries the field.
+  diffMode?: DiffMode;
+  /// Per tab, and part of `CompareTab.tsx`'s resource key — see that file for
+  /// why. A global toggle would refetch every open compare tab at once, each
+  /// re-running a full diff behind the same per-repo git mutex (CMP-F10); keyed
+  /// per tab, flipping one only refetches that one. `undefined` at the default
+  /// (`false`) for the same narrow-blob reason as `diffMode` above.
+  ignoreWhitespace?: boolean;
 }
 
 /// Persistent identifier for a stack tab. We don't cache the chain itself —
@@ -409,6 +421,13 @@ function deserializeCompare(raw: unknown): CompareTab | null {
     treeMode: raw.treeMode === "flat" ? "flat" : "tree",
     treeFilter: typeof raw.treeFilter === "string" ? raw.treeFilter : "",
     treeWidth: clampCompareTreeWidth(raw.treeWidth),
+    // `undefined` rather than the shipped default: keeps a tab that never
+    // touched these controls indistinguishable, post-round-trip, from one that
+    // was never serialized with them at all. A garbage persisted value (an
+    // older or newer build's stray string) falls back the same way rather than
+    // reaching a renderer with no branch for it.
+    diffMode: raw.diffMode === "split" ? "split" : undefined,
+    ignoreWhitespace: raw.ignoreWhitespace === true ? true : undefined,
   };
 }
 

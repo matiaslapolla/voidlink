@@ -1,6 +1,6 @@
 import { Show, createMemo, createResource } from "solid-js";
 import { GitCompare } from "lucide-solid";
-import { useAppStore } from "@/store/LayoutContext";
+import type { DiffMode } from "@/store/layout";
 import type { FileDiff } from "@/types/git";
 import {
   DiffRenderer,
@@ -9,14 +9,15 @@ import { ProvenanceNote } from "@/components/git/shared/ProvenanceNote";
 import { isCommitOid, loadCommitProvenance } from "@/components/git/shared/provenance";
 
 // Right-hand side of the Compare tab. Receives a single FileDiff and
-// delegates to the shared renderer. Inherits the global diffMode and
-// ignoreWhitespace toggles so the Compare experience matches working-tree
-// diff conventions.
+// delegates to the shared renderer. `diffMode` comes from the owning
+// CompareTab's own per-tab state, not the global working-tree toggle —
+// see CompareTab.tsx for why the two are kept separate.
 
 type Props = {
   file: FileDiff | null;
   baseRef: string;
   headRef: string;
+  diffMode: DiffMode;
 };
 
 function displayPath(file: FileDiff): { primary: string; rename: string | null } {
@@ -29,8 +30,6 @@ function displayPath(file: FileDiff): { primary: string; rename: string | null }
 }
 
 export function CompareDiffPane(props: Props) {
-  const { state } = useAppStore();
-
   /// The file exactly as the backend produced it. "Ignore whitespace" is now a
   /// diff option rather than a post-hoc filter here, so what this renders and
   /// what the tree counts are the same diff.
@@ -100,7 +99,7 @@ export function CompareDiffPane(props: Props) {
               </div>
               <ProvenanceNote provenance={provenance()} />
               <div class="flex-1 overflow-auto scrollbar-thin font-mono text-[12px] leading-[1.5]">
-                <DiffRenderer file={f()} mode={state.diffMode} />
+                <DiffRenderer file={f()} mode={props.diffMode} />
               </div>
             </>
           );

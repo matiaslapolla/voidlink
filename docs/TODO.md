@@ -45,7 +45,6 @@ behaviour nobody chose.
 | 3 | **Should an ordinary agent turn write an `agent.turn.*` record?** | The docs have described one for a while; nothing has ever emitted it, so the notification defaults, the check-in model and the trigger rules all read a kind that is never written. Recording the interval would also make a finished agent-panel turn attributable on the diff. It would immediately start firing the default `agent.turn.finished` banner, which is a change to what the app *does*, not to what it records. |
 | 4 | **Where does a destructive push live, and how is it confirmed?** | libgit2 has no lease primitive, so `--force-with-lease` means fetch → compare `refs/remotes/<r>/<b>` → force, with a real race window. The audit rates the current state "safe by construction" precisely because the button does not exist. (BR-F7) |
 | 5 | **What does a remote branch's ahead/behind count against?** | Checked rather than assumed: listing remote branches changes nothing, because `git_list_branches_impl` hands every remote-tracking branch `(None, 0, 0, false)` and both chips gate on `> 0`. The flip was made, verified inert, and reverted. (CMP-F22) |
-| 6 | **Do compare tabs get their own diff-mode and whitespace controls?** | Per-tab state exists for width, mode and filter; `diffMode` and `ignoreWhitespace` are the two that have no control anywhere in the compare surface — they live in the working-tree diff toolbar. Per-tab state with no per-tab control is state the user cannot reach. |
 
 ---
 
@@ -148,6 +147,7 @@ Recorded compactly; the detail is in the feature docs and the audits.
 | **Fan-out durability** | A Rust supervisor owns the legs; a run's lifetime is the app's, not the webview's. Unattended output is buffered and replayed rather than dropped. |
 | **Run provenance** | File-level on the working tree, commit-level on a commit, nothing on a branch range — the granularity the evidence actually supports. |
 | **Palette action sources** | Features contribute their own actions; 462 lines left `App.tsx`. Behaviour preservation proven id-for-id against the pre-refactor list. |
+| **Compare tabs' own diff-mode and whitespace controls** | Row 6's decision: per-tab controls, not a shared global toggle, because `ignoreWhitespace` sits in the diff resource's key — a global flip would refetch every open compare tab at once behind the same per-repo git mutex CMP-F10 bounds. The premise the decision assumed — that per-tab state already existed — did not hold: `CompareTab` had no `diffMode`/`ignoreWhitespace` fields at all, and the tab was silently reading the *global* prefs the working-tree toolbar owns, meaning every open compare tab already refetched together on that toolbar's toggle. Both fields are now genuinely per-tab, optional and `undefined` at default so an untouched tab's persisted blob does not grow. |
 
 **One live caveat carried forward.** BR-F1's fix — `browser_focus_host`, which
 gives the host webview the keyboard back — is still confidence *reading*, not

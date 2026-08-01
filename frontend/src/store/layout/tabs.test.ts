@@ -45,6 +45,11 @@ const FIXTURES: { [K in TabKind]: TabTypes[K] } = {
     // Not the default, so a `serialize` that dropped the field would be caught
     // rather than round-tripping by coincidence.
     treeWidth: 420,
+    // Same reasoning as `treeWidth`, for the two fields TODO row 6 added: both
+    // set away from their default ("inline", `false`) so a `serialize` that
+    // dropped either would be caught rather than round-tripping by luck.
+    diffMode: "split",
+    ignoreWhitespace: true,
   },
   stack: { id: "s1", trunk: "main", topBranch: "feature-3" },
   conflict: { id: "x1", filePath: "/repo/src/c.ts" },
@@ -92,6 +97,35 @@ describe("tab registry", () => {
       const back = (spec.deserialize as (raw: unknown) => unknown)(wire);
       expect(back, `${kind} failed to deserialize`).toEqual(expectedRoundTrip(kind));
     }
+  });
+
+  it("keeps a compare tab at default diff settings narrow, like the browser tab's zoom", () => {
+    // The fixture above sets both fields away from their default to prove they
+    // survive; this proves the opposite direction — a tab that never touched
+    // the diff-mode or ignore-whitespace controls must not carry them into the
+    // persisted blob at all. Modelled on "round-trips an agent tab whose
+    // roster entry had no name" below, and on `browser`'s narrow-form comment
+    // in `TAB_SPECS`.
+    const wire = JSON.parse(
+      JSON.stringify(
+        TAB_SPECS.compare.serialize({
+          id: "c2",
+          baseRef: "main",
+          headRef: "feature",
+          useMergeBase: true,
+          selectedFilePath: null,
+          treeMode: "tree",
+          treeFilter: "",
+          treeWidth: 320,
+        }),
+      ),
+    );
+    expect(wire).not.toHaveProperty("diffMode");
+    expect(wire).not.toHaveProperty("ignoreWhitespace");
+    expect(TAB_SPECS.compare.deserialize(wire)).toMatchObject({
+      diffMode: undefined,
+      ignoreWhitespace: undefined,
+    });
   });
 
   it("considers a round-tripped tab equal to the original", () => {
