@@ -29,6 +29,14 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 ///      has it. `focusHost` is the only way back, and it has to be a Rust
 ///      command because the capability to focus a webview is deliberately not
 ///      granted to JavaScript.
+///
+/// And one property of the *policy*: **where a tab may go is decided in Rust,
+/// not here.** `open` and `navigate` can be refused, and so can a navigation
+/// this module never asked for — a link the user clicked, an iframe the page
+/// pulled. The first two come back as a rejected promise; the third arrives on
+/// `onBlocked`, because a cancelled navigation is otherwise completely silent.
+/// `components/browser/url.ts` runs the same rule so the address bar refuses
+/// before it sends, but that copy is an agreement, not the enforcement.
 
 export interface WebviewRect {
   x: number;
@@ -74,10 +82,31 @@ export interface BrowserTitleChanged {
   title: string;
 }
 
+/// A navigation the URL policy cancelled, in Rust, at the hook.
+///
+/// It exists because cancelling produces *nothing*: no error, no load event,
+/// no change on screen. A page that silently refuses to move reads as an app
+/// that has frozen, which is a worse failure than the unrestricted `file://`
+/// the policy removes — so every refusal announces itself and this is the
+/// announcement.
+///
+/// **It cannot say which frame was refused**, because the hook cannot: wry's
+/// macOS navigation policy never consults `isMainFrame`, so a page pulling ten
+/// blocked iframes emits ten of these and is indistinguishable from ten tabs.
+/// Whoever renders it must therefore coalesce — `BrowserPane` does it with the
+/// toast `source` key, which already collapses repeats from one cause into a
+/// single toast carrying a count.
+export interface BrowserBlocked {
+  tabId: string;
+  url: string;
+  reason: "scheme" | "file-type";
+}
+
 const NAVIGATED_EVENT = "voidlink://browser-navigated";
 const NAVIGATING_EVENT = "voidlink://browser-navigating";
 const COMMITTED_EVENT = "voidlink://browser-committed";
 const TITLE_EVENT = "voidlink://browser-title";
+const BLOCKED_EVENT = "voidlink://browser-blocked";
 
 /// Floor every dimension at one logical pixel — a zero-sized webview is a
 /// platform error on some backends.
@@ -167,6 +196,12 @@ export const browserApi = {
   /// earliest event that may be trusted to name the tab.
   onCommitted(handler: (e: BrowserNavigating) => void): Promise<UnlistenFn> {
     return listen<BrowserNavigating>(COMMITTED_EVENT, (e) => handler(e.payload));
+  },
+
+  /// The URL policy refused a navigation. Fires for subframes too, and cannot
+  /// say which — see the type. Coalesce before showing anything.
+  onBlocked(handler: (e: BrowserBlocked) => void): Promise<UnlistenFn> {
+    return listen<BrowserBlocked>(BLOCKED_EVENT, (e) => handler(e.payload));
   },
 
   onTitleChanged(handler: (e: BrowserTitleChanged) => void): Promise<UnlistenFn> {

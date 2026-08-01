@@ -17,7 +17,7 @@
 //! id. Labels are derived from that id (`voidlink-browser-<uuid>`) so a crash
 //! leaves recognisable orphans for [`browser_close_orphans`] to sweep.
 //!
-//! Two things are deliberate:
+//! Three things are deliberate:
 //!
 //! - **The child webview gets no capability.** `capabilities/default.json` is
 //!   scoped to the `main` webview label precisely so a page the user loads
@@ -26,6 +26,12 @@
 //!   back/forward would otherwise mean evaluating `history.back()` inside an
 //!   untrusted remote document. We keep a URL stack instead and navigate to
 //!   entries, so no script of ours ever enters the page.
+//! - **Where a tab may go is decided here, not in the address bar.** See
+//!   [`navigation_refusal`]. The navigation hook is the only point every frame
+//!   passes through, so it is the only place a policy can actually hold: a
+//!   filter on the bar stops the user typing a `file://` URL and stops nothing
+//!   at all from a page that embeds one. Because a cancelled navigation is
+//!   silent, every refusal emits [`BLOCKED_EVENT`] on its way out.
 //!
 //! One thing this module cannot do, established by reading the pinned
 //! dependency rather than inferred, because every "obvious" fix for it is a
@@ -67,9 +73,156 @@ const NAVIGATED_EVENT: &str = "voidlink://browser-navigated";
 const NAVIGATING_EVENT: &str = "voidlink://browser-navigating";
 const COMMITTED_EVENT: &str = "voidlink://browser-committed";
 const TITLE_EVENT: &str = "voidlink://browser-title";
+const BLOCKED_EVENT: &str = "voidlink://browser-blocked";
 
 fn label_for(tab_id: &str) -> String {
     format!("{LABEL_PREFIX}{tab_id}")
+}
+
+// ─── Navigation policy ────────────────────────────────────────────────────────
+
+/// Why a navigation was refused. Two reasons rather than one because they are
+/// two different mistakes: a scheme refusal means "a browser tab does not open
+/// that kind of thing at all", and a file refusal means "that file is on disk
+/// and this tab cannot display it" — the second is the one a user can act on by
+/// picking a different file, so collapsing them into one message would hide the
+/// only actionable half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Refusal {
+    /// Not `http`, `https` or `file` — and not one of the page-internal schemes
+    /// below.
+    Scheme,
+    /// `file://`, but not something the tab can render as a document.
+    FileType,
+}
+
+/// Extensions a `file://` URL may carry.
+///
+/// The rule the repo owner set is "HTML, plain text and PDF — everything else
+/// is refused", and this is that rule spelled out. It is an extension list
+/// rather than a filesystem probe on purpose, and the reason is not laziness:
+/// this function runs inside the navigation hook, on **every frame a page
+/// loads**, so it must not touch the disk. It also would not buy anything if it
+/// did — see [`navigation_refusal`] on directories.
+///
+/// What this list is *not* is a promise that the platform renders each one. An
+/// extension the OS has no MIME mapping for downloads or blanks instead of
+/// rendering, and that is the platform's business. The safety property this
+/// list carries is the refusal: nothing outside it is handed to the webview at
+/// all, so an `.exe`, a `.dmg`, a `.key`, an `~/.ssh/id_rsa` or a sqlite
+/// database can never be pulled into a tab by a page that asks for it.
+///
+/// The named types, and the siblings that are literally the same type:
+/// HTML (`html`, `htm`, `xhtml`), plain text (`txt`, `text`, `log`, `md`,
+/// `markdown`, `csv`, `tsv`, `json`, `xml`, `yaml`, `yml`, `toml` — every one
+/// of them a text file, and every one of them a thing a git workbench actually
+/// has lying around), and PDF.
+///
+/// Images are deliberately absent even though a webview renders them: they are
+/// not one of the three named types, and `svg` in particular is a script
+/// carrier wearing a picture's extension.
+const RENDERABLE_FILE_EXTENSIONS: &[&str] = &[
+    "html", "htm", "xhtml", // HTML
+    "txt", "text", "log", "md", "markdown", "csv", "tsv", "json", "xml", "yaml", "yml",
+    "toml", // plain text
+    "pdf",  // PDF
+];
+
+/// Whether a browser tab may go to `url`, and why not if it may not.
+///
+/// **This is the enforcement point, and it is here rather than in the address
+/// bar because this is what subframes pass through.** wry's macOS navigation
+/// policy never consults `isMainFrame`, so the hook this feeds sees every
+/// iframe a page loads — which is the whole reason the policy is worth having:
+/// an address-bar filter stops the user typing `file:///Users/…`, and stops
+/// nothing at all from a page that embeds it in a hidden frame. The address bar
+/// runs the same rule in TypeScript (`frontend/src/components/browser/url.ts`,
+/// `navigationRefusal`) so that a URL this will silently drop is refused with a
+/// message before it is ever sent; the two lists are kept identical and each
+/// has the other's case table in its tests. That duplication is the price of a
+/// language boundary, not a design.
+///
+/// The schemes, and why each:
+///
+/// - `http`, `https` — the web. The thing the tab is for.
+/// - `file` — allowed *only* for a document the tab can render. The child
+///   webview holds no Tauri capability, so this was never a route to an app
+///   command; what it was is an unrestricted local file reader reachable by any
+///   page that asks. Narrowing it to renderable documents keeps the useful case
+///   (open the HTML coverage report a test run just wrote) and removes the rest.
+/// - `about`, `blob` — **allowed, and this is the exception worth naming.**
+///   Neither addresses anything outside the document that created it:
+///   `about:blank` and `about:srcdoc` are how ordinary pages build frames they
+///   then write into, and a `blob:` URL is minted by the page and scoped to its
+///   own origin. Refusing them would not block an attack, it would break
+///   ordinary web pages — silently, because a cancelled navigation produces no
+///   error anywhere. A policy that runs on every frame has to be judged on what
+///   it breaks as well as on what it stops.
+/// - everything else — refused. `data:` is in "everything else" on purpose:
+///   real browsers block top-level `data:` navigation because a `data:` page
+///   renders attacker-authored HTML under a URL nobody can read, and the tab
+///   here has an address bar that would show exactly that.
+///
+/// Percent-encoding is not decoded before the extension is read, so
+/// `file:///x%2Ehtml` is refused rather than allowed. That is the direction to
+/// fail in: an encoding trick makes the policy *stricter*, never looser.
+fn navigation_refusal(url: &url::Url) -> Option<Refusal> {
+    match url.scheme() {
+        "http" | "https" => None,
+        // Page-internal, and load-bearing for ordinary pages. See above.
+        "about" | "blob" => None,
+        "file" => {
+            let path = url.path();
+            // A trailing slash names a directory, and a directory listing is
+            // none of the three types the policy allows. Refused, deliberately:
+            // an allowed listing turns one refusal into a file browser the user
+            // can walk out of, which is exactly the unrestricted local read this
+            // policy exists to remove — and this app already has a file tree.
+            //
+            // A directory reached *without* the trailing slash lands in the
+            // no-extension arm below and is refused there, for the same reason
+            // and with the same message. That the two paths agree is why this
+            // function never needs to stat anything: knowing whether an
+            // extensionless path is a directory or a binary would not change the
+            // answer, and a syscall per frame to learn something that changes no
+            // answer is a cost with no benefit.
+            if path.is_empty() || path.ends_with('/') {
+                return Some(Refusal::FileType);
+            }
+            let name = path.rsplit('/').next().unwrap_or("");
+            match name.rsplit_once('.') {
+                // A non-empty stem is required so a dotfile literally named
+                // `.html` is not mistaken for an HTML document.
+                Some((stem, ext)) if !stem.is_empty() && is_renderable_extension(ext) => None,
+                _ => Some(Refusal::FileType),
+            }
+        }
+        _ => Some(Refusal::Scheme),
+    }
+}
+
+/// Case-insensitive because a file can be named `REPORT.HTML` and the case of
+/// an extension has never meant anything on macOS or Windows.
+fn is_renderable_extension(ext: &str) -> bool {
+    RENDERABLE_FILE_EXTENSIONS
+        .iter()
+        .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+}
+
+/// What a command says when it refuses a URL it was asked to load directly.
+///
+/// The *frame* path does not use this: a cancelled subframe has no command to
+/// return an error to, so it emits [`BLOCKED_EVENT`] and the frontend writes the
+/// sentence. This is the other half — `browser_open` and `browser_navigate`
+/// refusing before they dispatch — and it exists so that a caller that skipped
+/// the address bar's own check still gets told why rather than watching a
+/// command succeed against a page that never moved.
+fn refusal_reason(reason: Refusal) -> &'static str {
+    match reason {
+        Refusal::Scheme => "a browser tab only opens web pages and local files",
+        Refusal::FileType => "a local file has to be a web page, a text file or a PDF",
+    }
 }
 
 // ─── History ──────────────────────────────────────────────────────────────────
@@ -316,6 +469,29 @@ struct NavigatingPayload {
     url: String,
 }
 
+/// A navigation the policy cancelled.
+///
+/// It exists because cancelling is *silent*. `on_navigation` returning `false`
+/// stops the page moving and produces no error, no load event and nothing on
+/// screen — which reads exactly like the app having frozen, and is a worse bug
+/// than the unrestricted `file://` this policy removes. So every refusal says
+/// so, and this is how.
+///
+/// **It carries no frame information, because there is none to carry.** wry's
+/// macOS navigation policy never consults `isMainFrame`, so this module cannot
+/// tell a tab the user aimed somewhere from a page pulling ten blocked iframes.
+/// De-duplication is therefore the frontend's, and it is done with the
+/// mechanism that already exists for it: the toast `source` key collapses
+/// repeats from one cause into a single toast with a count, so a page with ten
+/// blocked frames produces one line and the number ten, not ten lines.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockedPayload {
+    tab_id: String,
+    url: String,
+    reason: Refusal,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TitlePayload {
@@ -339,6 +515,13 @@ pub async fn browser_open<R: Runtime>(
     store: tauri::State<'_, BrowserStore>,
 ) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|e| format!("{url}: {e}"))?;
+    // Same policy the navigation hook enforces, applied before the webview
+    // exists. Without it a tab could be *created* pointing at a refused URL and
+    // the hook would cancel it silently, leaving a blank tab nobody could
+    // explain.
+    if let Some(reason) = navigation_refusal(&parsed) {
+        return Err(refusal_reason(reason).to_string());
+    }
     let label = label_for(&tab_id);
 
     // A stale entry means a previous pane never cleaned up (hot reload, a
@@ -360,26 +543,30 @@ pub async fn browser_open<R: Runtime>(
         // The child renders untrusted remote pages: no drag-drop hijacking of
         // the host window, and no Tauri IPC surface (it holds no capability).
         .disable_drag_drop_handler()
-        // Fires when the page *asks* to go somewhere. Returning true always:
-        // this is an announcement, not a policy.
+        // Fires when the page *asks* to go somewhere, and decides whether it
+        // may. This is the app's URL policy and the only place it can be
+        // enforced: it sees **every frame** a page loads, not just the address
+        // the user typed, so a page that embeds `file:///Users/…` in a hidden
+        // iframe is stopped here and would not be stopped by any filter on the
+        // bar above. See [`navigation_refusal`] for the rule.
         //
-        // A URL policy — blocking `file://`, confining a tab to one origin —
-        // is one `return false` from possible here and deliberately is not
-        // one. It cannot be built as a mechanism first: an allow-everything
-        // policy object changes nothing, and the shape it would need depends
-        // entirely on the unanswered question (a global scheme allowlist? a
-        // per-tab origin confinement? a prompt?). Building the wrong one now
-        // would be harder to remove than to write.
-        //
-        // Two things the next person should know before writing it. wry's
-        // macOS navigation policy never checks `isMainFrame`, so this hook is
-        // *more* powerful than an address-bar filter: it sees every iframe a
-        // page loads, which is what a blocklist wants and is also why nothing
-        // that names the tab may be driven from the event it emits. And
-        // returning `false` cancels silently — the page simply does not move,
-        // with no error anywhere — so a policy that blocks needs its own way
-        // to say so or it will read as the app having frozen.
+        // A refusal emits before it returns `false`, and that ordering is the
+        // point. `false` cancels *silently* — the page simply does not move,
+        // with no error, no load event and nothing on screen — so a policy that
+        // blocks and says nothing is indistinguishable from an app that has
+        // frozen, which is a worse bug than the one being fixed.
         .on_navigation(move |url| {
+            if let Some(reason) = navigation_refusal(url) {
+                let _ = nav_app.emit(
+                    BLOCKED_EVENT,
+                    BlockedPayload {
+                        tab_id: nav_tab.clone(),
+                        url: url.to_string(),
+                        reason,
+                    },
+                );
+                return false;
+            }
             let _ = nav_app.emit(
                 NAVIGATING_EVENT,
                 NavigatingPayload {
@@ -463,6 +650,13 @@ pub async fn browser_navigate<R: Runtime>(
     store: tauri::State<'_, BrowserStore>,
 ) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|e| format!("{url}: {e}"))?;
+    // Refused here as well as in the hook, so the caller learns *why*. The hook
+    // would cancel this anyway, but it cancels without a word — a command that
+    // returned `Ok(())` over a page that never moved would be the freeze this
+    // policy is written to avoid.
+    if let Some(reason) = navigation_refusal(&parsed) {
+        return Err(refusal_reason(reason).to_string());
+    }
     let label = label_of(&store, &tab_id)?;
     let webview = app.get_webview(&label).ok_or("browser tab not found")?;
     webview.navigate(parsed).map_err(|e| e.to_string())
@@ -987,6 +1181,194 @@ mod tests {
         }
         assert_eq!(t.pending_traversals.len(), MAX_PENDING_TRAVERSALS);
         assert_eq!(t.pending_traversals.front().unwrap(), "https://10.test/");
+    }
+
+    // ─── The navigation policy ───────────────────────────────────────────────
+    //
+    // The rule is pure and the hook around it is four lines, which is the whole
+    // reason it was written this way: the hook itself needs a real child webview
+    // and a page that tries to navigate, and neither exists in a unit test.
+    // What is proven below is the *decision*. That `on_navigation` is wired to
+    // it, and that returning `false` cancels, is read from the pinned API
+    // (`tauri` 2.11.2: "Returning `false` cancels the navigation") and from
+    // wry's macOS navigation policy — not executed.
+    //
+    // The frontend half (`url.ts`, `navigationRefusal`) carries this same case
+    // table in `url.test.ts`. Two languages, one rule; if either table is
+    // edited alone the address bar and the hook stop agreeing, which is the
+    // failure this pair of tests is really guarding.
+
+    fn refusal(url: &str) -> Option<Refusal> {
+        navigation_refusal(&url::Url::parse(url).expect("test URL should parse"))
+    }
+
+    #[test]
+    fn the_web_is_allowed() {
+        assert_eq!(refusal("https://example.com/"), None);
+        assert_eq!(refusal("http://192.168.1.5:3000/app?q=1#top"), None);
+    }
+
+    /// Not one of the three named types, and every one of them a way to reach
+    /// something a browser tab has no business opening.
+    #[test]
+    fn every_other_scheme_is_refused() {
+        for url in [
+            "ftp://files.test/x",
+            "smb://share.test/x",
+            "javascript:alert(1)",
+            "vscode://file/etc/passwd",
+            "mailto:someone@test",
+            "tauri://localhost/",
+        ] {
+            assert_eq!(refusal(url), Some(Refusal::Scheme), "{url}");
+        }
+    }
+
+    /// `data:` renders attacker-authored HTML under an address nobody can read,
+    /// and this tab has an address bar that would show exactly that. Real
+    /// browsers block top-level `data:` for the same reason.
+    #[test]
+    fn data_urls_are_refused() {
+        assert_eq!(
+            refusal("data:text/html,<h1>hi</h1>"),
+            Some(Refusal::Scheme)
+        );
+    }
+
+    /// The exception that keeps this policy from breaking the ordinary web.
+    /// Neither scheme addresses anything outside the document that made it, and
+    /// both are how a page builds frames it then writes into — refusing them
+    /// would cancel page machinery, silently, on sites doing nothing wrong.
+    #[test]
+    fn page_internal_schemes_are_allowed() {
+        assert_eq!(refusal("about:blank"), None);
+        assert_eq!(refusal("about:srcdoc"), None);
+        assert_eq!(
+            refusal("blob:https://example.com/8f3c-4a2b"),
+            None
+        );
+    }
+
+    #[test]
+    fn renderable_local_files_are_allowed() {
+        for url in [
+            "file:///Users/me/coverage/index.html",
+            "file:///Users/me/notes.htm",
+            "file:///Users/me/page.xhtml",
+            "file:///var/log/build.log",
+            "file:///Users/me/README.md",
+            "file:///Users/me/data.json",
+            "file:///Users/me/rows.csv",
+            "file:///Users/me/Cargo.toml",
+            "file:///Users/me/spec.pdf",
+        ] {
+            assert_eq!(refusal(url), None, "{url}");
+        }
+    }
+
+    /// The point of the whole change. A page could pull any of these into a
+    /// frame and read it off the user's disk.
+    #[test]
+    fn unrenderable_local_files_are_refused() {
+        for url in [
+            "file:///Users/me/.ssh/id_rsa",
+            "file:///Users/me/wallet.dat",
+            "file:///Applications/Thing.app/Contents/MacOS/thing",
+            "file:///Users/me/photo.png",
+            "file:///Users/me/diagram.svg",
+            "file:///Users/me/archive.zip",
+            "file:///Users/me/db.sqlite3",
+        ] {
+            assert_eq!(refusal(url), Some(Refusal::FileType), "{url}");
+        }
+    }
+
+    /// A file's extension is not case-sensitive on the two platforms most of
+    /// these files come from, so a policy that was would refuse `REPORT.HTML`
+    /// and look broken.
+    #[test]
+    fn the_extension_match_ignores_case() {
+        assert_eq!(refusal("file:///Users/me/REPORT.HTML"), None);
+        assert_eq!(refusal("file:///Users/me/Spec.PdF"), None);
+        assert_eq!(refusal("FILE:///Users/me/a.html"), None);
+    }
+
+    /// A query string and a fragment are not part of the path, and a rule that
+    /// read the whole URL would see `.html?v=2` and refuse a page that is fine.
+    #[test]
+    fn a_query_or_fragment_does_not_change_the_verdict() {
+        assert_eq!(refusal("file:///Users/me/a.html?v=2"), None);
+        assert_eq!(refusal("file:///Users/me/a.html#section-3"), None);
+        assert_eq!(refusal("file:///Users/me/a.html?v=2#s"), None);
+        // …and neither may it *rescue* one: an unrenderable file does not
+        // become renderable by carrying `?x=.html`.
+        assert_eq!(
+            refusal("file:///Users/me/secret.key?x=.html"),
+            Some(Refusal::FileType)
+        );
+        assert_eq!(
+            refusal("file:///Users/me/secret.key#a.html"),
+            Some(Refusal::FileType)
+        );
+    }
+
+    /// A directory listing is none of the three allowed types, and allowing one
+    /// would turn a single refusal into a file browser the user can walk out of.
+    /// Both spellings of a directory have to agree, because only one of them is
+    /// distinguishable from a file without touching the disk.
+    #[test]
+    fn directories_are_refused_both_ways_round() {
+        assert_eq!(refusal("file:///Users/me/"), Some(Refusal::FileType));
+        assert_eq!(refusal("file:///"), Some(Refusal::FileType));
+        // No trailing slash: indistinguishable from an extensionless file, and
+        // refused as one. That the two answers match is why this rule never
+        // needs to stat anything.
+        assert_eq!(refusal("file:///Users/me/Documents"), Some(Refusal::FileType));
+        // A directory whose *name* has a renderable extension. The trailing
+        // slash is checked first, so this does not slip through.
+        assert_eq!(refusal("file:///Users/me/site.html/"), Some(Refusal::FileType));
+    }
+
+    #[test]
+    fn a_path_with_no_extension_is_refused() {
+        assert_eq!(refusal("file:///etc/hosts"), Some(Refusal::FileType));
+        assert_eq!(refusal("file:///Users/me/Makefile"), Some(Refusal::FileType));
+        // A dot in a *directory* along the way is not the file's extension.
+        assert_eq!(
+            refusal("file:///Users/me/v1.2/changelog"),
+            Some(Refusal::FileType)
+        );
+    }
+
+    /// A dotfile named `.html` is a dotfile, not an HTML document — and
+    /// `~/.htaccess`-shaped things are exactly what a hostile frame would ask
+    /// for if an empty stem counted.
+    #[test]
+    fn a_dotfile_is_not_its_own_extension() {
+        assert_eq!(refusal("file:///Users/me/.html"), Some(Refusal::FileType));
+        assert_eq!(refusal("file:///Users/me/.md"), Some(Refusal::FileType));
+        // A dotfile that then carries a real extension is fine.
+        assert_eq!(refusal("file:///Users/me/.config/notes.md"), None);
+    }
+
+    /// Percent-encoding must never *widen* the policy. A path that only looks
+    /// renderable once decoded is refused, which is the safe direction to be
+    /// wrong in.
+    #[test]
+    fn percent_encoding_cannot_smuggle_an_extension() {
+        assert_eq!(refusal("file:///Users/me/a%2Ehtml"), Some(Refusal::FileType));
+        // An encoded space in the name is ordinary and must still be allowed.
+        assert_eq!(refusal("file:///Users/me/my%20notes.md"), None);
+    }
+
+    /// The refusal reasons are two because they are two different mistakes, and
+    /// only one of them is something the user can do anything about.
+    #[test]
+    fn the_two_reasons_say_different_things() {
+        assert_ne!(
+            refusal_reason(Refusal::Scheme),
+            refusal_reason(Refusal::FileType)
+        );
     }
 
     #[test]

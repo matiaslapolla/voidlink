@@ -12,10 +12,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { emitTauriEvent, lastInvokeArgs, mockTauri, tauriCalls } from "@/test/tauri";
+import { resetToasts, useToasts } from "@/commands/toast";
 import type { BrowserTab } from "@/store/layout";
 
 import { BrowserPane } from "./BrowserPane";
 
+const BLOCKED = "voidlink://browser-blocked";
 const NAVIGATING = "voidlink://browser-navigating";
 const COMMITTED = "voidlink://browser-committed";
 const NAVIGATED = "voidlink://browser-navigated";
@@ -63,6 +65,7 @@ async function mountPane(props: Partial<Parameters<typeof BrowserPane>[0]> = {})
 }
 
 beforeEach(() => {
+  resetToasts();
   mountDefaults();
 });
 
@@ -145,6 +148,108 @@ describe("the address bar and the page's focus", () => {
     // The error state hides the webview; a typo must not cost the user the
     // page they were reading.
     expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
+});
+
+/// BR-S3. The rule itself is a pure function tested exhaustively in
+/// `url.test.ts` (and again, in Rust, in `browser/mod.rs`). What is under test
+/// here is the half that only exists in this component: **that a refusal is
+/// ever seen at all.**
+///
+/// It matters more than it looks. Enforcement is the Rust hook, and the hook
+/// cancels by returning `false`, which produces no error, no load event and no
+/// change on screen. A policy that blocks and says nothing is indistinguishable
+/// from an app that has hung — a worse bug than the unrestricted `file://` it
+/// removes.
+///
+/// **What no test in this repo can reach:** that returning `false` actually
+/// stops a real child webview. That needs an OS-level native view and a page
+/// trying to navigate. The tests below drive the *event* the hook emits, which
+/// is the contract this side of the boundary depends on.
+describe("the url policy", () => {
+  /// The address bar has to give the same answer as the hook. If it accepted a
+  /// URL the hook will cancel, Enter would send it and then nothing would
+  /// happen, anywhere, forever.
+  it("refuses a local file the tab cannot render instead of sending it", async () => {
+    const user = userEvent.setup();
+    await mountPane();
+
+    const input = screen.getByLabelText("Address");
+    await user.clear(input);
+    await user.type(input, "file:///Users/me/.ssh/id_rsa{Enter}");
+
+    await Promise.resolve();
+    expect(tauriCalls("browser_navigate")).toHaveLength(0);
+    expect(useToasts().toasts()).toHaveLength(1);
+    expect(useToasts().toasts()[0].message).toMatch(/web page, a text file or a PDF/);
+    // A refusal must not cost the user the page they were reading — the error
+    // state hides the webview and replaces it with a retry screen.
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
+
+  it("still sends a local file the tab can render", async () => {
+    const user = userEvent.setup();
+    await mountPane();
+
+    const input = screen.getByLabelText("Address");
+    await user.clear(input);
+    await user.type(input, "file:///Users/me/coverage/index.html{Enter}");
+
+    await waitFor(() => expect(tauriCalls("browser_navigate")).toHaveLength(1));
+    expect(lastInvokeArgs("browser_navigate")).toMatchObject({
+      url: "file:///Users/me/coverage/index.html",
+    });
+  });
+
+  /// A navigation this component never asked for — a link the user clicked, an
+  /// iframe the page pulled. The event is the only channel; the cancel itself
+  /// is silent.
+  it("says so when the hook cancels a navigation nothing here requested", async () => {
+    await mountPane();
+
+    emitTauriEvent(BLOCKED, {
+      tabId: "tab-1",
+      url: "file:///Users/me/wallet.dat",
+      reason: "file-type",
+    });
+
+    await waitFor(() => expect(useToasts().toasts()).toHaveLength(1));
+    expect(useToasts().toasts()[0].message).toContain("file:///Users/me/wallet.dat");
+  });
+
+  /// **The subframe case.** The hook cannot tell a subframe from a top-level
+  /// navigation — wry's macOS navigation policy never consults `isMainFrame` —
+  /// so one page pulling ten blocked frames emits ten of these. Ten toasts for
+  /// one page would be its own bug, so they coalesce onto one `source` key and
+  /// arrive as a single line carrying a count.
+  it("folds a page's worth of blocked frames into one toast with a count", async () => {
+    await mountPane();
+
+    for (let i = 0; i < 10; i++) {
+      emitTauriEvent(BLOCKED, {
+        tabId: "tab-1",
+        url: `file:///Users/me/leak-${i}.png`,
+        reason: "file-type",
+      });
+    }
+
+    await waitFor(() => expect(useToasts().toasts()[0]?.count).toBe(10));
+    expect(useToasts().toasts()).toHaveLength(1);
+  });
+
+  /// Every tab hears every tab's events, and a refusal in someone else's tab is
+  /// not this pane's news to report.
+  it("ignores a refusal in another tab", async () => {
+    await mountPane();
+
+    emitTauriEvent(BLOCKED, {
+      tabId: "tab-2",
+      url: "file:///Users/me/other.png",
+      reason: "file-type",
+    });
+
+    await Promise.resolve();
+    expect(useToasts().toasts()).toHaveLength(0);
   });
 });
 

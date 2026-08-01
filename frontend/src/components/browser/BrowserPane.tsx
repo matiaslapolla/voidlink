@@ -4,7 +4,7 @@ import { browserApi, type WebviewRect } from "@/api/webview";
 import { isOverlayOpen } from "@/commands/overlay";
 import { pushToast } from "@/commands/toast";
 import type { BrowserTab } from "@/store/layout";
-import { readAddress } from "@/components/browser/url";
+import { readAddress, refusalMessage } from "@/components/browser/url";
 
 export { browserTabLabel, normalizeUrl } from "@/components/browser/url";
 
@@ -146,6 +146,30 @@ export function BrowserPane(props: {
         if (!addressHasFocus()) setAddress(e.url);
         props.onUrlChange(e.url);
       }),
+      // The URL policy refused a navigation, in Rust, at the hook. Saying so
+      // is not optional: cancelling produces no error, no load event and no
+      // change on screen, so a page that quietly refuses to move is
+      // indistinguishable from an app that has hung — a worse bug than the
+      // unrestricted `file://` the policy removes.
+      //
+      // Coalesced by tab, because the hook cannot tell a subframe from a
+      // top-level navigation (wry's macOS policy never checks `isMainFrame`)
+      // and a single page can pull ten blocked frames. The `source` key is the
+      // toast module's own mechanism for exactly this: repeats from one cause
+      // fold into one toast carrying a count, so ten blocked frames read as one
+      // line and the number ten. Keyed by tab id rather than by URL — the news
+      // is "this page is being stopped", not "this particular URL was", and a
+      // per-URL key would put ten lines back on screen.
+      browserApi.onBlocked((e) => {
+        if (e.tabId !== tabId) return;
+        pushToast(
+          refusalMessage(e.url, e.reason),
+          "warning",
+          6000,
+          undefined,
+          `browser-blocked:${tabId}`,
+        );
+      }),
       browserApi.onTitleChanged((e) => {
         if (e.tabId !== tabId) return;
         props.onTitleChange(e.title);
@@ -270,6 +294,22 @@ export function BrowserPane(props: {
       // user was reading because they mistyped into the bar above it is a much
       // larger punishment than the mistake.
       pushToast(`"${address.input}" is not an address`, "error", 6000);
+      return;
+    }
+    if (address.kind === "refused") {
+      // The URL policy would cancel this at the hook, and cancelling there is
+      // silent — the user would press Enter and watch nothing happen at all.
+      // Refused here instead, with the reason, before anything is sent. Same
+      // toast the blocked-frame path raises, and the same `source` key, so a
+      // user who types a refused address while a page is pulling refused frames
+      // still sees one line rather than two.
+      pushToast(
+        refusalMessage(address.url, address.reason),
+        "warning",
+        6000,
+        undefined,
+        `browser-blocked:${tabId}`,
+      );
       return;
     }
     const normalized = address.url;
