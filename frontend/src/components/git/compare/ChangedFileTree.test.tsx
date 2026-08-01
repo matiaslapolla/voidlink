@@ -101,6 +101,57 @@ describe("tree shape", () => {
     expect(screen.getByText("gone.ts")).toBeInTheDocument();
   });
 
+  /// The other end of the compaction rule, and the one the audit read the
+  /// wrong way round: a folder whose only child is a *file* still merges into
+  /// its parent chain. `src/main/Foo.java` is one folder row, not two.
+  it("compacts a chain that ends in a single file", () => {
+    mount([file("src/main/Foo.java")]);
+    expect(screen.getByText("src/main/")).toBeInTheDocument();
+    expect(screen.queryByText("src/")).not.toBeInTheDocument();
+    expect(screen.queryByText("main/")).not.toBeInTheDocument();
+    expect(screen.getByText("Foo.java")).toBeInTheDocument();
+  });
+
+  /// ...but the last folder does not swallow the file itself. `src/main/` and
+  /// `Foo.java` are two rows, because the file is what gets clicked and a row
+  /// that is both a folder and a file has no sensible click target.
+  it("does not merge a folder into the file underneath it", () => {
+    mount([file("src/Foo.java")]);
+    const rows = screen.getAllByRole("button").map((b) => b.textContent ?? "");
+    expect(rows.some((t) => t.includes("src/Foo.java"))).toBe(false);
+  });
+
+  /// CMP-F6. A commit can turn a file into a directory, and then a single diff
+  /// contains both: `swap` deleted as a file and `swap/inner.ts` added beneath
+  /// a directory of the same name. Both nodes carried `path: "swap"`, so
+  /// anything keyed on the path could not say which row it meant — which is
+  /// why folders now key on the path plus a trailing slash.
+  it("keeps a file and a directory of the same name apart", () => {
+    mount([
+      file("swap", { newPath: null, status: "deleted" }),
+      file("swap/inner.ts", { oldPath: null, status: "added" }),
+    ]);
+    expect(screen.getByText("swap/")).toBeInTheDocument();
+    expect(screen.getByText("swap")).toBeInTheDocument();
+    expect(screen.getByText("inner.ts")).toBeInTheDocument();
+    expect(screen.getByText(/^2 files$/)).toBeInTheDocument();
+  });
+
+  /// The consequence that made the shared key worth fixing: collapse state is
+  /// keyed on it, so a collapsed directory must not take the file of the same
+  /// name down with it.
+  it("collapsing that directory leaves the file of the same name alone", async () => {
+    const user = userEvent.setup();
+    mount([
+      file("swap", { newPath: null, status: "deleted" }),
+      file("swap/inner.ts", { oldPath: null, status: "added" }),
+    ]);
+
+    await user.click(screen.getByText("swap/"));
+    expect(screen.queryByText("inner.ts")).not.toBeInTheDocument();
+    expect(screen.getByText("swap")).toBeInTheDocument();
+  });
+
   it("says so rather than rendering an empty pane when nothing changed", () => {
     mount([]);
     expect(screen.getByText(/no differences/i)).toBeInTheDocument();

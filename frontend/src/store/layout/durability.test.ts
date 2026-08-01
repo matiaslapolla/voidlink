@@ -383,3 +383,42 @@ describe("corrupt and half-written blobs", () => {
     expect(reported).toEqual([STORAGE_KEYS.stackTabs, STORAGE_KEYS.stackTabs]);
   });
 });
+
+/// CMP-F31. The tree width used to be one `localStorage` key shared by every
+/// compare tab in every window, so widening the tree to read a deep vendored
+/// path also widened it in the tab next door showing three root-level files —
+/// and only after a reload, since nothing told the live tabs.
+describe("compare tree width", () => {
+  it("belongs to one tab and not its neighbour", () => {
+    withStore((store) => {
+      const { actions, state } = store;
+      const wide = actions.openCompareTab(WT_ID, { baseRef: "main", headRef: "feat" });
+      const narrow = actions.openCompareTab(WT_ID, { baseRef: "main", headRef: "other" });
+
+      actions.setCompareTreeWidth(WT_ID, wide, 500);
+
+      const tabs = state.compareTabsByWorktree[WT_ID];
+      expect(tabs.find((t) => t.id === wide)!.treeWidth).toBe(500);
+      expect(tabs.find((t) => t.id === narrow)!.treeWidth).toBe(320);
+    });
+  });
+
+  /// A stored width is user-writable and outlives the version of the app that
+  /// wrote it, so an out-of-range one has to come back as something the pane
+  /// can still be dragged out of.
+  it("clamps a width the pane could not be recovered from", () => {
+    withStore((store) => {
+      const { actions, state } = store;
+      const id = actions.openCompareTab(WT_ID, { baseRef: "main", headRef: "feat" });
+
+      actions.setCompareTreeWidth(WT_ID, id, 0);
+      expect(state.compareTabsByWorktree[WT_ID][0].treeWidth).toBe(220);
+
+      actions.setCompareTreeWidth(WT_ID, id, 10_000);
+      expect(state.compareTabsByWorktree[WT_ID][0].treeWidth).toBe(600);
+
+      actions.setCompareTreeWidth(WT_ID, id, Number.NaN);
+      expect(state.compareTabsByWorktree[WT_ID][0].treeWidth).toBe(320);
+    });
+  });
+});

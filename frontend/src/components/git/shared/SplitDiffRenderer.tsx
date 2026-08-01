@@ -590,7 +590,11 @@ export function DiffRenderer(props: {
       }
     >
       <Show
-        when={props.file.hunks.length > 0}
+        // `|| truncated` because the global budget can be spent before this
+        // file's first line, leaving it with real changes and no stored hunks.
+        // `NoTextChange` would then say "no line changes to show" over a file
+        // that changed by thousands.
+        when={props.file.hunks.length > 0 || props.file.truncated}
         fallback={<NoTextChange file={props.file} />}
       >
         <Show
@@ -604,6 +608,20 @@ export function DiffRenderer(props: {
           }
         >
           <SplitDiff file={props.file} hunkActions={props.hunkActions} repoPath={props.repoPath} />
+        </Show>
+        {/* Rust stops storing lines once a file blows the budget in
+            `collect_diff`. The header's +/− counts are still the true totals,
+            so without this the pane and the number above it disagree and the
+            diff simply looks like it ends early — the same silent-wrongness
+            shape as the blank pane `NoTextChange` exists to avoid. */}
+        <Show when={props.file.truncated}>
+          <div class="px-4 py-3 border-t border-border text-xs text-muted-foreground">
+            This file is too large to show in full. The{" "}
+            <span class="tabular-nums">
+              +{props.file.additions} −{props.file.deletions}
+            </span>{" "}
+            counts above are complete; the lines below the cut are not shown.
+          </div>
         </Show>
       </Show>
     </Show>

@@ -19,7 +19,13 @@ pub(crate) fn git_diff_refs_impl(
     use_merge_base: bool,
     ignore_whitespace: bool,
 ) -> Result<DiffResult, String> {
-    let repo = open_repo(&repo_path)?;
+    // Prefixed, because the frontend routes this string. A failure to open the
+    // repository at all — a lock held by another process, a directory that
+    // moved — used to come back as a bare libgit2 message, indistinguishable
+    // from a mistyped ref, so it lit up whichever picker happened to have the
+    // words "base" or "head" in its error and offered a Retry that hits the
+    // same lock. `repo:` is neither side, and the UI says so.
+    let repo = open_repo(&repo_path).map_err(|e| format!("repo: {e}"))?;
 
     let base_obj = resolve_ref(&repo, &base_ref).map_err(|e| format!("base: {e}"))?;
     let head_obj = resolve_ref(&repo, &head_ref).map_err(|e| format!("head: {e}"))?;
@@ -369,7 +375,43 @@ mod tests {
         let base = head_default_branch(&Repository::open(dir.path()).unwrap());
         let err =
             git_diff_refs_impl(path, base, "no-such-ref".into(), true, false).unwrap_err();
-        assert!(err.contains("head"), "error should identify which side: {err}");
+        assert!(
+            err.starts_with("head:"),
+            "error should identify which side, at the front where the UI reads it: {err}"
+        );
+    }
+
+    /// CMP-F18 / CMP-F28. The frontend decides which picker to paint red from
+    /// this string. A ref failure has to say which side *at the front* — a
+    /// substring test matched `origin/base-fix` inside a head error and lit up
+    /// both — and a failure that is neither side has to say neither, instead of
+    /// being mistaken for a typo and offering a Retry that hits the same lock.
+    #[test]
+    fn a_repository_level_failure_blames_neither_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let nowhere = dir.path().join("not-a-repo");
+        std::fs::create_dir(&nowhere).unwrap();
+        let err = git_diff_refs_impl(
+            nowhere.to_string_lossy().to_string(),
+            "main".into(),
+            "feature".into(),
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("repo:"), "got {err}");
+    }
+
+    /// The half that made the substring test wrong: a *head* ref whose name
+    /// contains the word "base".
+    #[test]
+    fn a_head_ref_named_after_the_other_side_still_blames_only_head() {
+        let dir = build_two_branch_repo();
+        let path = dir.path().to_string_lossy().to_string();
+        let base = head_default_branch(&Repository::open(dir.path()).unwrap());
+        let err =
+            git_diff_refs_impl(path, base, "origin/base-fix".into(), true, false).unwrap_err();
+        assert!(err.starts_with("head:"), "got {err}");
     }
 
     fn head_default_branch(repo: &Repository) -> String {

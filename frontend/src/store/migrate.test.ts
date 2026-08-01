@@ -323,6 +323,10 @@ describe("a v1 user's session after the upgrade", () => {
           selectedFilePath: "/repo/x.ts",
           treeMode: "flat",
           treeFilter: "src",
+          // State written before the tree width became per-tab carries none,
+          // so the deserializer supplies the default rather than a `NaN` the
+          // pane would render as no width at all.
+          treeWidth: 320,
         },
       ]);
       expect(s.stackTabsByWorktree[WT_A]).toEqual([

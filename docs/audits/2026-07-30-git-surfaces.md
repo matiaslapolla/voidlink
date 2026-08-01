@@ -51,7 +51,7 @@ Ranked across all tracks. Numbers in brackets are the finding ids.
 | ~~5~~ | ~~Filesystem watcher over `.git` and the working tree~~ **done** | REFRESH-C1 |
 | ~~6~~ | ~~Pulse cost, then the visible-wrongness cluster~~ **done** | WT-W8, CMP-F23, CMP-F14, CMP-F13, CMP-F4, CMP-F5, CMP-F7, CMP-F8, CMP-F17, CMP-F33, BR-C2, BR-A1, GRAPH-O2 |
 | ~~7~~ | Two rows per file from `git_file_status_impl`; row identity is section+path | SIDEBAR-B1 |
-| 8 | Everything else below, unranked | *two passes done — see the ledgers* |
+| 8 | Everything else below, unranked | *four passes done — see the ledgers; Track 8 is closed but for two product decisions* |
 
 ### #8 ledger — first pass
 
@@ -176,7 +176,7 @@ Track 2 "Lower" lists, GRAPH-O4.
 the surfaces that carried the most findings are now mounted in tests for the
 first time:
 
-- `ChangedFileTree` — 15 tests, covering CMP-F25 (collapse state surviving a
+- `ChangedFileTree` — 15 tests at the time, covering CMP-F25 (collapse state surviving a
   rebuild, driven through a signal so the component genuinely re-renders against
   fresh objects), the compaction rule and where it stops, rename/deletion
   identity, rollups and filtering.
@@ -193,6 +193,51 @@ reading of the component: `a/b` and `a/c` do **not** compact into one row, since
 WT-S2–S6, WT-D3/D4, BR-A4/A5/A7/A8/A11/B3/C3–C6/D3/E2/F5/F6/F7/G8, DIFF-A7/A8,
 the Track 1 and Track 2 "Lower" lists, GRAPH-O4. All MEDIUM or below; none is a
 correctness defect that loses work or misreports the repository.
+
+### #8 ledger — fourth pass, the compare remainder (2026-08-01)
+
+| id | what |
+| --- | --- |
+| CMP-F10 | **fixed.** `collect_diff` has two budgets — 20,000 stored lines per file, 200,000 across the diff — and `FileDiff.truncated` says which files hit them. `additions`/`deletions` keep counting past the cap, so the tree rows, the folder rollups and the footer all still report the true size; what stops is storing content nobody was going to scroll. The renderer says what it is not showing rather than looking like a diff that ends early, and a file whose *first* line is past the global cap renders that notice instead of `NoTextChange` claiming nothing changed. This bounds the payload, not the walk: libgit2 still visits every line, so the per-repo lock is held for the traversal either way. |
+| CMP-F15 | **fixed.** `RefList.detachedHead` carries the commit HEAD is on when it is not on a branch, and the picker offers it as `HEAD` — the name, not the oid, so it keeps meaning "here" as a bisect moves. Absent when HEAD is on a branch, where it would only push a real choice off the top. |
+| CMP-F16 | **fixed.** The recent-commit revwalk is seeded from `refs/remotes/*` and `refs/tags/*` as well. |
+| CMP-F18 / CMP-F28 | **fixed together, because they are the same wire.** `compare.rs` answers `base:`, `head:` or `repo:` at the front and the UI anchors on that prefix. `\bbase\b` matched on `/`, `-` and `_`, so `origin/base-fix` typed into the *head* field turned both pickers red; a repository that would not open contained neither word and turned neither red, reading as a ref typo with a Retry that hits the same lock. |
+| CMP-F19 | **fixed.** The `/^[0-9a-f]{7,40}$/` heuristic waits for the ref list instead of running while it loads, so a branch named `deadbeef` no longer opens as a commit and changes kind under the user a moment later. |
+| CMP-F20 | **fixed.** The highlight opens at `-1`, so the first ArrowDown lands on item 0 rather than item 1, and ArrowUp goes back out of the list rather than trapping on the first item. The arrows also open a *closed* picker, which they never could: the handler was on the search input, and that input does not exist until the picker is open. |
+| CMP-F21 | **fixed.** Escape `stopPropagation`s. |
+| CMP-F22 (editability) | **fixed.** The box opens pre-filled with the current ref, selected — so `origin/main` becomes `origin/main~3` without retyping, and replacing it outright still costs one keystroke. The *filter* deliberately stays empty until the user types, because filtering on the pre-filled value would narrow the dropdown to the one ref already chosen. |
+| CMP-F6 | **fixed, structurally.** Folder nodes key on the path plus a trailing slash, so a commit that turns `swap` into `swap/` no longer produces two nodes sharing `path: "swap"`. Honest about what this was: as the code stands after F25/F26, only the collapse set consumes that key and only folders consult it, so the ambiguity had no reproducible symptom — a test written against the *old* keying passes. It is fixed as an identity invariant, with tests, rather than as an observed bug. |
+| CMP-F29 | **fixed.** The resizer holds a `ref` to the element it measures instead of a `getElementById` per mousemove. |
+| CMP-F31 | **fixed.** `CompareTab.treeWidth`, clamped on the way in and on restore, replaces one `localStorage` key shared by every compare tab in every window. The drag keeps a local signal and commits on mouseup, so a drag is not a store write and a persistence write per frame. |
+| CMP-F32 | **not a defect — the audit misread the code.** The claim was that a chain compacts `src/main/java/` but not `src/main/` with one file. It compacts both: the rule is that a folder with exactly one *folder* child merges into it, and `main` having a single file child does not stop `src` merging into `main`. What genuinely does not happen is a folder swallowing the file beneath it, which is correct — the file row is the click target. Both cases are now tests, and `branch-compare.md` says the rule in a way that does not invite the same misreading. |
+
+**Not fixed, and why.** Two of the F29–F32 cluster are blocked on a product
+decision rather than on work:
+
+- **`diffMode` and `ignoreWhitespace` per tab.** Both are global today, and
+  neither has a control anywhere inside the compare surface — the toggles live
+  in the working-tree diff toolbar. Making the state per-tab without adding
+  those controls to the compare toolbar would produce per-tab state the user
+  cannot change, which is worse than a shared setting. Adding the controls is a
+  toolbar decision, not a bug fix.
+- **CMP-F22's ahead/behind chip on remote branches.** Flipping
+  `listBranches(p, false)` to `true` does not help, and this was checked rather
+  than assumed: `git_list_branches_impl` hands every remote-tracking branch
+  `(None, 0, 0, false)`, because a remote branch has no upstream of its own.
+  Both counts are zero, both chips are gated on `> 0`, so the row renders
+  exactly as it does now at the cost of a heavier enumeration. Making a chip
+  appear means first deciding what a remote branch would be counted against —
+  the local branch that tracks it, its own upstream-of-an-upstream, the current
+  HEAD — and that is a question about what the arrows mean, not a flag.
+
+**Tests added:** `RefPicker.test.tsx` (14, the surface's first), four more in
+`ChangedFileTree.test.tsx` (19 total), two in `durability.test.ts`, and five in
+Rust across `diff.rs`, `refs.rs` and `compare.rs`.
+
+**Still open after this pass:** WT-W3/W4/W6/W9, WT-S2–S6, WT-D3/D4,
+BR-A4/A5/A7/A8/A11/B3/C3–C6/D3/E2/F5/F6/F7/G8, DIFF-A7/A8, the Track 1 and
+Track 2 "Lower" lists, GRAPH-O4, and the two compare items above. Track 8 is
+otherwise closed.
 
 ### Notes from #7
 

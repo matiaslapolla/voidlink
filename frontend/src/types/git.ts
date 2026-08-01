@@ -134,6 +134,15 @@ export interface FileDiff {
   /// file has moved since the diff was drawn. Never read by the UI; it exists
   /// so hunk-level staging cannot apply a patch to content nobody looked at.
   oldBlobOid: string | null;
+  /// Rust stopped storing this file's lines partway through, against the
+  /// budget in `collect_diff`. `additions`/`deletions` are still the true
+  /// totals — only the content stops — so a truncated file's tree row is
+  /// honest and only the pane needs to say what it is not showing.
+  ///
+  /// Optional because a `FileDiff` is also constructed on this side (hunk
+  /// staging round-trips one back to Rust), where there is nothing to
+  /// truncate.
+  truncated?: boolean;
 }
 
 export interface DiffResult {
@@ -153,6 +162,12 @@ export interface RefList {
   branches: string[];
   tags: string[];
   recentCommits: RecentCommit[];
+  /// The commit HEAD sits on when it is detached, and `null` otherwise.
+  ///
+  /// A detached HEAD is named by no listed ref, so mid-bisect or after
+  /// checking out a tag the position the user is standing on was the one thing
+  /// the picker could not offer.
+  detachedHead: RecentCommit | null;
 }
 
 export interface BlameLine {

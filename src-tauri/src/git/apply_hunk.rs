@@ -362,6 +362,7 @@ mod tests {
             additions: 0,
             deletions: 0,
             old_blob_oid: None,
+            truncated: false,
         };
         let hunk = DiffHunk {
             old_start: 1,
@@ -394,6 +395,7 @@ mod tests {
             additions: 0,
             deletions: 0,
             old_blob_oid: None,
+            truncated: false,
         };
         let hunk = DiffHunk {
             old_start: 1,
@@ -425,6 +427,7 @@ mod tests {
             additions: 0,
             deletions: 0,
             old_blob_oid: None,
+            truncated: false,
         };
         let hunk = DiffHunk {
             old_start: 1,
@@ -475,6 +478,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             old_blob_oid: None,
+            truncated: false,
         };
 
         git_apply_hunk_impl(
@@ -514,6 +518,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             old_blob_oid: basis,
+            truncated: false,
         }
     }
 

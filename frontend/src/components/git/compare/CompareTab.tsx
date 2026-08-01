@@ -10,7 +10,11 @@ import {
 import { ArrowLeftRight, GitMerge, RotateCw } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
-import type { CompareTab as CompareTabState } from "@/store/layout";
+import {
+  COMPARE_TREE_WIDTH_MAX,
+  COMPARE_TREE_WIDTH_MIN,
+  type CompareTab as CompareTabState,
+} from "@/store/layout";
 import { ChangedFileTree } from "./ChangedFileTree";
 import { CompareDiffPane } from "./CompareDiffPane";
 import { RefPicker } from "./RefPicker";
@@ -34,21 +38,15 @@ type Props = {
   worktreeId: string;
 };
 
-const TREE_WIDTH_KEY = "voidlink-compare-tree-width";
-const DEFAULT_TREE_WIDTH = 320;
-const MIN_TREE_WIDTH = 220;
-const MAX_TREE_WIDTH = 600;
-
-function loadTreeWidth(): number {
-  const raw = localStorage.getItem(TREE_WIDTH_KEY);
-  const n = raw ? parseInt(raw, 10) : NaN;
-  if (!Number.isFinite(n)) return DEFAULT_TREE_WIDTH;
-  return Math.min(MAX_TREE_WIDTH, Math.max(MIN_TREE_WIDTH, n));
-}
-
 export function CompareTab(props: Props) {
   const { state, actions } = useAppStore();
-  const [treeWidth, setTreeWidth] = createSignal(loadTreeWidth());
+  /// The element the drag measures against, held directly.
+  ///
+  /// It used to be re-found by id on every mousemove — a document-wide lookup
+  /// per frame that also depended on an id nothing else enforced, so a
+  /// duplicated or renamed id would have made the divider silently stop moving
+  /// with no error anywhere.
+  let rootRef: HTMLDivElement | undefined;
 
   // ─── Refs (autocomplete data) ───────────────────────────────────────
   const [refs, { refetch: refetchRefs }] = createResource(
@@ -60,6 +58,14 @@ export function CompareTab(props: Props) {
   /// listBranches is a heavier call than listRefs (it computes upstream
   /// counts) — keep it cached at the tab level so swapping ref dropdowns
   /// doesn't refetch.
+  ///
+  /// Local only, deliberately. `listRefs` does put `origin/main` in the
+  /// dropdown, and those rows carry no chip — but asking `listBranches` for
+  /// remotes would not change that: `git_list_branches_impl` hands every
+  /// remote-tracking branch `(None, 0, 0, false)`, because a remote branch has
+  /// no upstream of its own to be ahead or behind of. Making the chip appear
+  /// means first deciding what it would count against, and that is a product
+  /// question, not a flag.
   const [branchInfo, { refetch: refetchBranches }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listBranches(p, false),
@@ -192,6 +198,14 @@ export function CompareTab(props: Props) {
 
   // ─── Tree-pane resizer ──────────────────────────────────────────────
   const [dragging, setDragging] = createSignal(false);
+  /// The in-flight width, local for the length of the drag only.
+  ///
+  /// The committed value lives on the tab in the store, which is also what
+  /// gets persisted — and writing it on every mousemove would put a store
+  /// update and a persistence write on every frame of a drag. `null` means
+  /// "not dragging", so the rendered width falls back to the stored one.
+  const [dragWidth, setDragWidth] = createSignal<number | null>(null);
+  const treeWidth = () => dragWidth() ?? props.tab.treeWidth;
 
   function startDrag(e: MouseEvent) {
     e.preventDefault();
@@ -200,20 +214,23 @@ export function CompareTab(props: Props) {
 
   onMount(() => {
     const onMove = (e: MouseEvent) => {
-      if (!dragging()) return;
-      const target = document.getElementById(`compare-tab-${props.tab.id}`);
-      if (!target) return;
-      const rect = target.getBoundingClientRect();
-      const next = Math.min(
-        MAX_TREE_WIDTH,
-        Math.max(MIN_TREE_WIDTH, e.clientX - rect.left),
+      if (!dragging() || !rootRef) return;
+      const rect = rootRef.getBoundingClientRect();
+      setDragWidth(
+        Math.min(
+          COMPARE_TREE_WIDTH_MAX,
+          Math.max(COMPARE_TREE_WIDTH_MIN, e.clientX - rect.left),
+        ),
       );
-      setTreeWidth(next);
     };
     const onUp = () => {
       if (!dragging()) return;
       setDragging(false);
-      localStorage.setItem(TREE_WIDTH_KEY, String(treeWidth()));
+      const width = dragWidth();
+      setDragWidth(null);
+      if (width !== null) {
+        actions.setCompareTreeWidth(props.worktreeId, props.tab.id, width);
+      }
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -250,20 +267,19 @@ export function CompareTab(props: Props) {
     return e instanceof Error ? e.message : String(e);
   };
 
-  const baseInvalid = () => {
-    const m = errMessage();
-    return !!m && /\bbase\b/i.test(m);
-  };
-  const headInvalid = () => {
-    const m = errMessage();
-    return !!m && /\bhead\b/i.test(m);
-  };
+  /// Which picker to paint red, decided by the prefix Rust puts on the message
+  /// rather than by looking for the words anywhere in it.
+  ///
+  /// `\bbase\b` matched on `/`, `-` and `_`, so a typo'd `origin/base-fix` in
+  /// the *head* field turned both pickers red — while a repository that would
+  /// not open, containing neither word, highlighted neither and read as a ref
+  /// typo. `compare.rs` now answers `base:`, `head:` or `repo:` at the front,
+  /// and only the side that actually failed lights up.
+  const baseInvalid = () => /^base:/i.test(errMessage() ?? "");
+  const headInvalid = () => /^head:/i.test(errMessage() ?? "");
 
   return (
-    <div
-      id={`compare-tab-${props.tab.id}`}
-      class="absolute inset-0 flex flex-col bg-background"
-    >
+    <div ref={rootRef} class="absolute inset-0 flex flex-col bg-background">
       {/* Toolbar */}
       <div class="flex items-end gap-2 px-3 py-2 border-b border-border shrink-0">
         <div class="flex-1 min-w-0">
