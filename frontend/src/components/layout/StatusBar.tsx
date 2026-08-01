@@ -74,9 +74,9 @@ export const STATUS_BAR_ROW =
   // No `border-t`: under D1 the status bar is its own island and the canvas
   // gap above it is the separator. The editor window's scoped bar reuses this
   // string, so both windows lose the rule together.
-  "flex items-center h-6 px-2 gap-3 text-[11px] text-muted-foreground bg-sidebar shrink-0 select-none overflow-hidden";
+  "flex items-center h-6 px-2 gap-3 text-label text-muted-foreground bg-sidebar shrink-0 select-none overflow-hidden";
 
-/// One chip. Every status-bar control is this shape: `text-[10px]`, an optional
+/// One chip. Every status-bar control is this shape: `text-micro`, an optional
 /// LED, an optional click action, and an accessible name whether or not the
 /// visible content is text (§10.10).
 export function StatusChip(props: {
@@ -394,7 +394,7 @@ export function StatusBar() {
         render: () => (
           <>
             <Minimize2 class="w-3 h-3" />
-            <span class="text-[10px] tracking-wide">Maximized · {chordLabel("ui.maximize-pane")}</span>
+            <span class="text-micro tracking-wide">Maximized · {chordLabel("ui.maximize-pane")}</span>
           </>
         ),
       });
@@ -410,7 +410,7 @@ export function StatusBar() {
         render: () => (
           <>
             <Maximize2 class="w-3 h-3" />
-            <span class="text-[10px] tracking-wide">Zen · {chordLabel("ui.zen")}</span>
+            <span class="text-micro tracking-wide">Zen · {chordLabel("ui.zen")}</span>
           </>
         ),
       });
@@ -621,7 +621,7 @@ function OverflowMenu(props: { segments: StatusSegment[] }) {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[240px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[11px]"
+            class="fixed w-[240px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-label"
             style={{ left: `${pos().left}px`, bottom: `${pos().bottom}px` }}
           >
             <For each={props.segments}>

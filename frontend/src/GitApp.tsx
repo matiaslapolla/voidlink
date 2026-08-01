@@ -259,7 +259,7 @@ export function GitSurface(props: {
           this one, so neither the inset nor the drag region applies. */}
       <div
         data-tauri-drag-region={props.embedded ? undefined : true}
-        class={`h-9 shrink-0 flex items-center gap-2 px-3 text-xs select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
+        class={`h-9 shrink-0 flex items-center gap-2 px-3 text-body select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
         classList={{ "pl-[78px]": isMac() && !props.embedded }}
       >
         <GitBranch class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
@@ -310,13 +310,13 @@ export function GitSurface(props: {
             style={{ margin: "0 var(--island-inset) var(--island-inset)" }}
           >
             <GitBranch class="w-7 h-7 opacity-60" />
-            <p class="text-[13px]">
+            <p class="text-ui">
               {props.embedded
                 ? "Open a repository to see its git state."
                 : "Open a repository in the main voidlink window."}
             </p>
             <Show when={!props.embedded}>
-              <p class="text-[11px] opacity-70">
+              <p class="text-label opacity-70">
                 This window follows whichever worktree is active there.
               </p>
             </Show>
@@ -341,7 +341,7 @@ export function GitSurface(props: {
                         setSection(s.id);
                         setComparing(false);
                       }}
-                      class="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-left transition-colors"
+                      class="w-full flex items-center gap-2 px-3 py-1.5 text-ui text-left transition-colors"
                       classList={{
                         "bg-accent/60 text-foreground":
                           !comparing() && section() === s.id,
@@ -362,7 +362,7 @@ export function GitSurface(props: {
               <div class="shrink-0 border-t border-border/60 p-2">
                 <button
                   onClick={openCompare}
-                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed text-[12px] transition-colors"
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed text-body transition-colors"
                   classList={{
                     "border-primary/60 bg-accent/40 text-foreground": comparing(),
                     "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40":

@@ -71,7 +71,7 @@ export function CheckinSection(props: CheckinSectionProps) {
                 type="button"
                 aria-pressed={window() === kind}
                 onClick={() => setWindow(kind)}
-                class="px-2 py-1 text-xs rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="px-2 py-1 text-body rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 classList={{
                   "bg-background text-foreground shadow-sm": window() === kind,
                   "text-muted-foreground hover:text-foreground": window() !== kind,
@@ -87,7 +87,7 @@ export function CheckinSection(props: CheckinSectionProps) {
           type="button"
           onClick={() => void copy()}
           aria-label="Copy this check-in"
-          class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          class="inline-flex items-center gap-1 px-2 py-1 text-body rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Show when={copied()} fallback={<Copy class="w-3 h-3" aria-hidden="true" />}>
             <Check class="w-3 h-3 text-success" aria-hidden="true" />
@@ -102,12 +102,12 @@ export function CheckinSection(props: CheckinSectionProps) {
             previous report on screen while the next one loads. */}
         <Show
           when={events() !== undefined}
-          fallback={<p class="py-2 text-xs text-muted-foreground">Reading the log…</p>}
+          fallback={<p class="py-2 text-body text-muted-foreground">Reading the log…</p>}
         >
           <Show
             when={report().total > 0}
             fallback={
-              <p class="py-2 text-xs text-muted-foreground">
+              <p class="py-2 text-body text-muted-foreground">
                 Nothing was recorded in this window. That is an answer, not an error — if you
                 expected activity here, check that the repository is open in a workspace.
               </p>
@@ -116,16 +116,16 @@ export function CheckinSection(props: CheckinSectionProps) {
             <For each={report().repos}>
               {(digest) => (
                 <section class="py-2">
-                  <h3 class="flex items-baseline gap-2 text-xs font-medium text-foreground">
+                  <h3 class="flex items-baseline gap-2 text-body font-medium text-foreground">
                     <span title={digest.repo}>{digest.label}</span>
                     <Show when={digest.workspace}>
-                      <span class="text-[11px] text-muted-foreground">{digest.workspace}</span>
+                      <span class="text-label text-muted-foreground">{digest.workspace}</span>
                     </Show>
                   </h3>
                   <ul class="mt-1 space-y-1">
                     <For each={digest.lines}>
                       {(line) => (
-                        <li class="text-xs">
+                        <li class="text-body">
                           <span
                             classList={{
                               "text-info": line.actor === "agent",
@@ -141,7 +141,7 @@ export function CheckinSection(props: CheckinSectionProps) {
                                   committed would be inventing history. */}
                               <For each={line.commits}>
                                 {(commit) => (
-                                  <li class="text-[11px] text-muted-foreground truncate">
+                                  <li class="text-label text-muted-foreground truncate">
                                     “{commit}”
                                   </li>
                                 )}

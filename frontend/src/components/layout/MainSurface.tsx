@@ -1322,7 +1322,7 @@ export function MainSurface(props: MainSurfaceProps) {
       <Show when={!activeRepoPath()}>
         <div class="island absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-3 bg-background z-10">
           <TerminalSquare class="w-7 h-7 opacity-60" />
-          <p class="text-[13px]">Open a folder from the workspace rail to start working.</p>
+          <p class="text-ui">Open a folder from the workspace rail to start working.</p>
         </div>
       </Show>
     </div>
@@ -1441,14 +1441,14 @@ function NewTabMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-56 rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[13px]"
+            class="fixed w-56 rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <Show
               when={!props.newFileMode}
               fallback={
                 <div class="p-2 space-y-1.5">
-                  <label class="block text-[11px] text-muted-foreground">
+                  <label class="block text-label text-muted-foreground">
                     New file at workspace root
                   </label>
                   <input
@@ -1460,22 +1460,22 @@ function NewTabMenu(props: {
                     onKeyDown={(e) => {
                       if (e.key === "Enter") { e.preventDefault(); props.onCreateFile(); }
                     }}
-                    class="w-full rounded border border-border bg-muted/40 px-2 py-1 text-[12px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                    class="w-full rounded border border-border bg-muted/40 px-2 py-1 text-body font-mono focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                   <Show when={props.newFileError}>
-                    <p class="text-[11px] text-destructive">{props.newFileError}</p>
+                    <p class="text-label text-destructive">{props.newFileError}</p>
                   </Show>
                   <div class="flex justify-end gap-1.5">
                     <button
                       onClick={props.onClose}
-                      class="px-2 py-0.5 rounded text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+                      class="px-2 py-0.5 rounded text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
                     >
                       Cancel
                     </button>
                     <button
                       onClick={props.onCreateFile}
                       disabled={!props.newFileName.trim()}
-                      class="px-2 py-0.5 rounded text-[11px] bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
+                      class="px-2 py-0.5 rounded text-label bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
                     >
                       Create
                     </button>

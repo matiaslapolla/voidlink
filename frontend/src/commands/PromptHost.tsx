@@ -34,9 +34,9 @@ export function PromptHost() {
               class="w-[min(420px,90vw)] bg-elev-3 border border-border rounded-lg shadow-xl p-4"
               onClick={(e) => e.stopPropagation()}
             >
-              <h2 class="text-sm font-semibold text-foreground mb-2">{r().title}</h2>
+              <h2 class="text-title font-semibold text-foreground mb-2">{r().title}</h2>
               <Show when={r().label}>
-                <p class="text-xs text-muted-foreground mb-2">{r().label}</p>
+                <p class="text-body text-muted-foreground mb-2">{r().label}</p>
               </Show>
               <input
                 ref={inputRef}
@@ -45,7 +45,7 @@ export function PromptHost() {
                 spellcheck={false}
                 autocapitalize="off"
                 autocorrect="off"
-                class="w-full bg-input/60 border border-border rounded px-2 py-1.5 text-[13px] text-foreground outline-none focus:border-primary"
+                class="w-full bg-input/60 border border-border rounded px-2 py-1.5 text-ui text-foreground outline-none focus:border-primary"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") { e.preventDefault(); confirm(); }
                   else if (e.key === "Escape") { e.preventDefault(); resolvePrompt(null); }
@@ -55,7 +55,7 @@ export function PromptHost() {
                 <div class="mt-3 space-y-1.5">
                   <For each={r().toggles}>
                     {(t) => (
-                      <label class="flex items-center gap-2 text-xs text-foreground cursor-pointer select-none">
+                      <label class="flex items-center gap-2 text-body text-foreground cursor-pointer select-none">
                         <input
                           type="checkbox"
                           checked={toggleState()[t.key] ?? false}
@@ -73,13 +73,13 @@ export function PromptHost() {
               <div class="flex justify-end gap-2 mt-3">
                 <button
                   onClick={() => resolvePrompt(null)}
-                  class="px-3 py-1.5 rounded text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors"
+                  class="px-3 py-1.5 rounded text-body text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={confirm}
-                  class="px-3 py-1.5 rounded text-xs bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                  class="px-3 py-1.5 rounded text-body bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
                 >
                   {r().confirmLabel}
                 </button>

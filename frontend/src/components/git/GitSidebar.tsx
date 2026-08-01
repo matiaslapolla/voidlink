@@ -193,15 +193,15 @@ function Section(props: {
       <button
         onClick={props.onToggle}
         aria-expanded={props.open}
-        class="flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors flex-1 min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        class="flex items-center gap-1.5 px-2.5 py-1.5 text-ui font-medium text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors flex-1 min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <span class="w-3 h-3 shrink-0">
           {props.open ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
         </span>
         {props.icon}
-        <span class="flex-1 tracking-wide text-xs truncate">{props.label}</span>
+        <span class="flex-1 tracking-wide text-body truncate">{props.label}</span>
         <Show when={!props.open && props.badge}>
-          <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/80 px-1 rounded bg-muted/60">
+          <span class="shrink-0 text-micro tabular-nums text-muted-foreground/80 px-1 rounded bg-muted/60">
             {props.badge}
           </span>
         </Show>
@@ -494,7 +494,7 @@ export function GitSidebar(props: GitSidebarProps) {
       />
 
       {/* Header */}
-      <div class="px-3 h-9 border-b border-border flex items-center gap-2 text-xs shrink-0">
+      <div class="px-3 h-9 border-b border-border flex items-center gap-2 text-body shrink-0">
         <GitBranch class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
         <span
           class={`font-medium truncate ${freshnessClass(freshness())}`}
@@ -535,7 +535,7 @@ export function GitSidebar(props: GitSidebarProps) {
           </button>
         </Show>
         <Show when={info()?.isClean === false}>
-          <span class={`text-warning text-xs ${freshnessClass(freshness())}`} title={freshTitle()}>
+          <span class={`text-warning text-body ${freshnessClass(freshness())}`} title={freshTitle()}>
             • changes
           </span>
         </Show>
@@ -631,7 +631,7 @@ export function GitSidebar(props: GitSidebarProps) {
       <div class="shrink-0 border-t border-border p-2">
         <button
           onClick={() => actions.openCompareTab(props.worktreeId)}
-          class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed border-border text-[12px] text-muted-foreground hover:text-foreground hover:bg-accent/40 hover:border-border/80 transition-colors"
+          class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed border-border text-body text-muted-foreground hover:text-foreground hover:bg-accent/40 hover:border-border/80 transition-colors"
           title="Compare two branches, tags, or commits"
         >
           <GitCompare class="w-3.5 h-3.5 shrink-0" />
@@ -1183,7 +1183,7 @@ export function ChangesPane(props: {
           value={commitMsg()}
           onInput={(e) => setCommitMsg(e.currentTarget.value)}
           rows={3}
-          class={`w-full rounded-md bg-muted/50 border border-border/60 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-ring transition-colors ${
+          class={`w-full rounded-md bg-muted/50 border border-border/60 px-2.5 py-1.5 text-body resize-none focus:outline-none focus:ring-1 focus:ring-ring transition-colors ${
             drafting() ? "border-primary/40 placeholder:animate-pulse" : ""
           }`}
           onKeyDown={(e) => {
@@ -1198,7 +1198,7 @@ export function ChangesPane(props: {
             disabled={committing() || (!amendMode() && (staged().length === 0 || !commitMsg().trim()))}
             onClick={() => void commit()}
             aria-label={amendMode() ? "Amend last commit" : "Commit staged changes"}
-            class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[13px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.96] transition-[background-color,color,transform,opacity]"
+            class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md text-ui font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.96] transition-[background-color,color,transform,opacity]"
           >
             <Show
               when={commitOk()}
@@ -1224,7 +1224,7 @@ export function ChangesPane(props: {
                   ? `Regenerate (last draft: ${recentDraftMs()}ms)`
                   : `Draft commit message with AI (${shortcutLabel("git.ai-draft-commit")})`
             }
-            class={`px-2 py-1 rounded-md text-[13px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+            class={`px-2 py-1 rounded-md text-ui transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               recentDraftMs() !== null
                 ? "text-primary hover:text-primary hover:bg-primary/10"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -1237,7 +1237,7 @@ export function ChangesPane(props: {
             disabled={busy()}
             aria-label="Stage all changes"
             title="Stage all"
-            class="px-2 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            class="px-2 py-1 rounded-md text-ui text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Plus class="w-3 h-3" />
           </button>
@@ -1246,7 +1246,7 @@ export function ChangesPane(props: {
             disabled={busy()}
             aria-label="Stash changes"
             title="Stash changes"
-            class="px-2 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            class="px-2 py-1 rounded-md text-ui text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Archive class="w-3 h-3" />
           </button>
@@ -1255,7 +1255,7 @@ export function ChangesPane(props: {
             disabled={pushing()}
             aria-label="Push to remote"
             title="Push"
-            class={`px-2 py-1 rounded-md text-[13px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+            class={`px-2 py-1 rounded-md text-ui transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               pushOk()
                 ? "text-success"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -1267,10 +1267,10 @@ export function ChangesPane(props: {
           </button>
         </div>
         <Show when={commitError()}>
-          <p class="text-xs text-destructive truncate" title={commitError()}>{commitError()}</p>
+          <p class="text-body text-destructive truncate" title={commitError()}>{commitError()}</p>
         </Show>
         <Show when={pushError()}>
-          <p class="text-xs text-destructive truncate" title={pushError()}>
+          <p class="text-body text-destructive truncate" title={pushError()}>
             Push failed: {pushError()}
           </p>
         </Show>
@@ -1290,7 +1290,7 @@ export function ChangesPane(props: {
             />
           )}
         </Show>
-        <div class="flex items-center gap-2 text-[11px]">
+        <div class="flex items-center gap-2 text-label">
           <label class="flex items-center gap-1 cursor-pointer select-none text-muted-foreground hover:text-foreground transition-colors">
             <input
               type="checkbox"
@@ -1312,7 +1312,7 @@ export function ChangesPane(props: {
 
         {/* Commit identity. Collapsed to one line until you need it — the
             common case is that git config is already right. */}
-        <div class="mt-1.5 text-[11px]">
+        <div class="mt-1.5 text-label">
           <button
             onClick={() => setAuthorOpen((v) => !v)}
             class="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
@@ -1369,14 +1369,14 @@ export function ChangesPane(props: {
                   value={draftName()}
                   onInput={(e) => setDraftName(e.currentTarget.value)}
                   placeholder="Ada Lovelace"
-                  class="rounded border border-border bg-muted/40 px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+                  class="rounded border border-border bg-muted/40 px-1.5 py-1 text-label focus:outline-none focus:ring-1 focus:ring-ring"
                 />
                 <label class="text-muted-foreground">Email</label>
                 <input
                   value={draftEmail()}
                   onInput={(e) => setDraftEmail(e.currentTarget.value)}
                   placeholder="ada@example.com"
-                  class="rounded border border-border bg-muted/40 px-1.5 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                  class="rounded border border-border bg-muted/40 px-1.5 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring"
                 />
                 <div class="flex items-center gap-2 pt-0.5">
                   <button
@@ -1447,7 +1447,7 @@ export function ChangesPane(props: {
             }}
             placeholder="Filter changed files"
             aria-label="Filter changed files"
-            class="w-full rounded-md bg-muted/40 border border-border/60 pl-7 pr-2 py-1 text-[12px] outline-2 outline-transparent focus:outline-none focus:ring-1 focus:ring-ring"
+            class="w-full rounded-md bg-muted/40 border border-border/60 pl-7 pr-2 py-1 text-body outline-2 outline-transparent focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
       </div>
@@ -1483,7 +1483,7 @@ export function ChangesPane(props: {
                     openConflict(`${props.repoPath}/${row.entry.path}`);
                   }}
                   title={`Resolve conflict in ${row.entry.path}`}
-                  class={`w-full flex items-center gap-2 px-2.5 h-6 text-[13px] text-left text-warning hover:bg-warning/10 transition-colors ${
+                  class={`w-full flex items-center gap-2 px-2.5 h-6 text-ui text-left text-warning hover:bg-warning/10 transition-colors ${
                     focusKey() === row.key ? "bg-warning/15" : ""
                   }`}
                 >
@@ -1491,7 +1491,7 @@ export function ChangesPane(props: {
                   <span class="flex-1 truncate font-mono">
                     <FuzzyText text={row.entry.path} ranges={row.ranges} />
                   </span>
-                  <span class="text-[10px] tracking-wide opacity-70">Resolve</span>
+                  <span class="text-micro tracking-wide opacity-70">Resolve</span>
                 </button>
               )}
             </For>
@@ -1958,7 +1958,7 @@ export function BranchesPane(props: {
           value={filter()}
           onInput={(e) => setFilter(e.currentTarget.value)}
           placeholder="Filter branches…"
-          class="flex-1 min-w-0 px-2 py-1 text-[12px] bg-muted/50 border border-border/60 rounded-md outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60"
+          class="flex-1 min-w-0 px-2 py-1 text-body bg-muted/50 border border-border/60 rounded-md outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60"
           aria-label="Filter branches"
         />
         <button
@@ -1972,14 +1972,14 @@ export function BranchesPane(props: {
         </button>
       </div>
       <Show when={error()}>
-        <p class="text-xs text-destructive px-1">{error()}</p>
+        <p class="text-body text-destructive px-1">{error()}</p>
       </Show>
       {/* Without this the pane just loses its highlight: no row is marked, and
           the missing highlight reads as a bug rather than as "you are not on a
           branch". It also explains why every row, including the one you came
           from, now offers delete. */}
       <Show when={props.detached}>
-        <p class="text-[11px] text-warning px-1 py-1 rounded bg-warning/10 border border-warning/20">
+        <p class="text-label text-warning px-1 py-1 rounded bg-warning/10 border border-warning/20">
           HEAD is detached — no branch is checked out. Check one out to resume
           normal work.
         </p>
@@ -1991,26 +1991,26 @@ export function BranchesPane(props: {
       <Show when={!branches.loading || settled()}>
         <Show when={!branches.error}>
           <Show when={(settled()?.length ?? 0) === 0}>
-            <p class="text-[11px] text-muted-foreground px-1 py-2">
+            <p class="text-label text-muted-foreground px-1 py-2">
               No branches yet — the first commit creates one.
             </p>
           </Show>
         </Show>
       </Show>
       <Show when={branches.loading && !settled()}>
-        <p class="text-[11px] text-muted-foreground px-1 py-2">Loading branches…</p>
+        <p class="text-label text-muted-foreground px-1 py-2">Loading branches…</p>
       </Show>
       <Show when={branches.error}>
         <div class="px-1 py-2 space-y-1">
-          <p class="text-[11px] text-destructive">Could not list branches.</p>
-          <p class="text-[11px] font-mono text-muted-foreground break-words">
+          <p class="text-label text-destructive">Could not list branches.</p>
+          <p class="text-label font-mono text-muted-foreground break-words">
             {branches.error instanceof Error
               ? branches.error.message
               : String(branches.error)}
           </p>
           <button
             onClick={() => void refetch()}
-            class="text-[11px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+            class="text-label px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
           >
             Try again
           </button>
@@ -2046,7 +2046,7 @@ export function BranchesPane(props: {
       </For>
 
       <Show when={(settled()?.length ?? 0) > 0 && filtered().length === 0}>
-        <p class="text-[11px] text-muted-foreground px-1 py-1">
+        <p class="text-label text-muted-foreground px-1 py-1">
           {showRemotes() || remoteCount() === 0
             ? "No matches."
             : `No matches among the local branches — ${remoteCount()} remote branch(es) are hidden.`}
@@ -2133,7 +2133,7 @@ function BranchRow(props: {
   return (
     <div
       onContextMenu={props.onMenu}
-      class={`group flex flex-col rounded-md px-2 py-0.5 text-[13px] transition-colors ${
+      class={`group flex flex-col rounded-md px-2 py-0.5 text-ui transition-colors ${
         b().isHead ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent/40"
       }`}
     >
@@ -2164,7 +2164,7 @@ function BranchRow(props: {
             something you can check out, rename or delete. */}
         <Show when={b().isRemote}>
           <span
-            class="shrink-0 px-1 rounded text-[10px] uppercase tracking-wide bg-muted/60 text-muted-foreground/80"
+            class="shrink-0 px-1 rounded text-micro uppercase tracking-wide bg-muted/60 text-muted-foreground/80"
             title="A remote-tracking branch. Its ahead/behind is counted against the local branch of the same name."
           >
             remote
@@ -2174,7 +2174,7 @@ function BranchRow(props: {
         <Show when={b().symbolicTarget}>
           {(target) => (
             <span
-              class="shrink-0 text-[10px] text-muted-foreground/80 truncate max-w-[40%]"
+              class="shrink-0 text-micro text-muted-foreground/80 truncate max-w-[40%]"
               title={`Symbolic ref pointing at ${target()}`}
             >
               → {target()}
@@ -2226,7 +2226,7 @@ function BranchRow(props: {
           </span>
         </Show>
         <Show when={b().isHead}>
-          <span class="text-xs tracking-wide text-primary/80">HEAD</span>
+          <span class="text-body tracking-wide text-primary/80">HEAD</span>
         </Show>
         <Show when={!b().isRemote}>
           <button
@@ -2234,7 +2234,7 @@ function BranchRow(props: {
             disabled={locked()}
             title={props.blockedReason ?? "Rename branch"}
             aria-label={`Rename ${b().name}`}
-            class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all disabled:opacity-40"
+            class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground hover:bg-accent/50 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out disabled:opacity-40"
           >
             <Pencil class="w-3 h-3" />
           </button>
@@ -2244,7 +2244,7 @@ function BranchRow(props: {
               disabled={locked()}
               title={props.blockedReason ?? "Delete branch"}
               aria-label={`Delete ${b().name}`}
-              class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all disabled:opacity-40"
+              class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out disabled:opacity-40"
             >
               <X class="w-3 h-3" />
             </button>
@@ -2254,13 +2254,13 @@ function BranchRow(props: {
       {/* The subtitle the backend was already paying for. Which branch is stale
           is the question a bare list of names cannot answer. */}
       <Show when={subtitle()}>
-        <div class="pl-5 truncate text-[11px] text-muted-foreground/70" title={subtitle()}>
+        <div class="pl-5 truncate text-label text-muted-foreground/70" title={subtitle()}>
           {subtitle()}
         </div>
       </Show>
       <Show when={b().upstream}>
         {(up) => (
-          <div class="pl-5 truncate text-[10px] text-muted-foreground/60" title={`Tracking ${up()}`}>
+          <div class="pl-5 truncate text-micro text-muted-foreground/60" title={`Tracking ${up()}`}>
             ⇅ {up()}
           </div>
         )}
@@ -2358,7 +2358,7 @@ export function WorktreesPane(props: { repoPath: string }) {
     <div class="p-1">
       <button
         onClick={() => void addWorktree()}
-        class="w-full flex items-center justify-center gap-1.5 px-2 py-1 mb-1 rounded-md text-[12px] text-muted-foreground hover:text-foreground bg-muted/40 hover:bg-accent/50 transition-colors"
+        class="w-full flex items-center justify-center gap-1.5 px-2 py-1 mb-1 rounded-md text-body text-muted-foreground hover:text-foreground bg-muted/40 hover:bg-accent/50 transition-colors"
       >
         <Plus class="w-3 h-3" /> New worktree
       </button>
@@ -2387,7 +2387,7 @@ export function WorktreesPane(props: { repoPath: string }) {
           const label = () => wt.branch ?? (wt.isDetached ? "(detached)" : wt.path);
           return (
             <div
-              class={`group w-full flex items-center gap-2 rounded-md px-2 density-row text-[13px] hover:bg-accent/30 ${
+              class={`group w-full flex items-center gap-2 rounded-md px-2 density-row text-ui hover:bg-accent/30 ${
                 wt.isCurrent ? "text-foreground" : "text-muted-foreground"
               }`}
             >
@@ -2447,7 +2447,7 @@ export function WorktreesPane(props: { repoPath: string }) {
                   at nothing — where every terminal spawned there fails. */}
               <Show when={wt.isPrunable}>
                 <span
-                  class="text-destructive shrink-0 text-[10px] font-mono"
+                  class="text-destructive shrink-0 text-micro font-mono"
                   title={
                     wt.prunableReason
                       ? `git would prune this worktree: ${wt.prunableReason}`
@@ -2470,7 +2470,7 @@ export function WorktreesPane(props: { repoPath: string }) {
                 </button>
               </Show>
               <Show when={wt.isMain}>
-                <span class="text-[10px] tracking-wide text-primary/70">Main</span>
+                <span class="text-micro tracking-wide text-primary/70">Main</span>
               </Show>
               <Show when={!wt.isMain}>
                 <button
@@ -2482,7 +2482,7 @@ export function WorktreesPane(props: { repoPath: string }) {
                       : "Open this worktree"
                   }
                   aria-label={`Open worktree ${label()}`}
-                  class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground hover:bg-accent/50 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <FolderOpen class="w-3 h-3" />
                 </button>
@@ -2491,7 +2491,7 @@ export function WorktreesPane(props: { repoPath: string }) {
                   disabled={busy()}
                   title="Remove worktree"
                   aria-label={`Remove worktree ${label()}`}
-                  class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <X class="w-3 h-3" />
                 </button>
@@ -2635,7 +2635,7 @@ export function TagsPane(props: { repoPath: string }) {
     <div class="pt-2 mt-1 border-t border-border/50">
       <div class="flex items-center gap-1.5 px-1 pb-1">
         <Tag class="w-3 h-3 text-muted-foreground" />
-        <span class="flex-1 tracking-wide text-[10px] text-muted-foreground font-semibold">
+        <span class="flex-1 tracking-wide text-micro text-muted-foreground font-semibold">
           Tags
         </span>
         <button
@@ -2653,7 +2653,7 @@ export function TagsPane(props: { repoPath: string }) {
       </Show>
       <For each={refs()?.tags ?? []}>
         {(t) => (
-          <div class="group flex items-center gap-2 rounded-md px-2 density-row text-[13px] text-muted-foreground hover:bg-accent/30">
+          <div class="group flex items-center gap-2 rounded-md px-2 density-row text-ui text-muted-foreground hover:bg-accent/30">
             <Tag class="w-3 h-3 shrink-0 opacity-70" />
             <span class="truncate flex-1" title={t}>{t}</span>
             <button
@@ -2661,7 +2661,7 @@ export function TagsPane(props: { repoPath: string }) {
               disabled={busy()}
               title="Push tag to origin"
               aria-label={`Push tag ${t}`}
-              class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
+              class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground hover:bg-accent/50 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out"
             >
               <Upload class="w-3 h-3" />
             </button>
@@ -2670,7 +2670,7 @@ export function TagsPane(props: { repoPath: string }) {
               disabled={busy()}
               title="Delete tag"
               aria-label={`Delete tag ${t}`}
-              class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
+              class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out"
             >
               <X class="w-3 h-3" />
             </button>
@@ -2792,14 +2792,14 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
       >
         <For each={stashes() ?? []}>
           {(s: StashEntry) => (
-            <div class="group flex items-center gap-2 rounded-md px-2 density-row text-[13px] text-muted-foreground hover:bg-accent/30">
+            <div class="group flex items-center gap-2 rounded-md px-2 density-row text-ui text-muted-foreground hover:bg-accent/30">
               <Archive class="w-3 h-3 shrink-0 opacity-70" />
               <button
                 onClick={() => showDiff(s)}
                 class="truncate flex-1 text-left hover:text-foreground"
                 title={`Show diff for ${s.message}`}
               >
-                <span class="text-[10px] text-muted-foreground/70 tabular-nums mr-1">{`{${s.index}}`}</span>
+                <span class="text-micro text-muted-foreground/70 tabular-nums mr-1">{`{${s.index}}`}</span>
                 {s.message}
               </button>
               <button
@@ -2807,7 +2807,7 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
                 disabled={busy()}
                 title="Apply (keep stash)"
                 aria-label="Apply stash"
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground hover:bg-accent/50 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Plus class="w-3 h-3" />
               </button>
@@ -2816,7 +2816,7 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
                 disabled={busy()}
                 title="Pop (apply and remove)"
                 aria-label="Pop stash"
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground hover:bg-accent/50 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <ArrowDownToLine class="w-3 h-3" />
               </button>
@@ -2825,7 +2825,7 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
                 disabled={busy()}
                 title="Drop stash"
                 aria-label="Drop stash"
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                class="p-0.5 rounded opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <X class="w-3 h-3" />
               </button>
@@ -3017,19 +3017,19 @@ export function RemotesDialog(props: { repoPath: string; open: boolean; onClose:
         <div class="fixed inset-0 z-[var(--z-prompt)] flex items-start justify-center bg-black/40 pt-[18vh]" onClick={props.onClose}>
           <div class="w-[min(520px,92vw)] bg-popover border border-border rounded-lg shadow-xl p-4" onClick={(e) => e.stopPropagation()}>
             <div class="flex items-center mb-3">
-              <h2 class="text-sm font-semibold flex-1">Remotes</h2>
-              <button onClick={() => void addRemote()} disabled={busy()} class="flex items-center gap-1 px-2 py-1 rounded text-xs bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+              <h2 class="text-title font-semibold flex-1">Remotes</h2>
+              <button onClick={() => void addRemote()} disabled={busy()} class="flex items-center gap-1 px-2 py-1 rounded text-body bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                 <Plus class="w-3 h-3" /> Add
               </button>
             </div>
-            <Show when={(remotes()?.length ?? 0) > 0} fallback={<p class="text-xs text-muted-foreground py-2">No remotes configured.</p>}>
+            <Show when={(remotes()?.length ?? 0) > 0} fallback={<p class="text-body text-muted-foreground py-2">No remotes configured.</p>}>
               <div class="space-y-1.5">
                 <For each={remotes() ?? []}>
                   {(r) => (
-                    <div class="group flex items-center gap-2 rounded-md border border-border/60 px-2 py-1.5 text-xs">
+                    <div class="group flex items-center gap-2 rounded-md border border-border/60 px-2 py-1.5 text-body">
                       <div class="min-w-0 flex-1">
                         <div class="font-medium text-foreground">{r.name}</div>
-                        <div class="truncate text-muted-foreground font-mono text-[11px]" title={r.url ?? ""}>{r.url ?? "—"}</div>
+                        <div class="truncate text-muted-foreground font-mono text-label" title={r.url ?? ""}>{r.url ?? "—"}</div>
                       </div>
                       <button onClick={() => void editUrl(r)} disabled={busy()} title="Set URL" aria-label={`Set URL for ${r.name}`} class="p-1 rounded hover:bg-accent/60 hover:text-foreground text-muted-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                         <Pencil class="w-3 h-3" />
@@ -3046,7 +3046,7 @@ export function RemotesDialog(props: { repoPath: string; open: boolean; onClose:
               </div>
             </Show>
             <div class="flex justify-end mt-4">
-              <button onClick={props.onClose} class="px-3 py-1.5 rounded text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors">Close</button>
+              <button onClick={props.onClose} class="px-3 py-1.5 rounded text-body text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors">Close</button>
             </div>
           </div>
         </div>
@@ -3088,14 +3088,14 @@ function CommitHoverPopover(props: { commit: GitCommitInfo; x: number; y: number
     <Portal>
       <div
         ref={popRef}
-        class="fixed z-[var(--z-menu)] bg-popover border border-border rounded-lg shadow-xl p-3 text-xs max-w-xs pointer-events-none"
+        class="fixed z-[var(--z-menu)] bg-popover border border-border rounded-lg shadow-xl p-3 text-body max-w-xs pointer-events-none"
         style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
       >
-        <div class="font-mono text-muted-foreground mb-1 text-[10px] tracking-wide">{props.commit.oid.slice(0, 12)}</div>
+        <div class="font-mono text-muted-foreground mb-1 text-micro tracking-wide">{props.commit.oid.slice(0, 12)}</div>
         <div class="font-medium text-foreground mb-1.5 leading-snug">{props.commit.summary}</div>
         <Show when={props.commit.body}>
           {(body) => (
-            <div class="text-muted-foreground mb-2 whitespace-pre-wrap text-[11px] leading-relaxed line-clamp-4">{body()}</div>
+            <div class="text-muted-foreground mb-2 whitespace-pre-wrap text-label leading-relaxed line-clamp-4">{body()}</div>
           )}
         </Show>
         <div class="space-y-0.5 text-muted-foreground/80 border-t border-border/50 pt-1.5 mt-1.5">
@@ -3352,7 +3352,7 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
   return (
     <div class="h-full relative">
       <Show when={logError()}>
-        <p class="px-2 py-1.5 text-[11px] text-destructive" title={logError()}>
+        <p class="px-2 py-1.5 text-label text-destructive" title={logError()}>
           History unavailable: {logError()}
         </p>
       </Show>
@@ -3379,14 +3379,14 @@ export function HistoryPane(props: { repoPath: string; worktreeId: string }) {
               <DagColumn row={row} maxLanes={layout().maxLanes} />
               {/* Leading is pinned (18px + 16px + 12px padding = ROW_HEIGHT) so the
                   body never outgrows the gutter SVG next to it. */}
-              <div class="flex-1 min-w-0 px-2 py-1.5 text-[13px] flex flex-col justify-center">
+              <div class="flex-1 min-w-0 px-2 py-1.5 text-ui flex flex-col justify-center">
                 <div class="flex items-center gap-2 h-[18px]">
-                  <span class="font-mono text-muted-foreground text-xs tabular-nums shrink-0">
+                  <span class="font-mono text-muted-foreground text-body tabular-nums shrink-0">
                     {row.commit.oid.slice(0, 7)}
                   </span>
                   <span class="truncate flex-1 text-foreground">{row.commit.summary}</span>
                 </div>
-                <div class="text-xs leading-4 text-muted-foreground/80 truncate tabular-nums">
+                <div class="text-body leading-4 text-muted-foreground/80 truncate tabular-nums">
                   {row.commit.authorName} · {new Date(row.commit.time * 1000).toLocaleString()}
                 </div>
               </div>
@@ -3523,7 +3523,7 @@ function OpenedDiffsPane(props: {
       <Show
         when={props.tabs.length > 0}
         fallback={
-          <div class="px-2.5 py-3 text-[13px] text-muted-foreground">
+          <div class="px-2.5 py-3 text-ui text-muted-foreground">
             <GitCompare class="w-4 h-4 mx-auto mb-1.5 opacity-60" />
             <p class="text-center">No diffs open.</p>
           </div>
@@ -3544,11 +3544,11 @@ function OpenedDiffsPane(props: {
                 <button
                   onClick={() => props.onSelect(tab.id)}
                   title={tab.filePath}
-                  class="flex-1 flex items-center gap-2 px-2 density-row min-w-0 text-left text-[13px] cursor-pointer focus-visible:outline-none"
+                  class="flex-1 flex items-center gap-2 px-2 density-row min-w-0 text-left text-ui cursor-pointer focus-visible:outline-none"
                 >
                   <GitCompare class="w-3.5 h-3.5 shrink-0 text-info" />
                   <span class="flex-1 min-w-0 truncate">
-                    <span class="text-muted-foreground text-[11px]">diff · </span>{fileName()}
+                    <span class="text-muted-foreground text-label">diff · </span>{fileName()}
                   </span>
                 </button>
                 <button
@@ -3743,7 +3743,7 @@ function FileRow(props: {
       aria-selected={!!props.cursor}
       // `h-6` rather than `density-row`: this row is the virtualizer's
       // `estimateSize`, and a height that moves with a setting desyncs it.
-      class={`group flex items-center h-6 text-xs transition-colors focus-within:bg-accent/40 ${
+      class={`group flex items-center h-6 text-body transition-colors focus-within:bg-accent/40 ${
         props.selected ? "bg-accent/70 text-foreground" : "hover:bg-accent/40"
       } ${props.cursor ? "ring-1 ring-inset ring-ring" : ""}`}
     >

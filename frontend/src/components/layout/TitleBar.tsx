@@ -114,7 +114,7 @@ export function TitleBar(props: TitleBarProps) {
       */}
       <div
         data-tauri-drag-region
-        class="flex-1 flex items-center pr-3 text-xs text-muted-foreground"
+        class="flex-1 flex items-center pr-3 text-body text-muted-foreground"
         classList={{ "pl-3": !isMac(), "pl-[78px]": isMac() }}
       >
         <span class="font-semibold tracking-wide text-foreground/80 pointer-events-none">
@@ -177,7 +177,7 @@ export function TitleBar(props: TitleBarProps) {
           }}
           aria-label="Open editor window"
           title="Open the code editor in its own window"
-          class="self-center ml-1 flex items-center gap-1 h-[22px] px-1.5 rounded border border-dashed border-border text-[11px] hover:bg-accent/60 hover:text-foreground hover:border-border/80 transition-colors"
+          class="self-center ml-1 flex items-center gap-1 h-[22px] px-1.5 rounded border border-dashed border-border text-label hover:bg-accent/60 hover:text-foreground hover:border-border/80 transition-colors"
         >
           <FileCode class="w-3 h-3 shrink-0" />
           Editor
@@ -194,7 +194,7 @@ export function TitleBar(props: TitleBarProps) {
           }}
           aria-label="Open git window"
           title="Open the git client in its own window"
-          class="self-center mx-1 flex items-center gap-1 h-[22px] px-1.5 rounded border border-dashed border-border text-[11px] hover:bg-accent/60 hover:text-foreground hover:border-border/80 transition-colors"
+          class="self-center mx-1 flex items-center gap-1 h-[22px] px-1.5 rounded border border-dashed border-border text-label hover:bg-accent/60 hover:text-foreground hover:border-border/80 transition-colors"
         >
           <GitBranch class="w-3 h-3 shrink-0" />
           Git

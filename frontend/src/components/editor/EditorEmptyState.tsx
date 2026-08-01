@@ -41,13 +41,13 @@ export function EditorEmptyState() {
   return (
     <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background text-muted-foreground z-10">
       <FileSearch class="w-5 h-5 opacity-60" aria-hidden="true" />
-      <p class="text-[13px]">No file open</p>
+      <p class="text-ui">No file open</p>
       <Show when={paths().length > 0}>
-        <ul class="flex items-center gap-4 text-[11px]">
+        <ul class="flex items-center gap-4 text-label">
           <For each={paths()}>
             {(p) => (
               <li class="flex items-center gap-1.5">
-                <kbd class="px-1.5 py-0.5 rounded border border-border bg-accent/30 font-mono text-[11px] text-foreground">
+                <kbd class="px-1.5 py-0.5 rounded border border-border bg-accent/30 font-mono text-label text-foreground">
                   {formatChord(p.chord, isMac())}
                 </kbd>
                 <span>{p.what}</span>

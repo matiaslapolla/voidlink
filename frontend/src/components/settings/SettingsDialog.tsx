@@ -158,7 +158,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           onKeyDown={trapFocus}
         >
           <div class="flex items-center justify-between px-4 py-2.5 border-b border-border">
-            <h2 id="settings-dialog-title" class="text-sm font-semibold">Settings</h2>
+            <h2 id="settings-dialog-title" class="text-title font-semibold">Settings</h2>
             <button
               onClick={props.onClose}
               aria-label="Close settings"
@@ -169,7 +169,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             </button>
           </div>
 
-          <div class="flex items-center gap-1 border-b border-border px-2 py-1 text-xs">
+          <div class="flex items-center gap-1 border-b border-border px-2 py-1 text-body">
             <TabButton active={tab() === "ui"} onClick={() => setTab("ui")}>UI</TabButton>
             <TabButton active={tab() === "theme"} onClick={() => setTab("theme")}>Theme</TabButton>
             <TabButton active={tab() === "editor"} onClick={() => setTab("editor")}>Editor</TabButton>
@@ -181,7 +181,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
           </div>
 
-          <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs">
+          <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-body">
             <Show when={tab() === "ui"}><UiPane /></Show>
             <Show when={tab() === "theme"}><ThemePane /></Show>
             <Show when={tab() === "editor"}><EditorPane initialQuery={props.gotoSetting} /></Show>
@@ -196,13 +196,13 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <div class="flex items-center justify-between px-4 py-2.5 border-t border-border">
             <button
               onClick={reset}
-              class="px-3 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+              class="px-3 py-1 rounded text-body text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
             >
               Reset to defaults
             </button>
             <button
               onClick={props.onClose}
-              class="px-3 py-1 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 active:scale-[0.96] transition-[background-color,color,transform]"
+              class="px-3 py-1 rounded bg-primary text-primary-foreground text-body hover:bg-primary/90 active:scale-[0.96] transition-[background-color,color,transform]"
             >
               Done
             </button>
@@ -269,7 +269,7 @@ function UiPane() {
           ]}
           onChange={(v) => updateUi({ showIgnoredFiles: v === "show" })}
         />
-        <p class="mt-1 ml-[7.75rem] text-[11px] text-muted-foreground/80">
+        <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
           Show lists gitignored files in the file tree and Cmd+P, dimmed — the
           way to edit a repo's <code>.env</code>. Build output directories
           (node_modules, dist, target…) stay out of Cmd+P either way.
@@ -282,7 +282,7 @@ function UiPane() {
           options={ENVIRONMENT_MODES}
           onChange={(v) => updateUi({ environmentMode: v })}
         />
-        <p class="mt-1 ml-[7.75rem] text-[11px] text-muted-foreground/80">
+        <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
           Detached gives the git client and the editor their own windows.
           Stacked keeps all three in this window, switched from the title bar —
           switching to it closes any satellite window already open.
@@ -307,7 +307,7 @@ function ResetLayoutRow() {
     <div class="flex items-center gap-3">
       <div class="w-28 shrink-0">
         <div class="text-muted-foreground">Layout</div>
-        <div class="text-[10px] text-muted-foreground/70 leading-tight">
+        <div class="text-micro text-muted-foreground/70 leading-tight">
           Tabs, panes, panel widths
         </div>
       </div>
@@ -331,7 +331,7 @@ function ResetLayoutRow() {
               ? "Click again to clear tabs, panes and panel widths, then reload"
               : "Clears tabs, panes and panel widths. Settings, provider keys and saved snapshots are kept."
           }
-          class={`px-3 py-1 rounded border text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+          class={`px-3 py-1 rounded border text-label transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
             confirming()
               ? "border-destructive/50 bg-destructive/10 text-destructive"
               : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -343,7 +343,7 @@ function ResetLayoutRow() {
           <button
             onClick={() => setConfirming(false)}
             aria-label="Cancel the layout reset"
-            class="px-2 py-1 rounded text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
+            class="px-2 py-1 rounded text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
           >
             Cancel
           </button>
@@ -381,7 +381,7 @@ function ThemePane() {
 
   return (
     <div class="space-y-4">
-      <p class="text-[11px] text-muted-foreground leading-relaxed">
+      <p class="text-label text-muted-foreground leading-relaxed">
         Pick a color theme. Applied instantly across the whole app and remembered
         across restarts. Each swatch previews that palette's background,
         foreground, primary, and border.
@@ -411,7 +411,7 @@ function ThemePane() {
               >
                 <ThemeSwatch preview={t.preview} />
                 <span
-                  class={`flex-1 truncate text-[11px] ${
+                  class={`flex-1 truncate text-label ${
                     selected() ? "text-primary" : "text-foreground/90"
                   }`}
                 >
@@ -445,7 +445,7 @@ function ThemeSwatch(props: { preview: [string, string, string, string] }) {
       class="flex h-9 w-9 shrink-0 flex-col items-center justify-center gap-0.5 rounded border"
       style={{ "background-color": bg, "border-color": border }}
     >
-      <span class="text-[11px] font-semibold leading-none" style={{ color: fg }}>
+      <span class="text-label font-semibold leading-none" style={{ color: fg }}>
         Aa
       </span>
       <span class="h-1 w-4 rounded-full" style={{ "background-color": primary }} />
@@ -550,7 +550,7 @@ function EditorPane(props: { initialQuery?: string }) {
             onInput={(e) => setQuery(e.currentTarget.value)}
             placeholder="Search settings by name, id or value…"
             aria-label="Search editor settings"
-            class="w-full rounded border border-border bg-muted/40 py-1 pl-7 pr-2 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+            class="w-full rounded border border-border bg-muted/40 py-1 pl-7 pr-2 text-label focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
         {/* Disabled rather than hidden when nothing is modified: the count is
@@ -565,7 +565,7 @@ function EditorPane(props: { initialQuery?: string }) {
               ? "Nothing differs from the defaults"
               : `Show only the ${modified()} setting${modified() === 1 ? "" : "s"} you changed`
           }
-          class={`shrink-0 rounded border px-2 py-1 text-[11px] transition-colors disabled:cursor-default disabled:opacity-50 ${
+          class={`shrink-0 rounded border px-2 py-1 text-label transition-colors disabled:cursor-default disabled:opacity-50 ${
             modifiedOnly()
               ? "border-primary/40 bg-primary/15 text-primary"
               : "border-border text-muted-foreground hover:bg-accent/40 hover:text-foreground"
@@ -591,7 +591,7 @@ function EditorPane(props: { initialQuery?: string }) {
         <Show
           when={hits().length > 0}
           fallback={
-            <p class="py-6 text-center text-[11px] text-muted-foreground">
+            <p class="py-6 text-center text-label text-muted-foreground">
               {modifiedOnly() && query().trim()
                 ? "No setting you changed matches that."
                 : modifiedOnly()
@@ -704,7 +704,7 @@ function SettingRow(props: { hit: SettingHit }) {
                 {(p) => (
                   <button
                     onClick={() => write(p.stack)}
-                    class="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    class="rounded border border-border px-2 py-0.5 text-micro text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     title={p.stack}
                   >
                     {p.label}
@@ -757,7 +757,7 @@ function SettingLabelCell(props: { hit: SettingHit; onReset: () => void }) {
       <FuzzyText
         text={subtitle().text}
         ranges={subtitle().ranges}
-        class="block text-[10px] leading-tight text-muted-foreground/70"
+        class="block text-micro leading-tight text-muted-foreground/70"
       />
     </div>
   );
@@ -786,7 +786,7 @@ function LspServerPaths() {
           />
         )}
       </For>
-      <p class="text-[10px] leading-relaxed text-muted-foreground/70">
+      <p class="text-micro leading-relaxed text-muted-foreground/70">
         Leave a path blank to search PATH. A server that is not installed is not
         an error — the editor works exactly as it does now and the status bar
         shows nothing at all.
@@ -830,7 +830,7 @@ function LanguageOverridesSection() {
 
   return (
     <Section title="Per-language overrides">
-      <p class="text-[11px] leading-relaxed text-muted-foreground">
+      <p class="text-label leading-relaxed text-muted-foreground">
         Settings that apply only to one language — four-space tabs in Rust, two
         in TypeScript. Anything not overridden here inherits the value above.
       </p>
@@ -840,7 +840,7 @@ function LanguageOverridesSection() {
           value={language()}
           onChange={(e) => setLanguage(e.currentTarget.value)}
           aria-label="Language to override settings for"
-          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label focus:outline-none focus:ring-1 focus:ring-ring"
         >
           <For each={languages()}>
             {(id) => (
@@ -858,7 +858,7 @@ function LanguageOverridesSection() {
       <Show
         when={overridden().length > 0}
         fallback={
-          <p class="text-[11px] text-muted-foreground/70">
+          <p class="text-label text-muted-foreground/70">
             No overrides for <span class="font-mono">{language()}</span>.
           </p>
         }
@@ -885,7 +885,7 @@ function LanguageOverridesSection() {
             setAdding("");
           }}
           aria-label={`Add a setting override for ${language()}`}
-          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label focus:outline-none focus:ring-1 focus:ring-ring"
         >
           <option value="">Choose a setting…</option>
           <For each={available()}>
@@ -919,7 +919,7 @@ function LanguageOverrideRow(props: {
           <X class="h-2.5 w-2.5" />
         </button>
       </div>
-      <span class="block text-[10px] leading-tight text-muted-foreground/70">
+      <span class="block text-micro leading-tight text-muted-foreground/70">
         {props.setting.id}
       </span>
     </div>
@@ -1026,7 +1026,7 @@ function SegmentedButtons<T extends string>(props: {
           <button
             onClick={() => props.onChange(opt.id)}
             aria-pressed={props.value === opt.id}
-            class={`rounded border px-2 py-1 text-[11px] transition-colors ${
+            class={`rounded border px-2 py-1 text-label transition-colors ${
               props.value === opt.id
                 ? "border-primary/40 bg-primary/15 text-primary"
                 : "border-border text-muted-foreground hover:bg-accent/40 hover:text-foreground"
@@ -1056,7 +1056,7 @@ function TerminalPane() {
             {(p) => (
               <button
                 onClick={() => updateTerminal({ fontFamily: p.stack })}
-                class="px-2 py-0.5 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                class="px-2 py-0.5 text-micro rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
                 title={p.stack}
               >
                 {p.label}
@@ -1134,7 +1134,7 @@ function TerminalPane() {
 function ShellIntegrationRow() {
   const count = shellsWithIntegration;
   return (
-    <div class="space-y-2 text-[11px] leading-relaxed">
+    <div class="space-y-2 text-label leading-relaxed">
       <div class="flex items-center gap-2">
         <span
           class={`size-1.5 rounded-full ${count() > 0 ? "bg-success" : "bg-muted-foreground/40"}`}
@@ -1152,7 +1152,7 @@ function ShellIntegrationRow() {
         it, a finished command still reports — just without a status. Add this to
         the end of your shell's rc file and open a new terminal:
       </p>
-      <code class="block rounded border border-border bg-muted/40 px-2 py-1 font-mono text-[10px] text-foreground/80 overflow-x-auto whitespace-pre">
+      <code class="block rounded border border-border bg-muted/40 px-2 py-1 font-mono text-micro text-foreground/80 overflow-x-auto whitespace-pre">
         source /path/to/voidlink/shell-integration/voidlink.zsh
       </code>
       <p class="text-muted-foreground/70">
@@ -1182,7 +1182,7 @@ function KeyboardPane() {
 
   return (
     <div class="space-y-6">
-      <p class="text-[11px] text-muted-foreground leading-relaxed">
+      <p class="text-label text-muted-foreground leading-relaxed">
         Every global shortcut, derived from the same table that fires them —
         this list cannot go out of date. On macOS the platform modifier is ⌘;
         elsewhere it is Ctrl, and voidlink accepts either. Press{" "}
@@ -1214,7 +1214,7 @@ function ShortcutRow(props: { entry: KeymapEntry }) {
         </div>
         <Show when={scopeHint()}>
           {(hint) => (
-            <div class="text-[10px] text-muted-foreground/70 leading-tight">
+            <div class="text-micro text-muted-foreground/70 leading-tight">
               {hint()}
             </div>
           )}
@@ -1223,7 +1223,7 @@ function ShortcutRow(props: { entry: KeymapEntry }) {
       <div class="flex items-center gap-1.5 shrink-0">
         <For each={chords()}>
           {(chord) => (
-            <kbd class="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-mono text-foreground/80">
+            <kbd class="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-label font-mono text-foreground/80">
               {chord}
             </kbd>
           )}
@@ -1301,13 +1301,13 @@ function ToggleRow(props: {
         <div class="w-28 shrink-0">
           <div class="text-muted-foreground">{props.label}</div>
           <Show when={props.hint}>
-            <div class="text-[10px] text-muted-foreground/70 leading-tight">{props.hint}</div>
+            <div class="text-micro text-muted-foreground/70 leading-tight">{props.hint}</div>
           </Show>
         </div>
       )}
       <button
         onClick={() => props.onChange(!props.value)}
-        class={`px-3 py-1 rounded-full border text-[11px] transition-colors ${
+        class={`px-3 py-1 rounded-full border text-label transition-colors ${
           props.value
             ? "bg-primary/15 border-primary/40 text-primary"
             : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -1334,7 +1334,7 @@ function TextRow(props: {
         value={props.value}
         placeholder={props.placeholder}
         onInput={(e) => props.onInput(e.currentTarget.value)}
-        class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+        class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring"
       />
     </div>
   );
@@ -1355,7 +1355,7 @@ function SegmentedRow<T extends string>(props: {
           {(opt) => (
             <button
               onClick={() => props.onChange(opt.id)}
-              class={`flex-1 px-2 py-1 rounded border text-[11px] transition-colors ${
+              class={`flex-1 px-2 py-1 rounded border text-label transition-colors ${
                 props.value === opt.id
                   ? "bg-primary/15 border-primary/40 text-primary"
                   : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -1394,7 +1394,7 @@ function AiPane() {
   const { settings, updateAi } = useSettings();
   return (
     <div class="space-y-4">
-      <p class="text-[11px] text-muted-foreground leading-relaxed">
+      <p class="text-label text-muted-foreground leading-relaxed">
         VoidLink doesn't ship an LLM. Configure any local CLI you already have
         installed; the staged diff is piped to its stdin and stdout becomes the
         commit-message draft. If that CLI needs an API key, store it under
@@ -1413,7 +1413,7 @@ function AiPane() {
             {(p) => (
               <button
                 onClick={() => updateAi({ commitCommand: p.command })}
-                class="px-2 py-0.5 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                class="px-2 py-0.5 text-micro rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
                 title={p.command}
               >
                 {p.label}
@@ -1430,7 +1430,7 @@ function AiPane() {
           placeholder={'optional — defaults to the commit command'}
           onInput={(v) => updateAi({ agentCommand: v })}
         />
-        <p class="text-[11px] text-muted-foreground leading-relaxed pl-28">
+        <p class="text-label text-muted-foreground leading-relaxed pl-28">
           Used by any agent above that leaves its own command blank — and, if
           this is blank too, the commit command. A prompt grounded in your live
           workspace state — branch, status, recent log, staged diff, open files —
@@ -1445,7 +1445,7 @@ function AiPane() {
 // ─── Agent roster ───────────────────────────────────────────────────────────
 
 const AGENT_INPUT_CLASS =
-  "min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono outline-2 outline-transparent transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring";
+  "min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono outline-2 outline-transparent transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring";
 
 /// The workspace's named agents. An agent tab is bound to one of these rows, so
 /// two rows pointing at differently-configured CLIs can answer side by side.
@@ -1463,7 +1463,7 @@ function AgentRosterSection() {
 
   return (
     <Section title="Agents">
-      <p class="text-[11px] text-muted-foreground leading-relaxed">
+      <p class="text-label text-muted-foreground leading-relaxed">
         Each agent is a name plus the CLI command its prompt is piped to. Bind an
         agent tab to one of these; leave a command blank to use the fallback
         below.
@@ -1513,7 +1513,7 @@ function AgentRosterSection() {
       <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
         <button
           onClick={() => addAgent("New agent", "")}
-          class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
+          class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
         >
           Add agent
         </button>
@@ -1575,7 +1575,7 @@ function ProviderKeysSection() {
 
   return (
     <Section title="Provider keys">
-      <p class="text-[11px] text-muted-foreground leading-relaxed">
+      <p class="text-label text-muted-foreground leading-relaxed">
         Optional. Keys go to your OS credential store (macOS Keychain, Windows
         Credential Manager, Linux secret-service) — never to voidlink's settings
         or localStorage — and are exported into the environment of the commands
@@ -1584,7 +1584,7 @@ function ProviderKeysSection() {
       </p>
       <Show when={keychainError()}>
         {(err) => (
-          <p class="text-[11px] text-destructive leading-relaxed" title={err()}>
+          <p class="text-label text-destructive leading-relaxed" title={err()}>
             Can't reach the OS credential store, so which keys are stored is
             unknown. Saving will report the same error.
           </p>
@@ -1671,7 +1671,7 @@ function KeyRow(props: {
           {props.binding.label}
         </div>
         <div
-          class="truncate font-mono text-[10px] text-muted-foreground/70"
+          class="truncate font-mono text-micro text-muted-foreground/70"
           title={props.binding.envVar}
         >
           {props.binding.envVar}
@@ -1690,12 +1690,12 @@ function KeyRow(props: {
             onKeyDown={(e) => {
               if (e.key === "Enter") void save();
             }}
-            class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+            class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
           />
           <button
             onClick={() => void save()}
             disabled={busy()}
-            class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
+            class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
           >
             Save
           </button>
@@ -1723,7 +1723,7 @@ function KeyRow(props: {
           </Show>
         </div>
         <div
-          class={`text-[10px] ${present() ? "text-primary/80" : "text-muted-foreground/70"}`}
+          class={`text-micro ${present() ? "text-primary/80" : "text-muted-foreground/70"}`}
         >
           {statusText()}
         </div>
@@ -1779,7 +1779,7 @@ function AddCustomKey(props: { onAdded: () => void }) {
         placeholder="MY_PROVIDER_API_KEY"
         onInput={(e) => setEnvVar(e.currentTarget.value)}
         aria-label="Custom environment variable name"
-        class="w-28 shrink-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+        class="w-28 shrink-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
       />
       <input
         type="password"
@@ -1793,12 +1793,12 @@ function AddCustomKey(props: { onAdded: () => void }) {
         onKeyDown={(e) => {
           if (e.key === "Enter") void add();
         }}
-        class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+        class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
       />
       <button
         onClick={() => void add()}
         disabled={busy()}
-        class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
+        class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
       >
         Add
       </button>
@@ -1893,7 +1893,7 @@ function GitPane() {
   return (
     <div class="space-y-4">
       <div class="flex items-start justify-between gap-3">
-        <p class="text-[11px] text-muted-foreground leading-relaxed">
+        <p class="text-label text-muted-foreground leading-relaxed">
           Reads your whole config cascade and writes the keys below to the
           scope you pick. Everything else in git config is left alone — edit it
           with <code>git config</code>.
@@ -1902,7 +1902,7 @@ function GitPane() {
           onClick={() => void refetch()}
           aria-label="Re-read git config"
           title={freshness()}
-          class="shrink-0 flex items-center gap-1 px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          class="shrink-0 flex items-center gap-1 px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
           <RefreshCw
             class={`w-3 h-3 ${snapshot.loading ? "animate-spin motion-loop" : ""}`}
@@ -1928,14 +1928,14 @@ function GitPane() {
             class="rounded border border-destructive/50 bg-destructive/10 px-3 py-2 space-y-1.5"
             role="alert"
           >
-            <p class="text-[11px] text-destructive leading-relaxed">
+            <p class="text-label text-destructive leading-relaxed">
               Couldn't read git config. Nothing below is being shown because
               nothing could be read.
             </p>
-            <p class="text-[10px] font-mono text-muted-foreground break-all">{err()}</p>
+            <p class="text-micro font-mono text-muted-foreground break-all">{err()}</p>
             <button
               onClick={() => void refetch()}
-              class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             >
               Retry
             </button>
@@ -1996,7 +1996,7 @@ function ScopePicker(props: {
             aria-pressed={props.scope === "local"}
             title={props.repoOpen ? "Writes go to this repository's .git/config" : noRepoReason}
             onClick={() => props.repoOpen && props.onChange("local")}
-            class={`flex-1 px-2 py-1 rounded border text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+            class={`flex-1 px-2 py-1 rounded border text-label transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
               !props.repoOpen
                 ? "opacity-40 cursor-not-allowed border-border text-muted-foreground"
                 : props.scope === "local"
@@ -2010,7 +2010,7 @@ function ScopePicker(props: {
             aria-pressed={props.scope === "global"}
             title="Writes go to your user-wide git config, outside this repository"
             onClick={() => props.onChange("global")}
-            class={`flex-1 px-2 py-1 rounded border text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+            class={`flex-1 px-2 py-1 rounded border text-label transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
               props.scope === "global"
                 ? "bg-warning/15 border-warning/40 text-warning"
                 : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -2023,7 +2023,7 @@ function ScopePicker(props: {
 
       <div class="flex items-start gap-3">
         <span class="w-28 shrink-0" aria-hidden="true" />
-        <p class="flex-1 text-[10px] leading-tight text-muted-foreground">
+        <p class="flex-1 text-micro leading-tight text-muted-foreground">
           <Show
             when={!props.loading}
             fallback={<span class="inline-block h-3 w-52 rounded bg-muted animate-pulse motion-loop align-middle" />}
@@ -2045,7 +2045,7 @@ function ScopePicker(props: {
       <Show when={!props.repoOpen}>
         <div class="flex items-start gap-3">
           <span class="w-28 shrink-0" aria-hidden="true" />
-          <p class="flex-1 text-[10px] leading-tight text-muted-foreground/80">
+          <p class="flex-1 text-micro leading-tight text-muted-foreground/80">
             {noRepoReason}. The global cascade below still reads normally.
           </p>
         </div>
@@ -2122,7 +2122,7 @@ function ConfigFieldRow(props: {
             {props.field.label}
           </label>
         </Show>
-        <span class="block text-[10px] font-mono text-muted-foreground/60 leading-tight break-all">
+        <span class="block text-micro font-mono text-muted-foreground/60 leading-tight break-all">
           {props.field.key}
         </span>
       </div>
@@ -2153,7 +2153,7 @@ function ConfigFieldRow(props: {
                       parseGitBool(shown(), parseGitBool(props.field.fallback)) ? "false" : "true",
                     )
                   }
-                  class={`px-3 py-1 rounded-full border text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+                  class={`px-3 py-1 rounded-full border text-label transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
                     parseGitBool(shown(), parseGitBool(props.field.fallback))
                       ? "bg-primary/15 border-primary/40 text-primary"
                       : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -2170,7 +2170,7 @@ function ConfigFieldRow(props: {
                       <button
                         aria-pressed={shown() === opt}
                         onClick={() => void commit(opt)}
-                        class={`px-2 py-1 rounded border text-[11px] font-mono transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+                        class={`px-2 py-1 rounded border text-label font-mono transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
                           shown() === opt
                             ? "bg-primary/15 border-primary/40 text-primary"
                             : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -2202,7 +2202,7 @@ function ConfigFieldRow(props: {
                       setDraft(null);
                     }
                   }}
-                  class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono outline-2 outline-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono outline-2 outline-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
               </Match>
             </Switch>
@@ -2219,18 +2219,18 @@ function ConfigFieldRow(props: {
         </div>
 
         <Show when={props.field.hint}>
-          <p class="text-[10px] leading-tight text-muted-foreground/70">{props.field.hint}</p>
+          <p class="text-micro leading-tight text-muted-foreground/70">{props.field.hint}</p>
         </Show>
 
         <Show when={prov().kind === "unset" && !props.loading}>
-          <p class="text-[10px] leading-tight text-muted-foreground/60">
+          <p class="text-micro leading-tight text-muted-foreground/60">
             git's default here is <span class="font-mono">{props.field.fallback}</span>.
           </p>
         </Show>
 
         <Show when={prov().shadowed}>
           {(shadow) => (
-            <p class="text-[10px] leading-tight text-muted-foreground/60 break-all">
+            <p class="text-micro leading-tight text-muted-foreground/60 break-all">
               {shadow().level}: <span class="font-mono">{shadow().value}</span>
             </p>
           )}
@@ -2244,7 +2244,7 @@ function ConfigFieldRow(props: {
           when={!props.loading}
           fallback={<span class="h-3 w-16 rounded bg-muted animate-pulse motion-loop" />}
         >
-          <span class="text-[10px] uppercase tracking-wider text-muted-foreground text-right leading-tight">
+          <span class="text-micro uppercase tracking-wider text-muted-foreground text-right leading-tight">
             {prov().label}
           </span>
         </Show>
@@ -2254,7 +2254,7 @@ function ConfigFieldRow(props: {
               onClick={() => void commit(null)}
               title={`Remove ${props.field.key} from ${props.scope} config`}
               aria-label={`Clear ${props.field.key} at ${props.scope} scope`}
-              class="px-1 py-0.5 rounded border border-border text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              class="px-1 py-0.5 rounded border border-border text-micro text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             >
               Clear
             </button>
@@ -2287,7 +2287,7 @@ function RepoIdentityOverrides() {
   return (
     <div class="space-y-4">
       <Section title="voidlink identity overrides">
-        <p class="text-[11px] text-muted-foreground leading-relaxed">
+        <p class="text-label text-muted-foreground leading-relaxed">
           Separate from the <code>user.name</code> and <code>user.email</code>{" "}
           rows above: these are applied by voidlink at commit time and are
           stored in voidlink's own settings, so they never touch git config and
@@ -2297,7 +2297,7 @@ function RepoIdentityOverrides() {
         <Show
           when={entries().length > 0}
           fallback={
-            <p class="text-[11px] text-muted-foreground/70 italic">
+            <p class="text-label text-muted-foreground/70 italic">
               No overrides. Every repository commits with its git config identity.
             </p>
           }
@@ -2308,17 +2308,17 @@ function RepoIdentityOverrides() {
                 <div class="flex items-center gap-2 rounded border border-border bg-muted/20 px-2 py-1.5">
                   <div class="min-w-0 flex-1">
                     <div class="flex items-center gap-1.5">
-                      <span class="text-[12px] font-medium truncate">
+                      <span class="text-body font-medium truncate">
                         {repoName(repoPath)}
                       </span>
                       <Show when={activeRepoPath() === repoPath}>
-                        <span class="text-[10px] text-primary/80">active</span>
+                        <span class="text-micro text-primary/80">active</span>
                       </Show>
                     </div>
-                    <p class="text-[10px] text-muted-foreground font-mono truncate" title={repoPath}>
+                    <p class="text-micro text-muted-foreground font-mono truncate" title={repoPath}>
                       {repoPath}
                     </p>
-                    <p class="text-[11px] text-muted-foreground truncate">
+                    <p class="text-label text-muted-foreground truncate">
                       {identity.name} &lt;{identity.email}&gt;
                     </p>
                   </div>
@@ -2426,7 +2426,7 @@ function StackPane() {
                 value={draft()}
                 onInput={(e) => setDraft(e.currentTarget.value)}
                 placeholder="release/v2, staging"
-                class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring"
               />
             </div>
             <div class="flex items-center justify-end gap-2 pl-28">
@@ -2437,7 +2437,7 @@ function StackPane() {
                     void onSave();
                   }}
                   disabled={saving()}
-                  class="px-3 py-1 rounded text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50"
+                  class="px-3 py-1 rounded text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50"
                 >
                   Clear
                 </button>
@@ -2445,7 +2445,7 @@ function StackPane() {
               <button
                 onClick={() => void onSave()}
                 disabled={saving()}
-                class="px-3 py-1 rounded bg-primary text-primary-foreground text-[11px] hover:bg-primary/90 disabled:opacity-50"
+                class="px-3 py-1 rounded bg-primary text-primary-foreground text-label hover:bg-primary/90 disabled:opacity-50"
               >
                 {saving() ? "Saving…" : "Save"}
               </button>

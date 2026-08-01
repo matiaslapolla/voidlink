@@ -45,7 +45,7 @@ export function ProvenanceNote(props: { provenance: Provenance | null | undefine
     <Show when={props.provenance}>
       {(provenance) => (
         <p
-          class="flex items-center gap-1.5 px-3 py-1 border-b border-border bg-muted/20 text-[10px] text-muted-foreground"
+          class="flex items-center gap-1.5 px-3 py-1 border-b border-border bg-muted/20 text-micro text-muted-foreground"
           title={explainProvenance(provenance())}
         >
           <Bot class="w-2.5 h-2.5 shrink-0 opacity-70" aria-hidden="true" />

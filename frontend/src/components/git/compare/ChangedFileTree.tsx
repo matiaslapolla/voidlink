@@ -196,7 +196,7 @@ export function ChangedFileTree(props: Props) {
             value={props.filter}
             onInput={(e) => props.onFilterChange(e.currentTarget.value)}
             placeholder="Filter files…"
-            class="flex-1 min-w-0 bg-transparent outline-none text-[11px] placeholder:text-muted-foreground/60"
+            class="flex-1 min-w-0 bg-transparent outline-none text-label placeholder:text-muted-foreground/60"
             aria-label="Filter changed files"
           />
         </div>
@@ -235,11 +235,11 @@ export function ChangedFileTree(props: Props) {
       </div>
 
       {/* Body */}
-      <div class="flex-1 overflow-auto scrollbar-thin py-1 text-[12px]">
+      <div class="flex-1 overflow-auto scrollbar-thin py-1 text-body">
         <Show
           when={props.files.length > 0}
           fallback={
-            <div class="h-full flex items-center justify-center text-muted-foreground text-[11px] italic">
+            <div class="h-full flex items-center justify-center text-muted-foreground text-label italic">
               No differences.
             </div>
           }
@@ -257,7 +257,7 @@ export function ChangedFileTree(props: Props) {
             <Show
               when={filteredFiles().length > 0}
               fallback={
-                <div class="px-3 py-2 text-[11px] text-muted-foreground italic">
+                <div class="px-3 py-2 text-label text-muted-foreground italic">
                   No matches for “{props.filter}”.
                 </div>
               }
@@ -284,7 +284,7 @@ export function ChangedFileTree(props: Props) {
           list — and "of N" is spelled out rather than implied, so a filtered
           view never looks like the whole diff. */}
       <Show when={props.files.length > 0}>
-        <div class="px-3 py-1 border-t border-border text-[10px] text-muted-foreground tabular-nums shrink-0 flex items-center justify-between">
+        <div class="px-3 py-1 border-t border-border text-micro text-muted-foreground tabular-nums shrink-0 flex items-center justify-between">
           <span>
             {filteredFiles().length} file{filteredFiles().length === 1 ? "" : "s"}
             <Show when={filteredFiles().length !== props.files.length}>
@@ -409,11 +409,11 @@ function FolderRow(props: {
           }`}
         />
         <span class="flex-1 truncate text-foreground/85">{props.node.label}/</span>
-        <span class="text-[10px] tabular-nums text-muted-foreground/70 shrink-0">
+        <span class="text-micro tabular-nums text-muted-foreground/70 shrink-0">
           <span class="text-success">+{props.node.additions}</span>{" "}
           <span class="text-destructive">−{props.node.deletions}</span>
         </span>
-        <span class="text-[10px] tabular-nums text-muted-foreground/50 shrink-0 w-10 text-right">
+        <span class="text-micro tabular-nums text-muted-foreground/50 shrink-0 w-10 text-right">
           {props.node.fileCount}
         </span>
       </button>
@@ -472,7 +472,7 @@ function FileRow(props: {
     >
       <StatusBadge status={file().status} />
       <span class="flex-1 truncate">{props.node.label}</span>
-      <span class="text-[10px] tabular-nums text-muted-foreground/70 shrink-0">
+      <span class="text-micro tabular-nums text-muted-foreground/70 shrink-0">
         <span class="text-success">+{file().additions}</span>{" "}
         <span class="text-destructive">−{file().deletions}</span>
       </span>
@@ -493,7 +493,7 @@ function FlatList(props: {
     <Show
       when={sorted().length > 0}
       fallback={
-        <div class="px-3 py-2 text-[11px] text-muted-foreground italic">
+        <div class="px-3 py-2 text-label text-muted-foreground italic">
           No matches.
         </div>
       }
@@ -513,7 +513,7 @@ function FlatList(props: {
             >
               <StatusBadge status={file.status} />
               <span class="flex-1 truncate">{path}</span>
-              <span class="text-[10px] tabular-nums text-muted-foreground/70 shrink-0">
+              <span class="text-micro tabular-nums text-muted-foreground/70 shrink-0">
                 <span class="text-success">+{file.additions}</span>{" "}
                 <span class="text-destructive">−{file.deletions}</span>
               </span>

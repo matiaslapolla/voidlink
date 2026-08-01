@@ -224,7 +224,7 @@ export function DiffTabView(props: DiffTabViewProps) {
     <div class="absolute inset-0 flex flex-col bg-background">
       <div class="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0">
         <GitCompare class="w-3.5 h-3.5 text-info shrink-0" />
-        <div class="flex-1 min-w-0 text-xs truncate">
+        <div class="flex-1 min-w-0 text-body truncate">
           <span class="font-medium">{relPath()}</span>
           <Show when={fileDiff()}>
             {(f) => (
@@ -244,7 +244,7 @@ export function DiffTabView(props: DiffTabViewProps) {
             })
           }
           disabled={busy()}
-          class="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-40 transition-colors"
+          class="flex items-center gap-1 px-2 py-0.5 text-label rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-40 transition-colors"
           title="Stage the whole file"
         >
           <Plus class="w-3 h-3" />
@@ -253,7 +253,7 @@ export function DiffTabView(props: DiffTabViewProps) {
         <button
           onClick={() => void discard()}
           disabled={busy()}
-          class="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-border text-muted-foreground hover:text-destructive hover:border-destructive/50 disabled:opacity-40 transition-colors"
+          class="flex items-center gap-1 px-2 py-0.5 text-label rounded border border-border text-muted-foreground hover:text-destructive hover:border-destructive/50 disabled:opacity-40 transition-colors"
           title="Discard working-tree changes to this file"
         >
           <Trash2 class="w-3 h-3" />
@@ -276,7 +276,7 @@ export function DiffTabView(props: DiffTabViewProps) {
           onClick={() => setHunkMode((v) => !v)}
           aria-label="Toggle per-hunk view"
           aria-pressed={hunkMode()}
-          class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border transition-colors ${
+          class={`flex items-center gap-1 px-2 py-0.5 text-label rounded border transition-colors ${
             hunkMode()
               ? "bg-primary/15 border-primary/40 text-primary"
               : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -294,7 +294,7 @@ export function DiffTabView(props: DiffTabViewProps) {
           onClick={() => actions.toggleIgnoreWhitespace()}
           aria-label="Toggle ignore whitespace"
           aria-pressed={state.ignoreWhitespace}
-          class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border transition-colors ${
+          class={`flex items-center gap-1 px-2 py-0.5 text-label rounded border transition-colors ${
             state.ignoreWhitespace
               ? "bg-primary/15 border-primary/40 text-primary"
               : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -313,7 +313,7 @@ export function DiffTabView(props: DiffTabViewProps) {
             onClick={() => actions.setDiffMode("inline")}
             aria-label="Inline (unified) view"
             aria-pressed={state.diffMode === "inline"}
-            class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors ${
+            class={`flex items-center gap-1 px-2 py-0.5 text-label rounded transition-colors ${
               state.diffMode === "inline"
                 ? "bg-primary/15 text-primary"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -327,7 +327,7 @@ export function DiffTabView(props: DiffTabViewProps) {
             onClick={() => actions.setDiffMode("split")}
             aria-label="Split (side by side) view"
             aria-pressed={state.diffMode === "split"}
-            class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors ${
+            class={`flex items-center gap-1 px-2 py-0.5 text-label rounded transition-colors ${
               state.diffMode === "split"
                 ? "bg-primary/15 text-primary"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -347,11 +347,11 @@ export function DiffTabView(props: DiffTabViewProps) {
 
       <div class="flex-1 min-h-0">
         <Show when={!hunkMode()} fallback={
-          <div class="h-full overflow-auto scrollbar-thin font-mono text-[12px] leading-[1.5]">
+          <div class="h-full overflow-auto scrollbar-thin font-mono text-body leading-[1.5]">
             <Show
               when={fileDiff()}
               fallback={
-                <div class="h-full flex items-center justify-center text-muted-foreground text-xs">
+                <div class="h-full flex items-center justify-center text-muted-foreground text-body">
                   <Show when={data.loading} fallback="No changes to show.">
                     Loading diff…
                   </Show>
@@ -372,7 +372,7 @@ export function DiffTabView(props: DiffTabViewProps) {
         <Show
           when={sides()}
           fallback={
-            <div class="h-full flex items-center justify-center text-muted-foreground text-xs">
+            <div class="h-full flex items-center justify-center text-muted-foreground text-body">
               <Show when={data.loading} fallback="Could not read this file.">
                 Loading diff…
               </Show>
@@ -383,7 +383,7 @@ export function DiffTabView(props: DiffTabViewProps) {
             <Show
               when={!s().unavailable}
               fallback={
-                <div class="h-full flex items-center justify-center text-muted-foreground text-xs">
+                <div class="h-full flex items-center justify-center text-muted-foreground text-body">
                   {s().unavailable}
                 </div>
               }

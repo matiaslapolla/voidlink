@@ -803,7 +803,7 @@ export function EditorSurface(props: {
           workbench's TitleBar and the git window's header. */}
       <div
         data-tauri-drag-region={props.embedded ? undefined : true}
-        class={`h-9 shrink-0 flex items-center gap-2 px-3 text-xs select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
+        class={`h-9 shrink-0 flex items-center gap-2 px-3 text-body select-none ${props.embedded ? "" : DEV_CHROME_CLASS}`}
         classList={{ "pl-[78px]": isMac() && !props.embedded }}
       >
         <FileCode class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
@@ -893,7 +893,7 @@ export function EditorSurface(props: {
             }}
             aria-label="Open git window"
             title="Open the git client in its own window"
-            class="self-center flex items-center gap-1 h-[22px] px-1.5 rounded border border-dashed border-border text-[11px] text-muted-foreground hover:bg-accent/60 hover:text-foreground hover:border-border/80 transition-colors"
+            class="self-center flex items-center gap-1 h-[22px] px-1.5 rounded border border-dashed border-border text-label text-muted-foreground hover:bg-accent/60 hover:text-foreground hover:border-border/80 transition-colors"
           >
             <GitBranch class="w-3 h-3 shrink-0" />
             Git
@@ -911,13 +911,13 @@ export function EditorSurface(props: {
             style={{ margin: "0 var(--island-inset) var(--island-inset)" }}
           >
             <FileCode class="w-7 h-7 opacity-60" />
-            <p class="text-[13px]">
+            <p class="text-ui">
               {props.embedded
                 ? "Open a repository to start editing."
                 : "Open a repository in the main voidlink window."}
             </p>
             <Show when={!props.embedded}>
-              <p class="text-[11px] opacity-70">
+              <p class="text-label opacity-70">
                 This window follows whichever worktree is active there.
               </p>
             </Show>
@@ -950,7 +950,7 @@ export function EditorSurface(props: {
                   />
                 </Show>
                 <Show when={!searchVisible()}>
-                <div class="px-3 py-1.5 text-[10px] tracking-wide text-muted-foreground/70 border-b border-border/60 shrink-0">
+                <div class="px-3 py-1.5 text-micro tracking-wide text-muted-foreground/70 border-b border-border/60 shrink-0">
                   Files
                 </div>
                 <FileTree
@@ -1135,7 +1135,7 @@ export function EditorSurface(props: {
             {/* Git panel */}
             <Show when={gitVisible()}>
               <aside class="island w-80 shrink-0 bg-sidebar flex flex-col min-h-0">
-                <div class="px-3 py-1.5 text-[10px] tracking-wide text-muted-foreground/70 border-b border-border/60 shrink-0">
+                <div class="px-3 py-1.5 text-micro tracking-wide text-muted-foreground/70 border-b border-border/60 shrink-0">
                   Changes
                 </div>
                 <div class="flex-1 overflow-y-auto scrollbar-thin">
@@ -1181,7 +1181,7 @@ function ExternalChangeBar(props: {
     <div
       role="status"
       aria-live="polite"
-      class="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-warning/40 bg-warning/10 text-[11px]"
+      class="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-warning/40 bg-warning/10 text-label"
     >
       <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
       <span class="flex-1 min-w-0 truncate">

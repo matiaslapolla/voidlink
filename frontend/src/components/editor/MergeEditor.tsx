@@ -131,11 +131,11 @@ export function MergeEditor(props: MergeEditorProps) {
       <div class="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
         <GitMerge class="w-4 h-4 text-warning shrink-0" />
         <div class="flex flex-col min-w-0 flex-1">
-          <span class="text-[13px] font-medium truncate">{shortName(props.filePath)}</span>
-          <span class="text-[11px] text-muted-foreground truncate">{props.filePath}</span>
+          <span class="text-ui font-medium truncate">{shortName(props.filePath)}</span>
+          <span class="text-label text-muted-foreground truncate">{props.filePath}</span>
         </div>
 
-        <span class="text-[11px] text-muted-foreground tabular-nums whitespace-nowrap">
+        <span class="text-label text-muted-foreground tabular-nums whitespace-nowrap">
           {resolved()} of {total()} resolved
         </span>
 
@@ -149,7 +149,7 @@ export function MergeEditor(props: MergeEditorProps) {
             >
               <ChevronUp class="w-3 h-3" />
             </button>
-            <span class="px-1 text-[11px] tabular-nums text-muted-foreground">
+            <span class="px-1 text-label tabular-nums text-muted-foreground">
               {Math.min(cursor() + 1, blocks().length)}/{blocks().length}
             </span>
             <button
@@ -164,19 +164,19 @@ export function MergeEditor(props: MergeEditorProps) {
 
           <button
             onClick={() => accept("ours")}
-            class="px-2 py-1 rounded bg-info/15 text-info hover:bg-info/25 text-[11px] whitespace-nowrap"
+            class="px-2 py-1 rounded bg-info/15 text-info hover:bg-info/25 text-label whitespace-nowrap"
           >
             Accept ours
           </button>
           <button
             onClick={() => accept("theirs")}
-            class="px-2 py-1 rounded bg-warning/15 text-warning hover:bg-warning/25 text-[11px] whitespace-nowrap"
+            class="px-2 py-1 rounded bg-warning/15 text-warning hover:bg-warning/25 text-label whitespace-nowrap"
           >
             Accept theirs
           </button>
           <button
             onClick={() => accept("both")}
-            class="px-2 py-1 rounded bg-primary/15 text-primary hover:bg-primary/25 text-[11px] whitespace-nowrap"
+            class="px-2 py-1 rounded bg-primary/15 text-primary hover:bg-primary/25 text-label whitespace-nowrap"
           >
             Accept both
           </button>
@@ -193,7 +193,7 @@ export function MergeEditor(props: MergeEditorProps) {
         <button
           onClick={() => void save()}
           disabled={saving() || blocks().length > 0}
-          class="flex items-center gap-1 px-2 py-1 rounded text-[13px] bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          class="flex items-center gap-1 px-2 py-1 rounded text-ui bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
         >
           <Check class="w-3 h-3" /> Mark resolved &amp; stage
         </button>
@@ -202,7 +202,7 @@ export function MergeEditor(props: MergeEditorProps) {
       <Show
         when={!versions.loading && buffer() !== null}
         fallback={
-          <div class="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+          <div class="flex-1 flex items-center justify-center text-muted-foreground text-title">
             Loading conflict versions…
           </div>
         }
@@ -229,7 +229,7 @@ export function MergeEditor(props: MergeEditorProps) {
               <Show
                 when={base() !== null}
                 fallback={
-                  <div class="h-full flex items-center justify-center px-4 text-center text-[11px] text-muted-foreground">
+                  <div class="h-full flex items-center justify-center px-4 text-center text-label text-muted-foreground">
                     git recorded no common ancestor for this file, so each side is
                     shown as-is rather than as a diff.
                   </div>
@@ -259,17 +259,17 @@ export function MergeEditor(props: MergeEditorProps) {
               typing, not a replacement for it. */}
           <div class="flex-[1.2] min-h-0 flex flex-col">
             <div class="flex items-center gap-2 px-3 py-1 border-b border-border/60 shrink-0">
-              <span class="text-[10px] tracking-wide text-foreground/80">Result</span>
+              <span class="text-micro tracking-wide text-foreground/80">Result</span>
               <Show when={blocks().length > 0} fallback={
-                <span class="text-[10px] text-success">no markers left</span>
+                <span class="text-micro text-success">no markers left</span>
               }>
-                <span class="text-[10px] text-warning tabular-nums">
+                <span class="text-micro text-warning tabular-nums">
                   {blocks().length} conflict marker block{blocks().length === 1 ? "" : "s"} remaining
                 </span>
               </Show>
               <Show when={current()}>
                 {(block) => (
-                  <span class="ml-auto text-[10px] text-muted-foreground tabular-nums">
+                  <span class="ml-auto text-micro text-muted-foreground tabular-nums">
                     conflict at lines {block().startLine + 1}–{block().endLine + 1}
                   </span>
                 )}
@@ -302,7 +302,7 @@ function MergeColumn(props: {
         : "text-muted-foreground";
   return (
     <div class="flex flex-col min-w-0 min-h-0">
-      <div class={`px-3 py-1 text-[10px] tracking-wide shrink-0 ${toneClass()}`}>
+      <div class={`px-3 py-1 text-micro tracking-wide shrink-0 ${toneClass()}`}>
         {props.label}
       </div>
       <div class="flex-1 min-h-0">{props.children}</div>

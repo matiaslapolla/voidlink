@@ -139,7 +139,7 @@ export function FindPanel(props: FindPanelProps) {
               }
             }}
             placeholder="Search this repository"
-            class="rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono outline-2 outline-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono outline-2 outline-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </div>
 
@@ -153,7 +153,7 @@ export function FindPanel(props: FindPanelProps) {
               type="text"
               value={replacement()}
               onInput={(e) => setReplacement(e.currentTarget.value)}
-              class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono outline-2 outline-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono outline-2 outline-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
             <button
               onClick={() => void replaceAll()}
@@ -165,7 +165,7 @@ export function FindPanel(props: FindPanelProps) {
               }
               aria-disabled={find.groups().length === 0}
               disabled={find.groups().length === 0}
-              class="shrink-0 flex items-center gap-1 px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              class="shrink-0 flex items-center gap-1 px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {/* Icon slot is reserved at rest, so the pending swap costs no
                   reflow (§7.5.2). */}
@@ -215,7 +215,7 @@ export function FindPanel(props: FindPanelProps) {
       >
         <Show when={find.state().kind !== "idle"}>
           <div
-            class="px-3 py-1.5 text-[10px] text-muted-foreground border-b border-border/40"
+            class="px-3 py-1.5 text-micro text-muted-foreground border-b border-border/40"
             classList={{ "animate-pulse": find.state().kind === "searching" }}
           >
             <Show
@@ -233,7 +233,7 @@ export function FindPanel(props: FindPanelProps) {
           <For each={find.groups()}>
             {(group) => (
               <section>
-                <div class="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-muted-foreground/80 truncate">
+                <div class="px-3 py-1 text-micro font-mono uppercase tracking-wider text-muted-foreground/80 truncate">
                   {relativePath(group.path, props.root())}
                 </div>
                 <For each={group.matches}>
@@ -251,7 +251,7 @@ export function FindPanel(props: FindPanelProps) {
 
         <Show when={truncatedOf(find.state())}>
           {(summary) => (
-            <div class="px-3 py-2 text-[11px] text-warning border-t border-border/40">
+            <div class="px-3 py-2 text-label text-warning border-t border-border/40">
               {describeTruncated(summary())}
               <button
                 onClick={() => {
@@ -271,7 +271,7 @@ export function FindPanel(props: FindPanelProps) {
             <div class="px-3 py-2 border-t border-border/40 space-y-1">
               <For each={errors()}>
                 {(err) => (
-                  <div class="flex items-start gap-1.5 text-[11px] text-destructive">
+                  <div class="flex items-start gap-1.5 text-label text-destructive">
                     <AlertTriangle class="w-3 h-3 shrink-0 mt-0.5" />
                     <span class="font-mono truncate">{err.path}</span>
                     <span class="text-muted-foreground truncate">{err.message}</span>
@@ -320,10 +320,10 @@ function MatchRow(props: { match: SearchMatch; onOpen: () => void }) {
       title={`${props.match.path}:${props.match.line}:${props.match.column}`}
       class="w-full text-left flex items-baseline gap-2 px-3 py-0.5 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset transition-colors"
     >
-      <span class="w-8 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground/70">
+      <span class="w-8 shrink-0 text-right font-mono text-micro tabular-nums text-muted-foreground/70">
         {props.match.line}
       </span>
-      <span class="min-w-0 truncate font-mono text-[11px] text-foreground/85">
+      <span class="min-w-0 truncate font-mono text-label text-foreground/85">
         {before()}
         {/* One highlight colour, the app's own (§11.5). Never a second. */}
         <span class="bg-primary/15 text-primary rounded">{hit()}</span>
@@ -345,7 +345,7 @@ function OptionToggle(props: {
       title={props.title}
       aria-label={props.title}
       aria-pressed={props.active}
-      class={`px-2 py-0.5 rounded border text-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      class={`px-2 py-0.5 rounded border text-micro transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         props.active
           ? "bg-primary/15 border-primary/40 text-primary"
           : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"

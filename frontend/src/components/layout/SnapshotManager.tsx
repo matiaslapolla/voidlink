@@ -223,7 +223,7 @@ export function SnapshotManager(props: SnapshotManagerProps) {
           onKeyDown={trapFocus}
         >
           <div class="flex items-center justify-between px-4 py-2.5 border-b border-border">
-            <h2 id="snapshot-manager-title" class="text-sm font-semibold">
+            <h2 id="snapshot-manager-title" class="text-title font-semibold">
               Snapshots
             </h2>
             <button
@@ -254,12 +254,12 @@ export function SnapshotManager(props: SnapshotManagerProps) {
                 // nor its sentence with any other empty state in the app.
                 <div class="flex flex-col items-center gap-2 py-10 text-center">
                   <Archive class="w-5 h-5 text-muted-foreground opacity-60" />
-                  <p class="text-xs text-muted-foreground">
+                  <p class="text-body text-muted-foreground">
                     Nothing has been snapshotted in this worktree yet.
                   </p>
                   <button
                     onClick={() => void saveNew()}
-                    class="px-3 py-1 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring transition-colors"
+                    class="px-3 py-1 rounded bg-primary text-primary-foreground text-body hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring transition-colors"
                   >
                     Save this session as a snapshot
                   </button>
@@ -282,8 +282,8 @@ export function SnapshotManager(props: SnapshotManagerProps) {
                         when={renaming() === snap.name}
                         fallback={
                           <>
-                            <div class="text-xs truncate">{snap.name}</div>
-                            <div class="text-[10px] text-muted-foreground truncate">
+                            <div class="text-body truncate">{snap.name}</div>
+                            <div class="text-micro text-muted-foreground truncate">
                               {contents(snap)} · {snapshotTabCount(snap)} tabs ·{" "}
                               {ago(snap.savedAt)}
                             </div>
@@ -310,12 +310,12 @@ export function SnapshotManager(props: SnapshotManagerProps) {
                               setRenameError(null);
                             }
                           }}
-                          class={`w-full rounded border bg-muted/40 px-2 py-1 text-xs outline-2 outline-transparent focus:outline-none focus:ring-1 focus:ring-ring ${
+                          class={`w-full rounded border bg-muted/40 px-2 py-1 text-body outline-2 outline-transparent focus:outline-none focus:ring-1 focus:ring-ring ${
                             renameError() ? "border-destructive" : "border-border"
                           }`}
                         />
                         <Show when={renameError()}>
-                          <div class="text-[10px] text-destructive mt-0.5">
+                          <div class="text-micro text-destructive mt-0.5">
                             {renameError()}
                           </div>
                         </Show>
@@ -342,7 +342,7 @@ export function SnapshotManager(props: SnapshotManagerProps) {
                         // order while the PTYs come up.
                         aria-label={`Restore snapshot ${snap.name}`}
                         title="Restore (Enter)"
-                        class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring transition-colors flex items-center gap-1"
+                        class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring transition-colors flex items-center gap-1"
                       >
                         <Show when={restoring() === snap.name}>
                           <Loader2 class="w-3 h-3 animate-spin" />
@@ -385,12 +385,12 @@ export function SnapshotManager(props: SnapshotManagerProps) {
           </div>
 
           <div class="flex items-center justify-between px-4 py-2.5 border-t border-border">
-            <span class="text-[10px] text-muted-foreground">
+            <span class="text-micro text-muted-foreground">
               ↑↓ select · Enter restore · F2 rename · Del delete
             </span>
             <button
               onClick={() => void saveNew()}
-              class="px-3 py-1 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring transition-colors"
+              class="px-3 py-1 rounded bg-primary text-primary-foreground text-body hover:bg-primary/90 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring transition-colors"
             >
               Save current session…
             </button>

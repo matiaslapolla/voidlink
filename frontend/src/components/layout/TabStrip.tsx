@@ -113,22 +113,56 @@ export interface TabDescriptor {
   labelWidth?: string;
 }
 
-/// The active tab's 2px `--primary` rule.
+/// The active tab's 2px `--primary` rule — **one** of them, for the whole
+/// strip, positioned by transform.
 ///
-/// Rendered as a child rather than as a border or a box-shadow for two
-/// reasons. A border would change `border-width` between states, which §7.6
-/// forbids outright; a box-shadow would have to be composed with the drop
-/// caret's inset shadow into one dynamic class string, and Tailwind v4 only
-/// emits classes it can find literally in the source, so a runtime-built one
-/// would silently produce no CSS at all.
+/// It used to be rendered inside each active tab (MOTION-PLAN F15), which
+/// meant switching tabs destroyed the rule in one place and created it in
+/// another. There was nothing to animate, because no single element persisted
+/// across the change. A shared indicator that slides is the clearest native
+/// signal a tab strip can emit, and it survives §7.1's frequency gate — which
+/// otherwise forbids animating anything this often — because it *carries
+/// information*: it shows where you came from, which a tab that simply lights
+/// up cannot.
+///
+/// Positioned with `translateX` + `width` rather than `left`/`right`.
+/// Transforms are the only geometry §7.3.2 permits, and `width` is animated
+/// here rather than the transform's `scaleX` because a scaled 2px rule would
+/// keep its own scale on the ends — a rounded cap would smear.
+///
+/// Rendered as a sibling of the scroller rather than a child, so the strip's
+/// `overflow-x: auto` cannot clip it and so it does not scroll away from the
+/// tab it marks; its offset is measured against the scroller and corrected by
+/// `scrollLeft`.
 ///
 /// Inset from the card's own edges by 6px so its ends clear the card's
 /// `--island-radius-inner` corners instead of poking past them.
-function ActiveRule() {
+const RULE_INSET = 6;
+
+function ActiveIndicator(props: {
+  /// Offset from the strip's left edge, in px, and the width to draw. `null`
+  /// when nothing is active — a strip with no active tab (an editor window
+  /// showing nothing) shows no rule.
+  rect: { left: number; width: number } | null;
+  /// Suppresses the transition for the first placement. Sliding in from x=0 on
+  /// mount is motion that describes a journey that never happened.
+  instant: boolean;
+}) {
   return (
     <span
       aria-hidden="true"
-      class="pointer-events-none absolute left-1.5 right-1.5 bottom-0 h-0.5 bg-primary"
+      data-motion="tab-indicator"
+      class={[
+        "pointer-events-none absolute bottom-0 left-0 h-0.5 bg-primary",
+        props.instant
+          ? ""
+          : "transition-[transform,width,opacity] duration-[var(--dur-short)] ease-out",
+      ].join(" ")}
+      style={{
+        opacity: props.rect ? 1 : 0,
+        width: `${props.rect ? Math.max(0, props.rect.width - RULE_INSET * 2) : 0}px`,
+        transform: `translateX(${(props.rect?.left ?? 0) + RULE_INSET}px)`,
+      }}
     />
   );
 }
@@ -538,7 +572,7 @@ export function TabStrip(props: TabStripProps) {
   ///     sidebar headers across all three columns (§5's density audit).
   function tabClasses(tab: TabDescriptor, active: boolean) {
     const base =
-      "group relative flex items-center gap-1.5 px-2.5 h-7 mx-[var(--space-3xs)] rounded-[var(--island-radius-inner)] border shrink-0 text-[13px] cursor-pointer select-none transition-colors";
+      "group relative flex items-center gap-1.5 px-2.5 h-7 mx-[var(--space-3xs)] rounded-[var(--island-radius-inner)] border shrink-0 text-ui cursor-pointer select-none transition-colors";
     const tone = active
       ? "bg-background text-foreground border-border"
       : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60";
@@ -564,18 +598,67 @@ export function TabStrip(props: TabStripProps) {
     setOverflowing(scrollRef.scrollWidth > scrollRef.clientWidth + 1);
   }
 
+  // ── The shared active indicator (MOTION-PLAN F15) ────────────────────────
+  // One rule for the strip, measured off whichever card is active. Measurement
+  // is by `offsetLeft`/`offsetWidth` against the scroller — which is
+  // `position: relative`, so the cards' `offsetParent` *is* the scroller and
+  // the numbers are already in the indicator's own coordinate space. That is
+  // also why no `scrollLeft` correction appears anywhere here: the indicator
+  // lives inside the scroller and scrolls with the tab it marks, which is the
+  // only behaviour that stays truthful when the strip overflows.
+  const [indicator, setIndicator] = createSignal<{ left: number; width: number } | null>(null);
+  /// True until the indicator has been placed once. A rule that slides in from
+  /// the strip's left edge on mount is describing a journey that never
+  /// happened.
+  const [indicatorInstant, setIndicatorInstant] = createSignal(true);
+
+  function measureIndicator() {
+    const host = scrollRef;
+    const id = props.activeId;
+    if (!host || !id) {
+      setIndicator(null);
+      return;
+    }
+    const el = host.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(id)}"]`);
+    if (!el) {
+      // The active tab is inside a collapsed group, or in another strip. No
+      // rule rather than a stale one — the indicator states a fact.
+      setIndicator(null);
+      return;
+    }
+    setIndicator({ left: el.offsetLeft, width: el.offsetWidth });
+  }
+
+  function remeasure() {
+    recomputeOverflow();
+    measureIndicator();
+  }
+
   onMount(() => {
     if (!scrollRef) return;
-    recomputeOverflow();
-    const ro = new ResizeObserver(() => recomputeOverflow());
+    remeasure();
+    // One frame after the first placement, allow the transition. Doing it on a
+    // frame rather than a microtask guarantees the initial values have been
+    // painted, so enabling the transition cannot retroactively animate them.
+    requestAnimationFrame(() => setIndicatorInstant(false));
+    const ro = new ResizeObserver(() => remeasure());
     ro.observe(scrollRef);
-    onCleanup(() => ro.disconnect());
+    // Cards change width when a terminal tab picks up a running process name,
+    // which moves every card after it. `ResizeObserver` on the scroller alone
+    // does not see that — the scroller's own size has not changed.
+    const mo = new MutationObserver(() => queueMicrotask(measureIndicator));
+    mo.observe(scrollRef, { childList: true, subtree: true, characterData: true });
+    onCleanup(() => {
+      ro.disconnect();
+      mo.disconnect();
+    });
   });
 
   createEffect(() => {
     void ordered().length;
+    void props.activeId;
     // Wait a microtask so layout has settled before measuring.
-    queueMicrotask(recomputeOverflow);
+    queueMicrotask(remeasure);
   });
 
   // ── Context menu ─────────────────────────────────────────────────────────
@@ -647,7 +730,11 @@ export function TabStrip(props: TabStripProps) {
         ref={(el) => (scrollRef = el)}
         onDragOver={onStripDragOver}
         onDrop={onStripDrop}
-        class="flex items-center overflow-x-auto scrollbar-none flex-1 min-w-0 h-full"
+        // `relative` is load-bearing twice over: it makes the scroller the
+        // cards' `offsetParent` (so `measureIndicator` needs no coordinate
+        // arithmetic) and it is what the shared indicator is positioned
+        // against.
+        class="relative flex items-center overflow-x-auto scrollbar-none flex-1 min-w-0 h-full"
       >
         {/*
           `Index` rather than `For`: descriptors are rebuilt from scratch on
@@ -704,6 +791,8 @@ export function TabStrip(props: TabStripProps) {
             </Show>
           )}
         </Index>
+        {/* Last child, so it paints over the cards rather than under them. */}
+        <ActiveIndicator rect={indicator()} instant={indicatorInstant()} />
       </div>
 
       {props.trailing}
@@ -889,7 +978,7 @@ function TabGroupChip(props: {
       // permanent transparent border for the same reason the cards do — state
       // moves `border-color` and `background-color` only, never
       // `border-width`, so hovering a chip cannot reflow the strip (§7.6).
-      class="flex items-center gap-1.5 pl-2 pr-1.5 h-7 mx-[var(--space-3xs)] rounded-[var(--island-radius-inner)] border border-transparent shrink-0 text-[12px] select-none cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60 transition-colors"
+      class="flex items-center gap-1.5 pl-2 pr-1.5 h-7 mx-[var(--space-3xs)] rounded-[var(--island-radius-inner)] border border-transparent shrink-0 text-body select-none cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60 transition-colors"
       classList={{ "opacity-50": props.dragging }}
       title={
         props.group.collapsed
@@ -930,14 +1019,14 @@ function TabGroupChip(props: {
             }
           }}
           aria-label={`Rename ${props.group.label}`}
-          class="w-[110px] bg-muted/40 border border-border rounded px-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-ring"
+          class="w-[110px] bg-muted/40 border border-border rounded px-1 text-body focus:outline-none focus:ring-1 focus:ring-ring"
         />
       </Show>
       {/* Count and mark exist only while collapsed — see the header comment.
           The slot is reserved inside that branch so a signal arriving on a
           collapsed group still costs no layout (§7.5.3 rule 3). */}
       <Show when={props.group.collapsed}>
-        <span class="text-[10px] font-mono tabular-nums opacity-70">{props.count}</span>
+        <span class="text-micro font-mono tabular-nums opacity-70">{props.count}</span>
         <LedSlot signal={props.activity} />
       </Show>
     </div>
@@ -991,10 +1080,10 @@ function TabGroupContextMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[13px]"
+            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
-            <div class="px-3 py-1 text-[11px] text-muted-foreground truncate border-b border-border/50">
+            <div class="px-3 py-1 text-label text-muted-foreground truncate border-b border-border/50">
               {c().group.label}
             </div>
             <MenuItem
@@ -1059,6 +1148,12 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
   return (
     <div
       draggable={props.draggable}
+      // What the shared active indicator measures against. `data-active` is
+      // not read by the indicator (the strip already knows which id is
+      // active) — it is there so the card's own state is legible in the
+      // inspector now that the rule inside it is gone.
+      data-tab-id={props.tab.id}
+      data-active={props.active ? "" : undefined}
       onDragStart={props.onDragStart}
       onDragOver={props.onDragOver}
       onDrop={props.onDrop}
@@ -1079,13 +1174,13 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
       </Show>
       <span
         class={`truncate ${props.tab.labelWidth ?? "max-w-[140px]"} ${
-          props.tab.mono ? "font-mono text-[12px]" : ""
+          props.tab.mono ? "font-mono text-body" : ""
         }`}
         classList={{ italic: props.tab.preview }}
       >
         <Show when={props.tab.prefix}>
           <span
-            class={`text-[11px] ${
+            class={`text-label ${
               props.tab.prefixTone === "warning"
                 ? "text-warning"
                 : "text-muted-foreground"
@@ -1102,9 +1197,6 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
         closeLabel={`Close ${props.tab.label}`}
         onClose={props.onClose}
       />
-      <Show when={props.active}>
-        <ActiveRule />
-      </Show>
     </div>
   );
 }
@@ -1199,6 +1291,12 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
   return (
     <div
       draggable={props.draggable}
+      // What the shared active indicator measures against. `data-active` is
+      // not read by the indicator (the strip already knows which id is
+      // active) — it is there so the card's own state is legible in the
+      // inspector now that the rule inside it is gone.
+      data-tab-id={props.tab.id}
+      data-active={props.active ? "" : undefined}
       onDragStart={props.onDragStart}
       onDragOver={props.onDragOver}
       onDrop={props.onDrop}
@@ -1241,9 +1339,6 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
         closeLabel={`Kill ${props.session.label}`}
         onClose={props.onClose}
       />
-      <Show when={props.active}>
-        <ActiveRule />
-      </Show>
     </div>
   );
 }
@@ -1331,19 +1426,19 @@ function TabOverflowMenu(props: {
         class="px-1.5 mx-0.5 h-7 self-end mb-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors shrink-0 flex items-center gap-0.5"
       >
         <ChevronsRight class="w-3.5 h-3.5" />
-        <span class="text-[10px] font-mono tabular-nums">{props.tabs.length}</span>
+        <span class="text-micro font-mono tabular-nums">{props.tabs.length}</span>
       </button>
       <Show when={open()}>
         <Portal>
           <div
             ref={panelRef}
-            class="fixed w-[280px] max-h-[60vh] overflow-y-auto scrollbar-thin rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[13px]"
+            class="fixed w-[280px] max-h-[60vh] overflow-y-auto scrollbar-thin rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <For each={groups()}>
               {(group) => (
                 <>
-                  <div class="px-3 pt-1 pb-0.5 text-[10px] tracking-wide text-muted-foreground/70">
+                  <div class="px-3 pt-1 pb-0.5 text-micro tracking-wide text-muted-foreground/70">
                     {KIND_LABELS[group.kind]}
                   </div>
                   <For each={group.tabs}>
@@ -1361,7 +1456,7 @@ function TabOverflowMenu(props: {
                         }`}
                       >
                         <span class="shrink-0 opacity-70">{tab.icon}</span>
-                        <span class="flex-1 truncate font-mono text-[12px]">{tab.label}</span>
+                        <span class="flex-1 truncate font-mono text-body">{tab.label}</span>
                       </button>
                     )}
                   </For>
@@ -1450,10 +1545,10 @@ function TabContextMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-[13px]"
+            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
-            <div class="px-3 py-1 text-[11px] text-muted-foreground truncate border-b border-border/50">
+            <div class="px-3 py-1 text-label text-muted-foreground truncate border-b border-border/50">
               {c().tab.prefix ?? ""}
               {c().tab.label}
             </div>
@@ -1621,7 +1716,7 @@ export function PaneDropOverlay(props: {
         {(g) => (
           <Portal>
             <div
-              class="fixed z-[var(--z-drag)] pointer-events-none rounded-md border border-destructive/60 bg-popover px-2 py-1 text-[11px] text-destructive shadow-lg"
+              class="fixed z-[var(--z-drag)] pointer-events-none rounded-md border border-destructive/60 bg-popover px-2 py-1 text-label text-destructive shadow-lg"
               style={{ left: `${g().x + 14}px`, top: `${g().y + 14}px` }}
             >
               {g().reason}

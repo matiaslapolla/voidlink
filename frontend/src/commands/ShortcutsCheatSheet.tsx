@@ -108,7 +108,7 @@ function CheatSheetContent() {
         >
           <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
             <Keyboard class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-            <h2 id="cheat-sheet-title" class="text-sm font-semibold shrink-0">
+            <h2 id="cheat-sheet-title" class="text-title font-semibold shrink-0">
               Keyboard shortcuts
             </h2>
             <input
@@ -119,16 +119,16 @@ function CheatSheetContent() {
               onKeyDown={onKeyDown}
               placeholder="Filter shortcuts…"
               aria-label="Filter shortcuts"
-              class="flex-1 min-w-0 bg-transparent border-0 outline-none text-sm placeholder:text-muted-foreground"
+              class="flex-1 min-w-0 bg-transparent border-0 outline-none text-title placeholder:text-muted-foreground"
             />
-            <span class="text-[10px] text-muted-foreground/70 shrink-0">Esc to close</span>
+            <span class="text-micro text-muted-foreground/70 shrink-0">Esc to close</span>
           </div>
 
           <div class="flex-1 overflow-y-auto scrollbar-thin px-3 py-2">
             <Show
               when={groups().length > 0}
               fallback={
-                <div class="px-3 py-6 text-center text-xs text-muted-foreground">
+                <div class="px-3 py-6 text-center text-body text-muted-foreground">
                   No matching shortcuts
                 </div>
               }
@@ -136,7 +136,7 @@ function CheatSheetContent() {
               <For each={groups()}>
                 {(g) => (
                   <section class="mb-3 last:mb-0">
-                    <h3 class="text-[11px] font-medium text-muted-foreground/80 py-1">
+                    <h3 class="text-label font-medium text-muted-foreground/80 py-1">
                       {g.group}
                     </h3>
                     <div class="rounded border border-border/60 divide-y divide-border/40">
@@ -148,7 +148,7 @@ function CheatSheetContent() {
             </Show>
           </div>
 
-          <div class="px-3 py-2 border-t border-border text-[11px] text-muted-foreground leading-snug">
+          <div class="px-3 py-2 border-t border-border text-label text-muted-foreground leading-snug">
             The platform modifier is ⌘ on macOS and Ctrl elsewhere; voidlink
             accepts either. A few bindings stand down while the editor or a
             terminal has focus, so they never swallow a key those need — those
@@ -162,19 +162,19 @@ function CheatSheetContent() {
 
 function CheatRow(props: { row: Row }) {
   return (
-    <div class="flex items-center gap-3 px-2.5 py-1.5 text-[13px]">
+    <div class="flex items-center gap-3 px-2.5 py-1.5 text-ui">
       <span class="flex-1 min-w-0 text-foreground/90">
         <span class="block truncate">
           {props.row.label}
           <Show when={props.row.description}>
             {(d) => (
-              <span class="ml-2 text-[11px] text-muted-foreground/80">· {d()}</span>
+              <span class="ml-2 text-label text-muted-foreground/80">· {d()}</span>
             )}
           </Show>
         </span>
         <Show when={props.row.scopeHint}>
           {(hint) => (
-            <span class="block text-[10px] text-muted-foreground/70 leading-tight">
+            <span class="block text-micro text-muted-foreground/70 leading-tight">
               {hint()}
             </span>
           )}
@@ -183,7 +183,7 @@ function CheatRow(props: { row: Row }) {
       <span class="flex items-center gap-1.5 shrink-0">
         <For each={props.row.chords}>
           {(chord) => (
-            <kbd class="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-mono text-foreground/80">
+            <kbd class="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-label font-mono text-foreground/80">
               {chord}
             </kbd>
           )}

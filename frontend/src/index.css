@@ -3,7 +3,11 @@
 @import "./themes.css";
 
 :root {
-  font-family: system-ui, -apple-system, sans-serif;
+  /* No `font-family` here. `@layer base` below sets `@apply font-sans` on
+   * `html` (Geist Variable), which wins for everything that inherits — a
+   * `system-ui` declaration at this level was dead the moment that rule
+   * existed, and reading it suggested the app rendered in the system face.
+   * MOTION-PLAN F24. */
   line-height: 1.5;
   color-scheme: dark;
 
@@ -130,6 +134,44 @@
   --dur-short: 180ms; /* popover, tooltip, menu, sidebar collapse */
   --dur-long: 240ms; /* modal, pane split, zen — the ceiling */
 
+  /* Exits run at ~75% of their enter (§7.2). Named rather than recomputed at
+   * each call site, because "75% of 180" written as a literal is exactly the
+   * sixth budget §7.2 exists to prevent. */
+  --dur-short-out: 135ms; /* 75% of --dur-short */
+  --dur-long-out: 180ms; /* 75% of --dur-long  */
+
+  /* Hover delay before a tooltip opens. Asymmetric by design: keyboard focus
+   * opens at `--dur-instant` because a keyboard user asked for it explicitly
+   * (§7.3.12). Not a transition duration — a `setTimeout` budget — but it is
+   * still a timing the doctrine fixes, so it is a token. */
+  --delay-tooltip: 650ms;
+
+  /* ── Type scale (MASTER.md §4, MOTION-PLAN F4) ─────────────────────────
+   * Five names for the five sizes chrome is actually built out of. Before
+   * this there were six ways to write them — `text-[11px]` ×218,
+   * `text-[10px]` ×125, `text-xs` ×100, `text-[12px]` ×76, `text-[13px]` ×52,
+   * `text-sm` ×17 — with no name to pick correctly from, which is why the
+   * count kept growing.
+   *
+   * **Why px × a scale factor rather than rem.** The 471 `text-[Npx]` sites
+   * this replaces were fixed pixels, and so ignored `ui.textSize` entirely;
+   * the ~117 `text-xs`/`text-sm` sites were rem and did honour it. Naming the
+   * scale in raw px would have frozen those 117 and quietly deleted most of
+   * what the text-size preference still did; naming it in rem would have
+   * resized 471 sites at once. `--text-scale` gives both: the authored number
+   * is the pixel size these surfaces already had at the default setting, and
+   * the whole scale moves together when the user changes the preference —
+   * which is what that setting always claimed to do.
+   *
+   * `--text-scale` is written onto `<html>` beside `font-size` by
+   * `store/settings.ts`. The `1` here is the value for a document that has
+   * not run that effect yet (the editor window's first paint, and every test),
+   * so nothing depends on the store having loaded.
+   *
+   * Deliberately not named `xs`/`sm`/`lg`: those are Tailwind's own scale and
+   * shadowing them would leave two meanings for one class name. */
+  --text-scale: 1;
+
   --sidebar: oklch(0.213 0.005 270);
   --sidebar-foreground: oklch(0.950 0.006 270);
   --sidebar-primary: oklch(0.655 0.200 270);
@@ -197,8 +239,34 @@ body {
   min-height: 100vh;
 }
 
+/* Motion easings live in `@theme`, not `:root`, so that one definition is both
+ * the custom property components read (`var(--ease-out)`) and the value
+ * Tailwind's own `ease-out` / `ease-in` / `ease-in-out` utilities emit. Before
+ * this, `ease-out` in a class string meant Tailwind's curve and
+ * `var(--ease-out)` meant VoidLink's, and they were different curves. */
+@theme {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
 @theme inline {
   --font-sans: 'Geist Variable', sans-serif;
+
+  /* The named type scale — see `--text-scale` above for why these are px×scale
+   * rather than rem or raw px. `--text-*` is Tailwind's font-size namespace, so
+   * each of these becomes a `text-…` utility. */
+  --text-micro: calc(10px * var(--text-scale));
+  --text-label: calc(11px * var(--text-scale));
+  --text-body: calc(12px * var(--text-scale));
+  --text-ui: calc(13px * var(--text-scale));
+  --text-title: calc(14px * var(--text-scale));
+  /* The one size above chrome. A single site uses it — the document title in
+   * `brain/BrainSurface.tsx` — and it is named rather than left as `text-xl`
+   * so the scale has no second spelling, not because a sixth step was wanted.
+   * MASTER §4's rule still stands: adding a seventh needs a reason here. */
+  --text-heading: calc(20px * var(--text-scale));
+
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -254,8 +322,12 @@ body {
   }
   html {
     @apply font-sans;
+    /* `text-rendering: optimizeLegibility` used to sit here too. It was
+     * redundant beside this line — its practical effect in a modern engine is
+     * to force kerning and ligatures on, which `font-feature-settings` already
+     * states explicitly and more precisely — and it costs extra layout work on
+     * every text node in a 56k-line UI. MOTION-PLAN F23. */
     font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
-    text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
   }
   /* Focus rings are the *primary* boundary channel now that islands have no
@@ -378,15 +450,31 @@ html:not([data-density]) {
   margin-top: var(--row-gap);
 }
 
-.transition-colors {
+/* ── The transition floor, and how a surface leaves it ───────────────────────
+ * MOTION-PLAN F2. These three rules were written as a stopgap for the ~145
+ * pre-existing `transition-colors` sites and then became the ceiling: linear
+ * easing on every state change in the product, emitted by the compliance
+ * mechanism itself. Nothing was ever migrated off, because migrating meant
+ * deleting a rule that 200 other sites still depended on.
+ *
+ * `:not([data-motion])` is the exit. A surface that has named its own token
+ * carries `data-motion` and the floor releases it — one attribute per migrated
+ * element, no edit to this block, and `grep -c data-motion` is the migration's
+ * progress bar. The floor keeps governing everything that has not migrated,
+ * which is what §7.2 asks of it.
+ *
+ * `!important` stays only because these are still overriding Tailwind's own
+ * `transition-*` utilities for un-migrated sites; §11's ban is on `!important`
+ * *outside* this file, and this is the sanctioned use it names. */
+.transition-colors:not([data-motion]) {
   transition-duration: 60ms !important;
   transition-timing-function: linear !important;
 }
-.transition-opacity {
+.transition-opacity:not([data-motion]) {
   transition-duration: 80ms !important;
   transition-timing-function: linear !important;
 }
-.transition-all {
+.transition-all:not([data-motion]) {
   transition-duration: 80ms !important;
 }
 
@@ -420,7 +508,10 @@ html:not([data-density]) {
  * generous tracking that made caps legible is dialled back to near-neutral
  * because sentence case doesn't need it. */
 .ui-section-label {
-  font-size: 11px;
+  /* The `--text-label` step of the named scale, written as its definition
+   * rather than as `11px` so a section label moves with `ui.textSize` like
+   * every other piece of chrome text. */
+  font-size: calc(11px * var(--text-scale));
   letter-spacing: 0.01em;
   font-weight: 600;
   color: var(--muted-foreground);
@@ -562,10 +653,18 @@ html:not([data-density]) {
 
 /* ── Reduced motion ─────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
-  .transition-colors,
-  .transition-opacity,
-  .transition-all {
+  /* Every transition, not only the three utility classes the floor covers.
+   * The old list was exhaustive when `transition-colors` was the only motion
+   * in the app; a migrated surface names its duration in a `style` attribute
+   * or a `duration-[var(--dur-…)]` utility and would have escaped a
+   * class-name-keyed rule entirely — which is precisely the surface that most
+   * needs zeroing. Anything the user is *holding* (a splitter, a tab drag) has
+   * no transition to zero, so this cannot make a pointer gesture lag. */
+  *,
+  *::before,
+  *::after {
     transition-duration: 0ms !important;
+    transition-delay: 0ms !important;
   }
   * {
     animation-duration: 0ms !important;

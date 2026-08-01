@@ -56,7 +56,7 @@ function codeLines(lines: DiffLine[]): DiffLine[] {
 /// The footnote a hunk carries when one of its sides has no trailing newline.
 function NoNewlineNote() {
   return (
-    <div class="px-3 py-0.5 text-[11px] italic text-muted-foreground/70 select-none">
+    <div class="px-3 py-0.5 text-label italic text-muted-foreground/70 select-none">
       No newline at end of file
     </div>
   );
@@ -187,10 +187,10 @@ function InlineRow(props: {
   };
   return (
     <div class={`flex whitespace-pre ${bg()}`}>
-      <span class="w-12 flex-shrink-0 text-right pr-1 select-none text-muted-foreground/70 text-[10px] leading-[1.5]">
+      <span class="w-12 flex-shrink-0 text-right pr-1 select-none text-muted-foreground/70 text-micro leading-[1.5]">
         {props.line.oldLineno ?? ""}
       </span>
-      <span class="w-12 flex-shrink-0 text-right pr-2 select-none text-muted-foreground/70 text-[10px] leading-[1.5]">
+      <span class="w-12 flex-shrink-0 text-right pr-2 select-none text-muted-foreground/70 text-micro leading-[1.5]">
         {props.line.newLineno ?? ""}
       </span>
       <span class="w-4 flex-shrink-0 select-none opacity-70">{props.origin}</span>
@@ -381,13 +381,13 @@ function HunkHeader(props: {
         rows don't bleed through while it floats; z-10 keeps it above them. */}
     <div class="flex group sticky top-0 z-10 bg-background">
       <div class="w-1 shrink-0 bg-primary/40" />
-      <div class="flex-1 px-3 py-0.5 bg-muted/40 text-muted-foreground text-[11px] border-y border-border flex items-center gap-2">
+      <div class="flex-1 px-3 py-0.5 bg-muted/40 text-muted-foreground text-label border-y border-border flex items-center gap-2">
         <span class="truncate">{props.hunk.header}</span>
         {/* The note count sits outside the hover group: an existing comment has
             to be discoverable without hovering the hunk that carries it, or a
             review you left yesterday is invisible today. */}
         <Show when={notes().length > 0}>
-          <span class="px-1 rounded bg-info/15 text-info text-[10px]">
+          <span class="px-1 rounded bg-info/15 text-info text-micro">
             {notes().length}
           </span>
         </Show>
@@ -398,7 +398,7 @@ function HunkHeader(props: {
               title="Comment on this hunk — the next agent turn reads it"
               aria-label="Comment on this hunk"
               aria-expanded={composing()}
-              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/60 hover:text-foreground transition-colors"
+              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-micro hover:bg-accent/60 hover:text-foreground transition-colors"
             >
               <MessageSquarePlus class="w-2.5 h-2.5" />
               Comment
@@ -410,7 +410,7 @@ function HunkHeader(props: {
               disabled={running()}
               title={props.actions?.stageLabel ?? "Stage hunk"}
               aria-label={props.actions?.stageLabel ?? "Stage hunk"}
-              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/60 hover:text-foreground transition-colors"
+              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-micro hover:bg-accent/60 hover:text-foreground transition-colors"
             >
               <Show
                 when={props.actions?.stageReverse}
@@ -427,7 +427,7 @@ function HunkHeader(props: {
               disabled={running()}
               title="Discard hunk (revert in working tree)"
               aria-label="Discard hunk"
-              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-destructive/15 hover:text-destructive transition-colors"
+              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-micro hover:bg-destructive/15 hover:text-destructive transition-colors"
             >
               <Minus class="w-2.5 h-2.5" />
               Discard
@@ -437,7 +437,7 @@ function HunkHeader(props: {
             onClick={() => void copyAsMarkdown()}
             title="Copy hunk as markdown code block"
             aria-label="Copy hunk as markdown"
-            class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/60 hover:text-foreground transition-colors"
+            class="flex items-center gap-1 px-1.5 py-0.5 rounded text-micro hover:bg-accent/60 hover:text-foreground transition-colors"
           >
             <Show when={copied()} fallback={<Clipboard class="w-2.5 h-2.5" />}>
               <Check class="w-2.5 h-2.5 text-success" />
@@ -455,14 +455,14 @@ function HunkHeader(props: {
       <ul class="border-b border-border bg-info/5">
         <For each={notes()}>
           {(note) => (
-            <li class="flex items-start gap-2 px-3 py-1 text-[11px]">
+            <li class="flex items-start gap-2 px-3 py-1 text-label">
               <span class="flex-1 min-w-0 whitespace-pre-wrap break-words text-foreground/90">
                 {note.body}
                 <Show when={note.hunkHeader !== props.hunk.header}>
                   {/* The note's anchor moved. Saying so beats letting a reader
                       believe the comment is about the lines beneath it. */}
                   <span
-                    class="ml-1 px-1 rounded bg-muted text-[10px] text-muted-foreground"
+                    class="ml-1 px-1 rounded bg-muted text-micro text-muted-foreground"
                     title="The hunk this was written against has changed"
                   >
                     moved
@@ -498,11 +498,11 @@ function HunkHeader(props: {
           rows="2"
           placeholder="What should change here? The next agent turn reads this."
           aria-label="Comment on this hunk"
-          class="flex-1 min-w-0 px-2 py-1 text-[11px] bg-background rounded border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          class="flex-1 min-w-0 px-2 py-1 text-label bg-background rounded border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
         <button
           type="submit"
-          class="px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/60 transition-colors"
+          class="px-1.5 py-0.5 rounded text-micro hover:bg-accent/60 transition-colors"
         >
           Comment
         </button>
@@ -611,7 +611,7 @@ function SplitCell(props: {
   return (
     <div class={`flex-1 flex min-w-0 ${rowBg()}`}>
       <div class={`w-1 shrink-0 ${gutter()}`} />
-      <span class="w-12 flex-shrink-0 text-right pr-2 select-none text-muted-foreground/70 text-[10px] leading-[1.5]">
+      <span class="w-12 flex-shrink-0 text-right pr-2 select-none text-muted-foreground/70 text-micro leading-[1.5]">
         {lineNum()}
       </span>
       <span class="flex-1 pr-3 min-w-0 overflow-hidden">
@@ -644,7 +644,7 @@ export function DiffRenderer(props: {
     <Show
       when={!props.file.isBinary}
       fallback={
-        <div class="p-4 text-xs text-muted-foreground italic">
+        <div class="p-4 text-body text-muted-foreground italic">
           Binary file — no diff preview.
         </div>
       }
@@ -675,7 +675,7 @@ export function DiffRenderer(props: {
             diff simply looks like it ends early — the same silent-wrongness
             shape as the blank pane `NoTextChange` exists to avoid. */}
         <Show when={props.file.truncated}>
-          <div class="px-4 py-3 border-t border-border text-xs text-muted-foreground">
+          <div class="px-4 py-3 border-t border-border text-body text-muted-foreground">
             This file is too large to show in full. The{" "}
             <span class="tabular-nums">
               +{props.file.additions} −{props.file.deletions}
@@ -711,7 +711,7 @@ function NoTextChange(props: { file: FileDiff }) {
     }
   };
   return (
-    <div class="p-4 text-xs text-muted-foreground space-y-1">
+    <div class="p-4 text-body text-muted-foreground space-y-1">
       <p class="italic">No line changes to show.</p>
       <p>{reason()}</p>
     </div>

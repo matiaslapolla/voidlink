@@ -80,4 +80,20 @@ describe("token hygiene under src/components", () => {
   it("has no raw px radius — the island radii are tokens", () => {
     expect(scan(/rounded-\[[0-9]/)).toEqual([]);
   });
+
+  it("has no arbitrary font size — the type scale is five names", () => {
+    // MASTER §4 / MOTION-PLAN F4. `text-[11px]` ×218 and five more spellings
+    // beside it were how the scale reached six sizes with no name to pick
+    // from. `text-micro | text-label | text-body | text-ui | text-title` are
+    // the five, and a sixth has to be added to `index.css` and to §4's table
+    // before it can be used — which is the whole point of failing here.
+    expect(scan(/text-\[[0-9]/)).toEqual([]);
+  });
+
+  it("uses no Tailwind default font size — they shadow the named scale", () => {
+    // `text-xs` and `text-body` computed to the same 12px at the default
+    // setting and to different values at every other one, which is exactly the
+    // ambiguity naming the scale was meant to end.
+    expect(scan(/\btext-(xs|sm|base|lg|xl|[2-9]xl)\b/)).toEqual([]);
+  });
 });

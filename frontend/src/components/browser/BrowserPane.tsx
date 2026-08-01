@@ -426,7 +426,7 @@ export function BrowserPane(props: {
           spellcheck={false}
           aria-label="Address"
           placeholder="example.com"
-          class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[12px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+          class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-body font-mono focus:outline-none focus:ring-1 focus:ring-ring"
         />
         <button
           onClick={() => stepZoom(-1)}
@@ -448,7 +448,7 @@ export function BrowserPane(props: {
             }}
             title="Reset zoom"
             aria-label={`Zoom ${Math.round(zoom() * 100)} percent, reset`}
-            class="px-1 text-[10px] tabular-nums rounded text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            class="px-1 text-micro tabular-nums rounded text-muted-foreground hover:text-foreground hover:bg-accent/40"
           >
             {Math.round(zoom() * 100)}%
           </button>
@@ -503,11 +503,11 @@ export function BrowserPane(props: {
       >
         <Show when={error()}>
           <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground px-6 text-center">
-            <p class="text-[13px]">This page could not be loaded.</p>
-            <p class="text-[11px] text-destructive break-words max-w-md">{error()}</p>
+            <p class="text-ui">This page could not be loaded.</p>
+            <p class="text-label text-destructive break-words max-w-md">{error()}</p>
             <button
               onClick={() => void navigate(address())}
-              class="mt-1 flex items-center gap-1.5 text-[12px] px-3 py-1 rounded-md border border-border hover:bg-accent/40 hover:text-foreground transition-colors"
+              class="mt-1 flex items-center gap-1.5 text-body px-3 py-1 rounded-md border border-border hover:bg-accent/40 hover:text-foreground transition-colors"
             >
               <RotateCw class="w-3.5 h-3.5" />
               Try again

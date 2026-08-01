@@ -57,15 +57,15 @@ export function LspLogDialog(props: LspLogDialogProps) {
             class="w-[min(52rem,90vw)] h-[min(28rem,80vh)] flex flex-col rounded border border-border bg-elev-3 shadow-lg"
           >
             <div class="flex items-baseline gap-2 px-3 py-2 border-b border-border/60 shrink-0">
-              <span class="text-[11px] text-foreground">{log().server}</span>
-              <span class="flex-1 truncate font-mono text-[10px] text-muted-foreground/70">
+              <span class="text-label text-foreground">{log().server}</span>
+              <span class="flex-1 truncate font-mono text-micro text-muted-foreground/70">
                 {log().binary}
               </span>
               <button
                 ref={closeRef}
                 onClick={props.onClose}
                 aria-label="Close the output log"
-                class="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="rounded border border-border px-2 py-0.5 text-micro text-muted-foreground hover:text-foreground hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 Close
               </button>
@@ -76,7 +76,7 @@ export function LspLogDialog(props: LspLogDialogProps) {
                 fallback={
                   // Not a bare "No output" (MASTER §9.7): a quiet server is the
                   // healthy case and the line should say so.
-                  <p class="text-[11px] text-muted-foreground/70">
+                  <p class="text-label text-muted-foreground/70">
                     {log().server} has written nothing to its log. That is the normal
                     state for a server that started cleanly.
                   </p>
@@ -84,7 +84,7 @@ export function LspLogDialog(props: LspLogDialogProps) {
               >
                 <For each={log().lines}>
                   {(line) => (
-                    <p class="font-mono text-[10px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
+                    <p class="font-mono text-micro leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
                       {line}
                     </p>
                   )}

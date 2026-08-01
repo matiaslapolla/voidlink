@@ -3,7 +3,7 @@
 ///
 /// Deliberately not Monaco's breadcrumb widget. MASTER §11.5 names Monaco-drift
 /// as this module's identity risk, and the breadcrumb is where it would start —
-/// so this uses the app's own row and label idiom (§4, §9.2) at `text-[10px]`,
+/// so this uses the app's own row and label idiom (§4, §9.2) at `text-micro`,
 /// `--muted-foreground` at rest with `--foreground` on the segment you are
 /// actually in.
 ///
@@ -126,7 +126,7 @@ export function Breadcrumbs(props: BreadcrumbsProps) {
     <Show when={props.path()}>
       <nav
         aria-label="Editor breadcrumbs"
-        class="shrink-0 flex items-center gap-0.5 h-6 px-2 border-b border-border/60 bg-background text-[10px] text-muted-foreground overflow-x-auto scrollbar-thin whitespace-nowrap"
+        class="shrink-0 flex items-center gap-0.5 h-6 px-2 border-b border-border/60 bg-background text-micro text-muted-foreground overflow-x-auto scrollbar-thin whitespace-nowrap"
       >
         {/* Directory segments are labels, not controls. This window has no
             folder view and no scoped file finder, so a directory has nothing to

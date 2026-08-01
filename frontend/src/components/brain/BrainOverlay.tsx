@@ -51,9 +51,9 @@ export function BrainOverlay(props: { repoPath: string; onClose: () => void }) {
           onClick={(e) => e.stopPropagation()}
         >
           <div class="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
-            <span class="text-xs font-medium">Brain</span>
+            <span class="text-body font-medium">Brain</span>
             <div class="flex items-center gap-2">
-              <span class="text-[10px] text-muted-foreground/70 tracking-wide">ESC</span>
+              <span class="text-micro text-muted-foreground/70 tracking-wide">ESC</span>
               <button
                 type="button"
                 aria-label="Close Brain"

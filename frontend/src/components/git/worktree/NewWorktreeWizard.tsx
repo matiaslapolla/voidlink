@@ -309,8 +309,8 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
           {/* Header */}
           <div class="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-border">
             <div class="flex-1 min-w-0">
-              <h2 class="text-sm font-semibold">New worktree</h2>
-              <p class="text-[11px] text-muted-foreground truncate">
+              <h2 class="text-title font-semibold">New worktree</h2>
+              <p class="text-label text-muted-foreground truncate">
                 {props.request.repoRoot}
               </p>
             </div>
@@ -325,14 +325,14 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
           </div>
 
           {/* Body */}
-          <div class="flex-1 overflow-y-auto scrollbar-thin px-4 py-3 text-[13px]">
+          <div class="flex-1 overflow-y-auto scrollbar-thin px-4 py-3 text-ui">
             <Show
               when={ensureSeeded()}
               fallback={
                 <Show
                   when={!plan.error}
                   fallback={
-                    <p class="text-destructive text-[12px]">
+                    <p class="text-destructive text-body">
                       Could not inspect the repository: {String(plan.error)}
                     </p>
                   }
@@ -348,7 +348,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                 <>
                   {/* Step 1 — branch + path */}
                   <Show when={step() === "branch"}>
-                    <label class="block text-[11px] text-muted-foreground mb-1">
+                    <label class="block text-label text-muted-foreground mb-1">
                       Branch for the worktree (existing or new)
                     </label>
                     <input
@@ -359,14 +359,14 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && branch().trim()) setStep("env");
                       }}
-                      class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-ring"
+                      class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 font-mono text-body focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                     {/* What the name resolves to, said where the name is
                         typed. The classification decides whether a branch is
                         created or checked out, and it used to happen silently
                         on Create. */}
                     <Show when={branch().trim() && !allBranches.loading}>
-                      <p class="text-[11px] text-muted-foreground mt-1">
+                      <p class="text-label text-muted-foreground mt-1">
                         <Show when={branchKind().kind === "local"}>
                           Checks out the existing branch{" "}
                           <span class="font-mono">{branch().trim()}</span>.
@@ -381,7 +381,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                         </Show>
                       </p>
                     </Show>
-                    <label class="block text-[11px] text-muted-foreground mt-3 mb-1">
+                    <label class="block text-label text-muted-foreground mt-3 mb-1">
                       Directory
                     </label>
                     <input
@@ -391,13 +391,13 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                         setPathTouched(true);
                         setPath(e.currentTarget.value);
                       }}
-                      class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-ring"
+                      class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 font-mono text-body focus:outline-none focus:ring-1 focus:ring-ring"
                     />
-                    <p class="text-[11px] text-muted-foreground mt-1">
+                    <p class="text-label text-muted-foreground mt-1">
                       Defaults to {WORKTREE_DIR}/ inside the repository.
                     </p>
                     <Show when={needsIgnoreWarning(p())}>
-                      <div class="mt-2 flex items-start gap-2 rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
+                      <div class="mt-2 flex items-start gap-2 rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-label text-warning">
                         <AlertTriangle class="w-3.5 h-3.5 shrink-0 mt-px" />
                         <div class="flex-1">
                           <p>
@@ -414,7 +414,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                       </div>
                     </Show>
                     <Show when={p().defaults}>
-                      <p class="text-[11px] text-muted-foreground mt-3">
+                      <p class="text-label text-muted-foreground mt-3">
                         Using this repository's saved answers — review them on the next
                         steps or create now.
                       </p>
@@ -426,13 +426,13 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                     <Show
                       when={p().envFiles.length > 0}
                       fallback={
-                        <p class="text-muted-foreground text-[12px]">
+                        <p class="text-muted-foreground text-body">
                           No <span class="font-mono">.env</span> files found in the source
                           worktree.
                         </p>
                       }
                     >
-                      <p class="text-[11px] text-muted-foreground mb-2">
+                      <p class="text-label text-muted-foreground mb-2">
                         Gitignored env files never reach a fresh worktree. Pick the ones to
                         copy across.
                       </p>
@@ -444,20 +444,20 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                               checked={selectedEnv().has(file.relPath)}
                               onChange={() => toggleEnv(file.relPath)}
                             />
-                            <span class="font-mono text-[12px] flex-1 truncate">
+                            <span class="font-mono text-body flex-1 truncate">
                               {file.relPath}
                             </span>
                             <Show
                               when={file.gitignored}
                               fallback={
-                                <span class="text-[10px] text-muted-foreground">
+                                <span class="text-micro text-muted-foreground">
                                   tracked
                                 </span>
                               }
                             >
-                              <span class="text-[10px] text-warning">gitignored</span>
+                              <span class="text-micro text-warning">gitignored</span>
                             </Show>
-                            <span class="text-[10px] text-muted-foreground tabular-nums">
+                            <span class="text-micro text-muted-foreground tabular-nums">
                               {file.size} b
                             </span>
                           </label>
@@ -471,7 +471,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                     <Show
                       when={p().depDirs.length > 0}
                       fallback={
-                        <p class="text-muted-foreground text-[12px]">
+                        <p class="text-muted-foreground text-body">
                           No lockfiles detected — nothing to set up.
                         </p>
                       }
@@ -480,12 +480,12 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                         {(dep) => (
                           <div class="mb-3">
                             <div class="flex items-baseline gap-2">
-                              <span class="font-mono text-[12px]">{dep.dir}</span>
-                              <span class="text-[11px] text-muted-foreground">
+                              <span class="font-mono text-body">{dep.dir}</span>
+                              <span class="text-label text-muted-foreground">
                                 {dep.manager} · from {dep.detectedFrom}
                               </span>
                               <Show when={!dep.existsInSource}>
-                                <span class="text-[10px] text-muted-foreground">
+                                <span class="text-micro text-muted-foreground">
                                   not present in source
                                 </span>
                               </Show>
@@ -510,7 +510,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                                           ? `${dep.dir} does not exist in the source worktree`
                                           : opt.hint
                                       }
-                                      class={`px-2 py-0.5 rounded border text-[11px] transition-colors ${
+                                      class={`px-2 py-0.5 rounded border text-label transition-colors ${
                                         depActions()[dep.dir] === opt.value
                                           ? "border-primary bg-primary/15 text-foreground"
                                           : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -527,17 +527,17 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                       </For>
                     </Show>
 
-                    <label class="block text-[11px] text-muted-foreground mt-4 mb-1">
+                    <label class="block text-label text-muted-foreground mt-4 mb-1">
                       Post-create command (runs in a terminal in the new worktree)
                     </label>
                     <input
                       value={postCreate()}
                       placeholder="pnpm install"
                       onInput={(e) => setPostCreate(e.currentTarget.value)}
-                      class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-ring"
+                      class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 font-mono text-body focus:outline-none focus:ring-1 focus:ring-ring"
                     />
 
-                    <label class="flex items-center gap-2 mt-3 text-[12px] cursor-pointer">
+                    <label class="flex items-center gap-2 mt-3 text-body cursor-pointer">
                       <input
                         type="checkbox"
                         checked={saveDefaults()}
@@ -555,7 +555,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                         !p().defaults?.warnedNotGitignored
                       }
                     >
-                      <p class="flex items-start gap-1.5 text-[11px] text-warning mt-1.5">
+                      <p class="flex items-start gap-1.5 text-label text-warning mt-1.5">
                         <AlertTriangle class="w-3 h-3 mt-0.5 shrink-0" />
                         <span>
                           <span class="font-mono">.voidlink/</span> is not gitignored — these
@@ -569,7 +569,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
 
                   {/* Result */}
                   <Show when={step() === "result"}>
-                    <p class="text-[12px] mb-2">
+                    <p class="text-body mb-2">
                       Created <span class="font-mono">{createdPath()}</span> on{" "}
                       <span class="font-mono">{branch()}</span>.
                     </p>
@@ -583,9 +583,9 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                             <Check class="w-3 h-3 mt-1 shrink-0 text-success" />
                           </Show>
                           <div class="min-w-0">
-                            <div class="text-[12px]">{s.label}</div>
+                            <div class="text-body">{s.label}</div>
                             <Show when={s.error}>
-                              <div class="text-[11px] text-destructive break-words">
+                              <div class="text-label text-destructive break-words">
                                 {s.error}
                               </div>
                             </Show>
@@ -594,7 +594,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                       )}
                     </For>
                     <Show when={failedSteps().length > 0}>
-                      <p class="text-[11px] text-warning mt-3">
+                      <p class="text-label text-warning mt-3">
                         The worktree itself was created. {failedSteps().length} setup step
                         {failedSteps().length === 1 ? "" : "s"} did not complete — fix them in
                         the new worktree's terminal.
@@ -603,7 +603,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                   </Show>
 
                   <Show when={error()}>
-                    <p class="text-[12px] text-destructive mt-3">{error()}</p>
+                    <p class="text-body text-destructive mt-3">{error()}</p>
                   </Show>
                 </>
               )}
@@ -612,7 +612,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
 
           {/* Footer */}
           <div class="shrink-0 flex items-center gap-2 px-4 py-3 border-t border-border">
-            <div class="flex-1 text-[11px] text-muted-foreground">
+            <div class="flex-1 text-label text-muted-foreground">
               <Show when={step() !== "result"}>
                 Step {step() === "branch" ? 1 : step() === "env" ? 2 : 3} of 3
               </Show>
@@ -620,7 +620,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
             <Show when={step() === "result"}>
               <button
                 onClick={() => clearNewWorktreeRequest()}
-                class="px-3 py-1 rounded text-[12px] bg-primary text-primary-foreground hover:bg-primary/90"
+                class="px-3 py-1 rounded text-body bg-primary text-primary-foreground hover:bg-primary/90"
               >
                 Done
               </button>
@@ -629,7 +629,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
               <button
                 onClick={cancel}
                 disabled={busy()}
-                class="px-3 py-1 rounded text-[12px] text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-40"
+                class="px-3 py-1 rounded text-body text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-40"
               >
                 Cancel
               </button>
@@ -637,7 +637,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                 <button
                   onClick={() => setStep(step() === "deps" ? "env" : "branch")}
                   disabled={busy()}
-                  class="px-3 py-1 rounded text-[12px] border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-40"
+                  class="px-3 py-1 rounded text-body border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-40"
                 >
                   Back
                 </button>
@@ -648,7 +648,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                   <button
                     onClick={() => setStep(step() === "branch" ? "env" : "deps")}
                     disabled={busy() || !plan() || (step() === "branch" && !branch().trim())}
-                    class="px-3 py-1 rounded text-[12px] bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+                    class="px-3 py-1 rounded text-body bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
                   >
                     Next
                   </button>
@@ -657,7 +657,7 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                 <button
                   onClick={() => void create()}
                   disabled={busy() || !branch().trim()}
-                  class="px-3 py-1 rounded text-[12px] bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 flex items-center gap-1.5"
+                  class="px-3 py-1 rounded text-body bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 flex items-center gap-1.5"
                 >
                   <Show when={busy()}>
                     <Loader2 class="w-3 h-3 animate-spin" />

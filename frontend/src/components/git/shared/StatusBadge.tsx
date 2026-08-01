@@ -78,7 +78,7 @@ export function StatusBadge(props: { status: string; class?: string }): JSX.Elem
     <span
       title={glyph().label}
       aria-label={glyph().label}
-      class={`w-3 shrink-0 text-center font-mono text-[10px] font-bold leading-none tabular-nums ${statusToneClass(glyph().tone)} ${props.class ?? ""}`}
+      class={`w-3 shrink-0 text-center font-mono text-micro font-bold leading-none tabular-nums ${statusToneClass(glyph().tone)} ${props.class ?? ""}`}
     >
       {glyph().letter}
     </span>

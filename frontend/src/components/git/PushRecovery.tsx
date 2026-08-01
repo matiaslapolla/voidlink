@@ -211,7 +211,7 @@ export function PushRecovery(props: {
         class="mt-1 rounded-md border border-destructive/40 bg-destructive/5 p-2 space-y-1.5"
         data-testid="push-recovery"
       >
-        <p class="flex items-start gap-1.5 text-xs text-destructive">
+        <p class="flex items-start gap-1.5 text-body text-destructive">
           <AlertTriangle class="w-3.5 h-3.5 shrink-0 mt-px" />
           <span>
             {props.outcome.remote} rejected the push — {props.outcome.remote}/
@@ -222,7 +222,7 @@ export function PushRecovery(props: {
           <button
             onClick={() => void fetchAndRebase()}
             disabled={sync.syncing() || forcing()}
-            class="flex-1 px-2 py-1 rounded-md text-[12px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            class="flex-1 px-2 py-1 rounded-md text-body font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {sync.syncing() ? "Fetching…" : "Fetch and rebase"}
           </button>
@@ -230,14 +230,14 @@ export function PushRecovery(props: {
             onClick={() => void forcePush()}
             disabled={!fresh() || forcing() || sync.syncing()}
             title={forceBlockedReason() ?? `Overwrite ${props.outcome.remote}/${props.outcome.branch}`}
-            class="px-2 py-1 rounded-md text-[12px] border border-border text-muted-foreground hover:text-destructive hover:border-destructive/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            class="px-2 py-1 rounded-md text-body border border-border text-muted-foreground hover:text-destructive hover:border-destructive/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             Force push (with lease)
           </button>
         </div>
         <Show when={forceBlockedReason()}>
           {(reason) => (
-            <p class="text-[11px] text-muted-foreground">
+            <p class="text-label text-muted-foreground">
               {reason()}
               <Show when={expired()}>
                 {" "}

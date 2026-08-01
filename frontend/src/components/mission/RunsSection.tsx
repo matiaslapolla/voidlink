@@ -95,7 +95,7 @@ export function RunsSection(props: RunsSectionProps) {
       <Show
         when={props.repoPath}
         fallback={
-          <p class="p-4 text-xs text-muted-foreground">
+          <p class="p-4 text-body text-muted-foreground">
             Fan-out needs a repository. Point this workspace at one and it can send a prompt to
             several agents at once, each in its own worktree.
           </p>
@@ -108,7 +108,7 @@ export function RunsSection(props: RunsSectionProps) {
             rows="2"
             placeholder="One prompt, several agents, one worktree each — then compare the diffs."
             aria-label="Fan-out prompt"
-            class="w-full px-2 py-1 text-xs bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="w-full px-2 py-1 text-body bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           <div class="flex items-center gap-2 flex-wrap">
             <div class="flex items-center gap-1 flex-wrap" role="group" aria-label="Agents to fan out to">
@@ -118,7 +118,7 @@ export function RunsSection(props: RunsSectionProps) {
                     type="button"
                     aria-pressed={chosen().includes(agent.id)}
                     onClick={() => toggle(agent.id)}
-                    class="px-2 py-1 text-xs rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    class="px-2 py-1 text-body rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     classList={{
                       "bg-primary/15 text-primary": chosen().includes(agent.id),
                       "bg-muted/40 text-muted-foreground hover:text-foreground": !chosen().includes(
@@ -135,7 +135,7 @@ export function RunsSection(props: RunsSectionProps) {
             <button
               type="submit"
               disabled={!canLaunch()}
-              class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-primary/15 text-primary disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              class="inline-flex items-center gap-1 px-2 py-1 text-body rounded bg-primary/15 text-primary disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Show when={launching()} fallback={<Play class="w-3 h-3" aria-hidden="true" />}>
                 <Loader2 class="w-3 h-3 animate-spin motion-loop" aria-hidden="true" />
@@ -144,7 +144,7 @@ export function RunsSection(props: RunsSectionProps) {
             </button>
           </div>
           <Show when={error()}>
-            <p class="text-[11px] text-destructive">{error()}</p>
+            <p class="text-label text-destructive">{error()}</p>
           </Show>
         </form>
 
@@ -152,7 +152,7 @@ export function RunsSection(props: RunsSectionProps) {
           <Show
             when={runs().length > 0}
             fallback={
-              <p class="py-2 text-xs text-muted-foreground">
+              <p class="py-2 text-body text-muted-foreground">
                 No runs yet. A fan-out is for a change you are unsure how to make: send the same
                 prompt to two or three agents, let each work in its own worktree, then read the
                 diffs side by side and merge one.
@@ -207,8 +207,8 @@ function RunCard(props: { run: FanoutRun; onInspect?: (leg: RunLeg) => void }) {
   return (
     <section class="py-2 border-b border-border last:border-b-0">
       <div class="flex items-start gap-2">
-        <h3 class="flex-1 min-w-0 text-xs text-foreground break-words">{props.run.prompt}</h3>
-        <span class="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+        <h3 class="flex-1 min-w-0 text-body text-foreground break-words">{props.run.prompt}</h3>
+        <span class="shrink-0 text-label text-muted-foreground tabular-nums">
           {progress().done}/{progress().total}
         </span>
         <button
@@ -225,7 +225,7 @@ function RunCard(props: { run: FanoutRun; onInspect?: (leg: RunLeg) => void }) {
       <ul class="mt-1 space-y-1">
         <For each={legs()}>
           {(leg) => (
-            <li class="flex items-center gap-2 text-[11px]">
+            <li class="flex items-center gap-2 text-label">
               <span
                 class="shrink-0 w-24 truncate"
                 classList={{
@@ -294,7 +294,7 @@ function RunCard(props: { run: FanoutRun; onInspect?: (leg: RunLeg) => void }) {
                   </button>
                 </Show>
                 <Show when={props.run.adoptedLegId === leg.id}>
-                  <span class="px-1 rounded bg-success/15 text-success text-[10px]">adopted</span>
+                  <span class="px-1 rounded bg-success/15 text-success text-micro">adopted</span>
                 </Show>
                 <Show when={isLegDone(leg.status)}>
                   <button
@@ -328,7 +328,7 @@ function RunCard(props: { run: FanoutRun; onInspect?: (leg: RunLeg) => void }) {
           );
           return (
             <Show when={leftovers().length > 0}>
-              <p class="mt-1 text-[11px] text-muted-foreground">
+              <p class="mt-1 text-label text-muted-foreground">
                 {leftovers().length} other worktree{leftovers().length === 1 ? "" : "s"} and
                 branch{leftovers().length === 1 ? "" : "es"} are still on disk —{" "}
                 <For each={leftovers()}>
@@ -355,7 +355,7 @@ function RunCard(props: { run: FanoutRun; onInspect?: (leg: RunLeg) => void }) {
       </Show>
 
       <Show when={error()}>
-        <p class="mt-1 text-[11px] text-destructive">{error()}</p>
+        <p class="mt-1 text-label text-destructive">{error()}</p>
       </Show>
     </section>
   );

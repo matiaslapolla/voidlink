@@ -149,10 +149,10 @@ export function QuickPick<T>(props: QuickPickProps<T>) {
               }}
               onKeyDown={onKeyDown}
               placeholder={props.placeholder}
-              class="flex-1 bg-transparent border-0 outline-none text-sm placeholder:text-muted-foreground"
+              class="flex-1 bg-transparent border-0 outline-none text-title placeholder:text-muted-foreground"
             />
             {props.headerTrailing}
-            <span class="text-[10px] text-muted-foreground/70 tracking-wide">ESC</span>
+            <span class="text-micro text-muted-foreground/70 tracking-wide">ESC</span>
           </div>
           <div
             ref={listRef}
@@ -162,7 +162,7 @@ export function QuickPick<T>(props: QuickPickProps<T>) {
             class="max-h-[60vh] overflow-y-auto scrollbar-thin py-1"
           >
             <Show when={props.loading}>
-              <div class="px-3 py-6 text-center text-xs text-muted-foreground">
+              <div class="px-3 py-6 text-center text-body text-muted-foreground">
                 {props.loadingLabel ?? "Loading…"}
               </div>
             </Show>
@@ -183,7 +183,7 @@ export function QuickPick<T>(props: QuickPickProps<T>) {
             </For>
           </div>
           <Show when={props.footer}>
-            <div class="px-3 py-1.5 border-t border-border text-[10px] text-muted-foreground">
+            <div class="px-3 py-1.5 border-t border-border text-micro text-muted-foreground">
               {props.footer}
             </div>
           </Show>
@@ -211,7 +211,7 @@ export function QuickPickRow(props: {
       tabIndex={-1}
       aria-disabled={props.disabled ? "true" : undefined}
       title={props.disabled ? props.disabledReason : undefined}
-      class="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[13px] border border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors"
+      class="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-ui border border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors"
       classList={{
         "bg-accent/70 text-foreground": props.highlighted && !props.disabled,
         "text-muted-foreground": !props.highlighted,
@@ -269,9 +269,9 @@ export function QuickPickEmpty(props: {
   return (
     <div class="px-3 py-8 flex flex-col items-center gap-2 text-center text-muted-foreground">
       <span class="opacity-60">{props.icon}</span>
-      <p class="text-xs">{props.message}</p>
+      <p class="text-body">{props.message}</p>
       <Show when={props.hint}>
-        {(h) => <p class="text-[11px] text-muted-foreground/70">{h()}</p>}
+        {(h) => <p class="text-label text-muted-foreground/70">{h()}</p>}
       </Show>
     </div>
   );

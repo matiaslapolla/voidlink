@@ -23,8 +23,8 @@ export function SecretScanDialog(props: {
               <div class="flex items-start gap-2.5 min-w-0">
                 <AlertTriangle class="w-4 h-4 text-destructive shrink-0 mt-0.5" />
                 <div class="min-w-0">
-                  <h2 class="text-sm font-semibold">Possible secrets in staged changes</h2>
-                  <p class="text-xs text-muted-foreground mt-0.5">
+                  <h2 class="text-title font-semibold">Possible secrets in staged changes</h2>
+                  <p class="text-body text-muted-foreground mt-0.5">
                     Review before committing. Once pushed, treat any exposed value as
                     compromised — rotate it immediately.
                   </p>
@@ -41,14 +41,14 @@ export function SecretScanDialog(props: {
             <div class="max-h-[48vh] overflow-y-auto scrollbar-thin px-4 py-3 space-y-2">
               <For each={props.findings}>
                 {(f) => (
-                  <div class="text-xs border border-border/60 rounded-md p-2.5 bg-muted/20">
+                  <div class="text-body border border-border/60 rounded-md p-2.5 bg-muted/20">
                     <div class="flex items-center gap-2">
                       <span class="text-destructive font-medium">{f.rule}</span>
                       <span class="text-muted-foreground/70 truncate">
                         {f.file}:{f.line}
                       </span>
                     </div>
-                    <pre class="mt-1.5 font-mono text-[11px] text-foreground/85 whitespace-pre-wrap break-all">
+                    <pre class="mt-1.5 font-mono text-label text-foreground/85 whitespace-pre-wrap break-all">
                       {f.preview}
                     </pre>
                   </div>
@@ -58,13 +58,13 @@ export function SecretScanDialog(props: {
             <div class="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
               <button
                 onClick={props.onCancel}
-                class="px-3 py-1.5 rounded text-xs font-medium border border-border hover:bg-accent/40 transition-colors"
+                class="px-3 py-1.5 rounded text-body font-medium border border-border hover:bg-accent/40 transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={props.onCommitAnyway}
-                class="px-3 py-1.5 rounded text-xs font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
+                class="px-3 py-1.5 rounded text-body font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
               >
                 Commit anyway
               </button>

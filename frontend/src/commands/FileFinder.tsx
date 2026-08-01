@@ -138,7 +138,7 @@ function FinderRow(props: { path: string; ranges: MatchRange[]; highlighted: boo
         <FuzzyText
           text={dir()}
           ranges={shift(0, cut())}
-          class="ml-2 text-[11px] text-muted-foreground/70 truncate"
+          class="ml-2 text-label text-muted-foreground/70 truncate"
         />
       </Show>
     </QuickPickRow>

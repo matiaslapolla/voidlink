@@ -106,20 +106,20 @@ function WorktreeRow(props: { row: Row; current: boolean; highlighted: boolean }
   const wt = () => props.row.worktree;
   return (
     <QuickPickRow highlighted={props.highlighted}>
-      <span class="text-[10px] tracking-wide text-muted-foreground/70 w-24 shrink-0 truncate">
+      <span class="text-micro tracking-wide text-muted-foreground/70 w-24 shrink-0 truncate">
         {props.row.workspace.name}
       </span>
       <GitBranch class="w-3.5 h-3.5 shrink-0 opacity-60" />
       <FuzzyText text={props.row.label} ranges={props.row.ranges} class="truncate font-mono" />
       <Show when={props.current}>
-        <span class="shrink-0 text-[10px] px-1 rounded bg-primary/15 border border-primary/40 text-primary">
+        <span class="shrink-0 text-micro px-1 rounded bg-primary/15 border border-primary/40 text-primary">
           here
         </span>
       </Show>
       {/* Badges the rail already shows, in the same vocabulary. Each carries a
           glyph or a letter as well as a colour — §10.12 forbids colour as the
           only channel. */}
-      <span class="ml-auto shrink-0 flex items-center gap-1.5 text-[10px] font-mono">
+      <span class="ml-auto shrink-0 flex items-center gap-1.5 text-micro font-mono">
         <Show when={wt().isDirty}>
           <span class="text-warning" title="Uncommitted changes">
             ●
