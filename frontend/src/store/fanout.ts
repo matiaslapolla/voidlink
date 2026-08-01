@@ -5,21 +5,39 @@
 /// once, in isolation, and then read the diffs — and that the isolation is free
 /// because git worktrees already exist.
 ///
-/// ## What is here and what is deliberately not
+/// ## What is here and what moved to Rust
 ///
-/// **Here.** The run entity, leg lifecycle, concurrent execution, per-leg
-/// cancel, the diff stat each leg produced, and every state change recorded to
-/// the event log so a run is legible in the timeline and in a check-in.
+/// **Here.** The run entity as this window renders it, leg *naming*
+/// (`legBranchName`/`legWorktreePath` — pure, already tested, no reason to
+/// duplicate), the diff stat each leg produced once it goes terminal, adopt
+/// and discard, and the local persisted list of runs a repository has seen.
 ///
-/// **Not here: durability across a window close.** A leg is a child process
-/// spawned by `agentApi.streamQuery`, whose output streams over a
-/// `tauri::ipc::Channel` owned by *this webview*. Close the window and the
-/// channel dies with it. A run therefore survives a reload as a **record** —
-/// its legs marked `interrupted` — and not as work that carries on. Making
-/// fan-out outlive its window means moving the orchestration into Rust, which
-/// is a real piece of work and not a flag; pretending otherwise would produce
-/// the worst outcome, which is a user who believes an overnight run is
-/// progressing when nothing is running at all.
+/// **Moved to `src-tauri/src/fanout/mod.rs`.** Spawning a leg, its worktree
+/// creation, streaming its output, per-leg cancel, and the terminal
+/// transition itself — everything that used to live in `runLeg` below and
+/// die the moment this window closed, because it was a child process
+/// streaming over a `tauri::ipc::Channel` **this webview** owned. A run's
+/// lifetime is now the app's: `fanoutApi.startRun` hands a leg to the
+/// supervisor and returns as soon as it is *registered*, not once every leg
+/// finishes, and every state change this store applies after that is a
+/// message the supervisor sent — `fanoutApi.subscribe`'s live tail, or
+/// `reconcileFanoutRuns`'s reconnect query. This store is a **view**, in the
+/// same sense `journal.ts` is a view over Rust's event log: nothing here
+/// spawns a process or decides a leg's terminal state.
+///
+/// ## `interrupted`, after the move
+///
+/// Still exists, still means exactly what it always did: nobody chose it and
+/// nothing went wrong. What changed is *when* it applies. `reviveRuns` still
+/// applies it pessimistically to anything non-terminal at load time — that
+/// default has to stay honest with zero information. `reconcileFanoutRuns`
+/// is what can walk it back: for every run the supervisor confirms it is
+/// still driving, the leg's *real* status (possibly `finished`, learned while
+/// this window did not exist) replaces the guess. For a run the supervisor
+/// has no record of — this process never started it, or the app itself
+/// restarted since — there is nothing to ask, and `interrupted` is the
+/// honest answer, exactly as before. See `fanout::mod.rs`'s header for why
+/// "the app quitting" is still a horizon this feature cannot move past.
 ///
 /// **Not here: automatic cleanup.** Adopting one leg does not delete the other
 /// worktrees. Deleting a branch that took an agent four minutes to write,
@@ -27,7 +45,7 @@
 /// module gets to make silently. Removal is offered, per leg, explicitly.
 
 import { createStore, produce } from "solid-js/store";
-import { agentApi } from "@/api/agent";
+import { fanoutApi, type LegSnapshot, type RunSnapshot } from "@/api/fanout";
 import { gitApi } from "@/api/git";
 import { STORAGE_KEYS, readJson, writeJson } from "@/store/layout/persistence";
 import { record } from "@/store/journal";
@@ -41,9 +59,10 @@ export type LegStatus =
   | "finished"
   | "failed"
   | "cancelled"
-  /// The window that was running this leg went away. Distinct from `cancelled`
+  /// The supervisor has no record of this leg. Distinct from `cancelled`
   /// because nobody chose it, and distinct from `failed` because nothing went
-  /// wrong — the work simply stopped existing. See the module comment.
+  /// wrong — the work simply has no process behind it that this app can
+  /// vouch for. See the module comment.
   | "interrupted";
 
 /// A leg is terminal when nothing further will happen to it on its own.
@@ -63,7 +82,9 @@ export interface RunLeg {
   status: LegStatus;
   startedAt: number | null;
   endedAt: number | null;
-  /// The agent's answer, as far as it got.
+  /// The agent's answer, as far as it got. Set wholesale from a supervisor
+  /// snapshot or leg-status message (both carry the full buffer), appended to
+  /// from a live `chunk` message — see `applyLegSnapshot` vs `appendLegAnswer`.
   answer: string;
   /// Why it failed, when it did.
   error: string | null;
@@ -98,6 +119,11 @@ export interface FanoutRun {
   /// The leg whose work was merged, if any. A run can only be adopted once;
   /// adopting a second would merge two competing answers to one question.
   adoptedLegId: string | null;
+  /// The ref every leg branched from, if one was given. Persisted (not just
+  /// threaded through a call) because `legStat` needs it to measure a leg
+  /// correctly, and a leg can go terminal in a window that reconnected long
+  /// after `startFanoutRun`'s own closure over this value is gone.
+  baseRef: string | null;
 }
 
 type RunsByRepo = Record<string, FanoutRun[]>;
@@ -121,10 +147,11 @@ function reviveLeg(raw: unknown): RunLeg | null {
     commandTemplate: typeof r.commandTemplate === "string" ? r.commandTemplate : "",
     worktreePath: r.worktreePath,
     branch: typeof r.branch === "string" ? r.branch : "",
-    // A leg persisted mid-flight comes back as one whose window is gone. Same
-    // repair `parseMessage` makes for a streaming agent message, and for the
-    // same reason: a pending state for a process that died with the app is a
-    // spinner nothing will ever stop.
+    // A leg persisted mid-flight comes back as one with no known supervisor —
+    // `reconcileFanoutRuns` is what can prove otherwise. Same repair
+    // `parseMessage` makes for a streaming agent message, and for the same
+    // reason: a pending state nobody can vouch for is a spinner that might
+    // never stop.
     status: isLegDone(status) ? status : "interrupted",
     startedAt: typeof r.startedAt === "number" ? r.startedAt : null,
     endedAt: typeof r.endedAt === "number" ? r.endedAt : null,
@@ -170,6 +197,7 @@ export function reviveRuns(raw: unknown): RunsByRepo {
         createdAt: typeof r.createdAt === "number" ? r.createdAt : 0,
         legs,
         adoptedLegId: typeof r.adoptedLegId === "string" ? r.adoptedLegId : null,
+        baseRef: typeof r.baseRef === "string" ? r.baseRef : null,
       });
     }
     if (runs.length) out[repo] = runs;
@@ -193,8 +221,11 @@ export function fanoutRun(repo: string, runId: string): FanoutRun | undefined {
   return fanoutRuns(repo).find((r) => r.id === runId);
 }
 
-/// Turn ids in flight, keyed by leg id, so a cancel has something to name.
-const turnIds = new Map<string, string>();
+/// Runs this window is currently subscribed to, so a repeated
+/// `reconcileFanoutRuns` call (the active repository changing back and forth,
+/// or firing twice for the same repo) does not register a second `Channel`
+/// for the same run — a `chunk` message would then append twice.
+const subscribedRunIds = new Set<string>();
 
 // ── Naming ───────────────────────────────────────────────────────────────────
 
@@ -253,13 +284,27 @@ function patchLeg(repo: string, runId: string, legId: string, patch: Partial<Run
   persist();
 }
 
+function appendLegAnswer(repo: string, runId: string, legId: string, text: string): void {
+  setRuns(
+    repo,
+    (r) => r.id === runId,
+    "legs",
+    (l: RunLeg) => l.id === legId,
+    produce((leg: RunLeg) => {
+      leg.answer += text;
+    }),
+  );
+  persist();
+}
+
 /// Launch a run. Returns the run id, or `null` when there is nothing to launch.
 ///
-/// Legs start concurrently and independently: one leg failing to get a worktree
-/// must not stop the others, because the entire premise is that you do not know
-/// which approach will work. The returned promise settles when every leg has,
-/// so a caller can await the whole run — but the store updates as each leg
-/// moves, which is what the surface renders from.
+/// Resolves once the supervisor has **registered** the run, not once every
+/// leg finishes — that guarantee belonged to the old window-owned
+/// orchestration and is exactly what made a run unable to outlive the window
+/// that awaited it. Progress after this point arrives through
+/// `subscribeRun`'s live tail; the store updates as each leg moves, which is
+/// what the surface renders from.
 export async function startFanoutRun(options: StartRunOptions): Promise<string | null> {
   const prompt = options.prompt.trim();
   if (!prompt || options.legs.length === 0) return null;
@@ -291,6 +336,7 @@ export async function startFanoutRun(options: StartRunOptions): Promise<string |
     createdAt: now,
     legs,
     adoptedLegId: null,
+    baseRef: options.baseRef ?? null,
   };
 
   setRuns(
@@ -303,89 +349,144 @@ export async function startFanoutRun(options: StartRunOptions): Promise<string |
   );
   persist();
 
-  record({
-    kind: "run.started",
-    actor: "user",
-    repo: options.repo,
-    subject: prompt,
-    summary: `Fanned “${firstLine(prompt)}” out to ${legs.length} agent${legs.length === 1 ? "" : "s"}`,
-    data: { runId, legs: legs.map((l) => ({ agent: l.agentName, branch: l.branch })) },
-  });
+  try {
+    // `run.started` is recorded by the supervisor itself now — see
+    // `fanout::start_run` — so this call does not also write it, which would
+    // double the journal entry.
+    await fanoutApi.startRun({
+      runId,
+      repo: options.repo,
+      prompt,
+      secretBindings: aiSecretBindings(),
+      legs: legs.map((leg) => ({
+        id: leg.id,
+        agentId: leg.agentId,
+        agentName: leg.agentName,
+        commandTemplate: leg.commandTemplate,
+        branch: leg.branch,
+        worktreePath: leg.worktreePath,
+        prompt: legPrompt(prompt, options.baseRef),
+      })),
+    });
+  } catch (e) {
+    // The supervisor never took the run at all — every leg failed before a
+    // single worktree was touched. Different shape from a single leg's
+    // worktree failing (Rust reports that per-leg and keeps the rest going);
+    // a rejected `startRun` means nothing was registered, so every leg here
+    // failed identically.
+    const error = message(e);
+    for (const leg of legs) {
+      patchLeg(options.repo, runId, leg.id, { status: "failed", error, endedAt: Date.now() });
+    }
+    return runId;
+  }
 
-  await Promise.all(legs.map((leg) => runLeg(run, leg, options.baseRef)));
+  subscribeRun(options.repo, runId);
   return runId;
 }
 
-async function runLeg(run: FanoutRun, leg: RunLeg, baseRef?: string): Promise<void> {
-  const { repo, id: runId } = run;
+/// Attach to a run's live output and apply every message to the store.
+/// Idempotent per run id — see `subscribedRunIds`.
+function subscribeRun(repo: string, runId: string): void {
+  if (subscribedRunIds.has(runId)) return;
+  subscribedRunIds.add(runId);
 
-  patchLeg(repo, runId, leg.id, { status: "preparing", startedAt: Date.now() });
-  try {
-    await gitApi.addWorktree(repo, leg.worktreePath, leg.branch, true);
-  } catch (e) {
-    const error = message(e);
-    patchLeg(repo, runId, leg.id, { status: "failed", error, endedAt: Date.now() });
-    recordLeg(run, leg, "failed", `could not create a worktree: ${error}`);
-    noteLegFailure(run, leg, error);
-    return;
+  fanoutApi
+    .subscribe(runId, (event) => {
+      if (!fanoutRun(repo, runId)) return; // "Forget this run" raced the subscribe
+      if (event.event === "snapshot") {
+        for (const leg of event.data.run.legs) applyLegSnapshot(repo, runId, leg, false);
+      } else if (event.event === "chunk") {
+        appendLegAnswer(repo, runId, event.data.legId, event.data.text);
+      } else {
+        applyLegSnapshot(repo, runId, event.data.leg, true);
+      }
+    })
+    .catch(() => {
+      // The run vanished from the supervisor between deciding to subscribe
+      // and asking — most likely it finished and this window is only now
+      // catching up, or the app restarted. Either way `reviveRuns` already
+      // set every non-terminal leg to `interrupted`, which is the honest
+      // answer when there is nothing left to ask.
+      subscribedRunIds.delete(runId);
+    });
+}
+
+/// Apply one leg's full state from the supervisor. `live` distinguishes a
+/// real-time `legStatus` message from the replay half of a `snapshot` — a
+/// failure toast fires only for the former. A snapshot can carry a leg that
+/// has been `failed` for an hour; announcing that as news every time a window
+/// reconnects would be exactly the "five stacked toasts" problem the original
+/// coalescing existed to prevent, just retriggered by reconnects instead of
+/// fan-out size.
+function applyLegSnapshot(repo: string, runId: string, snap: LegSnapshot, live: boolean): void {
+  const before = fanoutRun(repo, runId)?.legs.find((l) => l.id === snap.id);
+  const wasDone = before ? isLegDone(before.status) : false;
+
+  patchLeg(repo, runId, snap.id, {
+    status: snap.status,
+    startedAt: snap.startedAt,
+    endedAt: snap.endedAt,
+    answer: snap.answer,
+    error: snap.error,
+  });
+
+  if (live && !wasDone && snap.status === "failed") {
+    const run = fanoutRun(repo, runId);
+    if (run) noteLegFailure(run, { ...before, ...snap } as RunLeg, snap.error ?? "failed");
   }
 
-  const turnId = crypto.randomUUID();
-  turnIds.set(leg.id, turnId);
-  patchLeg(repo, runId, leg.id, { status: "running" });
+  void maybeMeasureLeg(repo, runId, snap.id);
+}
 
-  let answer = "";
+/// Measure a leg's diff once it goes terminal, the same way for every leg —
+/// see `legStat`. Guarded on `stat === null` so a leg already measured (by an
+/// earlier snapshot, or earlier in this same session) is not re-diffed on
+/// every subsequent message the supervisor happens to still send about it.
+async function maybeMeasureLeg(repo: string, runId: string, legId: string): Promise<void> {
+  const run = fanoutRun(repo, runId);
+  const leg = run?.legs.find((l) => l.id === legId);
+  if (!run || !leg || !isLegDone(leg.status) || leg.stat) return;
+  const stat = await legStat(leg.worktreePath, run.baseRef ?? undefined);
+  patchLeg(repo, runId, legId, { stat });
+}
+
+/// Reconcile every run this window knows about for `repo` against what the
+/// supervisor is actually tracking. Call once per repository — `App.tsx`
+/// does it in the same effect that keeps the journal's ambient repo current,
+/// keyed on the active repository changing.
+///
+/// This is the reconnect half of the feature: a window that (re)appears asks
+/// "what is running?" and, for anything it gets back, both corrects the
+/// locally-guessed status and re-subscribes for further live output —
+/// including when the window doing the asking is not the one that started
+/// the run. A run absent from the supervisor's answer is left exactly as
+/// `reviveRuns` set it: `interrupted`.
+///
+/// **Known gap.** This only reconciles runs *this window already has a
+/// record of* (its own `localStorage`). A run started entirely from a
+/// different window, whose record therefore never reached this one's copy of
+/// `voidlink-fanout-runs`, stays invisible here even though the supervisor is
+/// still driving it — the same cross-window `localStorage` limitation
+/// `journal/mod.rs`'s header describes for the event log generally. Fixing it
+/// for fan-out specifically would mean either moving the run *list* into Rust
+/// too (not just its liveness) or polling every open repository's runs on
+/// every window, and neither is done here.
+export async function reconcileFanoutRuns(repo: string): Promise<void> {
+  let supervised: RunSnapshot[];
   try {
-    const result = await agentApi.streamQuery({
-      repoPath: leg.worktreePath,
-      commandTemplate: leg.commandTemplate,
-      prompt: legPrompt(run.prompt, baseRef),
-      secretBindings: aiSecretBindings(),
-      turnId,
-      agentName: leg.agentName,
-      onChunk: (text) => {
-        answer += text;
-        patchLeg(repo, runId, leg.id, { answer });
-      },
-    });
-
-    const stat = await legStat(leg.worktreePath, baseRef);
-    if (result.cancelled) {
-      patchLeg(repo, runId, leg.id, {
-        status: "cancelled",
-        endedAt: Date.now(),
-        answer,
-        stat,
-      });
-      recordLeg(run, leg, "cancelled", "was stopped");
-      return;
-    }
-    patchLeg(repo, runId, leg.id, {
-      status: "finished",
-      endedAt: Date.now(),
-      answer,
-      stat,
-    });
-    recordLeg(
-      run,
-      leg,
-      "finished",
-      stat
-        ? `${stat.files} file${stat.files === 1 ? "" : "s"}, +${stat.additions} −${stat.deletions}`
-        : "finished",
-    );
-  } catch (e) {
-    const error = message(e);
-    patchLeg(repo, runId, leg.id, {
-      status: "failed",
-      endedAt: Date.now(),
-      answer,
-      error,
-    });
-    recordLeg(run, leg, "failed", error);
-    noteLegFailure(run, leg, error);
-  } finally {
-    turnIds.delete(leg.id);
+    supervised = await fanoutApi.runState(repo);
+  } catch {
+    // Could not reach the supervisor at all. Leave every run exactly as
+    // `reviveRuns` decided — degrading to "no better information" rather
+    // than guessing, the same policy `legStat`'s own catch uses.
+    return;
+  }
+  const known = new Set(fanoutRuns(repo).map((r) => r.id));
+  for (const run of supervised) {
+    if (!known.has(run.id)) continue; // see "Known gap" above
+    for (const leg of run.legs) applyLegSnapshot(repo, run.id, leg, false);
+    subscribeRun(repo, run.id);
   }
 }
 
@@ -470,17 +571,16 @@ async function legStat(worktreePath: string, baseRef?: string): Promise<LegStat 
 
 /// Stop one leg. The others keep going, which is the point.
 ///
-/// Takes only the leg id — a turn in flight is unique across every run, so
-/// asking the caller for the repo and run as well would be three parameters
-/// where the first two are never checked, which is an invitation to pass the
-/// wrong one and see nothing happen.
+/// `false` (or a rejected call, swallowed here) means there was nothing to
+/// cancel — the leg had already reached a terminal status, which is an
+/// ordinary race between this click and the leg finishing on its own, not a
+/// fault to surface. The supervisor is the single source of truth for
+/// whether the cancel landed; this function does not guess.
 export async function cancelFanoutLeg(legId: string): Promise<void> {
-  const turnId = turnIds.get(legId);
-  if (!turnId) return;
   try {
-    await agentApi.cancelTurn(turnId);
+    await fanoutApi.cancelLeg(legId);
   } catch {
-    // The turn had already ended. `runLeg` will settle it either way.
+    // See above — a cancel racing the leg's own completion is normal.
   }
 }
 
@@ -553,6 +653,7 @@ export function removeFanoutRun(repo: string, runId: string): void {
   // this, dismissing the run leaves its failure toast counting up on screen
   // against a run that no longer exists.
   dismissToastSource(`run:${runId}`);
+  subscribedRunIds.delete(runId);
   setRuns(
     produce((s) => {
       const list = s[repo];
@@ -565,7 +666,7 @@ export function removeFanoutRun(repo: string, runId: string): void {
 
 /// Test seam.
 export function resetFanout(): void {
-  turnIds.clear();
+  subscribedRunIds.clear();
   setRuns(produce((s) => {
     for (const key of Object.keys(s)) delete s[key];
   }));
@@ -609,18 +710,6 @@ export function compareLegs(a: RunLeg, b: RunLeg): number {
   const bySize = size(b) - size(a);
   if (bySize !== 0) return bySize;
   return a.agentName.localeCompare(b.agentName);
-}
-
-function recordLeg(run: FanoutRun, leg: RunLeg, outcome: string, detail: string): void {
-  record({
-    kind: `run.leg.${outcome}`,
-    actor: "agent",
-    actorName: leg.agentName,
-    repo: run.repo,
-    subject: leg.branch,
-    summary: `${leg.agentName} ${outcome} on “${firstLine(run.prompt)}” — ${detail}`,
-    data: { runId: run.id, legId: leg.id, branch: leg.branch, worktree: leg.worktreePath },
-  });
 }
 
 function firstLine(text: string, max = 60): string {

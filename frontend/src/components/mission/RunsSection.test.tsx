@@ -72,6 +72,7 @@ function run(partial: Partial<FanoutRun> = {}): FanoutRun {
     createdAt: 0,
     legs: [leg()],
     adoptedLegId: null,
+    baseRef: null,
     ...partial,
   };
 }

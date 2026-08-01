@@ -41,7 +41,31 @@ file exists to prevent.
 |---|---|---|
 | 1 | **BR-O1 — the overlay tax** | Ten hand-written `setOverlayOpen` effects in `App.tsx`, one per modal surface, each there because a child webview composites above the DOM. One self-registration mechanism — the shape `TAB_SPECS` already uses for tabs — makes the count one and the growth zero. |
 | 2 | **Run provenance on the diff** | "Which agent wrote this hunk", inline. Was ranked 13th of 14 when proposed and is now near the top: the journal already does the attribution and already labels it as inferred, so what is left is the surface. |
-| 3 | **Fan-out durability in Rust** | The real limit of fan-out: close the window and the orchestration is gone. `store/fanout.ts`'s header says why. Only worth doing if unattended overnight runs are the point — it is a project, not a flag. |
+
+**Done — fan-out durability in Rust.** `src-tauri/src/fanout/mod.rs`: a
+supervisor that owns spawning, concurrency, per-leg cancel and terminal
+transitions, so a run's lifetime is the app's rather than the webview's.
+`fanout_start_run` registers a run and returns without waiting on any leg;
+`fanout_run_state` answers "what is running" for a repository;
+`fanout_subscribe` attaches to a run's live output from any window, replaying
+the full buffered answer as one message before any live chunk — a fan-out is
+for being left unattended, so output produced while nobody was listening is
+kept, not dropped. Leg spawn/cancel reuses `agent::agent_stream_query` and
+`agent::agent_cancel_turn` directly (a leg's turn id is its own id), so the
+process-group kill and UTF-8-safe streaming are exercised by `agent::tests`,
+not duplicated. Every terminal transition still lands in the journal, from
+Rust. `LegStatus` in Rust has no `interrupted` variant — the supervisor either
+knows a tracked leg's true state or has no record of the run at all, and
+`interrupted` stays a frontend-only reading of that absence (`store/fanout.ts`
+`reviveRuns` at load time, corrected by the new `reconcileFanoutRuns` once a
+window asks the supervisor what it is still tracking). **Known gap, stated
+rather than hidden:** `reconcileFanoutRuns` only reconciles runs the asking
+window already has a local record of — a run started entirely from a
+different window is invisible to a window that never persisted it, the same
+cross-window `localStorage` limitation `journal/mod.rs` describes for the
+event log generally. Fixing that would mean moving the run *list*, not just
+its liveness, into Rust, and was not done here. 9 new Rust tests, 12 new
+frontend tests (`fanout.test.ts` rewritten against the new API boundary).
 
 **Done — a browser test project.** `*.browser.test.tsx`, Vitest 4 +
 `@vitest/browser-playwright`, chromium, headless, exactly the config sketched
@@ -107,7 +131,7 @@ once the first geometry test needed `overflow-auto` to actually clip.
 | Item | Notes |
 |---|---|
 | **Run provenance on the diff** | Item 2 above. |
-| **Fan-out durability** | Item 3 above. |
+| **Fan-out durability** | Done — see "The top of the list" above. |
 | **Palette action sources** | Unchanged since it was proposed: let features contribute action sources to the palette rather than the palette knowing every feature. |
 | **Keyboard navigation over N worktrees' changed files** | All that is left of a "review across worktrees" proposal that Mission Control's Lineup otherwise superseded. Re-scope before building — most of what it was for now has a home. |
 | **An agent-written check-in summary** | Optional half of check-ins, not built. If it ever is, the labelling rule stands: a generated summary says it is generated. |

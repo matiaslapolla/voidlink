@@ -126,18 +126,30 @@ Nothing here runs a leg's tests or knows what the test command is, and a column
 populated by guessing would be wrong often enough to make people distrust the
 columns that are right. It wants a real test-runner integration.
 
-### The limit that matters
+### Outliving the window
 
-**A run does not survive closing the window.** A leg is a child process whose
-output streams over a `tauri::ipc::Channel` owned by that webview; close the
-window and the channel dies with it. A run reloads as a *record*, with its legs
-marked `interrupted` — in those words, because nobody chose it and nothing went
-wrong.
+A leg's process, its worktree creation and its terminal transition are owned by
+a Rust supervisor (`src-tauri/src/fanout/mod.rs`), not by the webview that
+started it. A run's lifetime is the **app's**, not any one window's: close the
+tab, reload, or open a second window on the same repository, and the legs keep
+going, because nothing about them lived in that window's JS heap to begin with.
 
-Making fan-out outlive its window means moving the orchestration into Rust. That
-is real work, not a flag. Pretending otherwise would produce the worst possible
-outcome: someone believing an overnight run is progressing when nothing is
-running at all.
+A window that (re)appears asks the supervisor "what is running?" and, for
+anything it gets back, re-attaches to the live output — including a window
+opened after the one that started the run is gone. What it gets on
+re-attaching is the **whole buffered answer so far, replayed, then a live
+tail** — not a drop of whatever happened while nobody was listening. A
+fan-out is *for* being left unattended; "come back later and read the answer"
+is the point, not an edge case the surface has to apologise for.
+
+**The app quitting is still a horizon.** A run's lifetime is the app's, and an
+app that is not running supervises nothing — that is the honest boundary this
+feature moved to, not "survives anything". A leg the supervisor genuinely has
+no record of — this app instance never started it, or the app itself
+restarted since — comes back exactly as it always did: `interrupted`, in
+those words, because nobody chose it and nothing went wrong. The surface never
+infers a leg is still progressing from the absence of information; it asks,
+and only a confirmed answer moves a leg out of `interrupted`.
 
 Other limits:
 
@@ -233,7 +245,9 @@ from.
 | --- | --- |
 | Review notes, anchoring, prompt block | `frontend/src/store/reviewNotes.ts` |
 | The comment affordance | `frontend/src/components/git/shared/SplitDiffRenderer.tsx` |
-| Runs, legs, adopt, discard | `frontend/src/store/fanout.ts` |
+| The run supervisor — spawn, cancel, terminal transitions, replay | `src-tauri/src/fanout/mod.rs` |
+| Runs as this window renders them, adopt, discard, reconnect | `frontend/src/store/fanout.ts` |
+| The fan-out IPC transport | `frontend/src/api/fanout.ts` |
 | Runs surface | `frontend/src/components/mission/RunsSection.tsx` |
 | Rules, matching, dry run, cutoff | `frontend/src/store/triggers.ts` |
 | Triggers surface | `frontend/src/components/mission/TriggersSection.tsx` |
