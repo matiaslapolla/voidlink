@@ -36,6 +36,7 @@ import { abortCycle, commitCycle, stepCycle } from "@/commands/tabCycle";
 import type { OpenTabTarget, RecentFileTarget } from "@/commands/targets";
 import { ShortcutsCheatSheet } from "@/commands/ShortcutsCheatSheet";
 import { ToastViewport } from "@/commands/ToastViewport";
+import { TooltipLayer } from "@/components/ui/Tooltip";
 import { PromptHost } from "@/commands/PromptHost";
 import {
   closeCheatSheet,
@@ -1201,6 +1202,10 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />
       <ToastViewport />
+      {/* One tooltip surface per window. Without it `use:tooltip` is inert
+          rather than broken, which is the right failure for a window that has
+          not adopted it yet. */}
+      <TooltipLayer />
       <PromptHost />
       {/* macOS resizes through its own window frame; our strips would fight it. */}
       <Show when={!isMac()}>

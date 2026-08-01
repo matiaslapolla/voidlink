@@ -35,6 +35,12 @@ import { promptWithToggles } from "@/commands/prompt";
 import type { CommitIdentity, PushOutcome, StashEntry, RemoteInfo } from "@/types/git";
 import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
+import { Button } from "@/components/ui/Button";
+// Referenced so the compiler keeps the import: Solid erases a `use:` directive
+// whose symbol is otherwise unused, and TypeScript cannot see a JSX attribute
+// as a use.
+import { tooltip } from "@/components/ui/Tooltip";
+void tooltip;
 import { StatusBadge } from "@/components/git/shared/StatusBadge";
 import { OperationBanner } from "@/components/git/OperationBanner";
 import { gitApi } from "@/api/git";
@@ -103,6 +109,18 @@ type LucideIcon = Component<{ class?: string }>;
 /// A header icon button. `disabled` exists because Fetch (and every Remotes
 /// action) sat next to a Pull button that had one, with nothing stopping a second
 /// click while the first request was still out.
+/// The git sidebar's icon button, now over `components/ui/Button`.
+///
+/// Its `chrome` variant is exactly what this was hand-rolling — the same tint,
+/// the same disabled treatment — and it brings the two states this did not
+/// have: a press treatment (MOTION-PLAN F19; this was one of the 275 controls
+/// with none) and a real tooltip rather than the OS's `title` (F3).
+///
+/// `disabled` stays a boolean here rather than becoming `disabledReason`,
+/// because the ~30 call sites pass it as one. Where a caller already knows the
+/// reason it passes `title`, and that is what the button states — which is
+/// §7.6's requirement met at the sites that can meet it, rather than a
+/// mandatory field the other sites would fill with a placeholder.
 function IconBtn(props: {
   label: string;
   onClick: () => void;
@@ -110,17 +128,23 @@ function IconBtn(props: {
   class?: string;
   disabled?: boolean;
   title?: string;
+  /// Work is in flight. Swaps the icon for a spinner; the button stays
+  /// focusable and in the tab order (§7.6 — pending is not disabled).
+  pending?: boolean;
 }) {
   return (
-    <button
+    <Button
+      variant="chrome"
+      size="sm"
       onClick={props.onClick}
-      disabled={props.disabled}
+      disabledReason={props.disabled ? (props.title ?? `${props.label} is unavailable`) : undefined}
+      pending={props.pending}
+      icon={props.children}
       aria-label={props.label}
       title={props.title ?? props.label}
-      class={`p-1 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${props.class ?? ""}`}
-    >
-      {props.children}
-    </button>
+      use:tooltip={props.title ?? props.label}
+      class={props.class}
+    />
   );
 }
 

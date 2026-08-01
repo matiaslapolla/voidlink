@@ -99,6 +99,7 @@ import { PromptHost } from "@/commands/PromptHost";
 import { textPrompt } from "@/commands/prompt";
 import { fsApi } from "@/api/fs";
 import { ToastViewport } from "@/commands/ToastViewport";
+import { TooltipLayer } from "@/components/ui/Tooltip";
 import { keymapBindings, useKeybindings } from "@/commands/keybindings";
 import { registerActions, type Action } from "@/commands/registry";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
@@ -172,6 +173,10 @@ export default function EditorApp() {
           of those prompts would hang waiting on a dialog that never renders. */}
       <PromptHost />
       <ToastViewport />
+      {/* One tooltip surface per window. Without it `use:tooltip` is inert
+          rather than broken, which is the right failure for a window that has
+          not adopted it yet. */}
+      <TooltipLayer />
     </AppStoreContext.Provider>
   );
 }

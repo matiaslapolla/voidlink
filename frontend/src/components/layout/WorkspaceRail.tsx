@@ -11,6 +11,14 @@ import {
 } from "lucide-solid";
 import { useAppStore } from "@/store/LayoutContext";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
+// The three `title` attributes below carry information rather than restating a
+// visible label (MOTION-PLAN F3 names them), so they are the first sites to
+// move onto the real tooltip: a delay we control, a keyboard-focus path the OS
+// tooltip never had, and a surface that can hold two lines.
+// `void tooltip` keeps the import: Solid erases a `use:` directive whose symbol
+// is otherwise unused, and TypeScript cannot see a JSX attribute as a use.
+import { tooltip } from "@/components/ui/Tooltip";
+void tooltip;
 import { onGitRefsChanged } from "@/commands/gitEvents";
 import { pickWorkspaceFolder } from "@/commands/openFolder";
 import { requestNewWorktree } from "@/commands/worktree";
@@ -251,7 +259,7 @@ export function WorkspaceRail() {
                       <button
                         onClick={() => actions.selectWorkspace(ws.id)}
                         onDblClick={() => startRename(ws.id, ws.name)}
-                        title={`${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`}
+                        use:tooltip={`${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`}
                         class="flex-1 min-w-0 text-left truncate font-medium hover:text-foreground"
                       >
                         {ws.name}
@@ -278,7 +286,7 @@ export function WorkspaceRail() {
                       void onOpenFolder(ws);
                     }}
                     aria-label={`Open folder in ${ws.name}`}
-                    title={ws.repoRoot ? `${ws.repoRoot}\nOpen a different folder…` : "Open folder…"}
+                    use:tooltip={ws.repoRoot ? `${ws.repoRoot}\nOpen a different folder…` : "Open folder…"}
                     class="p-0.5 rounded shrink-0 transition-colors opacity-60 group-hover:opacity-100 hover:bg-accent/60 hover:text-foreground"
                   >
                     <FolderOpen class="w-3 h-3" />
@@ -290,7 +298,7 @@ export function WorkspaceRail() {
                     }}
                     aria-label={`New worktree in ${ws.name}`}
                     aria-disabled={!!blocked()}
-                    title={blocked() ?? "New worktree…"}
+                    use:tooltip={blocked() ?? "New worktree…"}
                     class={`p-0.5 rounded shrink-0 transition-colors ${
                       blocked()
                         ? "text-muted-foreground/40 cursor-not-allowed"

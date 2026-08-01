@@ -54,6 +54,7 @@ import { CompareTab } from "@/components/git/compare/CompareTab";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { PromptHost } from "@/commands/PromptHost";
 import { ToastViewport } from "@/commands/ToastViewport";
+import { TooltipLayer } from "@/components/ui/Tooltip";
 import { pushToast } from "@/commands/toast";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { AppStoreContext } from "@/store/LayoutContext";
@@ -124,6 +125,10 @@ export default function GitApp() {
           waiting on a dialog that never renders. */}
       <PromptHost />
       <ToastViewport />
+      {/* One tooltip surface per window. Without it `use:tooltip` is inert
+          rather than broken, which is the right failure for a window that has
+          not adopted it yet. */}
+      <TooltipLayer />
     </AppStoreContext.Provider>
   );
 }
