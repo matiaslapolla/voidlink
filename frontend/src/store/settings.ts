@@ -199,6 +199,20 @@ export interface AiKeyBinding {
 /// Custom bindings live in `AiSettings.customKeys`.
 export const AI_KEY_PRESETS: readonly AiKeyBinding[] = [
   { id: "anthropic", envVar: "ANTHROPIC_API_KEY", label: "Anthropic" },
+  // A `claude setup-token` token, which is how a Claude *subscription* is used
+  // non-interactively. It is exactly the shape the presets already handle — an
+  // id and an env var, value in the keychain — and its absence was why a user
+  // on a paid plan opened this pane, saw only "Anthropic: not set", and
+  // concluded VoidLink wanted an API key they'd have to buy separately.
+  //
+  // Ordered directly after `ANTHROPIC_API_KEY` because that adjacency is the
+  // point: the two are alternatives, and the API key silently wins when both
+  // are present. See the note in `ProviderKeysSection`.
+  {
+    id: "claude-code-oauth",
+    envVar: "CLAUDE_CODE_OAUTH_TOKEN",
+    label: "Claude subscription",
+  },
   { id: "openai", envVar: "OPENAI_API_KEY", label: "OpenAI" },
   { id: "gemini", envVar: "GEMINI_API_KEY", label: "Google Gemini" },
   { id: "openrouter", envVar: "OPENROUTER_API_KEY", label: "OpenRouter" },

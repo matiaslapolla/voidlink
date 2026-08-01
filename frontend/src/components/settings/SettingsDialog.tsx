@@ -169,7 +169,18 @@ export function SettingsDialog(props: SettingsDialogProps) {
             </button>
           </div>
 
-          <div class="flex items-center gap-1 border-b border-border px-2 py-1 text-body">
+          {/* Nine tabs in a 560px dialog with no wrap and no scroll meant the
+              last of them — Git and Stack — became unreachable as soon as
+              anything made the row wider than the frame: the `xl` text size,
+              or `max-w-[92vw]` on a narrow window. Wrapping rather than
+              scrolling because a hidden tab in a horizontal scroller is a
+              navigation surface nobody can see, and this row is the only way
+              into half the dialog. */}
+          <div
+            role="tablist"
+            aria-label="Settings sections"
+            class="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1 text-body"
+          >
             <TabButton active={tab() === "ui"} onClick={() => setTab("ui")}>UI</TabButton>
             <TabButton active={tab() === "theme"} onClick={() => setTab("theme")}>Theme</TabButton>
             <TabButton active={tab() === "editor"} onClick={() => setTab("editor")}>Editor</TabButton>
@@ -213,11 +224,21 @@ export function SettingsDialog(props: SettingsDialogProps) {
   );
 }
 
+/// One section tab.
+///
+/// `role="tab"` + `aria-selected` because the row that holds these now
+/// declares itself a `tablist`, and a tablist whose children are plain buttons
+/// promises a screen reader an arrow-navigable set it does not have.
+///
+/// `focus-visible:ring-inset` rather than an outward ring: these sit flush
+/// against the dialog's own edge, where an outward ring is clipped in half.
 function TabButton(props: { active: boolean; onClick: () => void; children: JSX.Element }) {
   return (
     <button
+      role="tab"
+      aria-selected={props.active}
       onClick={props.onClick}
-      class={`px-3 py-1 rounded transition-colors ${
+      class={`px-3 py-1 rounded shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
         props.active ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
       }`}
     >
@@ -550,7 +571,7 @@ function EditorPane(props: { initialQuery?: string }) {
             onInput={(e) => setQuery(e.currentTarget.value)}
             placeholder="Search settings by name, id or value…"
             aria-label="Search editor settings"
-            class="w-full rounded border border-border bg-muted/40 py-1 pl-7 pr-2 text-label focus:outline-none focus:ring-1 focus:ring-ring"
+            class="w-full rounded border border-border bg-muted/40 py-1 pl-7 pr-2 text-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           />
         </div>
         {/* Disabled rather than hidden when nothing is modified: the count is
@@ -699,7 +720,7 @@ function SettingRow(props: { hit: SettingHit }) {
               value that works is a Nerd-Font package name almost nobody can
               spell from memory. */}
           <Show when={setting().key === "fontFamily"}>
-            <div class="flex flex-wrap gap-1 pl-28">
+            <div class={`flex flex-wrap gap-1 ${LABEL_INDENT}`}>
               <For each={FONT_PRESETS}>
                 {(p) => (
                   <button
@@ -840,7 +861,7 @@ function LanguageOverridesSection() {
           value={language()}
           onChange={(e) => setLanguage(e.currentTarget.value)}
           aria-label="Language to override settings for"
-          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label focus:outline-none focus:ring-1 focus:ring-ring"
+          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <For each={languages()}>
             {(id) => (
@@ -885,7 +906,7 @@ function LanguageOverridesSection() {
             setAdding("");
           }}
           aria-label={`Add a setting override for ${language()}`}
-          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label focus:outline-none focus:ring-1 focus:ring-ring"
+          class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <option value="">Choose a setting…</option>
           <For each={available()}>
@@ -1051,7 +1072,7 @@ function TerminalPane() {
           placeholder='"JetBrains Mono", monospace'
           onInput={(v) => updateTerminal({ fontFamily: v })}
         />
-        <div class="flex flex-wrap gap-1 pl-28">
+        <div class={`flex flex-wrap gap-1 ${LABEL_INDENT}`}>
           <For each={FONT_PRESETS}>
             {(p) => (
               <button
@@ -1240,6 +1261,23 @@ function ShortcutRow(props: { entry: KeymapEntry }) {
 /// colour transition is the pane's whole motion budget — at 0ms a
 /// simultaneous recolour of five headers reads as a repaint glitch rather than
 /// a change of mode.
+/// The label column, and the indent that has to line up with it.
+///
+/// Every row in this dialog is `flex gap-3` with a fixed-width label cell, and
+/// two places in the AI pane annotate a row by indenting a sibling to match.
+/// Those were hand-written as `pl-28` against a `w-28` label — which is short
+/// by exactly the `gap-3` between them, so the commit-preset buttons and the
+/// fallback-command hint sat 12px to the left of the input they belong to.
+/// Deriving the indent from the column is what stops the two drifting again.
+///
+/// `break-words` rather than `truncate`: the label is the only thing telling a
+/// user what a control does, and silently clipping it at the `xl` text size is
+/// worse than a row that grows a line. `shrink-0` is what keeps a long label
+/// from taking width from the control instead.
+const LABEL_COL = "w-28 shrink-0 break-words";
+/// `w-28` + `gap-3`, as a value rather than as a number to remember.
+const LABEL_INDENT = "pl-[calc(7rem+0.75rem)]";
+
 function Section(props: { title: string; tone?: "warning"; children: JSX.Element }) {
   return (
     <section>
@@ -1271,7 +1309,7 @@ function SliderRow(props: {
 }) {
   return (
     <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>}
+      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
       <input
         type="range"
         min={props.min}
@@ -1298,7 +1336,7 @@ function ToggleRow(props: {
   return (
     <div class="flex items-center gap-3">
       {props.labelCell ?? (
-        <div class="w-28 shrink-0">
+        <div class={LABEL_COL} title={props.label}>
           <div class="text-muted-foreground">{props.label}</div>
           <Show when={props.hint}>
             <div class="text-micro text-muted-foreground/70 leading-tight">{props.hint}</div>
@@ -1328,13 +1366,13 @@ function TextRow(props: {
 }) {
   return (
     <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>}
+      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
       <input
         type="text"
         value={props.value}
         placeholder={props.placeholder}
         onInput={(e) => props.onInput(e.currentTarget.value)}
-        class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+        class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       />
     </div>
   );
@@ -1349,7 +1387,7 @@ function SegmentedRow<T extends string>(props: {
 }) {
   return (
     <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class="w-28 text-muted-foreground shrink-0">{props.label}</span>}
+      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
       <div class="flex-1 flex gap-1">
         <For each={props.options}>
           {(opt) => (
@@ -1395,20 +1433,20 @@ function AiPane() {
   return (
     <div class="space-y-4">
       <p class="text-label text-muted-foreground leading-relaxed">
-        VoidLink doesn't ship an LLM. Configure any local CLI you already have
-        installed; the staged diff is piped to its stdin and stdout becomes the
-        commit-message draft. If that CLI needs an API key, store it under
-        Provider keys below — it goes to your OS keychain, never to voidlink's
-        settings.
+        VoidLink runs no model of its own and talks to no service on your
+        behalf. Configure any local CLI you already have installed; the staged
+        diff is piped to its stdin and stdout becomes the commit-message draft.
+        If that CLI needs a key or a token, store it under Provider keys below —
+        it goes to your OS keychain, never to voidlink's settings.
       </p>
       <Section title="Commit messages">
         <TextRow
-          label="Command"
+          label="Commit command"
           value={settings.ai.commitCommand}
           placeholder={'e.g. claude --no-tools -p "Write a git commit message:"'}
           onInput={(v) => updateAi({ commitCommand: v })}
         />
-        <div class="flex flex-wrap gap-1 pl-28">
+        <div class={`flex flex-wrap gap-1 ${LABEL_INDENT}`}>
           <For each={AI_COMMAND_PRESETS}>
             {(p) => (
               <button
@@ -1425,12 +1463,12 @@ function AiPane() {
       <AgentRosterSection />
       <Section title="Agent fallback command">
         <TextRow
-          label="Command"
+          label="Fallback command"
           value={settings.ai.agentCommand}
           placeholder={'optional — defaults to the commit command'}
           onInput={(v) => updateAi({ agentCommand: v })}
         />
-        <p class="text-label text-muted-foreground leading-relaxed pl-28">
+        <p class={`text-label text-muted-foreground leading-relaxed ${LABEL_INDENT}`}>
           Used by any agent above that leaves its own command blank — and, if
           this is blank too, the commit command. A prompt grounded in your live
           workspace state — branch, status, recent log, staged diff, open files —
@@ -1468,6 +1506,22 @@ function AgentRosterSection() {
         agent tab to one of these; leave a command blank to use the fallback
         below.
       </p>
+      {/* Column headings, because two bare inputs side by side told a sighted
+          user nothing about which was which — the `aria-label`s below were the
+          only labelling this section had, so it read correctly to a screen
+          reader and not at all to everyone else (MASTER §10.6 asks for a real
+          label, not a placeholder). `aria-hidden` because each input already
+          carries its own name; announcing the heading too would say it twice.
+          The spacer matches the remove button's box so the headings stay over
+          the fields they name. */}
+      <div
+        aria-hidden="true"
+        class="flex items-center gap-1.5 text-micro text-muted-foreground/70"
+      >
+        <span class="w-28 shrink-0">Name</span>
+        <span class="flex-1 min-w-0">Command</span>
+        <span class="w-[26px] shrink-0" />
+      </div>
       <For each={settings.ai.agents}>
         {(entry: AgentRosterEntry) => (
           <div class="flex items-center gap-1.5">
@@ -1582,6 +1636,24 @@ function ProviderKeysSection() {
         above. VoidLink itself never sends them anywhere. Injection is additive:
         if your shell already exports the same variable, yours wins.
       </p>
+      {/* The precedence note above is true of *VoidLink's* injection. This one
+          is about what the CLI does with what it receives, and it is the more
+          expensive surprise: Claude Code resolves an API key before a
+          subscription, so a stored `ANTHROPIC_API_KEY` silently bills per
+          token even when the machine is signed in to a paid plan. The pane
+          previously showed both rows and said nothing about which would win.
+          Rendered as a plain note rather than a warning tone because both
+          states are legitimate — this is a fact about ordering, not a
+          misconfiguration. */}
+      <p class="text-label text-muted-foreground leading-relaxed">
+        Two of these are alternatives, not additions. A Claude CLI or the agent
+        SDK will use <span class="font-mono">ANTHROPIC_API_KEY</span> if it is
+        set and fall back to{" "}
+        <span class="font-mono">CLAUDE_CODE_OAUTH_TOKEN</span> — or to a{" "}
+        <span class="font-mono">claude</span> already signed in on this machine
+        — only when it isn't. Store the API key and you are billed per token
+        even on a paid plan; leave it empty to use the plan.
+      </p>
       <Show when={keychainError()}>
         {(err) => (
           <p class="text-label text-destructive leading-relaxed" title={err()}>
@@ -1690,7 +1762,7 @@ function KeyRow(props: {
             onKeyDown={(e) => {
               if (e.key === "Enter") void save();
             }}
-            class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+            class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
           />
           <button
             onClick={() => void save()}
@@ -1779,7 +1851,7 @@ function AddCustomKey(props: { onAdded: () => void }) {
         placeholder="MY_PROVIDER_API_KEY"
         onInput={(e) => setEnvVar(e.currentTarget.value)}
         aria-label="Custom environment variable name"
-        class="w-28 shrink-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+        class="w-28 shrink-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
       />
       <input
         type="password"
@@ -1793,7 +1865,7 @@ function AddCustomKey(props: { onAdded: () => void }) {
         onKeyDown={(e) => {
           if (e.key === "Enter") void add();
         }}
-        class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+        class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
       />
       <button
         onClick={() => void add()}
@@ -2426,10 +2498,10 @@ function StackPane() {
                 value={draft()}
                 onInput={(e) => setDraft(e.currentTarget.value)}
                 placeholder="release/v2, staging"
-                class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               />
             </div>
-            <div class="flex items-center justify-end gap-2 pl-28">
+            <div class={`flex items-center justify-end gap-2 ${LABEL_INDENT}`}>
               <Show when={(trunks() ?? []).length > 0}>
                 <button
                   onClick={() => {
