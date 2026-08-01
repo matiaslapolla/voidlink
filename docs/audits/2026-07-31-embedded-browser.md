@@ -43,6 +43,7 @@ confidence in the fix.
 - [Track 5 — Security posture](#track-5--security-posture)
 - [Track 6 — The overlay tax](#track-6--the-overlay-tax)
 - [Deferred, with reasons](#deferred-with-reasons)
+- [BR-S3, answered](#br-s3-answered--2026-08-01)
 - [Seams for the workbench](#seams-for-the-workbench)
 - [The engine question, answered](#the-engine-question-answered)
 - [Coverage boundary](#coverage-boundary)
@@ -470,7 +471,7 @@ changes prove.
 | BR-N4 | **Fixed as a rule with its own tests.** `isPrivateHost` covers loopback (the whole `127/8`, `::1`, `0.0.0.0`), RFC 1918, IPv4 link-local, IPv6 unique- and link-local, `*.localhost` and `*.local`. Carrier-grade NAT and `.internal` are deliberately left public — both terminate TLS in the networks that use them. Tested at every boundary, including `172.15`/`172.16`/`172.31`/`172.32`. | proven |
 | BR-N5 | **Decided against, on evidence the audit did not have.** The comment in `navigate()` argues only against clearing on the *navigated* event, so it did not by itself forbid clearing on *navigating* — but the navigating event turns out not to be main-frame-scoped (see BR-N6), so hanging the title clear off it would blank the tab label on every page with an iframe. The ordering stands. The link-click case remains open and now has a main-frame-only event (`browser-committed`) to attach to, plus an unanswered question: is a blank tab label mid-load better than a stale one? | reading |
 | BR-H3 | **Fixed; the harness turned out to be cheap.** The decision was moved off the callback and onto `TabState::settle`, which is pure and needs no `AppHandle` — the callback around it is three lines of plumbing. `traversing: bool` became a URL-matched queue. Five tests: a traversal's own load, a burst of two, a burst wry coalesced into one, a traversal that redirects, and a cancelled traversal. The coalesced case was worse than the audit stated — the flag was left set *forever*, so the next address typed was folded in as if it had been a traversal. | proven |
-| BR-S3 | **Blocked on the product call; mechanism deliberately not built.** An allow-everything policy object changes nothing, and its shape depends entirely on the unanswered question. What was added instead is the knowledge the next person needs, at the hook: it sees subframes (so it is stronger than an address-bar filter), and `false` cancels *silently*, so a blocking policy needs its own way to say so or it reads as a freeze. | reading |
+| BR-S3 | **Blocked on the product call; mechanism deliberately not built.** An allow-everything policy object changes nothing, and its shape depends entirely on the unanswered question. What was added instead is the knowledge the next person needs, at the hook: it sees subframes (so it is stronger than an address-bar filter), and `false` cancels *silently*, so a blocking policy needs its own way to say so or it reads as a freeze. **Answered and shipped on 2026-08-01 — see below.** | reading |
 
 ### BR-N6 — new
 
@@ -495,6 +496,52 @@ already-settled page sets the spinner going and no main-frame event will arrive
 to clear it, so the spinner can stick. It is not made worse by this change — the
 same was true before it — and clearing it needs the same load-failure signal
 BR-N2 does not have.
+
+---
+
+## BR-S3, answered — 2026-08-01
+
+The product call was made by the repo owner: **`http`, `https`, and `file://` —
+but `file://` only for documents the tab can actually render: HTML, plain text,
+and PDF. Everything else is refused.** What that turned into, and the three
+things the shape of the mechanism turns on:
+
+1. **It is enforced at the hook, not at the address bar** — `navigation_refusal`
+   in `browser/mod.rs`, called from `on_navigation`. That is the finding's own
+   point: the hook sees subframes, so a page embedding `file:///Users/…` in a
+   hidden iframe is stopped, and an address-bar filter would have stopped only
+   the user. The bar runs the same rule in `url.ts` so it refuses *before*
+   sending — otherwise Enter would dispatch a URL the hook silently drops, which
+   reads as the app freezing. Two languages, one rule, and the same case table
+   asserted in both test files precisely because the duplication is a hazard.
+2. **Every refusal emits `voidlink://browser-blocked`**, because `false` cancels
+   with no error, no load event and nothing on screen. Since the hook cannot
+   tell a subframe from a top-level navigation, the event cannot either, so
+   de-duplication is the frontend's: the toast module's existing `source`
+   coalescing, keyed by tab, folds a page's worth of blocked frames into one
+   toast carrying a count.
+3. **Two exceptions were made deliberately.** `about:` and `blob:` are allowed:
+   neither reaches outside the document that created it, both are how ordinary
+   pages build frames, and a policy running on every frame has to be judged on
+   what it breaks as well as what it stops. `data:` is *not* allowed — it
+   renders attacker-authored HTML under an address nobody can read, in a tab
+   that has an address bar to show it in, and real browsers block top-level
+   `data:` for the same reason.
+
+A `file://` **directory** is refused, with or without the trailing slash. A
+listing is none of the three named types, and an allowed one turns a single
+refusal into a file browser the user can walk out of. That both spellings get
+the same answer is why the rule never touches the disk: a stat would only
+distinguish a directory from an extensionless file, and both are refused, so a
+syscall on every frame would buy no accuracy at all.
+
+**Confidence.** The rule is **proven**, at every boundary, in both languages —
+schemes, extensions, case, query strings and fragments, directories, dotfiles,
+percent-encoding, and the multi-frame refusal folding into one toast. That
+returning `false` actually stops a real child webview is **reading**: it is the
+pinned `tauri` 2.11.2 contract ("Returning `false` cancels the navigation") and
+wry's macOS navigation policy, and it needs an OS-level view driving a real page
+to observe — the same coverage boundary this audit opens with.
 
 ---
 

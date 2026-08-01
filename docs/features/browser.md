@@ -26,7 +26,8 @@ the code — without the alt-tab, and without a second app's worth of chrome.
    `172.16–31.x`, `192.168.x`, `169.254.x`, IPv6 unique- and link-local,
    `*.localhost` and `*.local` all get `http://`, because no public certificate
    authority can have vouched for them and dev servers don't do TLS. Input that
-   isn't an address at all is refused with a toast rather than sent anywhere.
+   isn't an address at all is refused with a toast rather than sent anywhere,
+   and so is an address a tab isn't allowed to open — see *What a tab may open*.
 3. Back / Forward / Reload sit left of the address bar; zoom and the devtools
    wrench sit right of it. Reload becomes a spinner while a page is loading, and
    its tooltip says which half of the load you are in: **Connecting…** means
@@ -51,6 +52,42 @@ there. Clicking anywhere in the address strip asks Rust to hand focus back
 because while the page holds focus the app never receives the keystroke that
 would trigger it. The pointer is the only channel, and that is why there is no
 `Mod+L`.
+
+### What a tab may open
+
+**Web pages, and local documents a tab can display. Nothing else.**
+
+- **`http` and `https`** — anywhere. This is what the tab is for.
+- **`file://`** — only if the file is one a tab can show you: a web page
+  (`.html`, `.htm`, `.xhtml`), a text file (`.txt`, `.text`, `.log`, `.md`,
+  `.markdown`, `.csv`, `.tsv`, `.json`, `.xml`, `.yaml`, `.yml`, `.toml`), or a
+  PDF. Opening the HTML coverage report a test run just wrote works; opening
+  `~/.ssh/id_rsa`, a photo, a zip or a database file does not.
+- **A `file://` directory is refused.** A listing isn't one of those three kinds
+  of document, and allowing one would turn a single refusal into a file browser
+  you can walk out of — this app already has a file tree for that.
+- **Everything else is refused**, `data:` included. The one exception is
+  `about:` and `blob:`, which name content a page already has and are how
+  ordinary sites build frames; refusing those would break working pages rather
+  than stop anything.
+
+**Why this is worth having, given a tab can't reach the app anyway.** A browser
+tab holds no capability, so a page in one was never able to run a VoidLink
+command. What it *was* able to do is name a local file — and not only when you
+typed it. A page can put a `file://` URL in a hidden iframe, so the rule is
+enforced at the point every frame passes through (`on_navigation`, in the Rust
+module), not at the address bar. A filter on the bar would stop you and stop
+nothing at all from the page.
+
+**Every refusal says so.** Cancelling a navigation produces nothing — no error,
+no load event, no change on screen — so a tab that quietly declined to move
+would read as the app having frozen. You get a toast naming the URL and the
+reason instead. A page pulling several blocked frames produces **one** toast
+carrying a count rather than one per frame, because the engine can't tell a
+subframe from a page you aimed there and the alternative would be its own bug.
+
+Typing a refused address is caught in the bar before anything is sent, and
+leaves the page you were reading on screen.
 
 The tab label is the page's own title once it reports one, falling back to the
 host until then.
@@ -89,7 +126,7 @@ to break across patch releases.
 | `browser_close` / `browser_close_orphans` | Teardown, and crash recovery on boot |
 | `browser_toggle_devtools` | Platform inspector for the page, answering its own state |
 
-Four events flow back, all carrying the tab id because every tab hears every
+Five events flow back, all carrying the tab id because every tab hears every
 tab's events:
 
 - `voidlink://browser-navigating` — `{ tabId, url }`, emitted when a load is
@@ -106,6 +143,11 @@ tab's events:
   emitted when a page load finishes. The traversal flags ride along so the
   frontend never keeps a second copy of the history to derive them from.
 - `voidlink://browser-title` — `{ tabId, title }`.
+- `voidlink://browser-blocked` — `{ tabId, url, reason }`, emitted when the URL
+  policy cancels a navigation. It exists because cancelling is silent: nothing
+  else would ever say a page had been stopped. `reason` is `scheme` or
+  `file-type`. Not main-frame-only either, and it has no way to become so, so
+  the frontend coalesces it onto one toast per tab.
 
 Neither mid-flight event carries traversal flags: the history hasn't folded the
 load in yet, and provisional flags would flicker the buttons against a stack
@@ -199,6 +241,13 @@ for, which is what cleans up after a crash.
   scoped by webview *label* (`"webviews": ["main"]`) rather than by window,
   precisely so a page the user loads cannot reach an app command — a
   window-scoped capability would hand every grant to whatever site is open.
+- **A URL policy at `on_navigation`**, which is the one point every frame a page
+  loads passes through — see *What a tab may open*. `http`/`https` anywhere,
+  `file://` only for a renderable document, everything else refused. It is in
+  Rust rather than in the address bar because the threat is a page embedding a
+  `file://` frame, not a user typing one; `url.ts` runs the same rule so the bar
+  agrees, but that copy is an agreement, not the enforcement. Both halves carry
+  the same case table in their tests for exactly that reason.
 - `disable_drag_drop_handler()` keeps a page from hijacking drops on the host
   window.
 - No `eval` into the page, ever. That is why history is app-tracked.
@@ -207,10 +256,10 @@ for, which is what cleans up after a crash.
 
 | Path | Role |
 |---|---|
-| `src-tauri/src/browser/mod.rs` | Webview lifecycle, history stack, commands, events |
+| `src-tauri/src/browser/mod.rs` | Webview lifecycle, history stack, the URL policy, commands, events |
 | `frontend/src/api/webview.ts` | The only module that knows a tab is a webview |
 | `frontend/src/components/browser/BrowserPane.tsx` | Address bar, anchor rect, visibility |
-| `frontend/src/components/browser/url.ts` | `normalizeUrl`, `browserTabLabel` |
+| `frontend/src/components/browser/url.ts` | `normalizeUrl`, `readAddress`, `navigationRefusal`, `browserTabLabel` |
 | `frontend/src/store/layout.ts` | `BrowserTab`, the tab actions, persistence |
 | `frontend/src/commands/overlay.ts` | The open-modal count the pane hides on |
 

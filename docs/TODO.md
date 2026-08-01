@@ -21,7 +21,7 @@ severity, confidence and reasoning attached than as a line in a list:
 
 ## Contents
 
-- [Blocked on a decision](#blocked-on-a-decision)
+- [Answered, being built](#answered-being-built)
 - [Blocked on the dependency](#blocked-on-the-dependency)
 - [Open — small and unblocked](#open--small-and-unblocked)
 - [Open — needs re-scoping first](#open--needs-re-scoping-first)
@@ -31,20 +31,16 @@ severity, confidence and reasoning attached than as a line in a list:
 
 ---
 
-## Blocked on a decision
+## Answered, being built
 
-Each of these is built up to the point where the next line of code encodes a
-policy. The mechanism is in place where the mechanism could be separated; what
-is missing is an answer, and guessing at one is how a product acquires
-behaviour nobody chose.
+Every question this section used to hold was answered on 2026-08-01. Two are
+still in flight; the rest are in [Shipped](#shipped-2026-08-01) or, where the
+answer was "no", in [Decided](#decided--do-not-relitigate).
 
-| # | The question | What is already built, and what turns on the answer |
-|---|---|---|
-| 1 | **Should the address bar reach a search engine at all — and if so, which, chosen by whom?** | Unparseable input is classified and refused with a toast; nothing is sent to Rust. The classification is right under either answer, which is why it shipped. A git workbench sending keystrokes to a search engine is a product posture, not a default. (BR-N3) |
-| 2 | **What may a browser tab navigate to: any scheme, http/https only, or http/https plus an explicit opt-in for `file://`?** | Deliberately *not* built. A global scheme allowlist, per-tab origin confinement, and a prompt are three different objects, and the wrong one is harder to remove than to write. Two facts for whoever answers, recorded at the hook site: the policy point sees subframes, so it is stronger than an address-bar filter; and returning `false` cancels *silently*, so a blocking policy needs its own way to say so or it reads as the app having frozen. (BR-S3) |
-| 3 | **Should an ordinary agent turn write an `agent.turn.*` record?** | The docs have described one for a while; nothing has ever emitted it, so the notification defaults, the check-in model and the trigger rules all read a kind that is never written. Recording the interval would also make a finished agent-panel turn attributable on the diff. It would immediately start firing the default `agent.turn.finished` banner, which is a change to what the app *does*, not to what it records. |
-| 4 | **Where does a destructive push live, and how is it confirmed?** | libgit2 has no lease primitive, so `--force-with-lease` means fetch → compare `refs/remotes/<r>/<b>` → force, with a real race window. The audit rates the current state "safe by construction" precisely because the button does not exist. (BR-F7) |
-| 5 | **What does a remote branch's ahead/behind count against?** | Checked rather than assumed: listing remote branches changes nothing, because `git_list_branches_impl` hands every remote-tracking branch `(None, 0, 0, false)` and both chips gate on `> 0`. The flip was made, verified inert, and reverted. (CMP-F22) |
+| The question | The answer, and what is being built |
+|---|---|
+| **Where does a destructive push live, and how is it confirmed?** | **Only as a recovery action after the remote rejects a push as non-fast-forward** — never beside Push, never in a menu, never in a context menu. "Fetch and rebase" is the first offer; force is the second and reads as the lesser path, and it stays disabled until a fetch is fresh enough to hold a lease. libgit2 has no lease primitive, so the lease is fetch → compare → push and **the race window is real and cannot be closed with this dependency** — it can only be made small, commented, and never described as "safe" in the UI. (BR-F7) |
+| **What does a remote branch's ahead/behind count against?** | **The local branch of the same name.** `origin/feat` against local `feat` — the same question the chip already answers for a local row, from the other side. A remote branch with no local counterpart shows **no chip**, not a zero: the type has to make "no claim" distinct from "0 ahead, 0 behind". Watch the cost — this is a graph walk per remote row on a list that recomputes every git pulse. (CMP-F22) |
 
 ---
 
@@ -147,6 +143,7 @@ Recorded compactly; the detail is in the feature docs and the audits.
 | **Fan-out durability** | A Rust supervisor owns the legs; a run's lifetime is the app's, not the webview's. Unattended output is buffered and replayed rather than dropped. |
 | **Run provenance** | File-level on the working tree, commit-level on a commit, nothing on a branch range — the granularity the evidence actually supports. |
 | **Palette action sources** | Features contribute their own actions; 462 lines left `App.tsx`. Behaviour preservation proven id-for-id against the pre-refactor list. |
+| **The browser's URL policy** (BR-S3, answering the old decision row 2) | **The decision: `http`, `https`, and `file://` — but `file://` only for what the tab can render (HTML, plain text, PDF). Everything else refused, `data:` included.** Enforced at `on_navigation`, which is the only point every *frame* passes through, so a page embedding a `file://` iframe is stopped and not merely a user typing one. A directory is refused, both spellings, and the two answers agreeing is why the rule never stats anything. Because `false` cancels silently, every refusal emits `voidlink://browser-blocked`, coalesced onto one toast per tab so ten blocked frames read as one line and a count. `about:`/`blob:` are allowed as page-internal — refusing them would break working sites rather than stop anything. The address bar runs the same rule in TS so it refuses before it sends; both halves carry the same case table in their tests. |
 | **Compare tabs' own diff-mode and whitespace controls** | Row 6's decision: per-tab controls, not a shared global toggle, because `ignoreWhitespace` sits in the diff resource's key — a global flip would refetch every open compare tab at once behind the same per-repo git mutex CMP-F10 bounds. The premise the decision assumed — that per-tab state already existed — did not hold: `CompareTab` had no `diffMode`/`ignoreWhitespace` fields at all, and the tab was silently reading the *global* prefs the working-tree toolbar owns, meaning every open compare tab already refetched together on that toolbar's toggle. Both fields are now genuinely per-tab, optional and `undefined` at default so an untouched tab's persisted blob does not grow. |
 
 **One live caveat carried forward.** BR-F1's fix — `browser_focus_host`, which
@@ -155,6 +152,14 @@ gives the host webview the keyboard back — is still confidence *reading*, not
 wiring is tested; what is not is that OS focus was the user-visible cause. Note
 that **BR-N6 is a second, independent cause of the same complaint**, so a
 symptom that survives one fix does not indict it.
+
+**And one shaped the same way as BR-F1's.** The URL policy's *rule* is proven
+twice over — the same case table in Rust and in TypeScript, boundary by
+boundary. That `on_navigation` returning `false` actually stops a real child
+webview is **read from the pinned API, not executed**: it needs an OS-level
+native view and a page trying to navigate, which no harness here can host. The
+refusal *event* is driven in `BrowserPane.test.tsx`, so what a user sees when a
+frame is blocked is covered; what is not is that the frame was blocked.
 
 **And one that matters more.** Fan-out durability's whole point — survival
 across an OS-level app restart — is **not covered by any test**. An in-memory
@@ -197,6 +202,16 @@ cost more to reach than it looks.
   banner gets the platform's own sound, which respects Do Not Disturb; a `rodio`
   cue plays only where there is no banner. Double-sounding is impossible by
   construction.
+- **The address bar does not reach a search engine.** Unparseable input is
+  classified and refused with a toast; nothing is sent to Rust and no engine is
+  contacted. A git workbench sending keystrokes to a search box is a product
+  posture, and the posture is no. (BR-N3, answered 2026-08-01)
+- **An ordinary agent turn writes no `agent.turn.*` record.** Answered
+  2026-08-01, and the consequence is accepted rather than overlooked: the
+  notification defaults, the check-in model and the trigger rules keep reading a
+  kind nothing writes, and a finished agent-panel turn stays un-attributable on
+  the diff once it is over. Emitting it would start firing a default banner,
+  which is a change to what the app *does*.
 - **The project brain is per-repo and app-owned**, under `.voidlink/brain`. It
   shares the six type names with the `brain` CLI and no code, no config and no
   vault.

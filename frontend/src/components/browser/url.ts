@@ -86,6 +86,110 @@ export function normalizeUrl(input: string): string {
   return `${isPrivateHost(hostOf(trimmed)) ? "http" : "https"}://${trimmed}`;
 }
 
+/// Why a URL was refused. Two reasons because they are two different mistakes,
+/// and only the second is one the user can act on by picking something else.
+export type Refusal = "scheme" | "file-type";
+
+/// Extensions a `file://` URL may carry — **the mirror of
+/// `RENDERABLE_FILE_EXTENSIONS` in `src-tauri/src/browser/mod.rs`.**
+///
+/// The rule is enforced in Rust, at the navigation hook, because that is the
+/// only point every frame a page loads passes through. This copy exists so the
+/// address bar *agrees* with it: without it the bar would happily accept
+/// `file:///Users/me/id_rsa`, send it, and the hook would cancel it silently —
+/// a bar that takes an address and then does nothing is the freeze the whole
+/// policy is written to avoid. It is a duplicate because the enforcement point
+/// is in another language, not because the rule has two owners.
+///
+/// HTML, plain text and PDF, per the decision. Images are absent on purpose:
+/// they are none of the three, and `svg` is a script carrier wearing a
+/// picture's extension.
+const RENDERABLE_FILE_EXTENSIONS = new Set([
+  "html",
+  "htm",
+  "xhtml",
+  "txt",
+  "text",
+  "log",
+  "md",
+  "markdown",
+  "csv",
+  "tsv",
+  "json",
+  "xml",
+  "yaml",
+  "yml",
+  "toml",
+  "pdf",
+]);
+
+/// Whether a browser tab may go to `url`, and why not if it may not. `null`
+/// means allowed.
+///
+/// Keep in step with `navigation_refusal` in `src-tauri/src/browser/mod.rs`;
+/// the same case table is asserted on both sides for exactly that reason.
+///
+/// - `http`, `https` — the web.
+/// - `file` — only a document the tab can render. The child webview holds no
+///   capability, so this was never a route to an app command; it was an
+///   unrestricted local file reader that any page could aim.
+/// - `about`, `blob` — allowed. Neither reaches outside the document that made
+///   it, and both are how ordinary pages build frames. Refusing them would
+///   break working sites rather than stop anything.
+/// - everything else — refused, `data:` included: it renders attacker-authored
+///   HTML under an address nobody can read, in a tab that has an address bar.
+///
+/// A malformed URL is *not* this function's problem — `readAddress` classifies
+/// that as `not-an-address` before it gets here.
+export function navigationRefusal(url: string): Refusal | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  switch (parsed.protocol) {
+    case "http:":
+    case "https:":
+    case "about:":
+    case "blob:":
+      return null;
+    case "file:":
+      return fileRefusal(parsed.pathname);
+    default:
+      return "scheme";
+  }
+}
+
+/// `pathname` rather than the whole URL: a query string or a fragment is not
+/// part of the path, so `a.html?v=2` must stay allowed and `secret.key?x=.html`
+/// must stay refused. Percent-encoding is deliberately not decoded, so an
+/// encoded dot makes the rule stricter and never looser.
+function fileRefusal(pathname: string): Refusal | null {
+  // A trailing slash names a directory, and a listing is none of the three
+  // allowed types. A directory reached *without* the slash falls into the
+  // no-extension case below and is refused there — the two agree, which is why
+  // this never has to ask the filesystem what a path actually is.
+  if (!pathname || pathname.endsWith("/")) return "file-type";
+  const name = pathname.slice(pathname.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  // `dot < 1` covers both "no extension" and a dotfile literally named `.html`,
+  // which is a dotfile and not an HTML document.
+  if (dot < 1) return "file-type";
+  return RENDERABLE_FILE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())
+    ? null
+    : "file-type";
+}
+
+/// The sentence a refusal is reported with, written once so the toast raised by
+/// a blocked *frame* and the toast raised by the *address bar* say the same
+/// thing. Mirrors `refusal_reason` in the Rust module.
+export function refusalMessage(url: string, reason: Refusal): string {
+  return reason === "scheme"
+    ? `Blocked ${url} — a browser tab only opens web pages and local files`
+    : `Blocked ${url} — a local file has to be a web page, a text file or a PDF`;
+}
+
 /// What the address bar made of what the user typed.
 ///
 /// `normalizeUrl` alone cannot say "that is not an address": it prefixes a
@@ -100,10 +204,18 @@ export function normalizeUrl(input: string): string {
 /// should send them anywhere at all, is a product decision. Classifying is not:
 /// it is right under either answer, and saying "that is not an address" beats
 /// showing a parser error under both.
+///
+/// **`refused` is the address bar agreeing with the navigation policy.** The
+/// policy is enforced in Rust, at the hook every frame passes through, and that
+/// hook cancels *silently*. So a URL the hook will drop must never be sent:
+/// the user would type an address, press Enter, and watch nothing happen. It is
+/// classified here instead and refused with the reason, before anything is
+/// dispatched.
 export type Address =
   | { kind: "empty" }
   | { kind: "url"; url: string }
-  | { kind: "not-an-address"; input: string };
+  | { kind: "not-an-address"; input: string }
+  | { kind: "refused"; url: string; reason: Refusal };
 
 export function readAddress(input: string): Address {
   const trimmed = input.trim();
@@ -117,6 +229,8 @@ export function readAddress(input: string): Address {
   } catch {
     return { kind: "not-an-address", input: trimmed };
   }
+  const reason = navigationRefusal(url);
+  if (reason) return { kind: "refused", url, reason };
   return { kind: "url", url };
 }
 
