@@ -47,12 +47,22 @@ export interface BrowserNavigated {
   canGoForward: boolean;
 }
 
-/// A tab has *started* going somewhere. `on_page_load` only fires when the page
-/// arrives, so without this the address bar showed the page being left for the
-/// whole of every load and nothing on screen said a load was happening.
+/// A tab has *asked* to go somewhere, or its document has *committed*. Same
+/// shape, two events, and the difference between them is load-bearing.
 ///
-/// No traversal flags: the history has not folded this load in yet, and
-/// provisional flags would flicker the buttons against a stack that has not
+/// `onNavigating` fires when the request goes out, before DNS. `onCommitted`
+/// fires when a server has answered and bytes are arriving. A load that
+/// produces the first and never the second failed to reach anything — which is
+/// as close to a failure signal as the engine gets, because neither wry nor
+/// Tauri exposes one. See the Rust module header for the measurement.
+///
+/// **Only `onCommitted` is main-frame-only.** wry's macOS navigation policy
+/// does not check `isMainFrame`, so `onNavigating` also fires for every iframe
+/// the page loads. Nothing that names the *tab* — the address bar, the tab
+/// title — may be driven from it, or an ad frame renames the tab.
+///
+/// No traversal flags on either: the history has not folded the load in yet,
+/// and provisional flags would flicker the buttons against a stack that has not
 /// moved.
 export interface BrowserNavigating {
   tabId: string;
@@ -66,6 +76,7 @@ export interface BrowserTitleChanged {
 
 const NAVIGATED_EVENT = "voidlink://browser-navigated";
 const NAVIGATING_EVENT = "voidlink://browser-navigating";
+const COMMITTED_EVENT = "voidlink://browser-committed";
 const TITLE_EVENT = "voidlink://browser-title";
 
 /// Floor every dimension at one logical pixel — a zero-sized webview is a
@@ -147,8 +158,15 @@ export const browserApi = {
     return listen<BrowserNavigated>(NAVIGATED_EVENT, (e) => handler(e.payload));
   },
 
+  /// A load has been requested. Fires for subframes too — see the type.
   onNavigating(handler: (e: BrowserNavigating) => void): Promise<UnlistenFn> {
     return listen<BrowserNavigating>(NAVIGATING_EVENT, (e) => handler(e.payload));
+  },
+
+  /// The page's own document has committed. Main-frame only, so this is the
+  /// earliest event that may be trusted to name the tab.
+  onCommitted(handler: (e: BrowserNavigating) => void): Promise<UnlistenFn> {
+    return listen<BrowserNavigating>(COMMITTED_EVENT, (e) => handler(e.payload));
   },
 
   onTitleChanged(handler: (e: BrowserTitleChanged) => void): Promise<UnlistenFn> {

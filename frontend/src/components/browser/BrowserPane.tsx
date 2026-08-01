@@ -4,9 +4,21 @@ import { browserApi, type WebviewRect } from "@/api/webview";
 import { isOverlayOpen } from "@/commands/overlay";
 import { pushToast } from "@/commands/toast";
 import type { BrowserTab } from "@/store/layout";
-import { normalizeUrl } from "@/components/browser/url";
+import { readAddress } from "@/components/browser/url";
 
 export { browserTabLabel, normalizeUrl } from "@/components/browser/url";
+
+/// How far a load has got, as far as the engine will say.
+///
+/// Three states rather than a boolean because the middle one is the only thing
+/// the pinned engine can tell you about a load that is going wrong. There is no
+/// load-failure event at any layer (measured against wry 0.55.1 — see the Rust
+/// module header), so a DNS failure, a refused connection or a bad certificate
+/// looks exactly like a slow page: a spinner that never stops. `connecting`
+/// separates the two honestly, without a timeout that would lie about a slow
+/// page: a load stuck here has not reached a server, and one stuck at `loading`
+/// has, and is simply big or slow.
+type LoadPhase = "idle" | "connecting" | "loading";
 
 /// The scale ladder, matching what a browser's own zoom does. A ladder rather
 /// than a multiplier so the steps are reproducible and 100% is always exactly
@@ -53,7 +65,8 @@ export function BrowserPane(props: {
   const [address, setAddress] = createSignal(props.tab.url);
   const [canGoBack, setCanGoBack] = createSignal(false);
   const [canGoForward, setCanGoForward] = createSignal(false);
-  const [loading, setLoading] = createSignal(false);
+  const [phase, setPhase] = createSignal<LoadPhase>("idle");
+  const loading = () => phase() !== "idle";
   const [devtoolsOpen, setDevtoolsOpen] = createSignal(false);
   const [zoom, setZoom] = createSignal(props.tab.zoom ?? 1);
   const [rect, setRect] = createSignal<WebviewRect>({ x: 0, y: 0, width: 1, height: 1 });
@@ -104,18 +117,28 @@ export function BrowserPane(props: {
 
     // Every tab hears every tab's events, so each one filters by id.
     const unlisteners: Promise<() => void>[] = [
+      // Deliberately does *not* touch the address bar. wry's macOS navigation
+      // policy never checks `isMainFrame`, so this fires for every iframe the
+      // page loads — driving the address off it would show an ad frame's URL
+      // as the tab's address. All it may be trusted for is "something is in
+      // flight", and it is the only event that fires before DNS.
       browserApi.onNavigating((e) => {
         if (e.tabId !== tabId) return;
-        setLoading(true);
-        // The address bar's job during a load is to name where you are going,
-        // not where you were. Same focus rule as below: the input belongs to
-        // whoever is typing in it.
+        if (phase() === "idle") setPhase("connecting");
+      }),
+      // The page's own document committed: main-frame only, and the earliest
+      // event that may name the tab. The address bar's job during a load is to
+      // say where you are going, not where you were. Same focus rule as below:
+      // the input belongs to whoever is typing in it.
+      browserApi.onCommitted((e) => {
+        if (e.tabId !== tabId) return;
+        setPhase("loading");
         if (!addressHasFocus()) setAddress(e.url);
       }),
       browserApi.onNavigated((e) => {
         if (e.tabId !== tabId) return;
         setError(null);
-        setLoading(false);
+        setPhase("idle");
         setCanGoBack(e.canGoBack);
         setCanGoForward(e.canGoForward);
         // Don't yank the address out from under someone mid-type. The input
@@ -228,12 +251,38 @@ export function BrowserPane(props: {
     });
   }
 
-  async function navigate(url: string) {
-    const normalized = normalizeUrl(url);
-    if (!normalized) return;
+  async function navigate(input: string) {
+    const address = readAddress(input);
+    if (address.kind === "empty") return;
+    if (address.kind === "not-an-address") {
+      // Used to be prefixed with `https://` regardless and sent to Rust, where
+      // it failed `Url::parse` and came back as a red toast naming a parser
+      // error — a message that reads like a bug in the app rather than a typo.
+      // Nothing is sent; the page on screen is left alone.
+      //
+      // A search engine would go here. Which one, and whether a git workbench
+      // should send keystrokes to one at all, is an open product decision, and
+      // guessing it inside an audit fix is how a browser ends up quietly
+      // shipping a default search provider.
+      //
+      // A toast rather than the error state: the error state hides the webview
+      // and replaces it with a retry screen, and throwing away the page the
+      // user was reading because they mistyped into the bar above it is a much
+      // larger punishment than the mistake.
+      pushToast(`"${address.input}" is not an address`, "error", 6000);
+      return;
+    }
+    const normalized = address.url;
     // The old title describes the page we're leaving. Cleared here rather than
     // on the navigated event, because the new page's title arrives *during*
     // its load — clearing on arrival would wipe the title we just received.
+    //
+    // Nor may it move to the navigating event, which is the obvious-looking
+    // fix for the title surviving a *link* click: that event fires for every
+    // iframe on macOS, so the tab would be renamed to nothing by any page with
+    // an ad frame in it. The link-click case is still open; it needs a
+    // main-frame-only start event, which is what `onCommitted` now is, and a
+    // decision about whether a blank tab label mid-load beats a stale one.
     props.onTitleChange("");
     try {
       if (ready()) {
@@ -302,10 +351,23 @@ export function BrowserPane(props: {
         </button>
         {/* One control, two states. A separate spinner would mean the strip
             reflowing every time a page starts loading, and the thing you reach
-            for to stop waiting is the same thing you reach for to try again. */}
+            for to stop waiting is the same thing you reach for to try again.
+
+            The load *phase* rides in the tooltip rather than in the strip: a
+            load that never leaves "Connecting" is one that never reached a
+            server, which is the only thing this engine can say about a
+            failure, and it is worth being able to find out — but not worth a
+            permanent piece of chrome that reads "Loading" for a quarter of a
+            second. */}
         <button
           onClick={guarded(() => browserApi.reload(tabId), "Reload failed")}
-          title={loading() ? "Loading…" : "Reload"}
+          title={
+            phase() === "connecting"
+              ? "Connecting…"
+              : phase() === "loading"
+                ? "Loading…"
+                : "Reload"
+          }
           aria-label="Reload page"
           aria-busy={loading()}
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40"

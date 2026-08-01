@@ -17,6 +17,7 @@ import type { BrowserTab } from "@/store/layout";
 import { BrowserPane } from "./BrowserPane";
 
 const NAVIGATING = "voidlink://browser-navigating";
+const COMMITTED = "voidlink://browser-committed";
 const NAVIGATED = "voidlink://browser-navigated";
 
 function tab(partial: Partial<BrowserTab> = {}): BrowserTab {
@@ -110,13 +111,48 @@ describe("the address bar and the page's focus", () => {
       url: "http://localhost:5173",
     });
   });
+
+  /// A dev server on the LAN is the same case as one on this machine, and used
+  /// to be handed an `https://` it could not answer.
+  it("does not assume TLS for a dev server on the network", async () => {
+    const user = userEvent.setup();
+    await mountPane();
+
+    const input = screen.getByLabelText("Address");
+    await user.clear(input);
+    await user.type(input, "192.168.1.5:3000{Enter}");
+
+    await waitFor(() => expect(tauriCalls("browser_navigate")).toHaveLength(1));
+    expect(lastInvokeArgs("browser_navigate")).toMatchObject({
+      url: "http://192.168.1.5:3000",
+    });
+  });
+
+  /// Anything without a scheme used to be prefixed with `https://` and sent to
+  /// Rust regardless, where a phrase failed `Url::parse` and came back as a red
+  /// toast naming a parser error. Nothing is sent now, and — deliberately — no
+  /// search engine is reached for either.
+  it("refuses to send a phrase to the engine, and leaves the page alone", async () => {
+    const user = userEvent.setup();
+    await mountPane();
+
+    const input = screen.getByLabelText("Address");
+    await user.clear(input);
+    await user.type(input, "git rebase onto{Enter}");
+
+    await Promise.resolve();
+    expect(tauriCalls("browser_navigate")).toHaveLength(0);
+    // The error state hides the webview; a typo must not cost the user the
+    // page they were reading.
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
 });
 
 describe("what the page reports", () => {
   it("shows where a load is going while it is still in flight", async () => {
     await mountPane();
 
-    emitTauriEvent(NAVIGATING, { tabId: "tab-1", url: "https://next.test/page" });
+    emitTauriEvent(COMMITTED, { tabId: "tab-1", url: "https://next.test/page" });
 
     await waitFor(() =>
       expect(screen.getByLabelText("Address")).toHaveValue("https://next.test/page"),
@@ -126,10 +162,43 @@ describe("what the page reports", () => {
     expect(screen.getByLabelText("Reload page")).toHaveAttribute("aria-busy", "true");
   });
 
+  /// The two mid-flight events say different things and only one of them is
+  /// main-frame-only. wry's macOS navigation policy never checks
+  /// `isMainFrame`, so the navigating event fires for every iframe a page
+  /// loads — a bar driven off it shows an ad frame's URL as the tab's address.
+  it("does not let a subframe's navigation rename the address", async () => {
+    await mountPane();
+
+    emitTauriEvent(NAVIGATING, { tabId: "tab-1", url: "https://ads.test/frame" });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Reload page")).toHaveAttribute("aria-busy", "true"),
+    );
+    expect(screen.getByLabelText("Address")).toHaveValue("https://example.com/");
+  });
+
+  /// The engine has no load-failure event at any layer, so a load that fails
+  /// at DNS or connect is indistinguishable from a slow one by its spinner
+  /// alone. The commit is the dividing line: reached before it, no server has
+  /// answered; reached after, one has.
+  it("distinguishes a load that has not reached a server from one that has", async () => {
+    await mountPane();
+
+    emitTauriEvent(NAVIGATING, { tabId: "tab-1", url: "https://slow.test/" });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Reload page")).toHaveAttribute("title", "Connecting…"),
+    );
+
+    emitTauriEvent(COMMITTED, { tabId: "tab-1", url: "https://slow.test/" });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Reload page")).toHaveAttribute("title", "Loading…"),
+    );
+  });
+
   it("stops reporting a load once the page settles", async () => {
     await mountPane();
 
-    emitTauriEvent(NAVIGATING, { tabId: "tab-1", url: "https://next.test/page" });
+    emitTauriEvent(COMMITTED, { tabId: "tab-1", url: "https://next.test/page" });
     await waitFor(() =>
       expect(screen.getByLabelText("Reload page")).toHaveAttribute("aria-busy", "true"),
     );
@@ -144,6 +213,7 @@ describe("what the page reports", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("Reload page")).toHaveAttribute("aria-busy", "false"),
     );
+    expect(screen.getByLabelText("Reload page")).toHaveAttribute("title", "Reload");
     expect(screen.getByLabelText("Back")).toBeEnabled();
     expect(screen.getByLabelText("Forward")).toBeDisabled();
   });

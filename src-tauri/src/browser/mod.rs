@@ -26,6 +26,30 @@
 //!   back/forward would otherwise mean evaluating `history.back()` inside an
 //!   untrusted remote document. We keep a URL stack instead and navigate to
 //!   entries, so no script of ours ever enters the page.
+//!
+//! One thing this module cannot do, established by reading the pinned
+//! dependency rather than inferred, because every "obvious" fix for it is a
+//! guess dressed up as an event:
+//!
+//! **There is no load-failure signal, at any layer.** `PageLoadEvent` has two
+//! variants, `Started` and `Finished`, and wry 0.55.1 never synthesises a third
+//! from what the platform tells it. On macOS its `WKNavigationDelegate`
+//! (`wkwebview/class/wry_navigation_delegate.rs`) implements
+//! `didCommitNavigation` and `didFinishNavigation` and simply does not
+//! implement `didFailProvisionalNavigation`. On Linux the `load-changed` match
+//! sends `LoadEvent::Failed` to a `_ => ()` arm. On Windows it is worse than
+//! absent: `NavigationCompleted` fires for failures too, and wry maps it to
+//! `Finished` without consulting the event's `IsSuccess`, so a refused
+//! connection arrives here indistinguishable from a page that loaded.
+//!
+//! So a DNS failure, a refused connection or a bad certificate produces
+//! [`NAVIGATING_EVENT`], then nothing, forever. What this module emits instead
+//! is the *commit* — [`COMMITTED_EVENT`], from `PageLoadEvent::Started`, which
+//! was being discarded — so a load that never reached a server is at least
+//! distinguishable from one that is merely slow. Deciding that a load has
+//! *failed* still needs either a timeout (which lies about a slow page) or
+//! polling `url()` (a poll where an event belongs); neither is here, and
+//! neither should be added without measuring a real failure first.
 
 use std::sync::Arc;
 
@@ -41,6 +65,7 @@ const LABEL_PREFIX: &str = "voidlink-browser-";
 
 const NAVIGATED_EVENT: &str = "voidlink://browser-navigated";
 const NAVIGATING_EVENT: &str = "voidlink://browser-navigating";
+const COMMITTED_EVENT: &str = "voidlink://browser-committed";
 const TITLE_EVENT: &str = "voidlink://browser-title";
 
 fn label_for(tab_id: &str) -> String {
@@ -119,6 +144,22 @@ impl History {
         self.cursor + 1 < self.entries.len()
     }
 
+    /// Point the current entry at where the page actually ended up.
+    ///
+    /// Used when a traversal lands somewhere other than the entry it asked for
+    /// — a Back to a URL that redirects. Pushing instead would truncate every
+    /// forward entry, so Forward would stop working because a page you went
+    /// *back* to moved; overwriting keeps the stack describing what is on
+    /// screen and leaves the rest of it reachable.
+    fn replace_current(&mut self, url: &str) {
+        if let Some(entry) = self.entries.get_mut(self.cursor) {
+            entry.clear();
+            entry.push_str(url);
+        } else {
+            self.push(url);
+        }
+    }
+
     #[cfg(test)]
     fn current(&self) -> Option<&str> {
         self.entries.get(self.cursor).map(String::as_str)
@@ -127,15 +168,89 @@ impl History {
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
+/// How many outstanding traversals one tab remembers.
+///
+/// A traversal that never produces a page load — wry does not always fire one
+/// for a navigation to a URL the webview considers it is already on — would
+/// otherwise sit in the queue forever, and the next *genuine* navigation would
+/// be mistaken for its late arrival and swallowed. Held-down Back is the only
+/// thing that fills this at all, so anything past a couple of dozen is already
+/// a queue that lost track and is better dropped than trusted.
+const MAX_PENDING_TRAVERSALS: usize = 32;
+
 pub(crate) struct TabState {
     label: String,
     history: History,
-    /// Set while a back/forward-issued navigation is in flight.
+    /// The URLs back/forward asked for, in the order they were asked for,
+    /// each held until the page load it causes settles.
     ///
-    /// Without it the page load that traversal *causes* would look identical to
-    /// a fresh navigation and get pushed, so Back would append the page you
-    /// just came from and the cursor could never reach the start of the stack.
-    traversing: bool,
+    /// A queue rather than the boolean this started as. The boolean was set by
+    /// every traversal and cleared by the first load to come back, so two
+    /// traversals inside one page load — a held-down Back, a keybinding repeat
+    /// — left the second load looking like a fresh navigation. Worse, a burst
+    /// that wry *coalesced* into one load left the flag set forever, and the
+    /// next address the user typed was then folded into history as if it had
+    /// been a traversal, so Back skipped it.
+    ///
+    /// Matching by URL rather than by count is what makes both cases decidable:
+    /// a load whose URL is somewhere in the queue is a traversal (and anything
+    /// queued ahead of it was superseded), and a load whose URL is in neither
+    /// the queue nor the future is a redirect off the traversal that is still
+    /// outstanding.
+    pending_traversals: std::collections::VecDeque<String>,
+}
+
+impl TabState {
+    fn new(label: String) -> Self {
+        Self {
+            label,
+            history: History::default(),
+            pending_traversals: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Record that a traversal to `url` has been issued.
+    fn expect_traversal(&mut self, url: &str) {
+        if self.pending_traversals.len() >= MAX_PENDING_TRAVERSALS {
+            self.pending_traversals.pop_front();
+        }
+        self.pending_traversals.push_back(url.to_string());
+    }
+
+    /// Undo [`Self::expect_traversal`] when the navigation it was recorded for
+    /// never got dispatched.
+    fn cancel_traversal(&mut self) {
+        self.pending_traversals.pop_back();
+    }
+
+    /// Fold a settled page load into this tab's history, answering the
+    /// traversal flags the frontend's buttons enable off.
+    ///
+    /// Pure, and separated from [`on_page_settled`] for exactly that reason:
+    /// the callback around it needs an `AppHandle` that no unit test in this
+    /// repo can build, and the decision it makes — push, ignore, or overwrite —
+    /// is the entire correctness of the back button.
+    fn settle(&mut self, url: &str) -> (bool, bool) {
+        match self.pending_traversals.iter().position(|u| u == url) {
+            // Our traversal landed. Anything queued ahead of it was superseded
+            // by a later Back before it ever loaded, so it is dropped too — the
+            // cursor already moved for all of them.
+            Some(index) => {
+                self.pending_traversals.drain(..=index);
+            }
+            // A load nobody asked for, while a traversal is still outstanding:
+            // the page we went back to redirected. The cursor is already on the
+            // entry that redirected, so point it at where the page ended up
+            // rather than pushing, which would discard everything ahead of it.
+            None if !self.pending_traversals.is_empty() => {
+                self.pending_traversals.pop_front();
+                self.history.replace_current(url);
+            }
+            // An ordinary navigation: typed, clicked, or redirected into.
+            None => self.history.push(url),
+        }
+        (self.history.can_go_back(), self.history.can_go_forward())
+    }
 }
 
 pub(crate) type BrowserStore = Arc<DashMap<String, TabState>>;
@@ -179,10 +294,17 @@ struct NavigatedPayload {
     can_go_forward: bool,
 }
 
-/// Emitted when a tab *starts* going somewhere, which the settled event cannot
-/// tell you: `on_page_load` only fires at the end, so between clicking a link
-/// and the page arriving the frontend had no idea anything was happening and
-/// the address bar still showed the page being left.
+/// The shape of both mid-flight events: a tab has *asked* to go somewhere
+/// ([`NAVIGATING_EVENT`]) and a tab's document has *committed*
+/// ([`COMMITTED_EVENT`]).
+///
+/// They are two events rather than one because the gap between them is the only
+/// thing this engine can tell you about a load that is going wrong. See the
+/// module header: a load that fails at DNS, connect or TLS produces the first
+/// and never the second, so "asked but never committed" is as close to a
+/// failure signal as the pinned dependency gets. A load that has committed and
+/// not finished is a slow page; a load that has not committed has not reached a
+/// server at all.
 ///
 /// Carries no traversal flags. They are only meaningful once the history has
 /// folded the load in, and sending a provisional pair would make the buttons
@@ -239,8 +361,24 @@ pub async fn browser_open<R: Runtime>(
         // the host window, and no Tauri IPC surface (it holds no capability).
         .disable_drag_drop_handler()
         // Fires when the page *asks* to go somewhere. Returning true always:
-        // this is an announcement, not a policy. A URL allowlist would belong
-        // here and deliberately is not one — see the audit.
+        // this is an announcement, not a policy.
+        //
+        // A URL policy — blocking `file://`, confining a tab to one origin —
+        // is one `return false` from possible here and deliberately is not
+        // one. It cannot be built as a mechanism first: an allow-everything
+        // policy object changes nothing, and the shape it would need depends
+        // entirely on the unanswered question (a global scheme allowlist? a
+        // per-tab origin confinement? a prompt?). Building the wrong one now
+        // would be harder to remove than to write.
+        //
+        // Two things the next person should know before writing it. wry's
+        // macOS navigation policy never checks `isMainFrame`, so this hook is
+        // *more* powerful than an address-bar filter: it sees every iframe a
+        // page loads, which is what a blocklist wants and is also why nothing
+        // that names the tab may be driven from the event it emits. And
+        // returning `false` cancels silently — the page simply does not move,
+        // with no error anywhere — so a policy that blocks needs its own way
+        // to say so or it will read as the app having frozen.
         .on_navigation(move |url| {
             let _ = nav_app.emit(
                 NAVIGATING_EVENT,
@@ -252,10 +390,23 @@ pub async fn browser_open<R: Runtime>(
             true
         })
         .on_page_load(move |_webview: tauri::Webview<R>, payload: PageLoadPayload<'_>| {
-            if !matches!(payload.event(), PageLoadEvent::Finished) {
-                return;
+            let url = payload.url().as_str();
+            match payload.event() {
+                // The document committed: a server answered and bytes are
+                // arriving. Nothing was listening for this before, and it is
+                // the only evidence the pinned engine offers that a load which
+                // has not finished is a load that has actually *begun*.
+                PageLoadEvent::Started => {
+                    let _ = load_app.emit(
+                        COMMITTED_EVENT,
+                        NavigatingPayload {
+                            tab_id: load_tab.clone(),
+                            url: url.to_string(),
+                        },
+                    );
+                }
+                PageLoadEvent::Finished => on_page_settled(&load_app, &load_tab, url),
             }
-            on_page_settled(&load_app, &load_tab, payload.url().as_str());
         })
         .on_document_title_changed(move |_webview, title| {
             let _ = title_app.emit(
@@ -271,14 +422,7 @@ pub async fn browser_open<R: Runtime>(
         .add_child(builder, rect.position(), rect.size())
         .map_err(|e| e.to_string())?;
 
-    store.insert(
-        tab_id,
-        TabState {
-            label,
-            history: History::default(),
-            traversing: false,
-        },
-    );
+    store.insert(tab_id, TabState::new(label));
     Ok(())
 }
 
@@ -295,13 +439,7 @@ fn on_page_settled<R: Runtime>(app: &AppHandle<R>, tab_id: &str, url: &str) {
         let Some(mut tab) = store.get_mut(tab_id) else {
             return;
         };
-        if tab.traversing {
-            // The cursor already moved when back()/forward() chose this URL.
-            tab.traversing = false;
-        } else {
-            tab.history.push(url);
-        }
-        (tab.history.can_go_back(), tab.history.can_go_forward())
+        tab.settle(url)
     };
 
     let _ = app.emit(
@@ -362,7 +500,7 @@ pub async fn browser_forward<R: Runtime>(
 /// Move the cursor and navigate to whatever it landed on.
 ///
 /// The cursor moves *before* the navigation so a page load racing back in can
-/// see `traversing` already set. If the navigation itself fails the move is
+/// already find the target queued. If the navigation itself fails the move is
 /// rolled back, otherwise the stack would silently drift from what is on
 /// screen.
 fn traverse<R: Runtime>(
@@ -383,21 +521,27 @@ fn traverse<R: Runtime>(
             // disabled, but a keyboard binding can still fire.
             None => return Ok(()),
             Some(url) => {
-                tab.traversing = true;
+                tab.expect_traversal(&url);
                 (tab.label.clone(), url)
             }
         }
     };
 
-    let parsed = url::Url::parse(&target).map_err(|e| e.to_string())?;
-    let result = app
-        .get_webview(&label)
-        .ok_or_else(|| "browser tab not found".to_string())
-        .and_then(|w| w.navigate(parsed).map_err(|e| e.to_string()));
+    // The parse is inside the result chain, not a `?` above it: every entry in
+    // the stack parsed once already, so a failure here is unreachable — but if
+    // it ever happened, an early return would leave the cursor moved and the
+    // traversal queued for a load that is never coming.
+    let result = url::Url::parse(&target)
+        .map_err(|e| e.to_string())
+        .and_then(|parsed| {
+            app.get_webview(&label)
+                .ok_or_else(|| "browser tab not found".to_string())
+                .and_then(|w| w.navigate(parsed).map_err(|e| e.to_string()))
+        });
 
     if result.is_err() {
         if let Some(mut tab) = store.get_mut(tab_id) {
-            tab.traversing = false;
+            tab.cancel_traversal();
             if backwards {
                 tab.history.forward();
             } else {
@@ -503,16 +647,38 @@ pub async fn browser_hide<R: Runtime>(
     Ok(())
 }
 
+/// Tear down a tab's webview. Closing a tab that is not open is **not** an
+/// error, and this is the decision rather than an oversight.
+///
+/// The audit asked whether the silent `Ok(())` for an unknown `tab_id` was a
+/// lie worth turning into an error. Every caller says no. There are three, all
+/// in `BrowserPane.tsx`, and all three discard the result on purpose because
+/// all three run during or after unmount, where there is no component left to
+/// show a message on and nothing a user could do about one:
+///
+/// 1. cleanup's close, which by design *expects* to find nothing — that is the
+///    whole shape of the open-still-in-flight race the `disposed` flag exists
+///    for, so an error here would report the normal path as a failure;
+/// 2. the in-flight `open` discovering the tab was closed under it;
+/// 3. the same discovery on `navigate`'s retry path.
+///
+/// So an error would change nothing observable and would misdescribe the one
+/// sequence this command exists to make safe. What *was* wrong is narrower and
+/// is fixed here: the close was gated on finding a store entry, so a webview
+/// whose entry had already been removed — a double close, anything the store
+/// lost track of — was left on screen compositing above the whole UI with
+/// nothing owning it. The label is derived from the tab id, so no lookup is
+/// needed to name it, and closing by label makes this idempotent in the
+/// direction that matters.
 #[tauri::command]
 pub async fn browser_close<R: Runtime>(
     tab_id: String,
     app: AppHandle<R>,
     store: tauri::State<'_, BrowserStore>,
 ) -> Result<(), String> {
-    if let Some((_, tab)) = store.remove(&tab_id) {
-        if let Some(webview) = app.get_webview(&tab.label) {
-            webview.close().map_err(|e| e.to_string())?;
-        }
+    store.remove(&tab_id);
+    if let Some(webview) = app.get_webview(&label_for(&tab_id)) {
+        webview.close().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -694,6 +860,133 @@ mod tests {
         assert_eq!(clamp_zoom(-3.0), 0.25);
         assert_eq!(clamp_zoom(99.0), 5.0);
         assert_eq!(clamp_zoom(f64::NAN), 1.0);
+    }
+
+    // ─── Settling a page load ────────────────────────────────────────────────
+    //
+    // `on_page_settled` needs an `AppHandle` no unit test in this repo can
+    // build, which is why this decision was moved onto `TabState` — the
+    // callback around it is three lines of plumbing and the decision inside it
+    // is the whole correctness of the back button.
+
+    /// Drive a tab the way the real one is driven: traversals are recorded when
+    /// issued, loads settle afterwards, in whatever order they arrive.
+    fn tab(urls: &[&str]) -> TabState {
+        let mut t = TabState::new("test".into());
+        for u in urls {
+            t.settle(u);
+        }
+        t
+    }
+
+    #[test]
+    fn an_ordinary_load_is_pushed() {
+        let mut t = tab(&["https://a.test/"]);
+        assert_eq!(t.settle("https://b.test/"), (true, false));
+        assert_eq!(t.history.current(), Some("https://b.test/"));
+    }
+
+    /// The traversal's own load must not be pushed, or Back would append the
+    /// page you just came from and the cursor could never reach the start.
+    #[test]
+    fn a_traversals_own_load_is_not_pushed() {
+        let mut t = tab(&["https://a.test/", "https://b.test/"]);
+        t.history.back();
+        t.expect_traversal("https://a.test/");
+        assert_eq!(t.settle("https://a.test/"), (false, true));
+        assert_eq!(t.history.entries.len(), 2);
+        assert_eq!(t.history.current(), Some("https://a.test/"));
+    }
+
+    /// BR-H3. Two traversals inside one page load — a held-down Back, a
+    /// keybinding repeat. The boolean this replaced was set twice and cleared
+    /// once, so the second load looked like a fresh navigation.
+    #[test]
+    fn a_burst_of_traversals_settles_without_disturbing_the_stack() {
+        let mut t = tab(&["https://a.test/", "https://b.test/", "https://c.test/"]);
+        t.history.back();
+        t.expect_traversal("https://b.test/");
+        t.history.back();
+        t.expect_traversal("https://a.test/");
+
+        t.settle("https://b.test/");
+        let flags = t.settle("https://a.test/");
+
+        assert_eq!(flags, (false, true));
+        assert_eq!(
+            t.history.entries,
+            vec!["https://a.test/", "https://b.test/", "https://c.test/"]
+        );
+        assert_eq!(t.history.current(), Some("https://a.test/"));
+        assert!(t.pending_traversals.is_empty());
+    }
+
+    /// The worse half of the same bug. wry does not promise one load per
+    /// `navigate`, so a burst can coalesce into a single load — and a queue
+    /// that only matched the front would then keep an entry forever and eat the
+    /// *next* address the user typed.
+    #[test]
+    fn a_coalesced_burst_drops_the_traversals_it_superseded() {
+        let mut t = tab(&["https://a.test/", "https://b.test/", "https://c.test/"]);
+        t.history.back();
+        t.expect_traversal("https://b.test/");
+        t.history.back();
+        t.expect_traversal("https://a.test/");
+
+        // Only the last one ever loads.
+        t.settle("https://a.test/");
+        assert!(t.pending_traversals.is_empty());
+
+        // The next real navigation must still be recorded.
+        t.settle("https://d.test/");
+        assert_eq!(t.history.current(), Some("https://d.test/"));
+        assert!(!t.history.can_go_forward());
+    }
+
+    /// Going back to a page that redirects. Pushing would discard everything
+    /// ahead of the cursor, so Forward would stop working because a page you
+    /// went *back* to moved.
+    #[test]
+    fn a_traversal_that_redirects_moves_the_entry_rather_than_the_stack() {
+        let mut t = tab(&["https://a.test/", "https://b.test/", "https://c.test/"]);
+        t.history.back();
+        t.history.back();
+        t.expect_traversal("https://a.test/");
+
+        let flags = t.settle("https://a.test/moved");
+
+        assert_eq!(flags, (false, true));
+        assert_eq!(
+            t.history.entries,
+            vec!["https://a.test/moved", "https://b.test/", "https://c.test/"]
+        );
+        assert!(t.pending_traversals.is_empty());
+    }
+
+    /// A traversal whose navigation never got dispatched must not leave the
+    /// queue expecting a load that is not coming.
+    #[test]
+    fn a_cancelled_traversal_leaves_nothing_outstanding() {
+        let mut t = tab(&["https://a.test/", "https://b.test/"]);
+        t.expect_traversal("https://a.test/");
+        t.cancel_traversal();
+        assert!(t.pending_traversals.is_empty());
+
+        t.settle("https://c.test/");
+        assert_eq!(t.history.current(), Some("https://c.test/"));
+    }
+
+    /// Held-down Back against a tab whose loads never arrive. The queue is a
+    /// bound, not a log: past the cap it has already lost track, and an
+    /// unbounded one would grow for as long as the key is held.
+    #[test]
+    fn the_traversal_queue_is_bounded() {
+        let mut t = TabState::new("test".into());
+        for i in 0..MAX_PENDING_TRAVERSALS + 10 {
+            t.expect_traversal(&format!("https://{i}.test/"));
+        }
+        assert_eq!(t.pending_traversals.len(), MAX_PENDING_TRAVERSALS);
+        assert_eq!(t.pending_traversals.front().unwrap(), "https://10.test/");
     }
 
     #[test]

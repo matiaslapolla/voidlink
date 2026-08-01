@@ -457,6 +457,47 @@ painting over a dialog with no obvious culprit.
 
 ---
 
+## Deferred findings, worked — 2026-07-31, later the same day
+
+A follow-up pass took the deferred rows above. What changed, and what the
+changes prove.
+
+| Finding | Outcome | Confidence after |
+|---|---|---|
+| BR-L2 | **Fixed, and the ambiguity decided against making it an error.** All three callers are in `BrowserPane.tsx`, all three discard the result, and all three run during or after unmount where there is nothing to show a message on — one of them (cleanup's close) *expects* to find nothing, because that is the shape of the BR-L1 race the `disposed` flag exists for. Erroring would report the normal path as a failure and change nothing observable. The real defect was narrower and is fixed: the close was gated on finding a store entry, so a webview whose entry had already gone was left compositing above the UI with nothing owning it. It now closes by derived label, which is idempotent in the direction that matters. The decision is written into the command's doc comment. | reading |
+| BR-N2 residue | **Not fixable in this dependency; measured rather than argued, and partially mitigated.** `PageLoadEvent` has two variants and wry 0.55.1 synthesises no third — on macOS `WryNavigationDelegate` implements `didCommitNavigation`/`didFinishNavigation` and *not* `didFailProvisionalNavigation`; on Linux `LoadEvent::Failed` reaches a `_ => ()` arm; on Windows a failed `NavigationCompleted` is mapped to `Finished` without consulting `IsSuccess`, so failures arrive indistinguishable from successes. The third option found was the `PageLoadEvent::Started` the module was discarding: it now emits `voidlink://browser-committed`, which splits "never reached a server" from "slow page" using a real event and no timeout. Declaring failure still needs the timeout or the poll, and still should not ship unmeasured. | proven (the API surface); reading (the user-visible effect) |
+| BR-N3 | **Mechanism shipped, policy still open.** `readAddress` classifies input into `url` / `empty` / `not-an-address`, so a typed phrase is refused with "that is not an address" instead of being prefixed with `https://`, sent to Rust and returned as a parser error. It is refused with a toast rather than the error state, because the error state hides the webview and a typo should not cost the page you were reading. No search engine is reached for. | proven |
+| BR-N4 | **Fixed as a rule with its own tests.** `isPrivateHost` covers loopback (the whole `127/8`, `::1`, `0.0.0.0`), RFC 1918, IPv4 link-local, IPv6 unique- and link-local, `*.localhost` and `*.local`. Carrier-grade NAT and `.internal` are deliberately left public — both terminate TLS in the networks that use them. Tested at every boundary, including `172.15`/`172.16`/`172.31`/`172.32`. | proven |
+| BR-N5 | **Decided against, on evidence the audit did not have.** The comment in `navigate()` argues only against clearing on the *navigated* event, so it did not by itself forbid clearing on *navigating* — but the navigating event turns out not to be main-frame-scoped (see BR-N6), so hanging the title clear off it would blank the tab label on every page with an iframe. The ordering stands. The link-click case remains open and now has a main-frame-only event (`browser-committed`) to attach to, plus an unanswered question: is a blank tab label mid-load better than a stale one? | reading |
+| BR-H3 | **Fixed; the harness turned out to be cheap.** The decision was moved off the callback and onto `TabState::settle`, which is pure and needs no `AppHandle` — the callback around it is three lines of plumbing. `traversing: bool` became a URL-matched queue. Five tests: a traversal's own load, a burst of two, a burst wry coalesced into one, a traversal that redirects, and a cancelled traversal. The coalesced case was worse than the audit stated — the flag was left set *forever*, so the next address typed was folded in as if it had been a traversal. | proven |
+| BR-S3 | **Blocked on the product call; mechanism deliberately not built.** An allow-everything policy object changes nothing, and its shape depends entirely on the unanswered question. What was added instead is the knowledge the next person needs, at the hook: it sees subframes (so it is stronger than an address-bar filter), and `false` cancels *silently*, so a blocking policy needs its own way to say so or it reads as a freeze. | reading |
+
+### BR-N6 — new
+
+**`voidlink://browser-navigating` fires for subframes, so an iframe could rename
+the tab's address.** Severity **medium**. Confidence **proven** for the cause
+(read in `wry-0.55.1/src/wkwebview/navigation.rs`), **reading** for the
+user-visible effect.
+
+Found while measuring BR-N2. wry's macOS `navigation_policy` never consults
+`action.targetFrame().isMainFrame()`, so `on_navigation` — and therefore the
+event BR-N1 built on it — fires for every iframe a page loads. The address bar
+was driven off that event, so a page with an ad frame would show the ad frame's
+URL as the tab's address.
+
+Fixed by driving the address bar off `browser-committed` instead, which comes
+from `didCommitNavigation` and is main-frame-only. The navigating event keeps
+only the job it can do honestly: turning the spinner on, earlier than any
+main-frame event can.
+
+**One residue, reported and not fixed.** A subframe navigating on an
+already-settled page sets the spinner going and no main-frame event will arrive
+to clear it, so the spinner can stick. It is not made worse by this change — the
+same was true before it — and clearing it needs the same load-failure signal
+BR-N2 does not have.
+
+---
+
 ## Seams for the workbench
 
 The four tie-ins the brief named are not built. Each is recorded here with the
