@@ -119,6 +119,22 @@ export interface AgentTab {
 
 export type CompareTreeMode = "tree" | "flat";
 
+export const COMPARE_TREE_WIDTH_DEFAULT = 320;
+export const COMPARE_TREE_WIDTH_MIN = 220;
+export const COMPARE_TREE_WIDTH_MAX = 600;
+
+/// Every width goes through here, including the restored one.
+///
+/// Persisted layout is user-writable and survives a version of the app that
+/// wrote it differently, so a stored `0` or a `NaN` from a half-finished drag
+/// would otherwise come back as a tree pane the user cannot see or cannot
+/// shrink — with no control left on screen to fix it with.
+export function clampCompareTreeWidth(value: unknown): number {
+  const n = typeof value === "number" ? value : Number.NaN;
+  if (!Number.isFinite(n)) return COMPARE_TREE_WIDTH_DEFAULT;
+  return Math.min(COMPARE_TREE_WIDTH_MAX, Math.max(COMPARE_TREE_WIDTH_MIN, n));
+}
+
 export interface CompareTab {
   id: string;
   baseRef: string;
@@ -127,6 +143,14 @@ export interface CompareTab {
   selectedFilePath: string | null;
   treeMode: CompareTreeMode;
   treeFilter: string;
+  /// Width of the tree pane, in pixels.
+  ///
+  /// Per tab, like the mode and the filter beside it. It used to live in one
+  /// `localStorage` key shared by every compare tab in every window, so
+  /// widening the tree to read a deep vendored path also widened it in the tab
+  /// next door that was showing three root-level files — and the change only
+  /// appeared there after a reload, since nothing told the other tab.
+  treeWidth: number;
 }
 
 /// Persistent identifier for a stack tab. We don't cache the chain itself —
@@ -376,6 +400,7 @@ function deserializeCompare(raw: unknown): CompareTab | null {
     selectedFilePath: typeof raw.selectedFilePath === "string" ? raw.selectedFilePath : null,
     treeMode: raw.treeMode === "flat" ? "flat" : "tree",
     treeFilter: typeof raw.treeFilter === "string" ? raw.treeFilter : "",
+    treeWidth: clampCompareTreeWidth(raw.treeWidth),
   };
 }
 

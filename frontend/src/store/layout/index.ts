@@ -97,9 +97,11 @@ import {
 } from "./navigation";
 import {
   TAB_KINDS,
+  COMPARE_TREE_WIDTH_DEFAULT,
   TAB_KIND_GROUP_LABELS,
   TAB_SPECS,
   WORKBENCH_TAB_KINDS,
+  clampCompareTreeWidth,
   closedTabsEqual,
   deserializeClosedTab,
   deserializeTabRecord,
@@ -156,7 +158,15 @@ export type {
   TabKind,
   TabKindSpec,
 } from "./tabs";
-export { TAB_KINDS, TAB_SPECS, parseEditorTabs, samePath, serializeEditorTabs } from "./tabs";
+export {
+  COMPARE_TREE_WIDTH_MAX,
+  COMPARE_TREE_WIDTH_MIN,
+  TAB_KINDS,
+  TAB_SPECS,
+  parseEditorTabs,
+  samePath,
+  serializeEditorTabs,
+} from "./tabs";
 export type {
   DiffMode,
   GitSectionKey,
@@ -1014,6 +1024,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         selectedFilePath: null,
         treeMode: "tree",
         treeFilter: "",
+        treeWidth: COMPARE_TREE_WIDTH_DEFAULT,
       };
       setState(
         produce((s) => {
@@ -1169,6 +1180,19 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         produce((s) => {
           const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
           if (tab) tab.treeFilter = filter;
+        }),
+      );
+    },
+
+    /// Per tab, where the mode and the filter already were. One shared
+    /// `localStorage` key meant dragging the divider in one comparison moved
+    /// it in every other one — and only after a reload, since nothing told the
+    /// live tabs.
+    setCompareTreeWidth(wtId: string, tabId: string, width: number) {
+      setState(
+        produce((s) => {
+          const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+          if (tab) tab.treeWidth = clampCompareTreeWidth(width);
         }),
       );
     },
@@ -2227,6 +2251,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
             selectedFilePath: c.selectedFilePath,
             treeMode: c.treeMode,
             treeFilter: c.treeFilter,
+            treeWidth: COMPARE_TREE_WIDTH_DEFAULT,
           };
           s.compareTabsByWorktree[wtId].push(tab);
           idByKey.set(`compare:${c.baseRef}..${c.headRef}`, tab.id);

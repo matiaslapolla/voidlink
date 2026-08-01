@@ -44,13 +44,23 @@ interface DropdownItem {
 
 function classifyRef(value: string, refs: RefList | null): RefKind {
   if (!value) return "unknown";
-  if (refs) {
-    if (refs.branches.includes(value)) return "branch";
-    if (refs.tags.includes(value)) return "tag";
-    if (refs.recentCommits.some((c) => c.oid === value || c.shortOid === value))
-      return "commit";
+  /// The SHA heuristic only runs once the real answer is in.
+  ///
+  /// `deadbeef`, `accede`, `beaded`, `facade`, `decaf` — all legal branch
+  /// names, all matching `/^[0-9a-f]{7,40}$/`. The lookup below settles those
+  /// correctly, but the heuristic used to run even while `refs` was still
+  /// loading, so a branch named after a hex word opened as a commit dot and
+  /// then changed under the user a moment later. Nothing is claimed until
+  /// there is something to check against.
+  if (!refs) return "unknown";
+  if (refs.branches.includes(value)) return "branch";
+  if (refs.tags.includes(value)) return "tag";
+  if (
+    value === "HEAD" ||
+    refs.recentCommits.some((c) => c.oid === value || c.shortOid === value)
+  ) {
+    return "commit";
   }
-  // Heuristic for SHA-ish strings.
   if (/^[0-9a-f]{7,40}$/i.test(value)) return "commit";
   return "unknown";
 }
@@ -97,6 +107,23 @@ function buildItems(
   for (const t of refs.tags) {
     if (match(t)) out.push({ kind: "tag", label: t, value: t });
   }
+  /// First in the commits section, when there is one.
+  ///
+  /// A detached HEAD is the one position in a repository no ref names, so it
+  /// was unreachable from this picker entirely: mid-bisect, mid-rebase or
+  /// after checking out a tag, the commit the user was standing on could only
+  /// be compared by typing the word "HEAD" from memory. `HEAD` rather than the
+  /// oid as the value, because that is the name that keeps meaning "here" as
+  /// the bisect moves.
+  const head = refs.detachedHead;
+  if (head && (match("HEAD") || match(head.shortOid) || match(head.summary))) {
+    out.push({
+      kind: "commit",
+      label: "HEAD",
+      subtitle: `detached at ${head.shortOid} · ${head.summary}`,
+      value: "HEAD",
+    });
+  }
   for (const c of refs.recentCommits) {
     if (match(c.shortOid) || match(c.summary)) {
       out.push({
@@ -138,8 +165,23 @@ function iconFor(kind: RefKind) {
 
 export function RefPicker(props: Props) {
   const [open, setOpen] = createSignal(false);
-  const [query, setQuery] = createSignal("");
-  const [highlight, setHighlight] = createSignal(0);
+  /// What is in the box, which is not the same thing as what the list is
+  /// filtered by — see `query` below.
+  const [text, setText] = createSignal("");
+  const [edited, setEdited] = createSignal(false);
+  /// The filter, which stays empty until the user actually types.
+  ///
+  /// The box opens pre-filled with the current ref so it can be edited rather
+  /// than retyped, and filtering on that would have narrowed the dropdown to
+  /// the one ref already selected — turning the list the picker exists to
+  /// offer into a list of one.
+  const query = () => (edited() ? text() : "");
+  /// `-1` means "nothing highlighted yet", which is what a freshly opened
+  /// picker means. It used to open on `0`, so the first ArrowDown moved to
+  /// item *1* and item 0 could only be reached by wrapping all the way around
+  /// or by mouse. Enter with nothing highlighted commits the typed text, which
+  /// is the other half of the same correction.
+  const [highlight, setHighlight] = createSignal(-1);
   let containerRef: HTMLDivElement | undefined;
   let inputRef: HTMLInputElement | undefined;
 
@@ -161,12 +203,32 @@ export function RefPicker(props: Props) {
 
   function commitValue(value: string) {
     props.onChange(value);
-    setQuery("");
+    setText("");
+    setEdited(false);
+    setHighlight(-1);
     setOpen(false);
   }
 
+  /// Opens with the current ref already in the box, selected.
+  ///
+  /// It used to open empty, which made the common edit impossible to do by
+  /// typing: turning `origin/main` into `origin/main~3`, or fixing one
+  /// character of a long branch name, meant retyping the whole thing from
+  /// nothing. Selected rather than merely present, so the other common case —
+  /// replacing it outright — still costs one keystroke.
+  function openPicker() {
+    setOpen(true);
+    setText(props.value);
+    setEdited(false);
+    setHighlight(-1);
+    queueMicrotask(() => {
+      inputRef?.focus();
+      inputRef?.select();
+    });
+  }
+
   function commitFreeText() {
-    const trimmed = query().trim();
+    const trimmed = text().trim();
     if (trimmed) commitValue(trimmed);
     else setOpen(false);
   }
@@ -178,18 +240,28 @@ export function RefPicker(props: Props) {
       setHighlight((h) => Math.min(items().length - 1, h + 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setHighlight((h) => Math.max(0, h - 1));
+      // Down to `-1` rather than stopping at 0, so the way back out of the
+      // list is the same key that went in — otherwise the first item is a trap
+      // and Enter can no longer commit what was typed.
+      setHighlight((h) => Math.max(-1, h - 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
       const list = items();
-      if (open() && list.length > 0 && highlight() < list.length) {
+      if (open() && highlight() >= 0 && highlight() < list.length) {
         commitValue(list[highlight()].value);
       } else {
         commitFreeText();
       }
     } else if (e.key === "Escape") {
+      // Stopped, or the same keystroke that closes this dropdown also reaches
+      // whatever is behind it — closing the tab the user was mid-edit in.
+      // Escape here means "close the picker" and nothing else.
+      e.preventDefault();
+      e.stopPropagation();
       setOpen(false);
-      setQuery("");
+      setText("");
+      setEdited(false);
+      setHighlight(-1);
     }
   }
 
@@ -209,11 +281,15 @@ export function RefPicker(props: Props) {
       </label>
       <button
         type="button"
-        onClick={() => {
-          setOpen(true);
-          setQuery("");
-          setHighlight(0);
-          queueMicrotask(() => inputRef?.focus());
+        onClick={openPicker}
+        // The arrows only ever reached the search input, which does not exist
+        // until the picker is open — so on a closed picker they did nothing at
+        // all, and the keyboard route in was Enter or Space only.
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            openPicker();
+          }
         }}
         class={`flex items-center gap-1.5 w-full px-2 py-1 rounded-md border text-left text-[12px] transition-colors ${
           props.invalid
@@ -245,10 +321,11 @@ export function RefPicker(props: Props) {
         <div class="absolute z-30 left-0 right-0 mt-1 rounded-md border border-border bg-popover shadow-lg max-h-72 overflow-hidden flex flex-col">
           <input
             ref={inputRef}
-            value={query()}
+            value={text()}
             onInput={(e) => {
-              setQuery(e.currentTarget.value);
-              setHighlight(0);
+              setText(e.currentTarget.value);
+              setEdited(true);
+              setHighlight(-1);
             }}
             onKeyDown={onKeyDown}
             placeholder="Type a branch, tag, SHA, or HEAD~N…"
@@ -266,7 +343,7 @@ export function RefPicker(props: Props) {
                 when={items().length > 0}
                 fallback={
                   <div class="px-3 py-2 text-[11px] text-muted-foreground">
-                    No matches. Press Enter to use “{query()}” as a revision expression.
+                    No matches. Press Enter to use “{text()}” as a revision expression.
                   </div>
                 }
               >

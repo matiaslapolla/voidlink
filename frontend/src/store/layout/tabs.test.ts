@@ -42,6 +42,9 @@ const FIXTURES: { [K in TabKind]: TabTypes[K] } = {
     selectedFilePath: "/repo/src/b.ts",
     treeMode: "flat",
     treeFilter: "src/",
+    // Not the default, so a `serialize` that dropped the field would be caught
+    // rather than round-tripping by coincidence.
+    treeWidth: 420,
   },
   stack: { id: "s1", trunk: "main", topBranch: "feature-3" },
   conflict: { id: "x1", filePath: "/repo/src/c.ts" },
