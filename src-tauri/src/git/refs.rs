@@ -57,6 +57,14 @@ pub(crate) fn git_list_refs_impl(repo_path: String) -> Result<RefList, String> {
     // commits the user was standing on. Both pushes are attempted; both are
     // allowed to fail (an unborn HEAD has nothing to push and no history).
     walk.push_glob("refs/heads/*").ok();
+    // ...and remotes and tags, which used to be absent. A `git fetch` brings
+    // commits that exist only under `refs/remotes/*`, and those are exactly the
+    // ones a comparison is usually about — "what did upstream just land". They
+    // were unpickable by summary or short sha until someone created a local
+    // branch for them. Tags are the same story for a release the user never
+    // checked out.
+    walk.push_glob("refs/remotes/*").ok();
+    walk.push_glob("refs/tags/*").ok();
     walk.push_head().ok();
     for oid in walk.take(RECENT_COMMITS_LIMIT).flatten() {
         let Ok(commit) = repo.find_commit(oid) else { continue };
@@ -68,10 +76,26 @@ pub(crate) fn git_list_refs_impl(repo_path: String) -> Result<RefList, String> {
         });
     }
 
+    // Only when detached. On a branch, HEAD is a second name for something the
+    // branch list already offers, and duplicating it would just push a real
+    // choice off the top of the dropdown.
+    let detached_head = repo
+        .head()
+        .ok()
+        .filter(|h| !h.is_branch())
+        .and_then(|h| h.peel_to_commit().ok())
+        .map(|commit| RecentCommit {
+            oid: commit.id().to_string(),
+            short_oid: commit.id().to_string().chars().take(7).collect(),
+            summary: commit.summary().unwrap_or("").to_string(),
+            time: commit.time().seconds(),
+        });
+
     Ok(RefList {
         branches,
         tags,
         recent_commits,
+        detached_head,
     })
 }
 
@@ -119,6 +143,91 @@ mod tests {
         assert!(
             refs.recent_commits.iter().any(|c| c.oid == tip.to_string()),
             "the commit HEAD points at must be in the recent list"
+        );
+    }
+
+    /// CMP-F15. Being *on* a commit no ref names is an ordinary state — mid
+    /// bisect, mid rebase, or after checking out a tag — and the picker listed
+    /// only branches, so the position the user was standing on was the one
+    /// thing they could not pick.
+    #[test]
+    fn a_detached_head_is_offered_as_a_ref_of_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(tmp.path());
+        write_file(tmp.path(), "a.txt", "one\n");
+        let first = commit_all(&repo, "one");
+        write_file(tmp.path(), "a.txt", "two\n");
+        commit_all(&repo, "two");
+
+        assert!(
+            git_list_refs_impl(tmp.path().to_string_lossy().to_string())
+                .unwrap()
+                .detached_head
+                .is_none(),
+            "on a branch, HEAD is a duplicate of a name already listed"
+        );
+
+        repo.set_head_detached(first).unwrap();
+        let refs = git_list_refs_impl(tmp.path().to_string_lossy().to_string()).unwrap();
+        let head = refs.detached_head.expect("a detached HEAD must be offered");
+        assert_eq!(head.oid, first.to_string());
+        assert_eq!(head.summary, "one");
+    }
+
+    /// CMP-F16. The walk was seeded from `refs/heads/*` and HEAD only, so a
+    /// commit that arrived on `origin/main` a moment ago — the usual reason to
+    /// open a compare at all — could not be found by summary or short sha
+    /// until someone made a local branch for it.
+    #[test]
+    fn a_commit_only_a_remote_ref_names_is_still_offered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(tmp.path());
+        write_file(tmp.path(), "a.txt", "one\n");
+        let base = commit_all(&repo, "one");
+
+        // A commit reachable only from `refs/remotes/origin/main`, exactly as a
+        // fetch leaves one.
+        write_file(tmp.path(), "a.txt", "upstream\n");
+        let upstream = commit_all(&repo, "landed upstream");
+        repo.reference("refs/remotes/origin/main", upstream, true, "fetch")
+            .unwrap();
+        repo.set_head_detached(base).unwrap();
+        for (branch, _) in repo.branches(Some(BranchType::Local)).unwrap().flatten() {
+            let mut branch = branch;
+            branch.delete().unwrap();
+        }
+
+        let refs = git_list_refs_impl(tmp.path().to_string_lossy().to_string()).unwrap();
+        assert!(
+            refs.recent_commits
+                .iter()
+                .any(|c| c.oid == upstream.to_string()),
+            "a fetched commit with no local branch must still be pickable"
+        );
+    }
+
+    /// The tag half of the same finding: a release tag no branch reaches.
+    #[test]
+    fn a_commit_only_a_tag_names_is_still_offered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(tmp.path());
+        write_file(tmp.path(), "a.txt", "one\n");
+        let base = commit_all(&repo, "one");
+        write_file(tmp.path(), "a.txt", "released\n");
+        let released = commit_all(&repo, "v1.0");
+        repo.reference("refs/tags/v1.0", released, true, "tag").unwrap();
+        repo.set_head_detached(base).unwrap();
+        for (branch, _) in repo.branches(Some(BranchType::Local)).unwrap().flatten() {
+            let mut branch = branch;
+            branch.delete().unwrap();
+        }
+
+        let refs = git_list_refs_impl(tmp.path().to_string_lossy().to_string()).unwrap();
+        assert!(
+            refs.recent_commits
+                .iter()
+                .any(|c| c.oid == released.to_string()),
+            "a tagged commit off every branch must still be pickable"
         );
     }
 }

@@ -102,6 +102,28 @@ pub(crate) fn git_diff_working_impl(
 /// Only files whose content is the entire story are dropped. A mode change or a
 /// typechange also yields zero hunks and is a real answer the user needs to
 /// see — `NoTextChange` exists to render exactly that.
+///
+/// ## Why there is a budget
+///
+/// Every hunk of every file was serialized into one JSON blob with no ceiling,
+/// and git work in a repository is serialized behind a per-repo mutex. So a
+/// single compare across a vendored directory or a generated lockfile — the
+/// kind that runs to millions of lines — held that mutex for the whole
+/// serialization *and* handed the frontend a payload no one can read anyway.
+/// Every other git command in that repository queued behind it: the status
+/// pulse, the branch list, the sidebar.
+///
+/// The caps below bound the payload rather than the walk, which is the half
+/// that is ours to bound. `additions`/`deletions` keep counting past the cap,
+/// so the tree and the footer still report the true size of the change; what
+/// stops is storing line content nobody was going to scroll through. The file
+/// carries `truncated` so the renderer can say so instead of quietly showing
+/// half a diff.
+const MAX_LINES_PER_FILE: usize = 20_000;
+/// A second ceiling across the whole diff, because ten thousand files of two
+/// lines each is the same problem arriving by a different route.
+const MAX_LINES_TOTAL: usize = 200_000;
+
 pub(crate) fn collect_diff(
     diff: git2::Diff,
     drop_whitespace_only: bool,
@@ -110,6 +132,11 @@ pub(crate) fn collect_diff(
     // Parallel to `files`: did this delta change the file's mode? Kept
     // alongside rather than on `FileDiff` because nothing downstream needs it.
     let mode_changed: RefCell<Vec<bool>> = RefCell::new(Vec::new());
+    // Lines stored so far across every file, against `MAX_LINES_TOTAL`.
+    let stored_total = std::cell::Cell::new(0usize);
+    // Lines stored so far for the file currently being walked. Counted rather
+    // than derived from the hunks, because a truncated file stops growing them.
+    let stored_in_file = std::cell::Cell::new(0usize);
 
     diff.foreach(
         &mut |delta, _progress| {
@@ -153,12 +180,19 @@ pub(crate) fn collect_diff(
                 additions: 0,
                 deletions: 0,
                 old_blob_oid,
+                truncated: false,
             });
+            stored_in_file.set(0);
             true
         },
         Some(&mut |_delta, _progress| true),
         Some(&mut |_delta, hunk| {
             if let Some(file) = files.borrow_mut().last_mut() {
+                // An empty hunk renders as a header with nothing under it, so
+                // once the budget is gone the hunk is not opened at all.
+                if file.truncated {
+                    return true;
+                }
                 let header = std::str::from_utf8(hunk.header())
                     .unwrap_or("")
                     .trim_end_matches('\n')
@@ -176,6 +210,25 @@ pub(crate) fn collect_diff(
         }),
         Some(&mut |_delta, _hunk, line| {
             if let Some(file) = files.borrow_mut().last_mut() {
+                // Counted before the budget check, and unconditionally: the
+                // tree rows, the folder rollups and the footer totals all read
+                // these, and a capped file reporting `+0 −0` would look like
+                // the mode-only case rather than like a huge change.
+                match line.origin() {
+                    '+' => file.additions += 1,
+                    '-' => file.deletions += 1,
+                    _ => {}
+                }
+                // Ahead of the `to_string` below, which is the allocation the
+                // budget exists to stop making.
+                if stored_in_file.get() >= MAX_LINES_PER_FILE
+                    || stored_total.get() >= MAX_LINES_TOTAL
+                {
+                    file.truncated = true;
+                    return true;
+                }
+                stored_in_file.set(stored_in_file.get() + 1);
+                stored_total.set(stored_total.get() + 1);
                 let origin = match line.origin() {
                     '+' => "+",
                     '-' => "-",
@@ -186,11 +239,6 @@ pub(crate) fn collect_diff(
                     .unwrap_or("")
                     .trim_end_matches('\n')
                     .to_string();
-                match line.origin() {
-                    '+' => file.additions += 1,
-                    '-' => file.deletions += 1,
-                    _ => {}
-                }
                 if let Some(hunk) = file.hunks.last_mut() {
                     hunk.lines.push(DiffLine {
                         origin: origin.to_string(),
@@ -427,6 +475,57 @@ mod tests {
             .collect();
         paths.sort_unstable();
         assert_eq!(paths, vec!["fresh/one.txt", "fresh/two.txt"]);
+    }
+
+    /// CMP-F10. Every hunk of every file went into one JSON blob with no
+    /// ceiling, behind a per-repo mutex — so one compare across a vendored
+    /// directory queued every other git command in the repository behind a
+    /// payload nobody was going to read.
+    #[test]
+    fn a_huge_file_is_capped_but_still_reports_its_real_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo(root);
+        write_file(root, "small.txt", "kept\n");
+        write_file(root, "generated.txt", "seed\n");
+        commit_all(&repo, "base");
+
+        let over = MAX_LINES_PER_FILE + 500;
+        let generated: String = (0..over).map(|i| format!("line {i}\n")).collect();
+        write_file(root, "generated.txt", &generated);
+
+        let out = git_diff_working_impl(root.to_string_lossy().into_owned(), false, false).unwrap();
+        let file = out
+            .files
+            .iter()
+            .find(|f| f.new_path.as_deref() == Some("generated.txt"))
+            .expect("the file is still listed — capping is not dropping");
+
+        assert!(file.truncated, "the renderer has to be told it is seeing part");
+        assert_eq!(
+            file.additions as usize, over,
+            "the counts keep counting past the cap, or the tree row lies about the size"
+        );
+        let stored: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+        assert!(
+            stored <= MAX_LINES_PER_FILE,
+            "stored {stored} lines against a cap of {MAX_LINES_PER_FILE}"
+        );
+    }
+
+    /// ...and an ordinary diff never sets the flag, or the notice becomes noise
+    /// the user learns to ignore.
+    #[test]
+    fn an_ordinary_file_is_not_marked_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo(root);
+        write_file(root, "a.txt", "one\n");
+        commit_all(&repo, "base");
+        write_file(root, "a.txt", "two\n");
+
+        let out = git_diff_working_impl(root.to_string_lossy().into_owned(), false, false).unwrap();
+        assert!(out.files.iter().all(|f| !f.truncated));
     }
 
     fn hunk_text(file: &FileDiff) -> String {

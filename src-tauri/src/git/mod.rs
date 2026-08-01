@@ -228,6 +228,16 @@ pub struct FileDiff {
     /// *discard*. Sending the oid back with the patch lets Rust refuse
     /// outright when the basis has moved.
     pub old_blob_oid: Option<String>,
+    /// Some of this file's lines were dropped before serialization.
+    ///
+    /// `additions`/`deletions` still count every line — only the stored
+    /// content stops. See the budget in `collect_diff`.
+    ///
+    /// `default` because this type is also *received* — hunk staging sends a
+    /// `FileDiff` back — and a field the frontend has no reason to set must
+    /// not make the whole command fail to deserialize.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +263,15 @@ pub struct RefList {
     pub branches: Vec<String>,
     pub tags: Vec<String>,
     pub recent_commits: Vec<RecentCommit>,
+    /// The commit HEAD is sitting on when it is **detached**, and `None`
+    /// otherwise.
+    ///
+    /// A detached HEAD is the one position in a repository that no listed ref
+    /// names, so the picker could not offer it at all: mid-bisect, mid-rebase,
+    /// or after checking out a tag, the thing the user is actually standing on
+    /// was the one thing they could not compare against without typing the
+    /// literal word themselves.
+    pub detached_head: Option<RecentCommit>,
 }
 
 // ─── Tauri command wrappers ──────────────────────────────────────────────────
