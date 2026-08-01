@@ -403,7 +403,7 @@ written down.
 |---|---|
 | **A1** — the `browser` project | **not started.** Deliberate: it is a *capability* we lack, not a bug. See below for what it would buy. |
 | **A2** — the Tauri stub | **shipped.** `src/test/tauri.ts`, installed once from `setup.ts` for the whole render project. A render test now needs no `vi.mock` at all. |
-| **A3** — the coverage backlog | **partly.** `ChangedFileTree` (15) and `OperationBanner` (14) are mounted. `GitSidebar` needs both providers and is not done. The three geometry rows of that table need A1. |
+| **A3** — the coverage backlog | **partly.** `ChangedFileTree` (15) and `OperationBanner` (14) are mounted, and the activity-escalation row is now mounted too — `ViewSwitcher.test.tsx` covers the view axis of §7.5.3 rule 1 against the store rather than against `escalate()` alone. `GitSidebar` needs both providers and is not done. The three geometry rows of that table need A1. |
 | **A4** — the runner as a thing you look at | **not started.** `@vitest/ui` and the script split. |
 | **A5** — visual regression, real E2E | deferred, as written. |
 
@@ -481,8 +481,13 @@ last of those was 14 passing tests on the first run.
    was ranked 13th, because the journal already does the attribution and already
    labels it as inferred.
 3. **Fan-out durability in Rust**, if unattended overnight runs are the point.
-4. **C1 from the 100x audit** — cutting the browser tab kind, which is a product
-   decision that unpins Tauri.
+4. ~~**C1 from the 100x audit** — cutting the browser tab kind, which is a product
+   decision that unpins Tauri.~~ **Answered, against the cut** (see the addendum
+   below). What replaced it on this list is **BR-O1, the overlay tax**: one
+   self-registration mechanism for overlays, in the shape `TAB_SPECS` already
+   uses, turning ten hand-written `setOverlayOpen` effects into one and their
+   growth into zero. It is the browser audit's top-ranked follow-up and it is
+   not a browser change at all.
 
 ---
 
@@ -507,3 +512,37 @@ One thing the stopgap did catch on its own: the first draft installed the stubs
 once per `describe` with an `afterEach` restore, which held for the first test in
 the block and silently stopped applying to the rest. It read as "virtualized rows
 render once and then never again". Installed per-test now.
+
+---
+
+## End of the same day — the browser answered, and a rule-1 hole under it
+
+Three things landed after the section above, none of them from this plan's
+tracks. Recorded here because two of them change rows in it.
+
+**The browser was audited and kept**
+([`../audits/2026-07-31-embedded-browser.md`](../audits/2026-07-31-embedded-browser.md)).
+Eight fixes shipped, nine findings are deferred with their reasons stated, and
+100x's C1 is closed against the cut. The load-bearing one: a child webview takes
+the OS keyboard focus and never returns it, so the address bar was dead after
+the first click and **no keybinding of ours could have rescued it** — the host
+webview stops receiving keystrokes entirely. Only Rust can arbitrate that
+boundary. The engine turned out to be running at a third of its surface; nine of
+eleven relevant `tauri` webview APIs were available and unused.
+
+**The project brain replaced the personal vault.** `.voidlink/brain` under the
+open repo, no configured path, no CLI to stay in sync with. This is C2's
+rationale finished rather than a new idea — see the 100x ledger's addendum.
+
+**§7.5.3 rule 1 had a hole one layer above every surface that implements it.**
+Stacked mode hides a view wholesale — panes, strips, rail and status bar
+together — so a terminal finishing while the user read a diff in the editor view
+counted as *watched*, `noteFinished` returned early, and the event raised no
+mark anywhere. The view switcher is the last stop in the chain now. Worth
+naming as a class: every escalation target this plan added assumed the
+workbench was on screen, and nothing checked.
+
+A fourth, smaller, from the same reading: `WORKBENCH_TAB_KINDS` is derived off
+the registry instead of hand-written. The hand-written copy is what made
+Mission Control's tab unclaimable by any pane group for its whole first release
+— it opened and nothing appeared.
