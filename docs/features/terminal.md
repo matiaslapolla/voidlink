@@ -81,9 +81,13 @@ LC_NUMERIC LC_TIME LC_MONETARY TZ TMPDIR XDG_CONFIG_HOME XDG_DATA_HOME
 XDG_CACHE_HOME XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY SSH_AUTH_SOCK
 ```
 
-plus `TERM=xterm-256color` and `COLORTERM=truecolor`. `PATH` is deliberately
-dropped so `/etc/zprofile`'s `path_helper` and your shell rc files rebuild it
-from scratch, exactly as Terminal.app would.
+plus `TERM=xterm-256color`, `COLORTERM=truecolor` and
+`VOIDLINK_SHELL_INTEGRATION=1`. `PATH` is deliberately dropped so
+`/etc/zprofile`'s `path_helper` and your shell rc files rebuild it from scratch,
+exactly as Terminal.app would.
+
+That last variable is a **marker, not an install** — see
+[shell integration](#shell-integration) for why it stops there.
 
 ## Addons
 
@@ -173,7 +177,7 @@ leading one is gone.
 | Idle shell, or a TUI open but not working, in the tab you are looking at | `idle` | green, no glow | still |
 | A foreground process actively working — busy **and** producing output | `working` | green, glowing | pulsing |
 | Something finished, or a program sent a notification, while you were elsewhere | `notify` | **cyan** | still |
-| The shell exited non-zero | `failed` | red | still |
+| A command exited non-zero, or the shell did | `failed` | red | still |
 
 `notify` outranks `working`, and that ordering is the point of the whole design.
 A TUI keeps its shell in the foreground for its entire life, so the busy signal
@@ -216,6 +220,11 @@ the two clocks cannot disagree for longer than one tick.
 
 ### What counts as "finished"
 
+In a shell with [integration](#shell-integration) the shell says so itself and
+the poll stands down entirely — see that section for its own three rules.
+Everything below is the fallback path, which is what every shell used until
+2026-08-01 and what an unconfigured one still uses.
+
 The process poll samples every 1500 ms, which is coarse enough to invent events.
 Two rules filter it:
 
@@ -242,6 +251,39 @@ The OS notification fires from one place, driven off the same signal the in-app
 mark is, so the two cannot disagree. It used to fire from inside a sidebar row's
 own poll, which meant no notification at all whenever the Terminals section was
 collapsed.
+
+## Shell integration
+
+`failed` used to be reachable only when the *shell itself* died. The activity
+poll sees a foreground process go away and never how it went, so a `cargo build`
+that failed in an open shell raised the same mark as one that succeeded. Only
+the shell knows `$?`.
+
+Source one line into your rc and it tells us:
+
+```zsh
+source /path/to/voidlink/shell-integration/voidlink.zsh   # or .bash
+```
+
+The snippet prints [OSC 133 semantic
+prompts](../../shell-integration/README.md) — `C` before a command runs,
+`D ; <exit-code>` after — the same sequences iTerm2, VS Code, WezTerm and kitty
+consume. voidlink parses them out of the stream and a non-zero code raises
+`failed`.
+
+**Settings → Terminal → Shell integration** says how many open shells are
+actually emitting. It reports what was observed, not what was configured: there
+is no way to ask a shell what it sourced.
+
+**voidlink will not install this for you**, and that is a decision rather than an
+omission. The alternative is pointing `ZDOTDIR` at a generated directory that
+re-sources your real config — which contradicts the whole point of the
+[environment rebuild](#environment) above, breaks your prompt and your plugin
+manager if the ordering is wrong, and has no equivalent for fish or nushell. The
+reasoning is written out in `create_pty`.
+
+**Without it, nothing is worse than it was.** The poll still reports a command
+finishing; it just never claims a status nobody gave it.
 
 ## Gotchas and limits
 

@@ -1,4 +1,5 @@
 import { emitGitRefsChanged } from "@/commands/gitEvents";
+import { shellsWithIntegration } from "@/store/terminalWatch";
 import {
   Show,
   For,
@@ -1109,6 +1110,55 @@ function TerminalPane() {
         <ToggleRow label="Scroll on input" value={settings.terminal.scrollOnUserInput}
           onChange={(v) => updateTerminal({ scrollOnUserInput: v })} />
       </Section>
+
+      <Section title="Shell integration">
+        <ShellIntegrationRow />
+      </Section>
+    </div>
+  );
+}
+
+/// Read-only, and the only control-shaped thing on it is the absence of one.
+///
+/// There is nothing to toggle here: whether a shell emits OSC 133 is decided by
+/// what its startup files sourced, which this app deliberately does not write
+/// (see `create_pty` in `src-tauri/src/lib.rs` for that decision). A switch
+/// would be a control that cannot do what it says.
+///
+/// It reports **what was observed**, never what was configured. There is no way
+/// to ask a shell what it sourced, so "active in N shells" is the only claim
+/// this surface can honestly make — and a zero is not a diagnosis. It is
+/// worded as such: a shell without integration is not broken, it is the state
+/// this app shipped in for a year, and it degrades to reporting `finished` from
+/// the process poll exactly as it always did.
+function ShellIntegrationRow() {
+  const count = shellsWithIntegration;
+  return (
+    <div class="space-y-2 text-[11px] leading-relaxed">
+      <div class="flex items-center gap-2">
+        <span
+          class={`size-1.5 rounded-full ${count() > 0 ? "bg-success" : "bg-muted-foreground/40"}`}
+          aria-hidden="true"
+        />
+        <span class="text-foreground/90">
+          {count() > 0
+            ? `Active in ${count()} open ${count() === 1 ? "shell" : "shells"}`
+            : "Not detected in any open shell"}
+        </span>
+      </div>
+      <p class="text-muted-foreground">
+        Lets voidlink read a command's exit status, so a build that{" "}
+        <em>failed</em> is marked differently from one that merely ended. Without
+        it, a finished command still reports — just without a status. Add this to
+        the end of your shell's rc file and open a new terminal:
+      </p>
+      <code class="block rounded border border-border bg-muted/40 px-2 py-1 font-mono text-[10px] text-foreground/80 overflow-x-auto whitespace-pre">
+        source /path/to/voidlink/shell-integration/voidlink.zsh
+      </code>
+      <p class="text-muted-foreground/70">
+        A <span class="font-mono">.bash</span> version sits beside it. Both are
+        no-ops outside voidlink, and neither touches your prompt.
+      </p>
     </div>
   );
 }
