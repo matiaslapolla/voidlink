@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import { textPrompt } from "./prompt";
+import { createOverlay } from "./overlay";
 
 /// A user-invokable action surfaced by the Cmd+K palette and (optionally)
 /// bound to a global keyboard shortcut. Actions are registered once at app
@@ -50,13 +51,23 @@ export function getVisibleActions(): Action[] {
   return actions().filter((a) => !a.hidden);
 }
 
-/// Palette open state — shared so any caller (keybinding, button) can toggle it.
-const [paletteOpen, setPaletteOpen] = createSignal(false);
-const [fileFinderOpen, setFileFinderOpen] = createSignal(false);
-const [cheatSheetOpen, setCheatSheetOpen] = createSignal(false);
-const [worktreeSwitcherOpen, setWorktreeSwitcherOpen] = createSignal(false);
-const [tabSwitcherOpen, setTabSwitcherOpen] = createSignal(false);
-const [brainOpen, setBrainOpen] = createSignal(false);
+/// Palette open state — shared so any caller (keybinding, button) can toggle
+/// it. `createOverlay` rather than a bare `createSignal`: each of these is a
+/// modal surface the embedded browser has to hide behind (see
+/// `commands/overlay.ts`), and this way that is true by construction instead
+/// of by an `App.tsx` effect someone had to remember to add. The cheat sheet
+/// was never wired into that effect list before this change — an
+/// unregistered overlay that nobody had hit yet, and exactly the failure mode
+/// BR-O1 describes.
+const paletteOverlay = createOverlay("palette");
+const fileFinderOverlay = createOverlay("file-finder");
+const cheatSheetOverlay = createOverlay("cheat-sheet");
+const worktreeSwitcherOverlay = createOverlay("worktree-switcher");
+const tabSwitcherOverlay = createOverlay("tab-switcher");
+/// The project brain, same mechanism. Its overlay component used to register
+/// itself on mount and unregister on cleanup; owning the state here means the
+/// registration cannot disagree with whether the surface is actually open.
+const brainOverlay = createOverlay("brain");
 
 // ─── Recently-used actions ────────────────────────────────────────────────
 /// Ids in most-recent-first order, capped. In memory rather than persisted: the
@@ -93,19 +104,19 @@ export function runAction(action: Action): void | Promise<void> {
 }
 
 export function isPaletteOpen() {
-  return paletteOpen();
+  return paletteOverlay.isOpen();
 }
 
 export function openPalette() {
-  setPaletteOpen(true);
+  paletteOverlay.open();
 }
 
 export function closePalette() {
-  setPaletteOpen(false);
+  paletteOverlay.close();
 }
 
 export function isFileFinderOpen() {
-  return fileFinderOpen();
+  return fileFinderOverlay.isOpen();
 }
 
 // ─── Built-in commands ────────────────────────────────────────────────────
@@ -127,23 +138,23 @@ registerActions([
 ]);
 
 export function openFileFinder() {
-  setFileFinderOpen(true);
+  fileFinderOverlay.open();
 }
 
 export function closeFileFinder() {
-  setFileFinderOpen(false);
+  fileFinderOverlay.close();
 }
 
 export function isCheatSheetOpen() {
-  return cheatSheetOpen();
+  return cheatSheetOverlay.isOpen();
 }
 
 export function openCheatSheet() {
-  setCheatSheetOpen(true);
+  cheatSheetOverlay.open();
 }
 
 export function closeCheatSheet() {
-  setCheatSheetOpen(false);
+  cheatSheetOverlay.close();
 }
 
 /// The project brain, as an overlay rather than a tab.
@@ -153,42 +164,42 @@ export function closeCheatSheet() {
 /// the other palette-invoked surfaces because that is what it now is — the
 /// difference from those is only that its panel is large enough to read in.
 export function isBrainOpen() {
-  return brainOpen();
+  return brainOverlay.isOpen();
 }
 
 export function openBrain() {
-  setBrainOpen(true);
+  brainOverlay.open();
 }
 
 export function closeBrain() {
-  setBrainOpen(false);
+  brainOverlay.close();
 }
 
 /// The worktree/workspace switcher: every worktree across every workspace, with
 /// its dirty/ahead/behind badges.
 export function isWorktreeSwitcherOpen() {
-  return worktreeSwitcherOpen();
+  return worktreeSwitcherOverlay.isOpen();
 }
 
 export function openWorktreeSwitcher() {
-  setWorktreeSwitcherOpen(true);
+  worktreeSwitcherOverlay.open();
 }
 
 export function closeWorktreeSwitcher() {
-  setWorktreeSwitcherOpen(false);
+  worktreeSwitcherOverlay.close();
 }
 
 /// "Go to open tab" — the same chrome, over what is already open.
 export function isTabSwitcherOpen() {
-  return tabSwitcherOpen();
+  return tabSwitcherOverlay.isOpen();
 }
 
 export function openTabSwitcher() {
-  setTabSwitcherOpen(true);
+  tabSwitcherOverlay.open();
 }
 
 export function closeTabSwitcher() {
-  setTabSwitcherOpen(false);
+  tabSwitcherOverlay.close();
 }
 
 /// Deep link into one editor setting by name.

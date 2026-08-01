@@ -21,22 +21,12 @@
 /// MASTER.md §7.1 puts a keyboard-initiated transition at 0ms, and §11 names
 /// animating one as an anti-pattern. The scrim and panel match `QuickPick`'s so
 /// the two read as the same class of surface.
-import { Show, createEffect, onCleanup } from "solid-js";
+import { Show, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
 import { BrainSurface } from "@/components/brain/BrainSurface";
-import { setOverlayOpen } from "@/commands/overlay";
 
 export function BrainOverlay(props: { repoPath: string; onClose: () => void }) {
-  /// Embedded browser tabs composite above the DOM, so an overlay that does not
-  /// register here is invisible whenever one is on screen. Cleaned up on
-  /// dispose, not just on close, so unmounting mid-open cannot leave the
-  /// browser pane hidden forever.
-  createEffect(() => {
-    setOverlayOpen("brain", true);
-    onCleanup(() => setOverlayOpen("brain", false));
-  });
-
   /// ESC closes. Captured at the document because focus is usually inside the
   /// surface's own search input or textarea by the time the user presses it.
   const onKeyDown = (e: KeyboardEvent) => {

@@ -78,9 +78,8 @@ import { agentById, defaultAgentId, resolveAgentCommand } from "@/store/settings
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, snapshotTabCount } from "@/commands/snapshots";
-import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
-import { setOverlayOpen } from "@/commands/overlay";
-import { agentPanelOpen } from "@/commands/agent";
+import { requestNewWorktree } from "@/commands/worktree";
+import { createOverlay, setOverlayOpen } from "@/commands/overlay";
 import { browserApi } from "@/api/webview";
 import { applyEditorRequest } from "@/store/editorRequests";
 import { publishRepos, setJournalRepo } from "@/store/journal";
@@ -134,11 +133,7 @@ const EditorView = lazy(() =>
 );
 const GitView = lazy(() => import("@/GitApp").then((m) => ({ default: m.GitSurface })));
 
-function AppInner(props: {
-  onOpenSettings: () => void;
-  settingsOpen: boolean;
-  onOpenSnapshots: () => void;
-}) {
+function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => void }) {
   const {
     state,
     activeWorkspace,
@@ -419,18 +414,16 @@ function AppInner(props: {
 
   // A view that isn't the workbench covers it with plain DOM — which a child
   // webview would paint straight through. Same mechanism the modals use.
+  //
+  // This is the one overlay registration still living here rather than beside
+  // the state it watches (see `commands/overlay.ts`): `currentView` is a
+  // derived read of two signals owned by this component (`isStackedMode`,
+  // `stackedView`), not a boolean a module can hand out a `createOverlay` for.
+  // Every other surface — the palette, the switchers, the cheat sheet, the
+  // agent panel, the worktree wizard, settings, snapshots — registers itself
+  // at its own point of ownership; `App.tsx` no longer has to know the full
+  // list to keep it correct.
   createEffect(() => setOverlayOpen("stacked-view", currentView() !== "workbench"));
-
-  // Embedded browser tabs are child webviews that composite above the DOM, so
-  // every modal surface has to actively push them out of the way while open.
-  createEffect(() => setOverlayOpen("palette", isPaletteOpen()));
-  createEffect(() => setOverlayOpen("file-finder", isFileFinderOpen()));
-  createEffect(() => setOverlayOpen("worktree-switcher", isWorktreeSwitcherOpen()));
-  createEffect(() => setOverlayOpen("tab-switcher", isTabSwitcherOpen()));
-  createEffect(() => setOverlayOpen("worktree-wizard", !!newWorktreeRequest()));
-  createEffect(() => setOverlayOpen("agent", agentPanelOpen()));
-  createEffect(() => setOverlayOpen("settings", props.settingsOpen));
-
 
   // ── Register the global action catalog. Re-runs when relevant state shifts
   // so closures always reference the current active workspace.
@@ -1692,8 +1685,13 @@ setPersistenceErrorHandler((key) =>
 
 export default function App() {
   const store = createAppStore();
-  const [settingsOpen, setSettingsOpen] = createSignal(false);
-  const [snapshotsOpen, setSnapshotsOpen] = createSignal(false);
+  // `createOverlay`, not a bare `createSignal`: both dialogs are modal
+  // surfaces the embedded browser has to hide behind (see
+  // `commands/overlay.ts`). Snapshots was never wired into the old
+  // hand-written effect list in `AppInner` — an unregistered overlay nobody
+  // had hit yet, and exactly the failure mode BR-O1 describes.
+  const settings = createOverlay("settings");
+  const snapshots = createOverlay("snapshots");
   /// The palette's "Go to setting…" query. A signal rather than a one-shot
   /// call so asking twice for the same setting still re-focuses the filter —
   /// the wrapper object makes each request a distinct value even when the text
@@ -1704,27 +1702,23 @@ export default function App() {
     const query = (e as CustomEvent<string>).detail;
     if (typeof query !== "string") return;
     setGotoSetting({ query });
-    setSettingsOpen(true);
+    settings.open();
   };
   window.addEventListener("voidlink:goto-setting", onGotoSetting);
   onCleanup(() => window.removeEventListener("voidlink:goto-setting", onGotoSetting));
 
   return (
     <AppStoreContext.Provider value={store}>
-      <AppInner
-        onOpenSettings={() => setSettingsOpen(true)}
-        settingsOpen={settingsOpen()}
-        onOpenSnapshots={() => setSnapshotsOpen(true)}
-      />
+      <AppInner onOpenSettings={settings.open} onOpenSnapshots={snapshots.open} />
       <SettingsDialog
-        open={settingsOpen()}
+        open={settings.isOpen()}
         onClose={() => {
-          setSettingsOpen(false);
+          settings.close();
           setGotoSetting(null);
         }}
         gotoSetting={gotoSetting()?.query}
       />
-      <SnapshotManager open={snapshotsOpen()} onClose={() => setSnapshotsOpen(false)} />
+      <SnapshotManager open={snapshots.isOpen()} onClose={snapshots.close} />
     </AppStoreContext.Provider>
   );
 }

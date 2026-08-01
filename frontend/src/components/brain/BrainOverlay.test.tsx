@@ -10,6 +10,7 @@ import { render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { lastInvokeArgs, mockTauri, tauriCalls } from "@/test/tauri";
 import { isOverlayOpen } from "@/commands/overlay";
+import { closeBrain, openBrain } from "@/commands/registry";
 import { stubLayout } from "@/test/layout";
 
 import { BrainOverlay, BrainOverlayHost } from "./BrainOverlay";
@@ -127,20 +128,31 @@ describe("dismissal", () => {
 });
 
 /// A child webview composites above the DOM, so an overlay that does not
-/// register here is simply invisible whenever a browser tab is open. The
-/// unmount half matters as much as the mount half: leaking the registration
-/// leaves the browser pane hidden with nothing on screen to explain why.
+/// register here is simply invisible whenever a browser tab is open.
+///
+/// The registration moved off this component and onto the state that opens it
+/// (`openBrain`/`closeBrain`, via `createOverlay`), which is why mounting alone
+/// no longer registers anything. That is the point of the change: a surface
+/// cannot be open-but-unregistered, because opening it *is* the registration.
+/// What the component owns is rendering, and it renders only while the state
+/// says open.
 describe("the overlay registration", () => {
-  it("registers while open and releases on unmount", () => {
-    const { unmount } = mount();
+  it("registers while the brain is open and releases when it closes", () => {
+    openBrain();
     expect(isOverlayOpen()).toBe(true);
-    unmount();
+    closeBrain();
     expect(isOverlayOpen()).toBe(false);
   });
 
   it("registers nothing while the host is closed", () => {
     render(() => <BrainOverlayHost open={false} repoPath={REPO} onClose={onClose} />);
     expect(isOverlayOpen()).toBe(false);
+  });
+
+  it("mounting the surface directly does not register it", () => {
+    const { unmount } = mount();
+    expect(isOverlayOpen()).toBe(false);
+    unmount();
   });
 });
 
