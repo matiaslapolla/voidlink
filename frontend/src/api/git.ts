@@ -14,6 +14,7 @@ import type {
   GitRepoInfo,
   OpResult,
   PullResult,
+  PushOutcome,
   RefList,
   RemoteInfo,
   SafeCheckoutResult,
@@ -286,8 +287,34 @@ export const gitApi = {
     return invoke<void>("git_config_unset", { repoPath, key, scope });
   },
 
-  push(repoPath: string, remote?: string, branch?: string): Promise<void> {
-    return invoke<void>("git_push", { repoPath, remote, branch });
+  /// Resolves even when the push was rejected — `ok` and `failure` carry the
+  /// verdict. Only a failure to get as far as talking to a remote rejects.
+  push(repoPath: string, remote?: string, branch?: string): Promise<PushOutcome> {
+    return invoke<PushOutcome>("git_push", { repoPath, remote, branch });
+  },
+
+  /// What the last fetch recorded for `refs/remotes/<remote>/<branch>` — the
+  /// value a force-push lease is taken on. `null` when there is no tracking
+  /// ref, in which case no lease can be held.
+  remoteTrackingOid(repoPath: string, remote: string, branch: string): Promise<string | null> {
+    return invoke<string | null>("git_remote_tracking_oid", { repoPath, remote, branch });
+  },
+
+  /// Force-push, honouring a lease taken from a fetch. Rejects — by design —
+  /// when the remote moved since. See `git/push.rs` for the race window this
+  /// narrows but does not close.
+  pushForceWithLease(
+    repoPath: string,
+    remote: string,
+    branch: string,
+    expectedRemoteOid: string,
+  ): Promise<void> {
+    return invoke<void>("git_push_force_with_lease", {
+      repoPath,
+      remote,
+      branch,
+      expectedRemoteOid,
+    });
   },
 
   fetch(repoPath: string, remote?: string): Promise<void> {

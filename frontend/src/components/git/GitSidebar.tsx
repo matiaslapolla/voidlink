@@ -32,7 +32,7 @@ import {
   PanelRightOpen,
 } from "lucide-solid";
 import { promptWithToggles } from "@/commands/prompt";
-import type { CommitIdentity, StashEntry, RemoteInfo } from "@/types/git";
+import type { CommitIdentity, PushOutcome, StashEntry, RemoteInfo } from "@/types/git";
 import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 import { StatusBadge } from "@/components/git/shared/StatusBadge";
@@ -46,6 +46,7 @@ import {
 } from "@/api/windows";
 import { openMerge } from "@/components/git/openMerge";
 import { GitSyncControls, createGitSync } from "@/components/git/GitSyncControls";
+import { PushRecovery } from "@/components/git/PushRecovery";
 import { Splitter } from "@/components/layout/Splitter";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
 import {
@@ -719,6 +720,9 @@ export function ChangesPane(props: {
   }
   const [pushOk, setPushOk] = createSignal(false);
   const [pushError, setPushError] = createSignal("");
+  /// The last rejection, kept whole so its failure class survives. Cleared on
+  /// the next push and once the divergence is resolved.
+  const [rejection, setRejection] = createSignal<PushOutcome | null>(null);
   const [pendingFindings, setPendingFindings] = createSignal<SecretFinding[]>([]);
   /// Findings the user explicitly chose to commit anyway, by key.
   const [acknowledged, setAcknowledged] = createSignal<Set<string>>(new Set());
@@ -1127,15 +1131,26 @@ export function ChangesPane(props: {
   /// Push failures get their own channel. They used to be written into
   /// `commitError`, which labelled a rejected push as a commit problem and
   /// clobbered a real commit error that was still on screen.
+  ///
+  /// The rejection is kept as a whole `PushOutcome`, not just its message,
+  /// because the recovery affordance underneath it is offered for one failure
+  /// class and withheld for every other — and it cannot tell them apart by
+  /// reading the prose. See `PushRecovery`.
   async function push() {
     if (pushing()) return;
     setPushing(true);
     setPushOk(false);
     setPushError("");
+    setRejection(null);
     try {
-      await gitApi.push(props.repoPath);
-      setPushOk(true);
-      setTimeout(() => setPushOk(false), 2000);
+      const outcome = await gitApi.push(props.repoPath);
+      if (outcome.ok) {
+        setPushOk(true);
+        setTimeout(() => setPushOk(false), 2000);
+      } else {
+        setPushError(outcome.message);
+        setRejection(outcome);
+      }
     } catch (e) {
       setPushError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1258,6 +1273,22 @@ export function ChangesPane(props: {
           <p class="text-xs text-destructive truncate" title={pushError()}>
             Push failed: {pushError()}
           </p>
+        </Show>
+        {/* Force-push lives here and nowhere else: only under a rejection that
+            proves the branches diverged. `PushRecovery` renders nothing for any
+            other failure class. */}
+        <Show when={rejection()}>
+          {(r) => (
+            <PushRecovery
+              repoPath={props.repoPath}
+              worktreeId={props.worktreeId}
+              outcome={r()}
+              onResolved={() => {
+                setRejection(null);
+                setPushError("");
+              }}
+            />
+          )}
         </Show>
         <div class="flex items-center gap-2 text-[11px]">
           <label class="flex items-center gap-1 cursor-pointer select-none text-muted-foreground hover:text-foreground transition-colors">

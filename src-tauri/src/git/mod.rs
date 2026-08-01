@@ -88,7 +88,9 @@ use status::{git_file_status_impl, git_log_impl};
 use tag::{
     git_create_tag_impl, git_delete_remote_tag_impl, git_delete_tag_impl, git_push_tag_impl,
 };
-use push::git_push_impl;
+use push::{
+    git_push_force_with_lease_impl, git_push_impl, git_remote_tracking_oid_impl, PushOutcome,
+};
 use worktree::{
     git_add_worktree_impl, git_list_worktrees_impl, git_remove_worktree_impl,
     git_unlock_worktree_impl, WorktreeInfo,
@@ -510,14 +512,53 @@ pub async fn git_config_unset(
     blocking_git!(state, repo_path, git_config_unset_impl(repo_path, key, scope))
 }
 
+/// Push, answering *how* it failed rather than only that it did — the
+/// force-push recovery is offered for one failure class and withheld for the
+/// rest, and it cannot tell them apart from a message.
 #[tauri::command]
 pub async fn git_push(
     repo_path: String,
     remote: Option<String>,
     branch: Option<String>,
     state: tauri::State<'_, GitState>,
-) -> Result<(), String> {
+) -> Result<PushOutcome, String> {
     blocking_git!(state, repo_path, git_push_impl(repo_path, remote, branch))
+}
+
+/// What the last fetch recorded for `refs/remotes/<remote>/<branch>`: the value
+/// a force-push lease is taken on. `None` when there is no tracking ref, in
+/// which case no lease can be held and force must stay out of reach.
+#[tauri::command]
+pub async fn git_remote_tracking_oid(
+    repo_path: String,
+    remote: String,
+    branch: String,
+    state: tauri::State<'_, GitState>,
+) -> Result<Option<String>, String> {
+    blocking_git!(
+        state,
+        repo_path,
+        git_remote_tracking_oid_impl(repo_path, remote, branch)
+    )
+}
+
+/// Force-push, honouring a lease taken from a fetch. Errs — loudly, and by
+/// design — when the remote moved between that fetch and now. See
+/// `push::git_push_force_with_lease_impl` for the race window this does *not*
+/// close.
+#[tauri::command]
+pub async fn git_push_force_with_lease(
+    repo_path: String,
+    remote: Option<String>,
+    branch: Option<String>,
+    expected_remote_oid: String,
+    state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(
+        state,
+        repo_path,
+        git_push_force_with_lease_impl(repo_path, remote, branch, expected_remote_oid)
+    )
 }
 
 #[tauri::command]

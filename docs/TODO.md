@@ -4,11 +4,14 @@ The single list of what is live. It replaces the ledgers that used to live in
 `docs/specs/`, which were retired on 2026-07-31 once each had been worked down
 to its open rows.
 
-On **2026-08-01** the list was worked in eleven parallel tracks and then rewritten
-against what actually shipped. Almost everything that was *implementable* is
-done; what remains is, with few exceptions, work that needs a decision from a
-person rather than an afternoon from an engineer. That is the point of the
-shape below: **the first section is questions, not tasks.**
+On **2026-08-01** the list was worked in eleven parallel tracks, and the six
+questions that were left over — the ones no amount of engineering could answer —
+were then answered by the repo owner and built in four more. **Nothing on this
+list is blocked on a decision any more.**
+
+What remains is of three kinds, in this order: things the pinned dependency
+cannot express, ordinary unblocked work, and things written against a product
+that has since changed and want re-scoping before anyone builds them.
 
 The two audits still hold the evidence, and a finding is worth more with its
 severity, confidence and reasoning attached than as a line in a list:
@@ -21,25 +24,12 @@ severity, confidence and reasoning attached than as a line in a list:
 
 ## Contents
 
-- [Answered, being built](#answered-being-built)
 - [Blocked on the dependency](#blocked-on-the-dependency)
 - [Open — small and unblocked](#open--small-and-unblocked)
 - [Open — needs re-scoping first](#open--needs-re-scoping-first)
 - [Deliberately deferred](#deliberately-deferred)
 - [Shipped 2026-08-01](#shipped-2026-08-01)
 - [Decided — do not relitigate](#decided--do-not-relitigate)
-
----
-
-## Answered, being built
-
-Every question this section used to hold was answered on 2026-08-01. One is
-still in flight; the rest are in [Shipped](#shipped-2026-08-01) or, where the
-answer was "no", in [Decided](#decided--do-not-relitigate).
-
-| The question | The answer, and what is being built |
-|---|---|
-| **Where does a destructive push live, and how is it confirmed?** | **Only as a recovery action after the remote rejects a push as non-fast-forward** — never beside Push, never in a menu, never in a context menu. "Fetch and rebase" is the first offer; force is the second and reads as the lesser path, and it stays disabled until a fetch is fresh enough to hold a lease. libgit2 has no lease primitive, so the lease is fetch → compare → push and **the race window is real and cannot be closed with this dependency** — it can only be made small, commented, and never described as "safe" in the UI. (BR-F7) |
 
 ---
 
@@ -161,6 +151,23 @@ tooltip spells the comparison out. The walk only runs for a remote branch that
 has a local counterpart, and identical tips short-circuit — measured at 500
 remote branches, the cost tracks how many branches *you* checked out, not how
 many were pushed. See [branches and sync](./features/branches-and-sync.md).
+| **BR-F7, force-push** | Landed after the eleven, once the decision below was made. Force is reachable from a non-fast-forward rejection and from nowhere else; `git_push` now reports a failure *class* so the offer can be withheld from auth, transport and hook failures. |
+
+**The decision behind BR-F7, recorded.** *Where does a destructive push live,
+and how is it confirmed?* — **force-push is reachable only as a recovery action
+after the remote rejects an ordinary push as non-fast-forward.** Never a button
+beside Push, never an overflow item, never a context menu. "Fetch and rebase" is
+the first and default offer; force is the second and reads as the lesser path;
+and force is disabled until a fetch fresh enough to hold a lease has landed.
+"Fresh enough" resolved to **two minutes** — a bound on the user's memory of the
+fetch, not on the remote, which is covered instead by a re-check immediately
+before the push.
+
+The audit's caveat survives intact and is written into the code, the feature doc
+and the confirm: libgit2 has no `--force-with-lease` primitive, so the check is
+client-side and **the race window is real**. It is one fetch round trip plus the
+push connection, and anything landing on the remote inside it is overwritten
+unseen. Nothing in the UI says "safe".
 
 **One live caveat carried forward.** BR-F1's fix — `browser_focus_host`, which
 gives the host webview the keyboard back — is still confidence *reading*, not
