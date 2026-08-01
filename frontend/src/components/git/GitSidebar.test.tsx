@@ -700,7 +700,12 @@ describe("reordering the sections", () => {
     await waitFor(() => expect(screen.getByText("src/a.ts")).toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: "Changes" }));
-    expect(screen.queryByText("src/a.ts")).not.toBeInTheDocument();
+    // Not synchronously. The section collapses on a `grid-template-rows` track
+    // (MOTION-PLAN F11), and a body that unmounted on the click would leave
+    // nothing for the track to collapse — so the pane trails the state by one
+    // exit. That it *does* still unmount is the part worth asserting: a
+    // collapsed section must stop polling, not merely stop being visible.
+    await waitFor(() => expect(screen.queryByText("src/a.ts")).not.toBeInTheDocument());
   });
 });
 

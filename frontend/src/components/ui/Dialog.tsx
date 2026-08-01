@@ -147,7 +147,9 @@ export function Dialog(props: DialogProps) {
         // which centres it — but it also has a UA `max-height` and a border we
         // do not want. Everything below is the reset plus the panel.
         "m-auto max-h-[85vh] w-[92vw] overflow-visible p-0",
-        "border border-border rounded-lg bg-elev-3 text-foreground shadow-xl",
+        // The heavier weight: a modal is the largest floating surface in the app,
+        // and §7.4 asks a bigger surface to read as thicker.
+        "border border-border rounded-lg material-structural text-foreground shadow-xl",
         "backdrop:bg-black/50",
         // §7.1's <5×/session budget. `--dur-long` in, `--dur-long-out` (75%)
         // out — a modal that closes as slowly as it opens feels stuck (§7.2).

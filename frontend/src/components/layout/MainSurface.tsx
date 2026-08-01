@@ -1441,7 +1441,7 @@ function NewTabMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-56 rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
+            class="fixed w-56 rounded-md border border-border material-chrome text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <Show

@@ -47,7 +47,7 @@ export function BrainOverlay(props: { repoPath: string; onClose: () => void }) {
           role="dialog"
           aria-modal="true"
           aria-label="Brain"
-          class="w-[1100px] max-w-[92vw] h-[76vh] bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
+          class="w-[1100px] max-w-[92vw] h-[76vh] material-structural border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
           <div class="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">

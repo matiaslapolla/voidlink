@@ -583,7 +583,7 @@ function ContextMenuPopup(props: {
   return (
     <Portal>
       <div
-        class="fixed z-50 min-w-[164px] bg-popover border border-border rounded-md shadow-xl py-1 text-ui"
+        class="fixed z-50 min-w-[164px] material-chrome border border-border rounded-md shadow-xl py-1 text-ui"
         style={{ left: `${props.state.x}px`, top: `${props.state.y}px` }}
         onClick={e => e.stopPropagation()}
         onContextMenu={e => e.stopPropagation()}

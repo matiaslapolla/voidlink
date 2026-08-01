@@ -645,11 +645,68 @@ html:not([data-density]) {
   }
 }
 
-/* `prefers-reduced-transparency` needs no rule here and that is a finding, not
- * an omission: VoidLink has no `backdrop-filter` anywhere, and its scrims are
- * flat `bg-black/40`–`/60` rather than blurs. If a translucent surface is ever
- * added, §7.4 requires it raise its opacity and drop its blur under that
- * query — the hook belongs next to this comment. */
+/* ── Materials (MASTER §7.4, MOTION-PLAN Phase 4 / F22) ──────────────────────
+ * Two weights, and the rule that decides between them is *what the surface
+ * is*, not how it looks: heavier and darker for structural regions, lighter
+ * for interactive chrome that arrives and leaves. On macOS this is the
+ * highest native-feel-per-line change available, and it is the item that most
+ * directly answers "why doesn't it feel like a Mac app".
+ *
+ * Four rules, each easy to undo by accident:
+ *   • **Never stack one translucent surface on another.** Legibility collapses
+ *     immediately — two 78% layers leave the text reading through both. In
+ *     practice that means a menu opened *from* a palette takes no material.
+ *   • **Bigger surfaces read as thicker**: more blur, and the deeper of the
+ *     two shadows. A 180px context menu and a 720px modal cannot share a blur
+ *     radius and both look right.
+ *   • **Colour stays on a solid layer.** A tint applied to the translucent
+ *     foreground picks up whatever is behind it and stops meaning anything;
+ *     status tints go on children, never on the material itself.
+ *   • **`-webkit-` first.** WKWebView is the only engine this ships against
+ *     today and it still wants the prefix on some versions; the unprefixed
+ *     property is what Linux will need when it lands.
+ *
+ * Deferred platform constraint: `backdrop-filter` under WebKitGTK is
+ * materially more expensive than under WKWebView. macOS-only scope means this
+ * does not gate the work, but when Linux lands, expect to gate materials
+ * per-platform rather than tune them down globally. */
+.material-chrome {
+  background-color: color-mix(in oklab, var(--popover) 80%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+}
+
+.material-structural {
+  background-color: color-mix(in oklab, var(--elev-3) 88%, transparent);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  backdrop-filter: blur(30px) saturate(160%);
+}
+
+/* §7.4's required hook, and the reason the comment that used to sit here —
+ * "needs no rule, the app has no `backdrop-filter` anywhere" — is no longer
+ * true. Reduced transparency is a legibility request, so the answer is to
+ * raise the opacity to full and drop the blur entirely rather than to soften
+ * it: a half-measure is still a background the user has told us they cannot
+ * read through. */
+@media (prefers-reduced-transparency: reduce) {
+  .material-chrome {
+    background-color: var(--popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .material-structural {
+    background-color: var(--elev-3);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Where floating chrome overlaps content, §7.4 prefers a scroll-edge fade to a
+ * 1px divider: a hairline under a translucent bar reads as a seam in the
+ * material, which is the one thing a material must not have. */
+.scroll-edge-fade {
+  mask-image: linear-gradient(to bottom, transparent 0, black var(--space-sm));
+}
 
 /* ── Reduced motion ─────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

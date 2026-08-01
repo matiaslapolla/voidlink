@@ -1080,7 +1080,7 @@ function TabGroupContextMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
+            class="fixed w-[200px] rounded-md border border-border material-chrome text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <div class="px-3 py-1 text-label text-muted-foreground truncate border-b border-border/50">
@@ -1432,7 +1432,7 @@ function TabOverflowMenu(props: {
         <Portal>
           <div
             ref={panelRef}
-            class="fixed w-[280px] max-h-[60vh] overflow-y-auto scrollbar-thin rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
+            class="fixed w-[280px] max-h-[60vh] overflow-y-auto scrollbar-thin rounded-md border border-border material-chrome text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <For each={groups()}>
@@ -1545,7 +1545,7 @@ function TabContextMenu(props: {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[200px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
+            class="fixed w-[200px] rounded-md border border-border material-chrome text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-ui"
             style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
           >
             <div class="px-3 py-1 text-label text-muted-foreground truncate border-b border-border/50">
@@ -1716,7 +1716,7 @@ export function PaneDropOverlay(props: {
         {(g) => (
           <Portal>
             <div
-              class="fixed z-[var(--z-drag)] pointer-events-none rounded-md border border-destructive/60 bg-popover px-2 py-1 text-label text-destructive shadow-lg"
+              class="fixed z-[var(--z-drag)] pointer-events-none rounded-md border border-destructive/60 material-chrome px-2 py-1 text-label text-destructive shadow-lg"
               style={{ left: `${g().x + 14}px`, top: `${g().y + 14}px` }}
             >
               {g().reason}

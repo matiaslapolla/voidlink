@@ -262,7 +262,9 @@ export function Menu(props: MenuProps) {
         }}
         class={cn(
           "fixed z-[var(--z-menu)] min-w-[180px] max-w-[320px] py-1",
-          "bg-popover text-popover-foreground border border-border rounded-md shadow-xl",
+          // `material-chrome` replaces the opaque `bg-popover` — a menu is small,
+          // arrives and leaves, and is the lighter of the two weights (§7.4).
+          "material-chrome text-popover-foreground border border-border rounded-md shadow-xl",
           "text-ui focus:outline-none",
           // 5–50×/session (§7.1) — `--dur-short` in, and the exit is the
           // parent unmounting us, which §7.2's 75% rule cannot reach from

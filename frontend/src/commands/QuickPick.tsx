@@ -128,7 +128,7 @@ export function QuickPick<T>(props: QuickPickProps<T>) {
           role="dialog"
           aria-modal="true"
           aria-label={props.label}
-          class={`${props.width ?? "w-[560px]"} max-w-[92vw] bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden`}
+          class={`${props.width ?? "w-[560px]"} max-w-[92vw] material-structural border border-border rounded-lg shadow-xl flex flex-col overflow-hidden`}
           onClick={(e) => e.stopPropagation()}
         >
           <div class="flex items-center gap-2 px-3 py-2 border-b border-border">

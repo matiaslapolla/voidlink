@@ -277,7 +277,7 @@ export function TooltipLayer() {
             }}
             class={[
               "fixed z-[var(--z-menu)] max-w-[280px] pointer-events-auto",
-              "rounded-md border border-border bg-popover text-popover-foreground",
+              "rounded-md border border-border material-chrome text-popover-foreground",
               "px-2 py-1 text-label leading-snug shadow-lg",
               // A warm or keyboard-opened tooltip appears with no transition at
               // all. A cold one gets §7.1's 5–50×/session budget, entering from

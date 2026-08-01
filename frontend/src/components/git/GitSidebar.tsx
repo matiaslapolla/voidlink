@@ -170,6 +170,9 @@ function Section(props: {
   label: string;
   icon: JSX.Element;
   open: boolean;
+  /// Whether the pane is in the DOM. Trails `open` by the length of the
+  /// collapse — see `useCollapseMount`.
+  mounted: boolean;
   isLast: boolean;
   onToggle: () => void;
   /// Shown beside the label. Its only job so far is saying that a *collapsed*
@@ -195,8 +198,14 @@ function Section(props: {
         aria-expanded={props.open}
         class="flex items-center gap-1.5 px-2.5 py-1.5 text-ui font-medium text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors flex-1 min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
+        {/* One glyph that rotates, not two that swap. A swap cannot
+            interpolate, so it reads as a flicker beside a track that is
+            taking `--dur-short` to open. */}
         <span class="w-3 h-3 shrink-0">
-          {props.open ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
+          <ChevronRight
+            class="w-3 h-3 transition-transform duration-[var(--dur-short)] ease-in-out"
+            classList={{ "rotate-90": props.open }}
+          />
         </span>
         {props.icon}
         <span class="flex-1 tracking-wide text-body truncate">{props.label}</span>
@@ -232,23 +241,87 @@ function Section(props: {
       </span>
       <span class="shrink-0 pr-1">{props.actions}</span>
       </div>
-      <Show when={props.open}>
-        <div
-          class={`overflow-y-auto scrollbar-thin ${props.isLast ? "flex-1 min-h-0" : "shrink-0"}`}
-          style={!props.isLast ? { height: `${props.contentHeight}px` } : undefined}
-        >
-          {props.children}
+      {/* The collapse (MOTION-PLAN F11).
+       *
+       * `grid-template-rows: 0fr → 1fr` is §7.3.2's named technique and the
+       * only one that animates a region to its *content's* height without
+       * measuring it, without a `max-height` guess, and without touching
+       * layout on the main thread every frame the way an animated `height`
+       * does. §7.1 budgets a sidebar collapse at `--dur-short`.
+       *
+       * **The last section is deliberately instant**, and that is a geometry
+       * fact rather than an oversight: an open last section is `flex-1`, so
+       * its height comes from the flex container and not from the grid track,
+       * and collapsing it changes which flex rule applies. There is nothing
+       * for the track to interpolate. Animating it would mean animating a flex
+       * basis, which §7.3.2 forbids for the reason it forbids `height`.
+       *
+       * The pane still *unmounts* when closed — a collapsed Stashes section
+       * that kept polling would be a background cost nobody asked for — and
+       * `mounted` is what holds it in the DOM for the length of the exit so
+       * there is something to collapse. */}
+      <div
+        data-motion="git-section"
+        class={[
+          "grid",
+          props.isLast && props.open ? "flex-1 min-h-0" : "shrink-0",
+          props.isLast ? "" : "transition-[grid-template-rows] duration-[var(--dur-short)] ease-in-out",
+        ].join(" ")}
+        style={{ "grid-template-rows": props.open ? "1fr" : "0fr" }}
+      >
+        <div class="min-h-0 overflow-hidden flex flex-col">
+          <Show when={props.mounted}>
+            <div
+              class={`overflow-y-auto scrollbar-thin ${props.isLast ? "flex-1 min-h-0" : "shrink-0"}`}
+              style={!props.isLast ? { height: `${props.contentHeight}px` } : undefined}
+            >
+              {props.children}
+            </div>
+            <Show when={!props.isLast}>
+              <div
+                class="h-1.5 cursor-row-resize shrink-0 hover:bg-primary/30 transition-colors"
+                onMouseDown={props.onResizeStart}
+              />
+            </Show>
+          </Show>
         </div>
-        <Show when={!props.isLast}>
-          <div
-            class="h-1.5 cursor-row-resize shrink-0 hover:bg-primary/30 transition-colors"
-            onMouseDown={props.onResizeStart}
-          />
-        </Show>
-      </Show>
+      </div>
     </div>
   );
 }
+
+/// `props.open`, held true for the length of the collapse.
+///
+/// A section unmounts its pane when it closes, and a pane that has already
+/// unmounted cannot animate away. This is the same shape as the toast
+/// viewport's departing rows: the truth (`open`) flips immediately and the DOM
+/// trails it by one exit.
+///
+/// Opening is *not* delayed — the content has to be in the DOM before the track
+/// can grow to it, or the section expands to nothing and then pops.
+export function useCollapseMount(open: () => boolean): () => boolean {
+  const [mounted, setMounted] = createSignal(open());
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  createEffect(() => {
+    if (handle !== undefined) {
+      clearTimeout(handle);
+      handle = undefined;
+    }
+    if (open()) {
+      setMounted(true);
+      return;
+    }
+    handle = setTimeout(() => setMounted(false), COLLAPSE_EXIT_MS);
+  });
+  onCleanup(() => {
+    if (handle !== undefined) clearTimeout(handle);
+  });
+  return mounted;
+}
+
+/// Must not be shorter than `--dur-short`; a little longer so the unmount never
+/// truncates the last frames of the collapse.
+const COLLAPSE_EXIT_MS = 220;
 
 export function GitSidebar(props: GitSidebarProps) {
   const { state, activeDiffTabs, editorActiveItem, actions } = useAppStore();
@@ -601,11 +674,16 @@ export function GitSidebar(props: GitSidebarProps) {
           scrolling past the five you don't. */}
       <div class="flex-1 flex flex-col overflow-y-auto scrollbar-thin">
         <For each={state.gitSectionOrder}>
-          {(key, i) => (
+          {(key, i) => {
+            // One per section, created inside the row's own reactive scope so
+            // each keeps its own exit timer.
+            const mounted = useCollapseMount(() => state.gitSections[key]);
+            return (
             <Section
               label={SECTION_LABELS[key]}
               icon={sectionIcon(key)}
               open={state.gitSections[key]}
+              mounted={mounted()}
               isLast={lastOpenSection() === key}
               onToggle={() => actions.toggleGitSection(key)}
               badge={key === "stashes" ? collapsedStashCount() : undefined}
@@ -621,7 +699,8 @@ export function GitSidebar(props: GitSidebarProps) {
                 {renderSection(key)}
               </GitErrorBoundary>
             </Section>
-          )}
+            );
+          }}
         </For>
       </div>
 

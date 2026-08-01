@@ -621,7 +621,7 @@ function OverflowMenu(props: { segments: StatusSegment[] }) {
           <div
             ref={panelRef}
             role="menu"
-            class="fixed w-[240px] rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-label"
+            class="fixed w-[240px] rounded-md border border-border material-chrome text-popover-foreground shadow-lg z-[var(--z-menu)] py-1 text-label"
             style={{ left: `${pos().left}px`, bottom: `${pos().bottom}px` }}
           >
             <For each={props.segments}>

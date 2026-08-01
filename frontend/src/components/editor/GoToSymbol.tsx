@@ -125,7 +125,7 @@ function SymbolPicker(props: { onClose: () => void }) {
         <div
           role="dialog"
           aria-label="Go to symbol"
-          class="w-[560px] max-w-[92vw] bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
+          class="w-[560px] max-w-[92vw] material-structural border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
           <div class="flex items-center gap-2 px-3 py-2 border-b border-border">

@@ -50,7 +50,7 @@ export function TabCycleOverlay() {
       <Portal>
         <div class="fixed inset-0 z-[var(--z-cycle)] flex items-center justify-center pointer-events-none">
           <div
-            class="w-[320px] max-w-[80vw] bg-popover border border-border rounded-lg shadow-xl overflow-hidden"
+            class="w-[320px] max-w-[80vw] material-structural border border-border rounded-lg shadow-xl overflow-hidden"
             role="listbox"
             aria-label="Recently used tabs"
             aria-live="polite"
