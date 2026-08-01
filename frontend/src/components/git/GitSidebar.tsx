@@ -22,12 +22,10 @@ import {
   FolderGit2,
   FolderOpen,
   Lock,
-  DownloadCloud,
   ArrowDownToLine,
   Undo2,
   Trash2,
   Archive,
-  Cloud,
   Tag,
   Pencil,
   GitBranchPlus,
@@ -47,6 +45,7 @@ import {
   requestOpenWorktreeOnMain,
 } from "@/api/windows";
 import { openMerge } from "@/components/git/openMerge";
+import { GitSyncControls, createGitSync } from "@/components/git/GitSyncControls";
 import { Splitter } from "@/components/layout/Splitter";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
 import {
@@ -64,7 +63,8 @@ import {
   type ChangeRow,
 } from "@/components/git/changesNav";
 import { FuzzyText } from "@/commands/QuickPick";
-import type { MatchRange } from "@/commands/fuzzy";
+import { fuzzyMatch, type FuzzyMatch, type MatchRange } from "@/commands/fuzzy";
+import { createRowIdentity } from "@/store/stableRows";
 import { PANEL_BOUNDS } from "@/store/layout";
 
 import { useAppStore } from "@/store/LayoutContext";
@@ -95,7 +95,7 @@ import {
   onAiCommitRequest,
 } from "@/commands/aiCommit";
 import { recordBranchUse, sortBranchesByMru } from "@/commands/branchMru";
-import type { GitCommitInfo } from "@/types/git";
+import type { GitBranchInfo, GitCommitInfo } from "@/types/git";
 
 type LucideIcon = Component<{ class?: string }>;
 
@@ -404,62 +404,18 @@ export function GitSidebar(props: GitSidebarProps) {
     });
   }
 
-  const [syncing, setSyncing] = createSignal(false);
   const [remotesOpen, setRemotesOpen] = createSignal(false);
 
-  /// Why Pull cannot run right now, or `null` when it can.
-  ///
-  /// Enabled-in-every-state meant clicking it on a detached HEAD, an unborn
-  /// branch or a branch with no upstream produced a raw porcelain error string in
-  /// a toast. The button now says the reason before you press it.
-  const pullBlockedReason = (): string | null => {
-    const current = info();
-    if (!current) return null;
-    if (current.operation) return `Finish or abort the ${current.operation} first`;
-    if (current.isDetached) return "HEAD is detached — check out a branch to pull";
-    if (!current.headOid) return "This branch has no commits yet — nothing to pull into";
-    if (!current.upstream) return "No upstream is set for this branch";
-    return null;
-  };
-
-  async function doFetch() {
-    setSyncing(true);
-    try {
-      // No remote name: fetch every configured remote. Passing none used to
-      // mean "origin" in Rust, so a remote added through the Remotes dialog
-      // was never fetched by anything and its branches never appeared.
-      await gitApi.fetch(props.repoPath);
-      pushToast("Fetched all remotes", "success", 2000);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-    } finally {
-      setSyncing(false);
-      emitGitRefsChanged();
-    }
-  }
-
-  async function doPull(mode: "ff-only" | "merge" | "rebase" = "ff-only") {
-    setSyncing(true);
-    try {
-      const res = await gitApi.pull(props.repoPath, mode);
-      if (res.conflicted) {
-        const conflicts = await gitApi.listConflicts(props.repoPath);
-        await Promise.all(
-          conflicts.map((c) => openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`)),
-        );
-        pushToast("Pull stopped on conflicts — resolve them, then continue.", "warning", 6000);
-      } else if (res.ok) {
-        pushToast("Pulled from origin", "success", 2000);
-      } else {
-        pushToast(res.message || "Pull failed", "error", 7000);
-      }
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 7000);
-    } finally {
-      setSyncing(false);
-      emitGitRefsChanged();
-    }
-  }
+  // Fetch / pull / remotes live in `GitSyncControls` now, shared with the
+  // standalone git window — which had none of the three, so the window you open
+  // *because* you want the git surface at full size could not fetch.
+  const sync = createGitSync({
+    repoPath: () => props.repoPath,
+    worktreeId: () => props.worktreeId,
+    info,
+  });
+  const doFetch = sync.doFetch;
+  const doPull = sync.doPull;
 
   // The last *open* section in the user's order is the one that grows to fill
   // the leftover height; everything above it keeps its own resized height.
@@ -597,33 +553,11 @@ export function GitSidebar(props: GitSidebarProps) {
           </button>
         </Show>
         <div class="ml-auto flex items-center gap-0.5">
-          <IconBtn
-            label="Fetch from origin"
-            onClick={() => void doFetch()}
-            disabled={syncing()}
-          >
-            <DownloadCloud class={`w-3 h-3 ${syncing() ? "animate-pulse" : ""}`} />
-          </IconBtn>
-          <button
-            onClick={() => void doPull()}
-            disabled={syncing() || pullBlockedReason() !== null}
-            aria-label="Pull from origin"
-            title={
-              pullBlockedReason() ??
-              ((info()?.behind ?? 0) > 0
-                ? `Pull ${info()!.behind} commit(s) from upstream`
-                : "Pull from origin")
-            }
-            class="flex items-center gap-0.5 px-1 py-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors disabled:opacity-40 tabular-nums"
-          >
-            <ArrowDownToLine class="w-3 h-3" />
-            <Show when={(info()?.behind ?? 0) > 0}>
-              <span class="text-[10px] text-destructive">{info()!.behind}</span>
-            </Show>
-          </button>
-          <IconBtn label="Manage remotes" onClick={() => setRemotesOpen(true)}>
-            <Cloud class="w-3 h-3" />
-          </IconBtn>
+          <GitSyncControls
+            sync={sync}
+            info={info}
+            onManageRemotes={() => setRemotesOpen(true)}
+          />
           <IconBtn
             label="Open git window"
             onClick={() => {
@@ -820,7 +754,11 @@ export function ChangesPane(props: {
   /// actions, so a path could no longer say which one the cursor was on.
   const [focusKey, setFocusKey] = createSignal<string | null>(null);
 
-  const rows = createMemo(() => flattenChanges(props.status ?? [], filter()));
+  /// Rows as stable objects across a pulse that did not change them — see
+  /// `store/stableRows`. This list rebuilds on every filesystem event, and
+  /// `<For>` keyed by reference tore down the focused row with everything else.
+  const stabilizeRows = createRowIdentity<ChangeRow>((r) => r.key);
+  const rows = createMemo(() => stabilizeRows(flattenChanges(props.status ?? [], filter())));
   const conflictRows = () => rowsIn(rows(), "conflicted");
   const stagedRows = () => rowsIn(rows(), "staged");
   const unstagedRows = () => rowsIn(rows(), "unstaged");
@@ -940,28 +878,45 @@ export function ChangesPane(props: {
     // edited again contributes two rows, and "Discard all changes to 2 tracked
     // file(s)" for one file is the kind of number that makes a destructive
     // confirm untrustworthy.
-    const all = props.status ?? [];
+    // Scoped to the filter when there is one. "Discard all changes" reverted
+    // every change in the repository while the list in front of the user showed
+    // four — the confirm was not lying, but the list is what they were reading,
+    // and this is the one action here that cannot be undone.
+    const filtering = filter().trim().length > 0;
+    const all = filtering
+      ? rows().map((r) => r.entry)
+      : (props.status ?? []);
     const pathsWhere = (keep: (status: string) => boolean) =>
       new Set(all.filter((f) => keep(f.status)).map((f) => f.path));
     const untracked = pathsWhere((s) => s === "untracked");
     const tracked = pathsWhere((s) => s !== "untracked");
+    /// `undefined` means "everything", which is what Rust wants when no filter
+    /// is active. An explicit list is never allowed to be empty-and-implicit.
+    const scope = filtering ? [...untracked, ...tracked] : undefined;
+    const what = filtering ? "matching the filter" : "";
 
     if (all.length === 0) {
-      pushToast("Nothing to discard — the working tree is clean.", "info", 2500);
+      pushToast(
+        filtering
+          ? "Nothing to discard — no changed file matches the filter."
+          : "Nothing to discard — the working tree is clean.",
+        "info",
+        2500,
+      );
       return;
     }
 
     let includeUntracked = false;
     if (tracked.size > 0) {
       const ok = await dialogConfirm(
-        `Discard all changes to ${tracked.size} tracked file(s)? Staged and unstaged edits both revert to HEAD. This cannot be undone.`,
+        `Discard all changes to ${tracked.size} tracked file(s) ${what}? Staged and unstaged edits both revert to HEAD. This cannot be undone.`,
         { title: "Discard tracked changes", kind: "warning" },
       );
       if (!ok) return;
     }
     if (untracked.size > 0) {
       includeUntracked = await dialogConfirm(
-        `Also delete ${untracked.size} untracked file(s) from disk? They are not in git, so this cannot be undone.`,
+        `Also delete ${untracked.size} untracked file(s) ${what} from disk? They are not in git, so this cannot be undone.`,
         { title: "Delete untracked files", kind: "warning" },
       );
       // Nothing at all was confirmed — don't run a no-op that reports success.
@@ -970,7 +925,16 @@ export function ChangesPane(props: {
 
     await run(async () => {
       try {
-        await gitApi.discardAll(props.repoPath, includeUntracked);
+        // Untracked paths are dropped from the scope when the user declined
+        // the second confirm: Rust deletes an untracked path it is *given*
+        // whenever `includeUntracked` is set, and the confirm the user answered
+        // was about the tracked half only.
+        const paths = scope
+          ? includeUntracked
+            ? scope
+            : scope.filter((p) => !untracked.has(p))
+          : undefined;
+        await gitApi.discardAll(props.repoPath, includeUntracked, paths);
         pushToast(
           includeUntracked
             ? "Discarded tracked changes and deleted untracked files"
@@ -1627,13 +1591,28 @@ export function BranchesPane(props: {
   const blocked = (): string | null =>
     props.operation ? `Finish or abort the ${props.operation} first` : null;
   const locked = () => busy() || blocked() !== null;
+  /// The list, tagged with the repository it came from.
+  ///
+  /// Solid keeps the previous value while a refetch is in flight (`completeLoad`
+  /// only calls `setValue` on success), so switching worktrees rendered the
+  /// *old* repository's branches for the length of the round-trip — with the
+  /// header already showing the new repo's name. Checking out from that list
+  /// would have named a branch that may not exist here. Carrying the repo path
+  /// in the payload is what lets the pane tell "still loading" from "loaded".
   const [branches, { refetch }] = createResource(
     () => props.repoPath,
-    (p) => gitApi.listBranches(p, true),
+    async (p) => ({ repo: p, list: await gitApi.listBranches(p, true) }),
   );
   const [error, setError] = createSignal("");
   const [filter, setFilter] = createSignal("");
   const [menu, setMenu] = createSignal<{ x: number; y: number; branch: string } | null>(null);
+  /// Remote-tracking branches are hidden by default.
+  ///
+  /// `listBranches(p, true)` was hardcoded and the two kinds were interleaved
+  /// through one sort, so in any clone of any size the local branches — the
+  /// ones you can actually check out and delete — were scattered through a list
+  /// dominated by rows that only exist to be read.
+  const [showRemotes, setShowRemotes] = createSignal(false);
 
   async function routeOpResult(res: { ok: boolean; conflicted: boolean; message: string }, label: string) {
     try {
@@ -1693,7 +1672,19 @@ export function BranchesPane(props: {
 
   // Branch ahead/behind and HEAD move on most git mutations; refetch on the
   // shared ref-change pulse so the list never lags after a merge/reset/etc.
-  onMount(() => onCleanup(onGitRefsChanged(() => refetch())));
+  //
+  // The open context menu closes with it. It holds a branch *name*, captured
+  // when the row was right-clicked, and a pulse is exactly the moment that name
+  // can stop meaning what it did — the branch was renamed, deleted, or is now
+  // mid-rebase. "Merge topic into current" would then act on a stale answer.
+  onMount(() =>
+    onCleanup(
+      onGitRefsChanged(() => {
+        setMenu(null);
+        refetch();
+      }),
+    ),
+  );
 
   async function checkout(name: string) {
     setError("");
@@ -1754,7 +1745,28 @@ export function BranchesPane(props: {
         await gitApi.renameBranch(props.repoPath, name, next);
         pushToast(`Renamed to ${next}`, "success", 2500);
       } catch (e) {
-        pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+        const msg = e instanceof Error ? e.message : String(e);
+        // `gitApi.renameBranch` has always taken a `force`, nothing ever passed
+        // it, and there was no overwrite confirm — so renaming onto an existing
+        // name failed with a raw libgit2 sentence and a dead end, while the tag
+        // flow two panes down offers exactly this. Matched on libgit2's wording
+        // because the rename goes straight through git2 with no marker of ours
+        // to key off; a miss costs the old behaviour, not a wrong one.
+        if (!/exists|failed to rename/i.test(msg)) {
+          pushToast(msg, "error", 6000);
+          return;
+        }
+        const force = await dialogConfirm(
+          `A branch named ${next} already exists.\n\nOverwrite it? Its commits stay in the repository but nothing will point at them.`,
+          { title: "Overwrite branch", kind: "warning" },
+        );
+        if (!force) return;
+        try {
+          await gitApi.renameBranch(props.repoPath, name, next, true);
+          pushToast(`Renamed to ${next}`, "success", 2500);
+        } catch (e2) {
+          pushToast(e2 instanceof Error ? e2.message : String(e2), "error", 6000);
+        }
       } finally {
         emitGitRefsChanged();
       }
@@ -1768,8 +1780,17 @@ export function BranchesPane(props: {
   /// it — the exact overlap `commands/inflight` exists to prevent. The confirm
   /// stays outside because holding the gate across a modal would block every
   /// other button for as long as the dialog is up.
-  async function deleteBranch(name: string) {
-    const ok = await dialogConfirm(`Delete branch ${name}?`, { title: "Delete branch", kind: "warning" });
+  async function deleteBranch(name: string, symbolicTarget?: string | null) {
+    const ok = await dialogConfirm(
+      symbolicTarget
+        ? // A symbolic ref is an alias. Deleting it removes the alias and
+          // leaves the branch it names untouched — which is either exactly
+          // what the user wanted or the opposite of it, and the old one-line
+          // confirm gave them no way to tell which they were about to get.
+          `${name} is an alias for ${symbolicTarget}.\n\nDeleting it removes the alias only — ${symbolicTarget} and its commits are untouched.`
+        : `Delete branch ${name}?`,
+      { title: symbolicTarget ? "Delete branch alias" : "Delete branch", kind: "warning" },
+    );
     if (!ok) return;
     await run(() => performDelete(name));
   }
@@ -1804,33 +1825,86 @@ export function BranchesPane(props: {
     }
   }
 
-  /// Fuzzy match: substring first (preferred), then in-order character
-  /// subsequence as a fallback. Matches the spirit of the file/command
-  /// pickers already in the app.
-  function fuzzy(name: string, query: string): boolean {
-    if (!query) return true;
-    const n = name.toLowerCase();
-    const q = query.toLowerCase();
-    if (n.includes(q)) return true;
-    let i = 0;
-    for (const ch of q) {
-      const idx = n.indexOf(ch, i);
-      if (idx === -1) return false;
-      i = idx + 1;
-    }
-    return true;
-  }
+  /// The list for *this* repository, or `undefined` — never a throw, and never
+  /// the previous repo's. A Solid resource rethrows its rejection from every
+  /// read, and this one is read inside a memo; see the same guard in
+  /// `CommitGraph`.
+  const settled = () => {
+    if (branches.state === "errored") return undefined;
+    const data = branches.latest;
+    return data && data.repo === props.repoPath ? data.list : undefined;
+  };
 
-  /// The list, or `undefined` — never a throw. A Solid resource rethrows its
-  /// rejection from every read, and this one is read inside a memo; see the
-  /// same guard in `CommitGraph`.
-  const settled = () => (branches.state === "errored" ? undefined : branches());
-
-  const filtered = createMemo(() => {
+  /// One `BranchRow` per branch, with the fuzzy ranges the filter matched.
+  ///
+  /// The old matcher was hand-rolled and answered only yes/no: its subsequence
+  /// fallback let `main` match `feature/my-api-normalizer`, and nothing said
+  /// *which* characters had matched even though `FuzzyText` and `MatchRange`
+  /// were already imported for it. `fuzzyMatch` is the same matcher the command
+  /// palette and file finder use — it scores, so a loose subsequence hit sorts
+  /// below a real one instead of sitting next to it, and it returns the ranges.
+  const matched = createMemo(() => {
     const all = settled() ?? [];
-    const sorted = sortBranchesByMru(all, props.repoPath);
+    const visible = showRemotes() ? all : all.filter((b) => !b.isRemote);
     const q = filter().trim();
-    return q ? sorted.filter((b) => fuzzy(b.name, q)) : sorted;
+    if (!q) {
+      return sortBranchesByMru(visible, props.repoPath).map((branch) => ({
+        branch,
+        ranges: [] as MatchRange[],
+      }));
+    }
+    const hits = visible
+      .map((branch) => ({ branch, match: fuzzyMatch(branch.name, q, { pathAware: true }) }))
+      .filter((h): h is { branch: GitBranchInfo; match: FuzzyMatch } => h.match !== null);
+    // Ordered by score only while filtering. With no query the MRU order is
+    // what makes the list scannable — a branch stays where you last saw it.
+    hits.sort((a, b) => b.match.score - a.match.score || a.branch.name.localeCompare(b.branch.name));
+    return hits.map((h) => ({ branch: h.branch, ranges: h.match.ranges }));
+  });
+
+  /// Rows as stable objects across a pulse that did not change them.
+  ///
+  /// `<For>` is keyed by reference and this list is rebuilt on every refs
+  /// pulse — which the filesystem watcher fires several times a second while
+  /// anything is running. Every row was torn down and rebuilt each time, so a
+  /// focused rename button lost focus mid-refresh and the hover-revealed
+  /// controls flickered. See `store/stableRows`.
+  ///
+  /// Keyed on remote-ness *and* name, NUL-escaped for the same reason
+  /// `changesNav.rowKey` does it: a local `foo` and `origin/foo` are different
+  /// rows, and no ref name can contain the separator and forge another's key.
+  const stabilize = createRowIdentity<{ branch: GitBranchInfo; ranges: MatchRange[] }>(
+    (r) => `${r.branch.isRemote ? "r" : "l"}\u0000${r.branch.name}`,
+  );
+  const filtered = createMemo(() => stabilize(matched()));
+
+  const localCount = () => (settled() ?? []).filter((b) => !b.isRemote).length;
+  const remoteCount = () => (settled() ?? []).filter((b) => b.isRemote).length;
+
+  /// Why this row cannot be acted on, or null.
+  ///
+  /// A lossily-decoded name is not the byte string git holds, so `find_branch`
+  /// cannot locate it and two different invalid names can flatten to the same
+  /// replacement character. Listing the row is the fix for it being invisible;
+  /// leaving its buttons live would have replaced a hidden branch with a
+  /// delete that might hit the wrong one.
+  const rowBlocked = (b: GitBranchInfo): string | null =>
+    b.lossyName
+      ? "This branch's name is not valid UTF-8 — use the command line to work with it"
+      : blocked();
+
+  const rowProps = (row: { branch: GitBranchInfo; ranges: MatchRange[] }) => ({
+    branch: row.branch,
+    ranges: row.ranges,
+    blockedReason: rowBlocked(row.branch),
+    busy: busy(),
+    onCheckout: () => void checkout(row.branch.name),
+    onRename: () => void renameBranch(row.branch.name),
+    onDelete: () => void deleteBranch(row.branch.name, row.branch.symbolicTarget),
+    onMenu: (e: MouseEvent) => {
+      e.preventDefault();
+      setMenu({ x: e.clientX, y: e.clientY, branch: row.branch.name });
+    },
   });
 
   return (
@@ -1899,80 +1973,41 @@ export function BranchesPane(props: {
           </button>
         </div>
       </Show>
-      <For each={filtered()}>
-        {(b) => (
-          <div
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setMenu({ x: e.clientX, y: e.clientY, branch: b.name });
-            }}
-            class={`group flex items-center gap-2 rounded-md px-2 density-row text-[13px] transition-colors ${
-              b.isHead
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-accent/40"
-            }`}
-          >
-            <button
-              onClick={() => void checkout(b.name)}
-              disabled={b.isHead || locked()}
-              aria-label={b.isHead ? `${b.name} (current branch)` : `Checkout ${b.name}`}
-              title={
-                blocked() ??
-                (b.isHead
-                  ? `${b.name} is the current branch`
-                  : b.isRemote
-                    ? `Check out ${b.name} (creates a local branch tracking it)`
-                    : `Checkout ${b.name}`)
-              }
-              class="flex items-center gap-2 min-w-0 flex-1 text-left hover:text-foreground disabled:cursor-default disabled:hover:text-primary"
-            >
-              <GitBranch class="w-3 h-3 shrink-0" />
-              <span class="truncate flex-1">{b.name}</span>
-            </button>
-            <Show when={b.ahead > 0}>
-              <span class="text-success tabular-nums">↑{b.ahead}</span>
-            </Show>
-            <Show when={b.behind > 0}>
-              <span class="text-destructive tabular-nums">↓{b.behind}</span>
-            </Show>
-            <Show when={b.aheadBehindUnknown}>
-              <span
-                class="text-muted-foreground/70"
-                title="Ahead/behind could not be computed for this branch (shallow clone?)"
-              >
-                ?
-              </span>
-            </Show>
-            <Show when={b.isHead}>
-              <span class="text-xs tracking-wide text-primary/80">HEAD</span>
-            </Show>
-            <Show when={!b.isRemote}>
-              <button
-                onClick={() => void renameBranch(b.name)}
-                disabled={locked()}
-                title="Rename branch"
-                aria-label={`Rename ${b.name}`}
-                class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all"
-              >
-                <Pencil class="w-3 h-3" />
-              </button>
-              <Show when={!b.isHead}>
-                <button
-                  onClick={() => void deleteBranch(b.name)}
-                  disabled={locked()}
-                  title="Delete branch"
-                  aria-label={`Delete ${b.name}`}
-                  class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
-                >
-                  <X class="w-3 h-3" />
-                </button>
-              </Show>
-            </Show>
-          </div>
-        )}
+      {/* Grouped, because local and remote rows are different kinds of thing:
+          one you check out and delete, the other you can only read. They used
+          to interleave through a single sort, so in any real clone the handful
+          of branches you work on were scattered through a hundred you don't. */}
+      <Show when={filtered().some((r) => !r.branch.isRemote)}>
+        <SectionLabel class="!bg-transparent">
+          Local ({localCount()})
+        </SectionLabel>
+      </Show>
+      <For each={filtered().filter((r) => !r.branch.isRemote)}>
+        {(row) => <BranchRow {...rowProps(row)} />}
       </For>
+
+      <Show when={remoteCount() > 0}>
+        <button
+          onClick={() => setShowRemotes((v) => !v)}
+          aria-expanded={showRemotes()}
+          class="w-full flex items-center gap-1 px-2 py-1 ui-section-label text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Show when={showRemotes()} fallback={<ChevronRight class="w-3 h-3" />}>
+            <ChevronDown class="w-3 h-3" />
+          </Show>
+          Remote ({remoteCount()})
+        </button>
+      </Show>
+      <For each={filtered().filter((r) => r.branch.isRemote)}>
+        {(row) => <BranchRow {...rowProps(row)} />}
+      </For>
+
       <Show when={(settled()?.length ?? 0) > 0 && filtered().length === 0}>
-        <p class="text-[11px] text-muted-foreground px-1 py-1">No matches.</p>
+        <p class="text-[11px] text-muted-foreground px-1 py-1">
+          {showRemotes() || remoteCount() === 0
+            ? "No matches."
+            : `No matches among the local branches — ${remoteCount()} remote branch(es) are hidden.`}
+        </p>
       </Show>
 
       <Show when={props.showTags !== false}>
@@ -1987,6 +2022,165 @@ export function BranchesPane(props: {
             items={branchMenuItems(m().branch)}
             onClose={() => setMenu(null)}
           />
+        )}
+      </Show>
+    </div>
+  );
+}
+
+/// How long ago, in the shortest form that is still true.
+///
+/// `lastCommitTime` and `lastCommitSummary` were computed for every branch —
+/// one `find_commit` each, on every pulse — and then never rendered anywhere.
+/// The pane paid for them and showed a bare list of names, which is the one
+/// question a branch list cannot answer on its own: *which of these is stale?*
+export function relativeAge(seconds: number, now = Date.now()): string {
+  const delta = Math.round(now / 1000) - seconds;
+  // A commit stamped in the future is a real thing — a colleague's clock, a
+  // rebase with a fixed date — and "in 3 hours" reads as a bug, so it clamps.
+  if (delta < 60) return "just now";
+  const mins = Math.floor(delta / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+
+/// One branch. Extracted so `<For>` renders a component rather than a closure
+/// over the pane's whole scope, which is what makes the stable-identity keying
+/// in `BranchesPane` worth anything: an untouched row's DOM survives a pulse.
+function BranchRow(props: {
+  branch: GitBranchInfo;
+  ranges: MatchRange[];
+  /// Why every mutation on this row is unavailable, or null.
+  blockedReason: string | null;
+  busy: boolean;
+  onCheckout: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  onMenu: (e: MouseEvent) => void;
+}) {
+  const b = () => props.branch;
+  const locked = () => props.busy || props.blockedReason !== null;
+  const subtitle = () => {
+    const parts: string[] = [];
+    if (b().lastCommitSummary) parts.push(b().lastCommitSummary!);
+    if (b().lastCommitTime !== null) parts.push(relativeAge(b().lastCommitTime!));
+    return parts.join(" · ");
+  };
+
+  return (
+    <div
+      onContextMenu={props.onMenu}
+      class={`group flex flex-col rounded-md px-2 py-0.5 text-[13px] transition-colors ${
+        b().isHead ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent/40"
+      }`}
+    >
+      <div class="flex items-center gap-2">
+        <button
+          onClick={props.onCheckout}
+          disabled={b().isHead || locked()}
+          aria-label={b().isHead ? `${b().name} (current branch)` : `Checkout ${b().name}`}
+          title={
+            props.blockedReason ??
+            (b().isHead
+              ? `${b().name} is the current branch`
+              : b().symbolicTarget
+                ? `${b().name} is an alias for ${b().symbolicTarget}`
+                : b().isRemote
+                  ? `Check out ${b().name} (creates a local branch tracking it)`
+                  : `Checkout ${b().name}`)
+          }
+          class="flex items-center gap-2 min-w-0 flex-1 text-left hover:text-foreground disabled:cursor-default disabled:hover:text-primary"
+        >
+          <GitBranch class="w-3 h-3 shrink-0" />
+          <span class="truncate flex-1">
+            <FuzzyText text={b().name} ranges={props.ranges} />
+          </span>
+        </button>
+        {/* A remote row hardcodes 0/0 and no upstream in Rust, so without a
+            label it renders identically to a local branch that is in sync —
+            two very different facts drawn the same way. */}
+        <Show when={b().isRemote}>
+          <span
+            class="shrink-0 px-1 rounded text-[10px] uppercase tracking-wide bg-muted/60 text-muted-foreground/80"
+            title="A remote-tracking branch. Ahead/behind is not computed for these."
+          >
+            remote
+          </span>
+        </Show>
+        {/* An alias, not a branch — see `symbolicTarget`. */}
+        <Show when={b().symbolicTarget}>
+          {(target) => (
+            <span
+              class="shrink-0 text-[10px] text-muted-foreground/80 truncate max-w-[40%]"
+              title={`Symbolic ref pointing at ${target()}`}
+            >
+              → {target()}
+            </span>
+          )}
+        </Show>
+        <Show when={b().lossyName}>
+          <span class="shrink-0 text-warning" title={props.blockedReason ?? ""}>
+            ⚠
+          </span>
+        </Show>
+        <Show when={b().ahead > 0}>
+          <span class="text-success tabular-nums">↑{b().ahead}</span>
+        </Show>
+        <Show when={b().behind > 0}>
+          <span class="text-destructive tabular-nums">↓{b().behind}</span>
+        </Show>
+        <Show when={b().aheadBehindUnknown}>
+          <span
+            class="text-muted-foreground/70"
+            title="Ahead/behind could not be computed for this branch (shallow clone?)"
+          >
+            ?
+          </span>
+        </Show>
+        <Show when={b().isHead}>
+          <span class="text-xs tracking-wide text-primary/80">HEAD</span>
+        </Show>
+        <Show when={!b().isRemote}>
+          <button
+            onClick={props.onRename}
+            disabled={locked()}
+            title={props.blockedReason ?? "Rename branch"}
+            aria-label={`Rename ${b().name}`}
+            class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent/50 transition-all disabled:opacity-40"
+          >
+            <Pencil class="w-3 h-3" />
+          </button>
+          <Show when={!b().isHead}>
+            <button
+              onClick={props.onDelete}
+              disabled={locked()}
+              title={props.blockedReason ?? "Delete branch"}
+              aria-label={`Delete ${b().name}`}
+              class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all disabled:opacity-40"
+            >
+              <X class="w-3 h-3" />
+            </button>
+          </Show>
+        </Show>
+      </div>
+      {/* The subtitle the backend was already paying for. Which branch is stale
+          is the question a bare list of names cannot answer. */}
+      <Show when={subtitle()}>
+        <div class="pl-5 truncate text-[11px] text-muted-foreground/70" title={subtitle()}>
+          {subtitle()}
+        </div>
+      </Show>
+      <Show when={b().upstream}>
+        {(up) => (
+          <div class="pl-5 truncate text-[10px] text-muted-foreground/60" title={`Tracking ${up()}`}>
+            ⇅ {up()}
+          </div>
         )}
       </Show>
     </div>
@@ -2520,12 +2714,34 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
 // Remotes (modal)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => void }) {
+export function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => void }) {
   const { busy, run } = createInFlight();
   const [remotes, { refetch }] = createResource(
     () => (props.open ? props.repoPath : null),
     (p) => gitApi.listRemotes(p),
   );
+
+  // A remote added from the other window, from a terminal, or by the wizard did
+  // not show up in an open dialog — which is the one place in the app whose
+  // entire job is telling you which remotes exist. Every mutation in here emits
+  // the pulse already; nothing was listening for anyone else's.
+  onMount(() => onCleanup(onGitRefsChanged(() => props.open && refetch())));
+
+  /// The remote as it exists *now*, or null.
+  ///
+  /// Every action here awaits a prompt outside the in-flight gate — deliberately,
+  /// since holding it across a modal freezes every other button — so a pulse can
+  /// land while the dialog is up and the `RemoteInfo` captured at click time can
+  /// name a remote that has since been renamed or removed. Re-reading the list
+  /// before mutating is what keeps "Set URL for origin" from writing to whatever
+  /// happens to be called origin a minute later.
+  const stillThere = (r: RemoteInfo): RemoteInfo | null =>
+    (remotes() ?? []).find((x) => x.name === r.name) ?? null;
+
+  function goneToast(name: string) {
+    pushToast(`Remote "${name}" is no longer configured — nothing was changed.`, "warning", 5000);
+    refetch();
+  }
 
   async function addRemote() {
     const rawName = await textPrompt({ title: "Add remote", label: "Remote name", placeholder: "origin", confirmLabel: "Next" });
@@ -2594,6 +2810,7 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
       );
       return;
     }
+    if (!stillThere(r)) return goneToast(r.name);
     await run(async () => {
       try {
         await gitApi.setRemoteUrl(props.repoPath, r.name, url);
@@ -2617,6 +2834,7 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
   async function renameRemote(r: RemoteInfo) {
     const next = await textPrompt({ title: "Rename remote", label: `New name for ${r.name}`, initialValue: r.name, confirmLabel: "Rename" });
     if (!next || next === r.name) return;
+    if (!stillThere(r)) return goneToast(r.name);
     await run(async () => {
       try {
         const stranded = await gitApi.renameRemote(props.repoPath, r.name, next);
@@ -2652,6 +2870,7 @@ function RemotesDialog(props: { repoPath: string; open: boolean; onClose: () => 
       { title: "Remove remote", kind: "warning" },
     );
     if (!ok) return;
+    if (!stillThere(r)) return goneToast(r.name);
     await run(async () => {
       try {
         await gitApi.removeRemote(props.repoPath, r.name);
@@ -3304,6 +3523,11 @@ function VirtualFileList(props: {
       file={r.entry.path}
       ranges={r.ranges}
       status={r.entry.status}
+      // A path that survived a lossy UTF-8 conversion is not the byte string
+      // git holds, so every command that takes one would fail on it. Listing
+      // the row fixes the file being invisible; leaving its buttons live would
+      // trade that for three buttons that error.
+      unactionable={r.entry.lossyPath ? "This path is not valid UTF-8 — use the command line for this file" : undefined}
       // Both halves of the path *and* the side: highlighting on path alone lit
       // the staged and unstaged rows of one file together, saying two tabs were
       // open when one was.
@@ -3381,6 +3605,8 @@ function FileRow(props: {
   secondaryIcon?: LucideIcon;
   onSecondary?: () => void;
   secondaryTitle?: string;
+  /// Why no action on this row can run, or undefined. See `GitFileStatus.lossyPath`.
+  unactionable?: string;
 }) {
   const Icon = props.actionIcon;
   return (
@@ -3396,14 +3622,21 @@ function FileRow(props: {
     >
       <button
         onClick={props.onSelect}
+        disabled={!!props.unactionable}
+        title={props.unactionable}
         aria-label={`Open diff for ${props.file}`}
         aria-pressed={props.selected}
-        class="flex-1 flex items-center gap-1.5 pl-2.5 h-full min-w-0 text-left cursor-pointer focus-visible:outline-none"
+        class="flex-1 flex items-center gap-1.5 pl-2.5 h-full min-w-0 text-left cursor-pointer focus-visible:outline-none disabled:cursor-default"
       >
         <StatusBadge status={props.status} />
         <span class="flex-1 truncate">
           <FuzzyText text={props.file} ranges={props.ranges ?? []} />
         </span>
+        <Show when={props.unactionable}>
+          <span class="shrink-0 pr-1 text-warning" title={props.unactionable}>
+            ⚠
+          </span>
+        </Show>
       </button>
       <Show when={props.secondaryIcon}>
         {(SecondaryIcon) => (
@@ -3412,8 +3645,9 @@ function FileRow(props: {
               e.stopPropagation();
               props.onSecondary?.();
             }}
+            disabled={!!props.unactionable}
             aria-label={`${props.secondaryTitle} ${props.file}`}
-            title={props.secondaryTitle}
+            title={props.unactionable ?? props.secondaryTitle}
             class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive focus-visible:opacity-100 transition-[opacity,background-color,color]"
           >
             {(() => {
@@ -3428,9 +3662,10 @@ function FileRow(props: {
           e.stopPropagation();
           props.onAction();
         }}
+        disabled={!!props.unactionable}
         aria-label={`${props.actionTitle} ${props.file}`}
-        title={props.actionTitle}
-        class="p-0.5 mr-2 rounded opacity-60 group-hover:opacity-100 hover:bg-accent focus-visible:opacity-100"
+        title={props.unactionable ?? props.actionTitle}
+        class="p-0.5 mr-2 rounded opacity-60 group-hover:opacity-100 hover:bg-accent focus-visible:opacity-100 disabled:opacity-30"
       >
         <Icon class="w-3 h-3 text-muted-foreground" />
       </button>

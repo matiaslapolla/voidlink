@@ -105,7 +105,12 @@ export interface GitCommitInfo {
 }
 
 export interface DiffLine {
-  origin: "+" | "-" | " " | "~";
+  /**
+   * `"\\"` is `\ No newline at end of file` — libgit2 emits that annotation as
+   * a diff line like any other, and it is not one. It has no line numbers and
+   * belongs to the line above it.
+   */
+  origin: "+" | "-" | " " | "~" | "\\";
   content: string;
   oldLineno: number | null;
   newLineno: number | null;

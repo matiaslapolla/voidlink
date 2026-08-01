@@ -30,6 +30,7 @@ import {
   Tag,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
+import type { GitRepoInfo } from "@/types/git";
 import { isMac } from "@/api/platform";
 import {
   bridgeGitRefsAcrossWindows,
@@ -41,10 +42,12 @@ import {
   BranchesPane,
   ChangesPane,
   HistoryPane,
+  RemotesDialog,
   StashesPane,
   TagsPane,
   WorktreesPane,
 } from "@/components/git/GitSidebar";
+import { GitSyncControls, createGitSync } from "@/components/git/GitSyncControls";
 import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { CompareTab } from "@/components/git/compare/CompareTab";
@@ -146,6 +149,7 @@ export function GitSurface(props: {
 
   const repoPath = createMemo(() => context()?.repoPath ?? null);
   const worktreeId = createMemo(() => context()?.worktreeId ?? "");
+  const [remotesOpen, setRemotesOpen] = createSignal(false);
 
   // A repo change invalidates everything on screen.
   createEffect((prev: string | null | undefined) => {
@@ -164,12 +168,19 @@ export function GitSurface(props: {
   const [repoInfo, setRepoInfo] = createSignal<{
     currentBranch: string | null;
     isClean: boolean;
+    /// Everything `GitSyncControls` needs to gate Pull. Carried here because
+    /// this window renders the same three buttons the sidebar does, and Pull
+    /// enabled on a detached HEAD or an upstream-less branch answers with a raw
+    /// porcelain error rather than with the reason.
+    headOid: string | null;
+    upstream: string | null;
+    behind: number;
     /// Carried so `BranchesPane` can disable the mutations a merge or rebase
     /// would corrupt. Without it this window left every branch's delete button
     /// live mid-rebase while the workbench disabled it — and the backend guard
     /// that now refuses those deletes is a wall to walk into, not a reason to
     /// keep offering the button.
-    operation: string | null;
+    operation: GitRepoInfo["operation"];
     isDetached: boolean;
   } | null>(null);
 
@@ -191,6 +202,9 @@ export function GitSurface(props: {
         isClean: info.isClean,
         operation: info.operation,
         isDetached: info.isDetached,
+        headOid: info.headOid,
+        upstream: info.upstream,
+        behind: info.behind,
       });
     } catch (e) {
       // A repository that vanished under us needs no toast — but an index.lock
@@ -211,6 +225,12 @@ export function GitSurface(props: {
     void refreshAll();
   });
   onMount(() => onCleanup(onGitRefsChanged(() => void refreshAll())));
+
+  const sync = createGitSync({
+    repoPath: () => repoPath() ?? "",
+    worktreeId,
+    info: repoInfo,
+  });
 
   /// Open (or reuse) a compare tab in this window's local store, then show it.
   function openCompare() {
@@ -252,14 +272,35 @@ export function GitSurface(props: {
         <Show when={repoInfo()?.isClean === false}>
           <span class="text-warning">• changes</span>
         </Show>
-        <span class="ml-auto text-muted-foreground truncate max-w-[50%]">
+        <span class="ml-auto text-muted-foreground truncate max-w-[40%]">
           {context()
             ? `${context()!.workspaceName} · ${context()!.worktreeLabel}`
             : props.embedded
               ? ""
               : "Waiting for the workbench…"}
         </span>
+        {/* This window had no fetch, no pull and no way to reach the remotes
+            dialog at all — you could rebase and reset here but never find out
+            that the branch you were about to rebase onto had moved. */}
+        <Show when={repoPath()}>
+          <div class="flex items-center gap-0.5 shrink-0">
+            <GitSyncControls
+              sync={sync}
+              info={repoInfo}
+              onManageRemotes={() => setRemotesOpen(true)}
+            />
+          </div>
+        </Show>
       </div>
+      <Show when={repoPath()}>
+        {(path) => (
+          <RemotesDialog
+            repoPath={path()}
+            open={remotesOpen()}
+            onClose={() => setRemotesOpen(false)}
+          />
+        )}
+      </Show>
 
       <Show
         when={repoPath()}
