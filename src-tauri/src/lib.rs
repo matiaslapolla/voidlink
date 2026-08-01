@@ -7,6 +7,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 
 mod agent;
 mod browser;
+mod fanout;
 mod git;
 mod fs;
 mod journal;
@@ -1163,6 +1164,7 @@ pub fn run() {
         .manage(browser::new_store())
         .manage(watch::WatchState::default())
         .manage(journal::JournalState::default())
+        .manage(fanout::FanoutState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1370,6 +1372,10 @@ pub fn run() {
             lsp::lsp_stop,
             agent::agent_stream_query,
             agent::agent_cancel_turn,
+            fanout::fanout_start_run,
+            fanout::fanout_cancel_leg,
+            fanout::fanout_run_state,
+            fanout::fanout_subscribe,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
