@@ -70,6 +70,52 @@ export function clearNewWorktreeRequest(): void {
 /// Also the string the wizard offers to append to `.gitignore`.
 export const WORKTREE_DIR = ".worktrees";
 
+/// What creating a worktree on this branch name will actually do.
+///
+///   * `local`  — the branch exists here; check it out.
+///   * `remote` — no local branch, but exactly one remote has one by that name.
+///     `git worktree add <path> <branch>` DWIMs this into
+///     `--track -b <branch> <path> <remote>/<branch>`, so the worktree lands on
+///     a local branch tracking the remote — which is what "add a worktree for
+///     `feature/x`" means when `feature/x` is a colleague's branch.
+///   * `new`    — nothing by that name anywhere; branch off HEAD.
+export type WorktreeBranchKind = "local" | "remote" | "new";
+
+export interface WorktreeBranchClass {
+  kind: WorktreeBranchKind;
+  /// For `remote`, the full ref the new branch will track (`origin/feature/x`).
+  trackingRef?: string;
+}
+
+/// Classify `branch` against the repository's branches.
+///
+/// The wizard used to ask for **local** branches only, so a branch that existed
+/// solely on a remote read as brand new: it created a fresh branch off HEAD
+/// under a name already taken upstream, silently, with no tracking. Pushing it
+/// then either fails or opens a second head on someone else's work.
+///
+/// Ambiguity is resolved the way git resolves it — it only DWIMs when exactly
+/// one remote has the name. Two remotes carrying `feature/x` is not a branch we
+/// can pick for the user, so it falls through to `new` (git would refuse the
+/// checkout, and branching off HEAD under a name we cannot resolve is the one
+/// answer that does not pretend to know which remote was meant).
+export function classifyWorktreeBranch(
+  branch: string,
+  branches: { name: string; isRemote: boolean }[],
+): WorktreeBranchClass {
+  const name = branch.trim();
+  if (!name) return { kind: "new" };
+  if (branches.some((b) => !b.isRemote && b.name === name)) return { kind: "local" };
+
+  // Remote branches are listed as `<remote>/<branch>`; the branch name itself
+  // may contain slashes, so match on the suffix rather than splitting.
+  const matches = branches.filter(
+    (b) => b.isRemote && b.name.endsWith(`/${name}`) && b.name.length > name.length + 1,
+  );
+  if (matches.length === 1) return { kind: "remote", trackingRef: matches[0].name };
+  return { kind: "new" };
+}
+
 /// Turn a branch name into a single path segment. Slashes in a branch name
 /// (`feat/foo`) would otherwise nest directories, so they collapse like every
 /// other unsafe character.

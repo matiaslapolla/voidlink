@@ -110,10 +110,12 @@ No dedicated chords, but the command palette (`Mod+K`) carries the whole set:
   both land on `.worktrees/feature-x`, and the resulting
   `path already exists: <path>` is unrecoverable from the UI. Edit the
   Directory field to break the tie.
-- **A remote-only branch is treated as new.** The existence check only looks at
-  local branches, so `origin/feature/x` gets `worktree add -b feature/x`, which
-  creates a fresh local branch off `HEAD` instead of a tracking branch off the
-  remote.
+- **A remote-only branch tracks, but only when one remote has it.** The wizard
+  classifies the name against local *and* remote branches and says which of the
+  three it will do under the input box. With exactly one remote carrying the
+  name, `worktree add <path> <branch>` lets git's own DWIM create a local branch
+  tracking it. Two remotes carrying the same name is ambiguous, so it falls back
+  to branching off `HEAD` — check the hint before pressing Create.
 - **`main` is positional, not semantic.** It is whichever record
   `git worktree list --porcelain` emits first, which is the main working tree —
   not "the worktree on the `main` branch". The badge text is a coincidence.
