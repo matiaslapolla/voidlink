@@ -70,6 +70,7 @@ pub(crate) fn git_diff_refs_impl(
     let mut opts = DiffOptions::new();
     opts.context_lines(3);
     super::diff::apply_whitespace(&mut opts, ignore_whitespace);
+    super::diff::apply_size_cap(&mut opts);
     // Without this, libgit2 reports a symlink that became a regular file (or a
     // file that became a directory) as a Deleted *and* an Added delta sharing
     // one path. Two tree rows with the same key highlighted together, and
@@ -90,6 +91,7 @@ pub(crate) fn git_diff_refs_impl(
         let mut opts = DiffOptions::new();
         opts.context_lines(3);
         super::diff::apply_whitespace(&mut opts, ignore_whitespace);
+        super::diff::apply_size_cap(&mut opts);
         let extra = repo
             .diff_tree_to_tree(None, Some(&untracked_tree), Some(&mut opts))
             .map_err(|e| e.message().to_string())?;

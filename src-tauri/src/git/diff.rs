@@ -33,7 +33,30 @@ fn working_diff_opts(ignore_whitespace: bool) -> DiffOptions {
     let mut opts = DiffOptions::new();
     opts.include_typechange(true);
     apply_whitespace(&mut opts, ignore_whitespace);
+    apply_size_cap(&mut opts);
     opts
+}
+
+/// Above this many bytes, libgit2 calls a blob binary and stops producing text
+/// for it.
+///
+/// There was no cap of any kind, and the working-tree diff sets
+/// `include_untracked(true)`: a build artifact, a database dump or a video
+/// dropped into the repo was read whole, split into lines, allocated as one
+/// `DiffLine` per line, serialized to JSON and pushed across the Tauri IPC
+/// boundary — for a file the user never asked to see and the renderer could not
+/// usefully show. The window freezes, and the reason is invisible.
+///
+/// 4 MiB is far above any file anyone reads in a diff viewer and far below the
+/// size where any of that hurts. Past it the delta still *arrives* — it is
+/// listed, and `is_binary` is set — so the file is never silently missing from
+/// the list, which is the failure mode a hard file-count cap would have
+/// introduced while fixing this one.
+const MAX_DIFF_BLOB_BYTES: i64 = 4 * 1024 * 1024;
+
+/// The size cap, applied everywhere a diff is built. See `MAX_DIFF_BLOB_BYTES`.
+pub(crate) fn apply_size_cap(opts: &mut DiffOptions) {
+    opts.max_size(MAX_DIFF_BLOB_BYTES);
 }
 
 /// "Ignore whitespace", as a property of the diff rather than of the render.
@@ -102,6 +125,31 @@ pub(crate) fn git_diff_working_impl(
 /// Only files whose content is the entire story are dropped. A mode change or a
 /// typechange also yields zero hunks and is a real answer the user needs to
 /// see — `NoTextChange` exists to render exactly that.
+/// The origin marking `\ No newline at end of file`.
+///
+/// libgit2 emits that annotation as an ordinary diff line with one of three
+/// EOFNL origins (`=` context, `>` added, `<` deleted). They all fell into the
+/// `_ => "~"` arm, so the sentence rendered as a line of the file — in the
+/// split view, aligned in a gutter, with a line number beside it. It is a note
+/// *about* the previous line, not a line, and the renderer needs to be able to
+/// tell which it has.
+pub(crate) const NO_NEWLINE_ORIGIN: &str = "\\";
+
+/// Bytes out of a diff, as text, without inventing an empty line.
+///
+/// This was `from_utf8(...).unwrap_or("")`, which turned any line containing a
+/// single invalid byte into a blank row. A file in Latin-1, a source file with
+/// a stray byte from a bad merge, a `.po` catalogue — the diff rendered as
+/// column after column of empty lines, with the line numbers still counting up,
+/// and nothing anywhere saying why. Lossy decoding shows U+FFFD where the byte
+/// was: the rest of the line survives and the damage is visible at the exact
+/// spot it exists.
+fn decode_lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .trim_end_matches('\n')
+        .to_string()
+}
+
 pub(crate) fn collect_diff(
     diff: git2::Diff,
     drop_whitespace_only: bool,
@@ -159,10 +207,7 @@ pub(crate) fn collect_diff(
         Some(&mut |_delta, _progress| true),
         Some(&mut |_delta, hunk| {
             if let Some(file) = files.borrow_mut().last_mut() {
-                let header = std::str::from_utf8(hunk.header())
-                    .unwrap_or("")
-                    .trim_end_matches('\n')
-                    .to_string();
+                let header = decode_lossy(hunk.header());
                 file.hunks.push(DiffHunk {
                     old_start: hunk.old_start(),
                     old_lines: hunk.old_lines(),
@@ -180,12 +225,24 @@ pub(crate) fn collect_diff(
                     '+' => "+",
                     '-' => "-",
                     ' ' => " ",
+                    // libgit2's three EOFNL origins. See `NO_NEWLINE_ORIGIN`.
+                    '=' | '>' | '<' => NO_NEWLINE_ORIGIN,
                     _ => "~",
                 };
-                let content = std::str::from_utf8(line.content())
-                    .unwrap_or("")
-                    .trim_end_matches('\n')
-                    .to_string();
+                // libgit2 hands the EOFNL annotation over as
+                // `"\n\\ No newline at end of file"` — the newline that was
+                // *not* there, then git's own patch-format prefix. Neither
+                // belongs in a value the renderer treats as text: the leading
+                // newline is what made the marker render as a blank row
+                // followed by a stray one.
+                let content = if origin == NO_NEWLINE_ORIGIN {
+                    decode_lossy(line.content())
+                        .trim_start_matches('\n')
+                        .trim_start_matches("\\ ")
+                        .to_string()
+                } else {
+                    decode_lossy(line.content())
+                };
                 match line.origin() {
                     '+' => file.additions += 1,
                     '-' => file.deletions += 1,
@@ -427,6 +484,95 @@ mod tests {
             .collect();
         paths.sort_unstable();
         assert_eq!(paths, vec!["fresh/one.txt", "fresh/two.txt"]);
+    }
+
+    /// One invalid byte used to blank the *whole* line, because
+    /// `from_utf8(...).unwrap_or("")` throws the line away rather than the
+    /// byte. A Latin-1 file rendered as a column of empty rows with the line
+    /// numbers still counting up and no explanation anywhere.
+    #[test]
+    fn a_non_utf8_line_keeps_everything_around_the_bad_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo(root);
+        write_file(root, "a.txt", "seed\n");
+        commit_all(&repo, "base");
+
+        // "caf<0xE9> latin" — valid text either side of one invalid byte.
+        let mut bytes = b"caf".to_vec();
+        bytes.push(0xE9);
+        bytes.extend_from_slice(b" latin\n");
+        std::fs::write(root.join("a.txt"), &bytes).unwrap();
+
+        let out = git_diff_working_impl(root.to_string_lossy().into_owned(), false, false).unwrap();
+        let added = out.files[0]
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .find(|l| l.origin == "+")
+            .expect("the edited line is in the diff");
+        assert!(
+            added.content.starts_with("caf") && added.content.ends_with(" latin"),
+            "the readable text either side of the bad byte must survive: {:?}",
+            added.content,
+        );
+        assert!(added.content.contains('\u{fffd}'), "and the damage is visible");
+    }
+
+    /// `\ No newline at end of file` is a note *about* a line, not a line. It
+    /// used to arrive with the catch-all `~` origin and render as a row of the
+    /// file, aligned in the gutter with a line number beside it.
+    #[test]
+    fn the_no_newline_marker_is_not_an_ordinary_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo(root);
+        write_file(root, "a.txt", "one\n");
+        commit_all(&repo, "base");
+        // No trailing newline.
+        std::fs::write(root.join("a.txt"), "two").unwrap();
+
+        let out = git_diff_working_impl(root.to_string_lossy().into_owned(), false, false).unwrap();
+        let lines = &out.files[0].hunks[0].lines;
+        let marker = lines
+            .iter()
+            .find(|l| l.content.contains("No newline"))
+            .expect("libgit2 emits the annotation");
+        assert_eq!(marker.origin, NO_NEWLINE_ORIGIN);
+        // Stripped of the newline-that-is-not-there and of git's own `\ `
+        // patch prefix, both of which libgit2 bakes into the content.
+        assert_eq!(marker.content, "No newline at end of file");
+        // And it is not counted as a change, or the +/− totals disagree with
+        // the lines the reader can see.
+        assert_eq!(out.files[0].additions, 1);
+        assert_eq!(out.files[0].deletions, 1);
+    }
+
+    /// An enormous untracked file — a build artifact, a dump, a video — used to
+    /// be read whole, split into one allocation per line and shipped across the
+    /// IPC boundary. Past the cap it is still *listed*, so the file is never
+    /// silently missing; it just arrives as binary, which is what the renderer
+    /// already knows how to say.
+    #[test]
+    fn an_oversized_file_is_listed_as_binary_rather_than_streamed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo(root);
+        write_file(root, "seed.txt", "seed\n");
+        commit_all(&repo, "base");
+
+        let big = "x".repeat(64) + "\n";
+        let count = (MAX_DIFF_BLOB_BYTES as usize / big.len()) + 16;
+        std::fs::write(root.join("huge.log"), big.repeat(count)).unwrap();
+
+        let out = git_diff_working_impl(root.to_string_lossy().into_owned(), false, false).unwrap();
+        let huge = out
+            .files
+            .iter()
+            .find(|f| f.new_path.as_deref() == Some("huge.log"))
+            .expect("the file is still listed — a cap must not hide it");
+        assert!(huge.is_binary, "over the cap libgit2 reports it as binary");
+        assert!(huge.hunks.is_empty(), "and produces no text for it");
     }
 
     fn hunk_text(file: &FileDiff) -> String {
