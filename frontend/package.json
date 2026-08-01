@@ -8,8 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --project unit --project render",
+    "test:watch": "vitest",
+    "test:browser": "vitest run --project browser",
+    "test:ui": "vitest --ui"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
@@ -41,9 +43,12 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^24.10.1",
+    "@vitest/browser-playwright": "^4.1.10",
+    "@vitest/ui": "^4.1.10",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
     "jsdom": "^29.1.1",
+    "playwright": "^1.62.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
     "vite": "^7.3.1",

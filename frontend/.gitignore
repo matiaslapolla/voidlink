@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Vitest browser-project failure artifacts (screenshots, traces) — generated
+# per run, meaningless without the run that produced them.
+.vitest-attachments
+__screenshots__
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
