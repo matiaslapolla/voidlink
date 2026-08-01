@@ -77,8 +77,8 @@ it("says a remote-only branch will be tracked, before Create is pressed", async 
   const user = userEvent.setup();
   mockTauri({
     git_list_branches: [
-      { name: "main", isHead: true, isRemote: false, upstream: null, ahead: 0, behind: 0, aheadBehindUnknown: false, lastCommitSummary: null, lastCommitTime: null },
-      { name: "origin/feature/x", isHead: false, isRemote: true, upstream: null, ahead: 0, behind: 0, aheadBehindUnknown: false, lastCommitSummary: null, lastCommitTime: null },
+      { name: "main", isHead: true, isRemote: false, upstream: null, aheadBehind: null, aheadBehindUnknown: false, lastCommitSummary: null, lastCommitTime: null },
+      { name: "origin/feature/x", isHead: false, isRemote: true, upstream: null, aheadBehind: null, aheadBehindUnknown: false, lastCommitSummary: null, lastCommitTime: null },
     ],
   });
   mount();
@@ -109,7 +109,7 @@ it("creates a remote-only branch as an existing one, so git tracks it", async ()
   const user = userEvent.setup();
   mockTauri({
     git_list_branches: [
-      { name: "origin/feature/x", isHead: false, isRemote: true, upstream: null, ahead: 0, behind: 0, aheadBehindUnknown: false, lastCommitSummary: null, lastCommitTime: null },
+      { name: "origin/feature/x", isHead: false, isRemote: true, upstream: null, aheadBehind: null, aheadBehindUnknown: false, lastCommitSummary: null, lastCommitTime: null },
     ],
     git_add_worktree: { path: `${REPO}/.worktrees/feature-x`, branch: "feature/x", isMain: false },
   });

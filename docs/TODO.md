@@ -44,8 +44,7 @@ behaviour nobody chose.
 | 2 | **What may a browser tab navigate to: any scheme, http/https only, or http/https plus an explicit opt-in for `file://`?** | Deliberately *not* built. A global scheme allowlist, per-tab origin confinement, and a prompt are three different objects, and the wrong one is harder to remove than to write. Two facts for whoever answers, recorded at the hook site: the policy point sees subframes, so it is stronger than an address-bar filter; and returning `false` cancels *silently*, so a blocking policy needs its own way to say so or it reads as the app having frozen. (BR-S3) |
 | 3 | **Should an ordinary agent turn write an `agent.turn.*` record?** | The docs have described one for a while; nothing has ever emitted it, so the notification defaults, the check-in model and the trigger rules all read a kind that is never written. Recording the interval would also make a finished agent-panel turn attributable on the diff. It would immediately start firing the default `agent.turn.finished` banner, which is a change to what the app *does*, not to what it records. |
 | 4 | **Where does a destructive push live, and how is it confirmed?** | libgit2 has no lease primitive, so `--force-with-lease` means fetch → compare `refs/remotes/<r>/<b>` → force, with a real race window. The audit rates the current state "safe by construction" precisely because the button does not exist. (BR-F7) |
-| 5 | **What does a remote branch's ahead/behind count against?** | Checked rather than assumed: listing remote branches changes nothing, because `git_list_branches_impl` hands every remote-tracking branch `(None, 0, 0, false)` and both chips gate on `> 0`. The flip was made, verified inert, and reverted. (CMP-F22) |
-| 6 | **Do compare tabs get their own diff-mode and whitespace controls?** | Per-tab state exists for width, mode and filter; `diffMode` and `ignoreWhitespace` are the two that have no control anywhere in the compare surface — they live in the working-tree diff toolbar. Per-tab state with no per-tab control is state the user cannot reach. |
+| 5 | **Do compare tabs get their own diff-mode and whitespace controls?** | Per-tab state exists for width, mode and filter; `diffMode` and `ignoreWhitespace` are the two that have no control anywhere in the compare surface — they live in the working-tree diff toolbar. Per-tab state with no per-tab control is state the user cannot reach. |
 
 ---
 
@@ -148,6 +147,23 @@ Recorded compactly; the detail is in the feature docs and the audits.
 | **Fan-out durability** | A Rust supervisor owns the legs; a run's lifetime is the app's, not the webview's. Unattended output is buffered and replayed rather than dropped. |
 | **Run provenance** | File-level on the working tree, commit-level on a commit, nothing on a branch range — the granularity the evidence actually supports. |
 | **Palette action sources** | Features contribute their own actions; 462 lines left `App.tsx`. Behaviour preservation proven id-for-id against the pre-refactor list. |
+| **CMP-F22, a remote row's ahead/behind** | The one item that left "blocked on a decision" by getting the decision. What was decided, and what it cost to encode, is recorded below. |
+
+**The decision CMP-F22 was waiting on, recorded.** *A remote-tracking branch is
+compared to the local branch of the same name* — `origin/feat` against `feat`.
+It answers the local row's question from the other side ("have I pulled what is
+up there, have I pushed what is down here"), so the remote row is the subject of
+its own counts: `↑` is what the remote has that you do not. **A remote branch
+with no local counterpart shows no chip at all** — not a zero, not a dash. That
+required fixing the type rather than the render: `ahead`/`behind` became one
+nullable `AheadBehind { ahead, behind, against }`, because two `u32`s cannot
+tell "nothing to compare against" from "compared, and level", and the second is
+a real `↑0 ↓0` that must render. `against` rides along because a bare `↑2 ↓0` on
+a remote row is ambiguous to anyone who has not read this paragraph; the row's
+tooltip spells the comparison out. The walk only runs for a remote branch that
+has a local counterpart, and identical tips short-circuit — measured at 500
+remote branches, the cost tracks how many branches *you* checked out, not how
+many were pushed. See [branches and sync](./features/branches-and-sync.md).
 
 **One live caveat carried forward.** BR-F1's fix — `browser_focus_host`, which
 gives the host webview the keyboard back — is still confidence *reading*, not

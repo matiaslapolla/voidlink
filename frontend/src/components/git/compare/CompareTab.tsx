@@ -59,13 +59,16 @@ export function CompareTab(props: Props) {
   /// counts) — keep it cached at the tab level so swapping ref dropdowns
   /// doesn't refetch.
   ///
-  /// Local only, deliberately. `listRefs` does put `origin/main` in the
-  /// dropdown, and those rows carry no chip — but asking `listBranches` for
-  /// remotes would not change that: `git_list_branches_impl` hands every
-  /// remote-tracking branch `(None, 0, 0, false)`, because a remote branch has
-  /// no upstream of its own to be ahead or behind of. Making the chip appear
-  /// means first deciding what it would count against, and that is a product
-  /// question, not a flag.
+  /// Local only, deliberately — but no longer because the number does not
+  /// exist. Since CMP-F22 a remote-tracking branch *is* counted, against the
+  /// local branch of the same name, so flipping this to `true` would light up
+  /// chips on the `origin/…` rows `listRefs` already puts in this dropdown.
+  ///
+  /// It stays off because this picker's chip is a bare `↑2 ↓0` with nowhere to
+  /// say what the other side is. In the branches pane the row carries that
+  /// label; here it would read as "ahead of the ref in the other dropdown",
+  /// which is the one thing it is not. Turning it on means designing the label
+  /// first.
   const [branchInfo, { refetch: refetchBranches }] = createResource(
     () => props.repoPath,
     (p) => gitApi.listBranches(p, false),
@@ -74,7 +77,11 @@ export function CompareTab(props: Props) {
   const branchMeta = createMemo<Record<string, { ahead: number; behind: number }>>(() => {
     const out: Record<string, { ahead: number; behind: number }> = {};
     for (const b of branchInfo() ?? []) {
-      out[b.name] = { ahead: b.ahead, behind: b.behind };
+      // A branch with nothing to count against gets no entry rather than a
+      // zeroed one: `RefPicker` gates its chip on `> 0`, so a fabricated 0/0
+      // would draw the same as a real one — which is the confusion
+      // `aheadBehind` being nullable exists to prevent.
+      if (b.aheadBehind) out[b.name] = { ahead: b.aheadBehind.ahead, behind: b.aheadBehind.behind };
     }
     return out;
   });

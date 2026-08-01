@@ -95,7 +95,7 @@ import {
   onAiCommitRequest,
 } from "@/commands/aiCommit";
 import { recordBranchUse, sortBranchesByMru } from "@/commands/branchMru";
-import type { GitBranchInfo, GitCommitInfo } from "@/types/git";
+import type { AheadBehind, GitBranchInfo, GitCommitInfo } from "@/types/git";
 
 type LucideIcon = Component<{ class?: string }>;
 
@@ -2062,6 +2062,20 @@ export function relativeAge(seconds: number, now = Date.now()): string {
   return `${Math.floor(months / 12)}y ago`;
 }
 
+/// What a row's ahead/behind chip is claiming, spelled out.
+///
+/// Exported for its test. `↑2 ↓0` on `origin/feat` is ambiguous to anyone who
+/// has not been told what the other side is — the remote's own upstream? the
+/// default branch? — and the answer, "your local `feat`", is not guessable from
+/// the row. The local row got the same treatment for free: it never said what
+/// it was counting against either, it was just easier to assume.
+export function comparisonLabel(name: string, isRemote: boolean, ab: AheadBehind): string {
+  // "local feat" rather than "feat", because on a remote row the bare name
+  // reads as another ref on the remote.
+  const other = isRemote ? `local ${ab.against}` : ab.against;
+  return `${name} is ${ab.ahead} ahead of and ${ab.behind} behind ${other}`;
+}
+
 /// One branch. Extracted so `<For>` renders a component rather than a closure
 /// over the pane's whole scope, which is what makes the stable-identity keying
 /// in `BranchesPane` worth anything: an untouched row's DOM survives a pulse.
@@ -2114,13 +2128,13 @@ function BranchRow(props: {
             <FuzzyText text={b().name} ranges={props.ranges} />
           </span>
         </button>
-        {/* A remote row hardcodes 0/0 and no upstream in Rust, so without a
-            label it renders identically to a local branch that is in sync —
-            two very different facts drawn the same way. */}
+        {/* Without a label a remote row renders identically to a local branch —
+            two very different facts drawn the same way, and only one of them is
+            something you can check out, rename or delete. */}
         <Show when={b().isRemote}>
           <span
             class="shrink-0 px-1 rounded text-[10px] uppercase tracking-wide bg-muted/60 text-muted-foreground/80"
-            title="A remote-tracking branch. Ahead/behind is not computed for these."
+            title="A remote-tracking branch. Its ahead/behind is counted against the local branch of the same name."
           >
             remote
           </span>
@@ -2141,11 +2155,36 @@ function BranchRow(props: {
             ⚠
           </span>
         </Show>
-        <Show when={b().ahead > 0}>
-          <span class="text-success tabular-nums">↑{b().ahead}</span>
-        </Show>
-        <Show when={b().behind > 0}>
-          <span class="text-destructive tabular-nums">↓{b().behind}</span>
+        {/* CMP-F22. `aheadBehind` is null when there was nothing to compare
+            against — a remote-tracking branch nobody has a local copy of, or a
+            local branch with no upstream — and that row shows no chip at all.
+            A measured `↑0 ↓0` is a different answer and must still render, so
+            the presence of the object, not the value of the numbers, is what
+            decides.
+
+            A local row keeps hiding a zero side: `main` in sync has always
+            drawn nothing, and turning every quiet local branch into `↑0 ↓0`
+            would be noise in the list's common case. A remote row shows both
+            sides, because there the zero is the answer — "you have pulled
+            everything" is exactly what someone opens this disclosure to learn,
+            and it cannot be told from "not compared" by absence alone. */}
+        <Show when={b().aheadBehind}>
+          {(ab) => (
+            <Show when={b().isRemote || ab().ahead > 0 || ab().behind > 0}>
+              <span
+                class="shrink-0 flex items-center gap-1"
+                title={comparisonLabel(b().name, b().isRemote, ab())}
+                aria-label={comparisonLabel(b().name, b().isRemote, ab())}
+              >
+                <Show when={b().isRemote || ab().ahead > 0}>
+                  <span class="text-success tabular-nums">↑{ab().ahead}</span>
+                </Show>
+                <Show when={b().isRemote || ab().behind > 0}>
+                  <span class="text-destructive tabular-nums">↓{ab().behind}</span>
+                </Show>
+              </span>
+            </Show>
+          )}
         </Show>
         <Show when={b().aheadBehindUnknown}>
           <span

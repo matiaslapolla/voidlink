@@ -61,13 +61,35 @@ export interface WorktreeInfo {
   isBare: boolean;
 }
 
+/**
+ * Ahead/behind counts for one ref, and what they were measured against.
+ *
+ * Nullable on the row rather than a pair of numbers, because "nothing to
+ * compare against" and "compared, and level" are different facts that
+ * `ahead: 0, behind: 0` cannot tell apart — and a remote-tracking branch with
+ * no local counterpart would otherwise render as in sync with a branch that
+ * does not exist.
+ */
+export interface AheadBehind {
+  /** Commits this row's own ref has that `against` does not. */
+  ahead: number;
+  /** Commits `against` has that this row's own ref does not. */
+  behind: number;
+  /**
+   * The ref the counts are measured against: the upstream for a local branch,
+   * the local branch of the same short name for a remote-tracking one. Carried
+   * because `↑2 ↓0` on a remote row is ambiguous without it.
+   */
+  against: string;
+}
+
 export interface GitBranchInfo {
   name: string;
   isHead: boolean;
   isRemote: boolean;
   upstream: string | null;
-  ahead: number;
-  behind: number;
+  /** The counts, when there is something to count against. See `AheadBehind`. */
+  aheadBehind: AheadBehind | null;
   /** See `GitRepoInfo.aheadBehindUnknown`. */
   aheadBehindUnknown: boolean;
   lastCommitSummary: string | null;
