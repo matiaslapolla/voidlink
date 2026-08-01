@@ -56,7 +56,7 @@ export function CompareDiffPane(props: Props) {
         fallback={
           <div class="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2 px-4 text-center">
             <GitCompare class="w-7 h-7 opacity-60" />
-            <p class="text-[12px]">Select a file in the tree to view its diff.</p>
+            <p class="text-body">Select a file in the tree to view its diff.</p>
           </div>
         }
       >
@@ -74,7 +74,7 @@ export function CompareDiffPane(props: Props) {
           const path = () => displayPath(f());
           return (
             <>
-              <div class="flex items-center gap-3 px-3 py-1.5 border-b border-border shrink-0 text-[11px]">
+              <div class="flex items-center gap-3 px-3 py-1.5 border-b border-border shrink-0 text-label">
                 <div class="flex-1 min-w-0">
                   <div class="font-medium truncate">{path().primary}</div>
                   <Show when={path().rename}>
@@ -87,7 +87,7 @@ export function CompareDiffPane(props: Props) {
                   <span class="text-success">+{f().additions}</span>
                   <span class="text-destructive">−{f().deletions}</span>
                 </div>
-                <div class="flex items-center gap-1 shrink-0 text-[10px] text-muted-foreground">
+                <div class="flex items-center gap-1 shrink-0 text-micro text-muted-foreground">
                   <span class="font-mono truncate max-w-[120px]" title={props.baseRef}>
                     {props.baseRef}
                   </span>
@@ -98,7 +98,7 @@ export function CompareDiffPane(props: Props) {
                 </div>
               </div>
               <ProvenanceNote provenance={provenance()} />
-              <div class="flex-1 overflow-auto scrollbar-thin font-mono text-[12px] leading-[1.5]">
+              <div class="flex-1 overflow-auto scrollbar-thin font-mono text-body leading-[1.5]">
                 <DiffRenderer file={f()} mode={props.diffMode} />
               </div>
             </>

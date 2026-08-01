@@ -46,7 +46,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             <button
               onClick={() => void chooseRepo()}
               title="Open a folder in this workspace"
-              class="w-full flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/40"
+              class="w-full flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-2 py-1 text-body text-muted-foreground hover:text-foreground hover:bg-accent/40"
             >
               <FolderOpen class="w-3.5 h-3.5" />
               Open folder
@@ -56,7 +56,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
           {(repo) => (
             <button
               onClick={() => void chooseRepo()}
-              class="w-full flex items-center gap-2 text-xs truncate"
+              class="w-full flex items-center gap-2 text-body truncate"
               title={`${repo()}\nClick to open a different folder`}
             >
               <FolderOpen class="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
@@ -78,14 +78,14 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             {filesOpen() ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
           </span>
           <Files class="w-3 h-3 text-muted-foreground" />
-          <span class="flex-1 tracking-wide text-xs text-muted-foreground font-semibold">Files</span>
+          <span class="flex-1 tracking-wide text-body text-muted-foreground font-semibold">Files</span>
         </button>
         <Show when={filesOpen()}>
           <div class="flex-1 overflow-hidden min-h-0">
             <Show
               when={activeRepoPath()}
               fallback={
-                <div class="px-2 py-4 text-center text-[13px] text-muted-foreground">
+                <div class="px-2 py-4 text-center text-ui text-muted-foreground">
                   <Files class="w-5 h-5 mx-auto mb-2 opacity-60" />
                   Open a folder to browse its files.
                 </div>
@@ -107,7 +107,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             {terminalsOpen() ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
           </span>
           <TerminalSquare class="w-3 h-3 text-muted-foreground" />
-          <span class="flex-1 tracking-wide text-xs text-muted-foreground font-semibold">Terminals</span>
+          <span class="flex-1 tracking-wide text-body text-muted-foreground font-semibold">Terminals</span>
           <span
             role="button"
             tabIndex={0}
@@ -134,7 +134,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             <Show
               when={activeTerminals().length > 0}
               fallback={
-                <div class="px-2 py-3 text-center text-[13px] text-muted-foreground">
+                <div class="px-2 py-3 text-center text-ui text-muted-foreground">
                   <TerminalSquare class="w-4 h-4 mx-auto mb-1.5 opacity-60" />
                   {activeRepoPath()
                     ? "No terminals. Click + to start one."
@@ -165,7 +165,7 @@ export function TerminalSidebar(props: { onOpenFile?: (path: string) => void }) 
             actions.openCompareTab(state.activeWorktreeId);
           }}
           disabled={!activeRepoPath()}
-          class={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed transition-colors text-[12px] ${
+          class={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed transition-colors text-body ${
             activeRepoPath()
               ? "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 hover:border-border/80"
               : "border-border/40 text-muted-foreground/40 cursor-not-allowed"
@@ -268,14 +268,14 @@ function TerminalRow(props: {
         <LedSlot signal={mark()} dim={!props.active} silent />
         <div class="flex-1 min-w-0">
           <div
-            class="text-xs truncate flex items-center gap-1.5"
+            class="text-body truncate flex items-center gap-1.5"
             title={displayLabel() === props.term.label ? props.term.label : `${props.term.label} — ${displayLabel()}`}
           >
             <span class="truncate">{displayLabel()}</span>
           </div>
           <Show when={cwd()}>
             {(c) => (
-              <div class="text-xs text-muted-foreground truncate">{c()}</div>
+              <div class="text-body text-muted-foreground truncate">{c()}</div>
             )}
           </Show>
         </div>

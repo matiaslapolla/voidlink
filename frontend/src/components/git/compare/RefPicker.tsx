@@ -276,7 +276,7 @@ export function RefPicker(props: Props) {
 
   return (
     <div ref={containerRef} class="relative flex-1 min-w-0">
-      <label class="block text-[10px] tracking-wide text-muted-foreground/70 mb-0.5">
+      <label class="block text-micro tracking-wide text-muted-foreground/70 mb-0.5">
         {props.label}
       </label>
       <button
@@ -291,7 +291,7 @@ export function RefPicker(props: Props) {
             openPicker();
           }
         }}
-        class={`flex items-center gap-1.5 w-full px-2 py-1 rounded-md border text-left text-[12px] transition-colors ${
+        class={`flex items-center gap-1.5 w-full px-2 py-1 rounded-md border text-left text-body transition-colors ${
           props.invalid
             ? "border-destructive/60 bg-destructive/5"
             : open()
@@ -312,7 +312,7 @@ export function RefPicker(props: Props) {
       </button>
 
       <Show when={props.error}>
-        <div class="mt-0.5 text-[10px] text-destructive truncate" title={props.error ?? ""}>
+        <div class="mt-0.5 text-micro text-destructive truncate" title={props.error ?? ""}>
           {props.error}
         </div>
       </Show>
@@ -329,20 +329,20 @@ export function RefPicker(props: Props) {
             }}
             onKeyDown={onKeyDown}
             placeholder="Type a branch, tag, SHA, or HEAD~N…"
-            class="px-2 py-1.5 text-[12px] bg-transparent border-b border-border outline-none placeholder:text-muted-foreground/60"
+            class="px-2 py-1.5 text-body bg-transparent border-b border-border outline-none placeholder:text-muted-foreground/60"
             aria-label="Search refs"
           />
           <div class="overflow-auto scrollbar-thin">
             <Show
               when={!props.loading}
               fallback={
-                <div class="px-3 py-2 text-[11px] text-muted-foreground">Loading refs…</div>
+                <div class="px-3 py-2 text-label text-muted-foreground">Loading refs…</div>
               }
             >
               <Show
                 when={items().length > 0}
                 fallback={
-                  <div class="px-3 py-2 text-[11px] text-muted-foreground">
+                  <div class="px-3 py-2 text-label text-muted-foreground">
                     No matches. Press Enter to use “{text()}” as a revision expression.
                   </div>
                 }
@@ -385,7 +385,7 @@ function RefSection(props: {
   return (
     <Show when={props.items.length > 0}>
       <div class="py-1">
-        <div class="px-3 py-0.5 text-[10px] tracking-wider text-muted-foreground/70">
+        <div class="px-3 py-0.5 text-micro tracking-wider text-muted-foreground/70">
           {props.title}
         </div>
         <For each={props.items}>
@@ -396,7 +396,7 @@ function RefSection(props: {
               <button
                 type="button"
                 onClick={() => props.onPick(item.value)}
-                class={`w-full flex items-center gap-2 px-3 py-1 text-left text-[12px] transition-colors ${
+                class={`w-full flex items-center gap-2 px-3 py-1 text-left text-body transition-colors ${
                   active() ? "bg-primary/15 text-primary" : "hover:bg-accent/30"
                 }`}
               >
@@ -405,14 +405,14 @@ function RefSection(props: {
                 <div class="flex-1 min-w-0">
                   <div class="font-mono truncate">{item.label}</div>
                   <Show when={item.subtitle}>
-                    <div class="text-[10px] text-muted-foreground truncate">
+                    <div class="text-micro text-muted-foreground truncate">
                       {item.subtitle}
                     </div>
                   </Show>
                 </div>
                 <Show when={item.rightChip}>
                   {(chip) => (
-                    <span class="flex items-center gap-0.5 text-[10px] font-mono tabular-nums shrink-0">
+                    <span class="flex items-center gap-0.5 text-micro font-mono tabular-nums shrink-0">
                       <Show when={chip().ahead > 0}>
                         <span class="text-success">↑{chip().ahead}</span>
                       </Show>

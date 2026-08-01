@@ -71,7 +71,7 @@ export function MissionSurface(props: MissionSurfaceProps) {
                 type="button"
                 aria-pressed={section() === option.value}
                 onClick={() => setSection(option.value)}
-                class="px-2 py-1 text-xs rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="px-2 py-1 text-body rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 classList={{
                   "bg-background text-foreground shadow-sm": section() === option.value,
                   "text-muted-foreground hover:text-foreground": section() !== option.value,

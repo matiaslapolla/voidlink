@@ -81,7 +81,7 @@ export function TriggersSection(props: TriggersSectionProps) {
       <Show
         when={props.repoPath}
         fallback={
-          <p class="p-4 text-xs text-muted-foreground">
+          <p class="p-4 text-body text-muted-foreground">
             Triggers watch one repository. Point this workspace at one to write a rule.
           </p>
         }
@@ -93,7 +93,7 @@ export function TriggersSection(props: TriggersSectionProps) {
             role="switch"
             aria-checked={triggersArmed()}
             onClick={() => setTriggersArmed(!triggersArmed())}
-            class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="inline-flex items-center gap-1 px-2 py-1 text-body rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             classList={{
               "bg-success/15 text-success": triggersArmed(),
               "bg-muted/40 text-muted-foreground hover:text-foreground": !triggersArmed(),
@@ -102,7 +102,7 @@ export function TriggersSection(props: TriggersSectionProps) {
             <Power class="w-3 h-3" aria-hidden="true" />
             {triggersArmed() ? "Triggers are on" : "Triggers are off"}
           </button>
-          <p class="text-[11px] text-muted-foreground">
+          <p class="text-label text-muted-foreground">
             {triggersArmed()
               ? "Enabled rules will start agent turns on their own."
               : "Nothing will run, whatever the rules below say."}
@@ -114,7 +114,7 @@ export function TriggersSection(props: TriggersSectionProps) {
             <For
               each={rules()}
               fallback={
-                <li class="px-3 py-2 text-xs text-muted-foreground">
+                <li class="px-3 py-2 text-body text-muted-foreground">
                   No rules yet. A rule binds an event kind to an agent — “when a commit lands,
                   ask the reviewer to look at it”. Try it against the last week before turning
                   it on.
@@ -140,13 +140,13 @@ export function TriggersSection(props: TriggersSectionProps) {
                 onInput={(e) => setName(e.currentTarget.value)}
                 placeholder="Rule name"
                 aria-label="Rule name"
-                class="flex-1 min-w-0 px-2 py-1 text-xs bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="flex-1 min-w-0 px-2 py-1 text-body bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
               <select
                 value={kinds().join(",")}
                 onChange={(e) => setKinds(e.currentTarget.value.split(","))}
                 aria-label="When this happens"
-                class="px-2 py-1 text-xs bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="px-2 py-1 text-body bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <For each={KIND_PRESETS}>
                   {(preset) => <option value={preset.kinds.join(",")}>{preset.label}</option>}
@@ -156,7 +156,7 @@ export function TriggersSection(props: TriggersSectionProps) {
                 value={agentId()}
                 onChange={(e) => setAgentId(e.currentTarget.value)}
                 aria-label="Run this agent"
-                class="px-2 py-1 text-xs bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="px-2 py-1 text-body bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <For each={roster()}>
                   {(agent) => <option value={agent.id}>{agent.name}</option>}
@@ -169,17 +169,17 @@ export function TriggersSection(props: TriggersSectionProps) {
               rows="2"
               placeholder="What to ask. {{summary}}, {{kind}}, {{subject}} and {{repo}} are filled in from the event."
               aria-label="Prompt"
-              class="w-full px-2 py-1 text-xs bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              class="w-full px-2 py-1 text-body bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
             <div class="flex items-center gap-2">
-              <p class="flex-1 text-[11px] text-muted-foreground">
+              <p class="flex-1 text-label text-muted-foreground">
                 New rules start off, and never fire more than once every{" "}
                 {Math.round(MIN_INTERVAL_FLOOR_MS / 1000)}s.
               </p>
               <button
                 type="submit"
                 disabled={!prompt().trim()}
-                class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded text-muted-foreground hover:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="inline-flex items-center gap-1 px-2 py-1 text-body rounded text-muted-foreground hover:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Plus class="w-3 h-3" aria-hidden="true" />
                 Add rule
@@ -209,7 +209,7 @@ function RuleRow(props: {
           aria-checked={props.rule.enabled}
           aria-label={`${props.rule.enabled ? "Disable" : "Enable"} ${props.rule.name}`}
           onClick={() => setTriggerRuleEnabled(props.repo, props.rule.id, !props.rule.enabled)}
-          class="shrink-0 px-1.5 py-0.5 text-[10px] rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          class="shrink-0 px-1.5 py-0.5 text-micro rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           classList={{
             "bg-success/15 text-success": props.rule.enabled,
             "bg-muted/40 text-muted-foreground": !props.rule.enabled,
@@ -217,8 +217,8 @@ function RuleRow(props: {
         >
           {props.rule.enabled ? "on" : "off"}
         </button>
-        <span class="flex-1 min-w-0 truncate text-xs text-foreground">{props.rule.name}</span>
-        <span class="shrink-0 text-[11px] text-muted-foreground truncate">
+        <span class="flex-1 min-w-0 truncate text-body text-foreground">{props.rule.name}</span>
+        <span class="shrink-0 text-label text-muted-foreground truncate">
           {props.rule.kinds.join(", ")} → {props.agentName}
         </span>
         <button
@@ -241,7 +241,7 @@ function RuleRow(props: {
       </div>
 
       <Show when={tried() !== null}>
-        <p class="mt-1 text-[11px]" classList={{ "text-warning": (tried() ?? 0) > 5 }}>
+        <p class="mt-1 text-label" classList={{ "text-warning": (tried() ?? 0) > 5 }}>
           Would have run {tried()} time{tried() === 1 ? "" : "s"} in the last week.
           {/* A rule that would have fired constantly is the failure mode a dry
               run exists to catch, so it is called out rather than left as a

@@ -167,11 +167,11 @@ export function HillsSection(props: HillsSectionProps) {
           onInput={(e) => setDraft(e.currentTarget.value)}
           placeholder="What are you working on?"
           aria-label="New scope"
-          class="flex-1 min-w-0 px-2 py-1 text-xs bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          class="flex-1 min-w-0 px-2 py-1 text-body bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
         <button
           type="submit"
-          class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          class="inline-flex items-center gap-1 px-2 py-1 text-body rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Plus class="w-3 h-3" aria-hidden="true" />
           Track it
@@ -182,7 +182,7 @@ export function HillsSection(props: HillsSectionProps) {
         <Show
           when={scopes().length > 0}
           fallback={
-            <p class="py-2 text-xs text-muted-foreground">
+            <p class="py-2 text-body text-muted-foreground">
               Nothing on the hill yet. A scope is a piece of work you can say you are either
               still figuring out or already executing — the chart exists to make that
               difference visible, which a percentage cannot.
@@ -196,7 +196,7 @@ export function HillsSection(props: HillsSectionProps) {
                 <section class="py-2 border-b border-border last:border-b-0">
                   <div class="flex items-center gap-2">
                     <h3
-                      class="flex-1 min-w-0 truncate text-xs"
+                      class="flex-1 min-w-0 truncate text-body"
                       classList={{
                         "line-through text-muted-foreground": scope.done,
                         "text-foreground": !scope.done,
@@ -204,14 +204,14 @@ export function HillsSection(props: HillsSectionProps) {
                     >
                       {scope.name}
                     </h3>
-                    <span class="text-[11px] text-muted-foreground">
+                    <span class="text-label text-muted-foreground">
                       {PHASE_LABELS[phaseOf(scope)]}
                     </span>
                     <Show when={stalled !== null && !scope.done}>
                       {/* A scope nobody has moved in days is the signal this
                           chart exists to produce. */}
                       <span
-                        class="px-1 rounded bg-muted text-[10px] text-muted-foreground"
+                        class="px-1 rounded bg-muted text-micro text-muted-foreground"
                         title="Nobody has moved this in a while"
                       >
                         {stalled}d still
@@ -276,7 +276,7 @@ export function HillsSection(props: HillsSectionProps) {
                       `aria-valuetext`, and a screen reader that also read these
                       would hear both phases named for every scope. */}
                   <div
-                    class="flex justify-between text-[10px] text-muted-foreground"
+                    class="flex justify-between text-micro text-muted-foreground"
                     aria-hidden="true"
                   >
                     <span>Figuring it out</span>

@@ -176,7 +176,7 @@ export function SettingsJsonPane() {
 
   return (
     <div class="space-y-2">
-      <p class="text-[11px] text-muted-foreground leading-relaxed">
+      <p class="text-label text-muted-foreground leading-relaxed">
         The same settings, in VS Code's dotted form. Edits apply as you type;
         a <code>"[rust]"</code> section overrides those keys for Rust buffers
         only. Completion and validation come from the same table the controls
@@ -190,7 +190,7 @@ export function SettingsJsonPane() {
         {(message) => (
           <div
             role="alert"
-            class="flex items-start gap-2 rounded border border-destructive/50 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive"
+            class="flex items-start gap-2 rounded border border-destructive/50 bg-destructive/10 px-2 py-1.5 text-label text-destructive"
           >
             <AlertTriangle class="mt-px h-3 w-3 shrink-0" />
             <span>

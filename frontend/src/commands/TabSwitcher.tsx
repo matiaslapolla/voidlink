@@ -78,7 +78,7 @@ function SwitcherContent(props: { tabs: () => OpenTabTarget[] }) {
           <FuzzyText text={row.target.label} ranges={row.ranges} class="truncate" />
           <Show when={row.target.detail}>
             {(d) => (
-              <span class="ml-2 text-[11px] text-muted-foreground/70 truncate font-mono">
+              <span class="ml-2 text-label text-muted-foreground/70 truncate font-mono">
                 {d()}
               </span>
             )}

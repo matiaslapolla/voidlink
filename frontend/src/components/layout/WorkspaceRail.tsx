@@ -11,6 +11,14 @@ import {
 } from "lucide-solid";
 import { useAppStore } from "@/store/LayoutContext";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
+// The three `title` attributes below carry information rather than restating a
+// visible label (MOTION-PLAN F3 names them), so they are the first sites to
+// move onto the real tooltip: a delay we control, a keyboard-focus path the OS
+// tooltip never had, and a surface that can hold two lines.
+// `void tooltip` keeps the import: Solid erases a `use:` directive whose symbol
+// is otherwise unused, and TypeScript cannot see a JSX attribute as a use.
+import { tooltip } from "@/components/ui/Tooltip";
+void tooltip;
 import { onGitRefsChanged } from "@/commands/gitEvents";
 import { pickWorkspaceFolder } from "@/commands/openFolder";
 import { requestNewWorktree } from "@/commands/worktree";
@@ -202,7 +210,7 @@ export function WorkspaceRail() {
       onDrop={onDropAtEnd}
     >
       <div class="h-9 px-3 border-b border-border flex items-center shrink-0">
-        <span class="text-xs font-semibold text-muted-foreground truncate">Workspaces</span>
+        <span class="text-body font-semibold text-muted-foreground truncate">Workspaces</span>
       </div>
 
       <div class="flex-1 overflow-y-auto scrollbar-thin py-1">
@@ -223,14 +231,20 @@ export function WorkspaceRail() {
               >
                 {/* Workspace header */}
                 <div
-                  class={`group flex items-center gap-1 pl-1 pr-1 h-7 text-xs ${
+                  class={`group flex items-center gap-1 pl-1 pr-1 h-7 text-body ${
                     isActiveWs() ? "text-foreground" : "text-muted-foreground"
                   }`}
                 >
                   <button
                     onClick={() => toggleCollapsed(ws.id)}
                     aria-label={isCollapsed(ws.id) ? `Expand ${ws.name}` : `Collapse ${ws.name}`}
-                    class="p-0.5 rounded hover:bg-accent/50 shrink-0"
+                    // Same gesture as the three trailing buttons below, so the
+                    // same tint and the same duration. It used to be the only
+                    // hover in this file with no transition at all — two
+                    // behaviours for one gesture, forty lines apart
+                    // (MOTION-PLAN F14).
+                    class="p-0.5 rounded shrink-0 hover:bg-accent/60 hover:text-foreground transition-[background-color,color] duration-[var(--dur-tint)] ease-out"
+                    data-motion="rail-chevron"
                   >
                     <Show
                       when={isCollapsed(ws.id)}
@@ -245,7 +259,7 @@ export function WorkspaceRail() {
                       <button
                         onClick={() => actions.selectWorkspace(ws.id)}
                         onDblClick={() => startRename(ws.id, ws.name)}
-                        title={`${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`}
+                        use:tooltip={`${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`}
                         class="flex-1 min-w-0 text-left truncate font-medium hover:text-foreground"
                       >
                         {ws.name}
@@ -263,7 +277,7 @@ export function WorkspaceRail() {
                       }}
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Rename workspace"
-                      class="flex-1 min-w-0 bg-background/60 rounded px-1 text-xs outline-none"
+                      class="flex-1 min-w-0 bg-background/60 rounded px-1 text-body outline-none"
                     />
                   </Show>
                   <button
@@ -272,7 +286,7 @@ export function WorkspaceRail() {
                       void onOpenFolder(ws);
                     }}
                     aria-label={`Open folder in ${ws.name}`}
-                    title={ws.repoRoot ? `${ws.repoRoot}\nOpen a different folder…` : "Open folder…"}
+                    use:tooltip={ws.repoRoot ? `${ws.repoRoot}\nOpen a different folder…` : "Open folder…"}
                     class="p-0.5 rounded shrink-0 transition-colors opacity-60 group-hover:opacity-100 hover:bg-accent/60 hover:text-foreground"
                   >
                     <FolderOpen class="w-3 h-3" />
@@ -284,7 +298,7 @@ export function WorkspaceRail() {
                     }}
                     aria-label={`New worktree in ${ws.name}`}
                     aria-disabled={!!blocked()}
-                    title={blocked() ?? "New worktree…"}
+                    use:tooltip={blocked() ?? "New worktree…"}
                     class={`p-0.5 rounded shrink-0 transition-colors ${
                       blocked()
                         ? "text-muted-foreground/40 cursor-not-allowed"
@@ -300,7 +314,19 @@ export function WorkspaceRail() {
                     }}
                     aria-label={`Close ${ws.name} workspace`}
                     title="Close workspace"
-                    class="p-0.5 rounded shrink-0 opacity-0 group-hover:opacity-70 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color] focus-visible:opacity-100"
+                    // Two rules met by one change. `hover:!opacity-100` was the
+                    // app's only `!important` outside `index.css`
+                    // (MOTION-PLAN F5) and it existed only because
+                    // `group-hover:opacity-70` and `hover:opacity-100` are the
+                    // same specificity — a fight this no longer has, because
+                    // there is one opacity step rather than three. And
+                    // `opacity-0` on a *destructive* control is MASTER §10.4
+                    // outright: a close button nobody can see until they
+                    // already know it is there. 60% at rest is the sanctioned
+                    // floor; the hover feedback is the tint, which is also
+                    // §7.3.6's one-effect-per-element.
+                    class="p-0.5 rounded shrink-0 opacity-60 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out"
+                    data-motion="rail-close-workspace"
                   >
                     <X class="w-3 h-3" />
                   </button>
@@ -320,7 +346,7 @@ export function WorkspaceRail() {
                         isActiveWs() && wt.id === state.activeWorktreeId;
                       return (
                         <div
-                          class={`group/wt flex items-center gap-1.5 pl-6 pr-1.5 density-row rounded-sm mx-1 text-[13px] cursor-pointer transition-colors ${
+                          class={`group/wt flex items-center gap-1.5 pl-6 pr-1.5 density-row rounded-sm mx-1 text-ui cursor-pointer transition-colors ${
                             isActive()
                               ? "bg-accent/60 text-foreground"
                               : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
@@ -376,7 +402,7 @@ export function WorkspaceRail() {
                           </Show>
                           <Show when={wt.ahead > 0}>
                             <span
-                              class="text-success tabular-nums shrink-0 text-[11px]"
+                              class="text-success tabular-nums shrink-0 text-label"
                               title={`${wt.ahead} commit(s) ahead of upstream`}
                               aria-label={`${wt.ahead} ahead`}
                             >
@@ -385,7 +411,7 @@ export function WorkspaceRail() {
                           </Show>
                           <Show when={wt.behind > 0}>
                             <span
-                              class="text-destructive tabular-nums shrink-0 text-[11px]"
+                              class="text-destructive tabular-nums shrink-0 text-label"
                               title={`${wt.behind} commit(s) behind upstream`}
                               aria-label={`${wt.behind} behind`}
                             >
@@ -403,7 +429,7 @@ export function WorkspaceRail() {
                           </Show>
                           <Show when={wt.isPrunable}>
                             <span
-                              class="text-destructive shrink-0 text-[10px] font-mono"
+                              class="text-destructive shrink-0 text-micro font-mono"
                               title="This worktree's directory is gone — git would prune it"
                               aria-label="missing"
                             >
@@ -421,7 +447,10 @@ export function WorkspaceRail() {
                               }}
                               aria-label={`Remove worktree ${worktreeLabel(wt)}`}
                               title="Remove worktree"
-                              class="p-0.5 rounded shrink-0 opacity-0 group-hover/wt:opacity-70 hover:!opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color]"
+                              // See the workspace close button above — same
+                              // rule, same fix (MOTION-PLAN F5, MASTER §10.4).
+                              class="p-0.5 rounded shrink-0 opacity-60 group-hover/wt:opacity-100 focus-visible:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-[opacity,background-color,color] duration-[var(--dur-tint)] ease-out"
+                              data-motion="rail-remove-worktree"
                             >
                               <X class="w-3 h-3" />
                             </button>
@@ -446,7 +475,7 @@ export function WorkspaceRail() {
           onClick={() => actions.addWorkspace()}
           aria-label="New workspace"
           title="New workspace"
-          class="w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded-md text-[12px] text-muted-foreground hover:text-foreground bg-muted/40 hover:bg-accent/50 transition-colors"
+          class="w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded-md text-body text-muted-foreground hover:text-foreground bg-muted/40 hover:bg-accent/50 transition-colors"
         >
           <Plus class="w-3 h-3" /> New workspace
         </button>

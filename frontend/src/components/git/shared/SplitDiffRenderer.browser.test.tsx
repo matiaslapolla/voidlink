@@ -28,7 +28,7 @@
 /// repeating the class list back at itself.
 ///
 /// The scroll container here is the one `DiffTabView` really wraps this
-/// component in (`h-full overflow-auto scrollbar-thin font-mono text-[12px]
+/// component in (`h-full overflow-auto scrollbar-thin font-mono text-body
 /// leading-[1.5]`), copied rather than invented: a sticky test against a
 /// container the app does not use would prove sticky works in general, not
 /// that it works here.
@@ -97,7 +97,7 @@ function mount(
   const { container } = render(() => (
     <div
       style={{ height: `${CONTAINER_HEIGHT}px` }}
-      class="overflow-auto scrollbar-thin font-mono text-[12px] leading-[1.5]"
+      class="overflow-auto scrollbar-thin font-mono text-body leading-[1.5]"
     >
       <DiffRenderer file={f} mode={mode} {...props} />
     </div>

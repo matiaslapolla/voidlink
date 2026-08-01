@@ -200,7 +200,7 @@ export function EditorStatusBar(props: EditorStatusBarProps) {
         {(label) => (
           <span
             aria-live="polite"
-            class="shrink-0 font-mono text-[10px] uppercase tracking-wider px-1.5 rounded border"
+            class="shrink-0 font-mono text-micro uppercase tracking-wider px-1.5 rounded border"
             classList={{
               "bg-primary/15 border-primary/40 text-primary": vimInNormalMode(),
               "bg-transparent border-border text-muted-foreground": !vimInNormalMode(),

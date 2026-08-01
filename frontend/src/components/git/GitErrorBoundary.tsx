@@ -21,12 +21,12 @@ export function GitErrorBoundary(props: {
   return (
     <ErrorBoundary
       fallback={(err, reset) => (
-        <div class="p-3 text-[12px] text-muted-foreground space-y-2">
+        <div class="p-3 text-body text-muted-foreground space-y-2">
           <div class="flex items-center gap-1.5 text-destructive">
             <AlertTriangle class="w-3.5 h-3.5 shrink-0" />
             <span class="font-medium">{props.surface} could not be read</span>
           </div>
-          <p class="font-mono text-[11px] leading-snug break-words text-muted-foreground/90">
+          <p class="font-mono text-label leading-snug break-words text-muted-foreground/90">
             {err instanceof Error ? err.message : String(err)}
           </p>
           <button
@@ -34,7 +34,7 @@ export function GitErrorBoundary(props: {
               props.onRetry?.();
               reset();
             }}
-            class="px-2 py-1 rounded border border-border text-[11px] hover:bg-accent/40 hover:text-foreground transition-colors"
+            class="px-2 py-1 rounded border border-border text-label hover:bg-accent/40 hover:text-foreground transition-colors"
           >
             Try again
           </button>

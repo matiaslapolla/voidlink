@@ -59,7 +59,7 @@ export function EmptyState(props: EmptyStateProps) {
         const Icon = ICONS[copy().iconName];
         return <Icon class="w-5 h-5 text-muted-foreground opacity-60" />;
       })()}
-      <p class="text-[12px] text-muted-foreground max-w-[36ch]">{copy().line}</p>
+      <p class="text-body text-muted-foreground max-w-[36ch]">{copy().line}</p>
       <Show when={props.action}>{props.action}</Show>
     </div>
   );
@@ -74,11 +74,11 @@ export function EmptyStateAction(props: {
   return (
     <button
       onClick={props.onClick}
-      class="mt-0.5 flex items-center gap-1.5 text-[12px] px-2.5 py-1 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      class="mt-0.5 flex items-center gap-1.5 text-body px-2.5 py-1 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {props.children}
       <Show when={props.chord}>
-        <span class="text-[10px] font-mono text-muted-foreground/70">{props.chord}</span>
+        <span class="text-micro font-mono text-muted-foreground/70">{props.chord}</span>
       </Show>
     </button>
   );

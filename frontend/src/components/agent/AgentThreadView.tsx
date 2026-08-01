@@ -140,7 +140,7 @@ export function AgentThreadView(props: AgentThreadViewProps) {
         >
           <StatusLed signal="running" pending class="motion-loop" />
         </Show>
-        <span class="text-[13px] font-semibold flex-1 truncate" title={agentName()}>
+        <span class="text-ui font-semibold flex-1 truncate" title={agentName()}>
           {agentName()}
         </span>
         <button
@@ -193,7 +193,7 @@ export function AgentThreadView(props: AgentThreadViewProps) {
                     const repo = repoPath();
                     if (repo) void retryAgentTurn({ ...grounding(), repoPath: repo });
                   }}
-                  class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[12px] text-foreground hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring outline-none transition-colors"
+                  class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-body text-foreground hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring outline-none transition-colors"
                 >
                   <RotateCcw class="w-3 h-3" /> Retry
                 </button>
@@ -225,7 +225,7 @@ export function AgentThreadView(props: AgentThreadViewProps) {
                   : undefined
             }
             aria-disabled={!repoPath() || !command() ? "true" : undefined}
-            class="flex-1 resize-none px-2 py-1.5 text-[13px] bg-muted/50 border border-border/60 rounded-md outline-2 outline-transparent focus-visible:ring-2 focus-visible:ring-ring placeholder:text-muted-foreground/60 disabled:opacity-40 disabled:cursor-not-allowed"
+            class="flex-1 resize-none px-2 py-1.5 text-ui bg-muted/50 border border-border/60 rounded-md outline-2 outline-transparent focus-visible:ring-2 focus-visible:ring-ring placeholder:text-muted-foreground/60 disabled:opacity-40 disabled:cursor-not-allowed"
             aria-label="Agent question"
           />
           {/* Stop replaces Send while a turn runs, rather than Send going
@@ -275,7 +275,7 @@ function sendTitle(hasRepo: boolean, hasCommand: boolean, hasText: boolean): str
 
 function Notice(props: { children: JSX.Element }) {
   return (
-    <div class="text-[12px] text-muted-foreground leading-relaxed px-1 py-2">
+    <div class="text-body text-muted-foreground leading-relaxed px-1 py-2">
       {props.children}
     </div>
   );
@@ -298,7 +298,7 @@ function MessageBubble(props: { msg: AgentMessage }) {
   return (
     <div class={`flex flex-col gap-1 ${isUser() ? "items-end" : "items-start"}`}>
       <div
-        class={`max-w-full rounded-lg px-3 py-2 text-[13px] ${
+        class={`max-w-full rounded-lg px-3 py-2 text-ui ${
           isUser()
             ? "bg-primary/15 text-foreground"
             : isError()
@@ -313,7 +313,7 @@ function MessageBubble(props: { msg: AgentMessage }) {
           <Show
             when={!isError()}
             fallback={
-              <span class="whitespace-pre-wrap font-mono text-[12px]">
+              <span class="whitespace-pre-wrap font-mono text-body">
                 {props.msg.content}
               </span>
             }
@@ -337,7 +337,7 @@ function MessageBubble(props: { msg: AgentMessage }) {
         </Show>
       </div>
       <Show when={props.msg.status === "cancelled"}>
-        <span class="text-[11px] text-muted-foreground">Stopped — partial answer</span>
+        <span class="text-label text-muted-foreground">Stopped — partial answer</span>
       </Show>
       {/* Audit attaches on completion, which is why a streaming turn shows no
           disclosure: its arrival is itself the signal that the turn landed. */}
@@ -351,7 +351,7 @@ function MessageBubble(props: { msg: AgentMessage }) {
 function AuditDisclosure(props: { msg: AgentMessage }) {
   const [open, setOpen] = createSignal(false);
   return (
-    <div class="text-[11px] text-muted-foreground">
+    <div class="text-label text-muted-foreground">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open()}

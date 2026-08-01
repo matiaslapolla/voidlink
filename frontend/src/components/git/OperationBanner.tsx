@@ -118,7 +118,7 @@ export function OperationBanner(props: {
   }
 
   return (
-    <div class="px-2.5 py-2 border-b border-warning/30 bg-warning/10 text-[12px] space-y-1.5">
+    <div class="px-2.5 py-2 border-b border-warning/30 bg-warning/10 text-body space-y-1.5">
       <div class="flex items-center gap-1.5 text-warning">
         <AlertTriangle class="w-3.5 h-3.5 shrink-0" />
         <span class="font-medium">{LABELS[props.operation]} in progress</span>
@@ -131,7 +131,7 @@ export function OperationBanner(props: {
           <button
             onClick={() => void continueOp()}
             disabled={busy()}
-            class="flex-1 px-2 py-1 rounded text-[12px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            class="flex-1 px-2 py-1 rounded text-body font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {busy() ? "Working…" : "Continue"}
           </button>
@@ -142,7 +142,7 @@ export function OperationBanner(props: {
         <button
           onClick={() => void abortOp()}
           disabled={busy()}
-          class="px-2 py-1 rounded text-[12px] text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class="px-2 py-1 rounded text-body text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Abort
         </button>

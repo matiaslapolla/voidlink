@@ -368,13 +368,13 @@ export function FileTree(props: {
     switch (r.kind) {
       case "loading":
         return (
-          <div class="text-xs text-muted-foreground/50 py-0.5" style={{ "padding-left": `calc(24px + ${r.depth * 12}px)` }}>
+          <div class="text-body text-muted-foreground/50 py-0.5" style={{ "padding-left": `calc(24px + ${r.depth * 12}px)` }}>
             Loading…
           </div>
         );
       case "empty":
         return (
-          <div class="text-xs text-muted-foreground/50 py-0.5" style={{ "padding-left": `calc(24px + ${r.depth * 12}px)` }}>
+          <div class="text-body text-muted-foreground/50 py-0.5" style={{ "padding-left": `calc(24px + ${r.depth * 12}px)` }}>
             Empty
           </div>
         );
@@ -403,7 +403,7 @@ export function FileTree(props: {
               ? <FolderOpen class="w-3.5 h-3.5 shrink-0 text-warning/80" />
               : <Folder    class="w-3.5 h-3.5 shrink-0 text-warning/80" />
             }
-            <span class="truncate text-[13px]">{r.name}</span>
+            <span class="truncate text-ui">{r.name}</span>
           </button>
         );
       case "file": {
@@ -438,7 +438,7 @@ export function FileTree(props: {
             title={r.ignored ? `${r.path} — ignored by git` : r.path}
           >
             <File class="w-3.5 h-3.5 shrink-0 opacity-60" />
-            <span class="truncate text-[13px]">{r.name}</span>
+            <span class="truncate text-ui">{r.name}</span>
           </button>
         );
       }
@@ -457,7 +457,7 @@ export function FileTree(props: {
               ? "Hide gitignored files"
               : "Show gitignored files, e.g. .env"
           }
-          class={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] tracking-wide transition-colors ${
+          class={`flex items-center gap-1 px-1.5 py-0.5 rounded text-micro tracking-wide transition-colors ${
             showIgnored()
               ? "text-foreground bg-accent/60"
               : "text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
@@ -583,7 +583,7 @@ function ContextMenuPopup(props: {
   return (
     <Portal>
       <div
-        class="fixed z-50 min-w-[164px] bg-popover border border-border rounded-md shadow-xl py-1 text-[13px]"
+        class="fixed z-50 min-w-[164px] material-chrome border border-border rounded-md shadow-xl py-1 text-ui"
         style={{ left: `${props.state.x}px`, top: `${props.state.y}px` }}
         onClick={e => e.stopPropagation()}
         onContextMenu={e => e.stopPropagation()}
@@ -702,7 +702,7 @@ function TreeInput(props: {
         spellcheck={false}
         autocapitalize="off"
         autocorrect="off"
-        class="flex-1 min-w-0 bg-input/60 border border-primary/60 rounded px-1 py-0 text-[13px] text-foreground outline-none focus:border-primary"
+        class="flex-1 min-w-0 bg-input/60 border border-primary/60 rounded px-1 py-0 text-ui text-foreground outline-none focus:border-primary"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === "Enter") { e.preventDefault(); commit(); }

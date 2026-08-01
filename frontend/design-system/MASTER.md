@@ -159,18 +159,34 @@ Eight named themes live in `src/themes.css`: `github-dark`, `github-light`, `mon
 
 ### Type scale
 
-Base font-size is set on `<html>` by the `ui.textSize` setting: `sm=13px`, `base=15px`, `xl=17px`. Tailwind `text-xs/sm/base` inherit from this; `text-[Npx]` bypasses it.
+**Named, and machine-checked.** There used to be six spellings for five sizes —
+`text-[11px]` ×218, `text-[10px]` ×125, `text-xs` ×100, `text-[12px]` ×76,
+`text-[13px]` ×52, `text-sm` ×17 — and no name to pick correctly from, which is
+why the count kept growing. The scale is now six names defined once in
+`index.css`:
 
-Current component usage:
-
-| Size | Use | Notes |
+| Utility | Size | Use |
 |---|---|---|
-| `text-xs` (0.75rem) | Tab labels, file rows, terminal row title, diff header, commit textarea | Default interactive text |
-| `text-[11px]` | Commit button, git tab labels, branch rows, history rows | Minor actions |
-| `text-[10px]` | Uppercase section headers, cwd subtext, diff line numbers, badges | Floor — anything smaller is too small |
-| ~~`text-[9px]`~~ | — | **Retired.** No component uses it. The only surviving 9px in the app is `.dev-chrome-badge` in `index.css`, which is literal by design so a `make dev` window can never be mistaken for the installed bundle. Do not reintroduce it. |
+| `text-micro` | 10px | Section headers, cwd subtext, diff line numbers, badges. **Floor** — anything smaller is too small |
+| `text-label` | 11px | Commit button, git tab labels, branch rows, history rows — minor actions |
+| `text-body` | 12px | Tab labels, file rows, terminal row title, diff header, commit textarea — default interactive text |
+| `text-ui` | 13px | Section headers in the git sidebar, menu rows, dialog titles |
+| `text-title` | 14px | The step above chrome |
+| `text-heading` | 20px | One site: the document title in `brain/BrainSurface.tsx` |
+| ~~`text-[9px]`~~ | — | **Retired.** The only surviving 9px is `.dev-chrome-badge` in `index.css`, literal by design so a `make dev` window can never be mistaken for the installed bundle. Do not reintroduce it. |
 
-**Rule**: stop adding new sizes. If you need smaller than `text-[10px]`, rethink the hierarchy. If you need a new intermediate size, add it as a utility class here first.
+**How they scale.** Each is `calc(Npx * var(--text-scale))`, and
+`store/settings.ts` writes `--text-scale` onto `<html>` beside `font-size` from
+the `ui.textSize` setting (`sm` 14 / `base` 16 / `xl` 18, so 0.875 / 1 / 1.125).
+The authored number is the size that surface already had at the default
+setting, and the whole scale moves together when the preference changes —
+which is what that setting always claimed to do and, before the scale was
+named, did for only about a fifth of the app's text.
+
+**Rule**: stop adding sizes. Two tests in `src/tokenHygiene.test.ts` fail the
+build on `text-[Npx]` and on Tailwind's own `text-xs`/`text-sm`/`text-lg`
+scale under `src/components/`, so a seventh step has to be argued for in this
+table before it can be used.
 
 ### Section label pattern (recurring)
 
@@ -348,7 +364,16 @@ Define in `index.css`; never inline a `cubic-bezier` or a raw ms value in a comp
 }
 ```
 
-The forced `!important` durations in `index.css` stay as the floor for the 145 existing `transition-colors` sites. New surfaces name a token.
+The forced `!important` durations in `index.css` stay as the floor for the
+`transition-colors` sites that have not migrated. **A surface leaves the floor
+by naming its own token**, and the floor's selectors are
+`:not([data-motion])` — so migrating one surface is one attribute rather than an
+edit to a block two hundred sites still depend on. `grep -c data-motion` against
+`grep -c transition-colors` is how much of this section is real.
+
+Exits also have names: `--dur-short-out` (135ms) and `--dur-long-out` (180ms)
+are the 75% below, so "75% of 180" is never written as a literal at a call
+site.
 
 **Exits run at ~75% of their enter** (`--ease-in`). A menu that closes as slowly as it opens feels stuck.
 
@@ -357,7 +382,7 @@ The forced `!important` durations in `index.css` stay as the floor for the 145 e
 1. **Never `transition: all`.** Name the properties. (`transition-all` exists at 9 sites — do not add a tenth.)
 2. **Animate `transform` and `opacity` only.** Never `width`, `height`, `top`, `left`, `margin`, `padding`. Expanding regions animate `grid-template-rows: 0fr → 1fr`.
 3. **Focus rings appear instantly.** Never transition a focus ring's opacity, transform or width. Keyboard users need the indicator on the same frame.
-4. **No bounce, overshoot or elastic easing on chrome.** Reserve overshoot for pointer-driven physical interactions only — and VoidLink currently has none that qualify.
+4. **No bounce, overshoot or elastic easing on chrome.** Reserve overshoot for pointer-driven physical interactions only. The splitter drag qualifies and takes none; tab drag-reorder will qualify when it moves off HTML5 DnD (MOTION-PLAN Phase 3), and is the only place in the app that will be permitted any.
 5. **No uniform hover-scale.** `hover:scale-*` across unrelated elements is the single loudest generic-UI tell. Hover is a tint shift.
 6. **One hover effect per element.** Not translate + scale + shadow + colour.
 7. **Never animate from `scale(0)`.** Popovers and menus enter at `scale(0.97)` + `opacity: 0`, from their trigger's `transform-origin` — not from centre. Modals are the exception: they keep `transform-origin: center`.
@@ -380,11 +405,21 @@ more contrast is telling us they cannot rely on — so under that query
 `index.css` gives `.island` a 1px `--border` **outline** (negative offset, so
 it costs no geometry per §7.6) and the edge comes back.
 
-`prefers-reduced-transparency: reduce` needs no rule today and that is a
-finding rather than an omission: the app has no `backdrop-filter` anywhere and
-its scrims are flat `bg-black/40`–`/60` rather than blurs. The first
-translucent surface added must raise its opacity and drop its blur under that
-query; the hook belongs beside the contrast block in `index.css`.
+`prefers-reduced-transparency: reduce` is **handled**, and materials are why.
+`index.css` defines two weights — `.material-chrome` for small floating chrome
+(menus, tooltips, portal popovers) and `.material-structural` for the large
+scrimmed panels and the modal — and under that query both go to full opacity
+with the blur dropped entirely. Not softened: a legibility request answered
+with a half-measure is still a background the user has told us they cannot read
+through.
+
+Three material rules, in `index.css` beside the definitions: never stack one
+translucent surface on another, bigger surfaces read as thicker (more blur, the
+deeper shadow), and colour stays on a solid layer — a tint on the translucent
+foreground picks up whatever is behind it and stops meaning anything.
+
+The title bar takes no material. Under D1 it sits on the canvas with nothing
+behind it, so a blur there costs a compositor pass and shows nothing.
 
 ## 7.5 Liveness & presence
 

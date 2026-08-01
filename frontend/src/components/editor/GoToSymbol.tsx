@@ -125,7 +125,7 @@ function SymbolPicker(props: { onClose: () => void }) {
         <div
           role="dialog"
           aria-label="Go to symbol"
-          class="w-[560px] max-w-[92vw] bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
+          class="w-[560px] max-w-[92vw] material-structural border border-border rounded-lg shadow-xl flex flex-col overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
           <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
@@ -143,9 +143,9 @@ function SymbolPicker(props: { onClose: () => void }) {
               }}
               onKeyDown={onKeyDown}
               placeholder="Go to symbol…"
-              class="flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/60"
+              class="flex-1 bg-transparent text-ui outline-none placeholder:text-muted-foreground/60"
             />
-            <span class="text-[10px] text-muted-foreground tabular-nums shrink-0">
+            <span class="text-micro text-muted-foreground tabular-nums shrink-0">
               {ranked().length}
             </span>
           </div>
@@ -154,7 +154,7 @@ function SymbolPicker(props: { onClose: () => void }) {
             <Show
               when={ranked().length > 0}
               fallback={
-                <p class="px-3 py-3 text-[11px] text-muted-foreground">{emptyReason()}</p>
+                <p class="px-3 py-3 text-label text-muted-foreground">{emptyReason()}</p>
               }
             >
               <For each={ranked()}>
@@ -165,7 +165,7 @@ function SymbolPicker(props: { onClose: () => void }) {
                       type="button"
                       onClick={() => go(i())}
                       onMouseEnter={() => setHighlight(i())}
-                      class="w-full flex items-center gap-2 px-3 py-1 text-left text-[12px]"
+                      class="w-full flex items-center gap-2 px-3 py-1 text-left text-body"
                       classList={{
                         "bg-primary/15 text-primary": i() === highlight(),
                         "text-foreground": i() !== highlight(),
@@ -179,11 +179,11 @@ function SymbolPicker(props: { onClose: () => void }) {
                         {row.node.name}
                       </span>
                       <Show when={row.node.detail}>
-                        <span class="font-mono text-[10px] text-muted-foreground truncate">
+                        <span class="font-mono text-micro text-muted-foreground truncate">
                           {row.node.detail}
                         </span>
                       </Show>
-                      <span class="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                      <span class="ml-auto shrink-0 text-micro text-muted-foreground tabular-nums">
                         {row.node.line}
                       </span>
                     </button>

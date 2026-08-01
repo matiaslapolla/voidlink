@@ -438,9 +438,20 @@ createEffect(() => {
 // ── UI effects: apply textSize + density to <html> so CSS rules can react.
 const TEXT_SIZE_PX: Record<UiTextSize, number> = { sm: 14, base: 16, xl: 18 };
 
+/// What `base` means, and therefore what the named type scale in `index.css`
+/// was authored against: `--text-body` is 12px *at this root size*.
+const TEXT_SIZE_BASE_PX = TEXT_SIZE_PX.base;
+
 createEffect(() => {
   const html = document.documentElement;
-  html.style.fontSize = `${TEXT_SIZE_PX[settings.ui.textSize]}px`;
+  const px = TEXT_SIZE_PX[settings.ui.textSize];
+  html.style.fontSize = `${px}px`;
+  // `font-size` alone only moves the rem-based sizes, which after the type
+  // scale landed is a small minority of the app's text. `--text-scale` is what
+  // moves the named scale (`text-micro` … `text-title`) with it, so the
+  // preference reaches the ~470 chrome sites that were authored as fixed px
+  // and had been ignoring it. See the `--text-scale` comment in `index.css`.
+  html.style.setProperty("--text-scale", String(px / TEXT_SIZE_BASE_PX));
   html.setAttribute("data-density", settings.ui.density);
 });
 

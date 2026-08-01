@@ -34,7 +34,7 @@ export function RunMatrix(props: {
   );
 
   return (
-    <div class="mt-2 rounded border border-border/60 bg-card/40 px-2 py-1.5 text-[11px]">
+    <div class="mt-2 rounded border border-border/60 bg-card/40 px-2 py-1.5 text-label">
       <p class="text-muted-foreground">{comparisonSummary(comparison())}</p>
 
       <Show when={comparison().comparable}>

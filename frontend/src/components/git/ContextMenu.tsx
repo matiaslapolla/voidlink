@@ -1,90 +1,63 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
-import { Portal } from "solid-js/web";
+/// The right-click menu, now an adapter over `components/ui/Menu`.
+///
+/// It used to be the implementation: a Portal, a viewport clamp, an Escape
+/// handler, and a `click` listener deferred by `setTimeout(0)` to dodge the
+/// opening click. That gave it no enter or exit (MOTION-PLAN F6), no keyboard
+/// navigation at all (F7), and a dismiss that a drag begun outside the menu
+/// could not trigger (F8).
+///
+/// The behaviour moved to `ui/Menu` rather than being fixed here because the
+/// tab strip's two portal menus want the same thing, and three more copies of
+/// a roving `tabindex` is how the first three copies happened. This file
+/// survives as the name its two callers already import (`WorkspaceRail`,
+/// `GitSidebar`) and as the place `ContextMenuItem`'s shape is documented — a
+/// rename across both call sites would have been churn with no reader on the
+/// other side of it.
+import { Menu, type MenuItem } from "@/components/ui/Menu";
 
 export interface ContextMenuItem {
   label: string;
   onSelect: () => void;
   danger?: boolean;
+  /// Kept as a boolean for the existing callers. `ui/Menu` takes a *reason*,
+  /// because §7.6 forbids a disabled control that does not say why; a caller
+  /// still passing the boolean gets the generic reason below, which is honest
+  /// (the action is unavailable in this state) without inventing a specific
+  /// one it does not know.
   disabled?: boolean;
+  /// Why the row is unavailable. Preferred over `disabled` — pass this and the
+  /// row states its own reason.
+  disabledReason?: string;
   separatorBefore?: boolean;
 }
 
-/// A lightweight right-click menu. Render conditionally with a `<Show>` keyed
-/// on the menu state in the parent; pass the cursor position and an `onClose`.
-/// Reuses the same viewport-clamping idea as the commit hover popover so the
-/// menu never spills off-screen near a window edge.
+const GENERIC_REASON = "Not available in this state";
+
 export function ContextMenu(props: {
   x: number;
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
+  /// Where focus returns when the menu closes — the row that was right-clicked.
+  returnFocusTo?: HTMLElement | null;
 }) {
-  let ref: HTMLDivElement | undefined;
-  const [pos, setPos] = createSignal({ left: props.x, top: props.y });
-
-  createEffect(() => {
-    const el = ref;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const pad = 8;
-    let left = props.x;
-    let top = props.y;
-    if (left + rect.width + pad > window.innerWidth) left = window.innerWidth - rect.width - pad;
-    if (top + rect.height + pad > window.innerHeight) top = window.innerHeight - rect.height - pad;
-    setPos({ left: Math.max(pad, left), top: Math.max(pad, top) });
-  });
-
-  onMount(() => {
-    const close = () => props.onClose();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    // Defer attaching so the opening click doesn't immediately close it.
-    const id = window.setTimeout(() => {
-      window.addEventListener("click", close);
-      window.addEventListener("contextmenu", close);
-      window.addEventListener("keydown", onKey);
-    }, 0);
-    onCleanup(() => {
-      window.clearTimeout(id);
-      window.removeEventListener("click", close);
-      window.removeEventListener("contextmenu", close);
-      window.removeEventListener("keydown", onKey);
-    });
-  });
+  const items = (): MenuItem[] =>
+    props.items.map((item) => ({
+      label: item.label,
+      onSelect: item.onSelect,
+      danger: item.danger,
+      separatorBefore: item.separatorBefore,
+      disabledReason: item.disabledReason ?? (item.disabled ? GENERIC_REASON : undefined),
+    }));
 
   return (
-    <Portal>
-      <div
-        ref={ref}
-        class="fixed z-[var(--z-menu)] min-w-[180px] bg-popover border border-border rounded-md shadow-xl py-1 text-xs"
-        style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <For each={props.items}>
-          {(item) => (
-            <>
-              <Show when={item.separatorBefore}>
-                <div class="my-1 border-t border-border/60" />
-              </Show>
-              <button
-                disabled={item.disabled}
-                onClick={() => {
-                  props.onClose();
-                  item.onSelect();
-                }}
-                class={`w-full text-left px-3 py-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                  item.danger
-                    ? "text-destructive hover:bg-destructive/10"
-                    : "text-foreground hover:bg-accent/60"
-                }`}
-              >
-                {item.label}
-              </button>
-            </>
-          )}
-        </For>
-      </div>
-    </Portal>
+    <Menu
+      x={props.x}
+      y={props.y}
+      items={items()}
+      onClose={props.onClose}
+      returnFocusTo={props.returnFocusTo}
+      label="Context menu"
+    />
   );
 }

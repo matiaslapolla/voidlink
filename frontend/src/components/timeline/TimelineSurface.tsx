@@ -127,7 +127,7 @@ export function TimelineSurface(props: TimelineSurfaceProps) {
                 type="button"
                 aria-pressed={actor() === option.value}
                 onClick={() => setActor(option.value)}
-                class="px-2 py-1 text-xs rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="px-2 py-1 text-body rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 classList={{
                   "bg-background text-foreground shadow-sm": actor() === option.value,
                   "text-muted-foreground hover:text-foreground": actor() !== option.value,
@@ -150,7 +150,7 @@ export function TimelineSurface(props: TimelineSurfaceProps) {
             onInput={(e) => setQuery(e.currentTarget.value)}
             placeholder="Filter events"
             aria-label="Filter events"
-            class="w-full pl-7 pr-2 py-1 text-xs bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="w-full pl-7 pr-2 py-1 text-body bg-muted/40 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </div>
 
@@ -172,12 +172,12 @@ export function TimelineSurface(props: TimelineSurfaceProps) {
             to show yet". A refetch keeps the previous list on screen. */}
         <Show
           when={fetched() !== undefined}
-          fallback={<p class="p-4 text-xs text-muted-foreground">Reading the event log…</p>}
+          fallback={<p class="p-4 text-body text-muted-foreground">Reading the event log…</p>}
         >
           <Show
             when={total() > 0}
             fallback={
-              <p class="p-4 text-xs text-muted-foreground">
+              <p class="p-4 text-body text-muted-foreground">
                 {events().length === 0
                   ? "Nothing recorded here yet. Commits, agent turns and long-running commands will appear as they happen."
                   : "No events match these filters."}
@@ -187,7 +187,7 @@ export function TimelineSurface(props: TimelineSurfaceProps) {
             <For each={sections()}>
               {(section) => (
                 <section>
-                  <h2 class="sticky top-0 z-20 px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground bg-background/95 backdrop-blur">
+                  <h2 class="sticky top-0 z-20 px-3 py-1 text-label font-medium uppercase tracking-wide text-muted-foreground bg-background/95 backdrop-blur">
                     {section.label}
                   </h2>
                   <ul>
@@ -195,7 +195,7 @@ export function TimelineSurface(props: TimelineSurfaceProps) {
                       {(event) => (
                         <li class="flex gap-2 px-3 py-1.5 hover:bg-muted/30">
                           <time
-                            class="shrink-0 w-11 text-[11px] tabular-nums text-muted-foreground pt-px"
+                            class="shrink-0 w-11 text-label tabular-nums text-muted-foreground pt-px"
                             dateTime={new Date(event.at).toISOString()}
                           >
                             {timeLabel(event.at)}
@@ -204,8 +204,8 @@ export function TimelineSurface(props: TimelineSurfaceProps) {
                             {/* The summary, and only the summary. See the
                                 component comment for why there is no per-kind
                                 renderer here. */}
-                            <p class="text-xs text-foreground break-words">{event.summary}</p>
-                            <p class="flex items-center gap-1 text-[11px] text-muted-foreground">
+                            <p class="text-body text-foreground break-words">{event.summary}</p>
+                            <p class="flex items-center gap-1 text-label text-muted-foreground">
                               <span
                                 class={FAMILY_COLORS[family(event.kind)] ?? "text-muted-foreground"}
                               >
@@ -222,7 +222,7 @@ export function TimelineSurface(props: TimelineSurfaceProps) {
                                     cannot tell a guess from an observation will
                                     eventually act on one as the other. */}
                                 <span
-                                  class="px-1 rounded bg-muted text-[10px]"
+                                  class="px-1 rounded bg-muted text-micro"
                                   title="Credited to the agent that was running at the time — inferred, not observed"
                                 >
                                   inferred

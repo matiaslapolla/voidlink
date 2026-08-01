@@ -78,12 +78,12 @@ export function LineupSection(props: LineupSectionProps) {
     <div class="flex-1 min-h-0 overflow-y-auto">
       <Show
         when={snapshot() !== undefined}
-        fallback={<p class="p-4 text-xs text-muted-foreground">Reading every workspace…</p>}
+        fallback={<p class="p-4 text-body text-muted-foreground">Reading every workspace…</p>}
       >
         <Show
           when={groups().length > 0}
           fallback={
-            <p class="p-4 text-xs text-muted-foreground">
+            <p class="p-4 text-body text-muted-foreground">
               No workspaces are registered yet. Open a repository and it will appear here.
             </p>
           }
@@ -91,7 +91,7 @@ export function LineupSection(props: LineupSectionProps) {
           <For each={groups()}>
             {(group) => (
               <section>
-                <h3 class="sticky top-0 z-20 flex items-center gap-2 px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground bg-background/95 backdrop-blur">
+                <h3 class="sticky top-0 z-20 flex items-center gap-2 px-3 py-1 text-label font-medium uppercase tracking-wide text-muted-foreground bg-background/95 backdrop-blur">
                   {group.workspaceName}
                   {/* A busy workspace has to say so even when its rows are
                       scrolled out of view — that is the whole point of the
@@ -115,17 +115,17 @@ export function LineupSection(props: LineupSectionProps) {
                         >
                           <span class="min-w-0 flex-1">
                             <span class="flex items-center gap-1.5">
-                              <span class="text-xs text-foreground truncate" title={row.repo}>
+                              <span class="text-body text-foreground truncate" title={row.repo}>
                                 {row.label}
                               </span>
                               <Show when={row.isMain}>
-                                <span class="px-1 rounded bg-muted text-[10px] text-muted-foreground">
+                                <span class="px-1 rounded bg-muted text-micro text-muted-foreground">
                                   main
                                 </span>
                               </Show>
                             </span>
                             <span
-                              class="block text-[11px] truncate"
+                              class="block text-label truncate"
                               classList={{
                                 "text-info": row.active.length > 0,
                                 "text-muted-foreground": row.active.length === 0,
@@ -135,7 +135,7 @@ export function LineupSection(props: LineupSectionProps) {
                             </span>
                           </span>
 
-                          <span class="shrink-0 flex items-center gap-2 text-[11px] text-muted-foreground tabular-nums">
+                          <span class="shrink-0 flex items-center gap-2 text-label text-muted-foreground tabular-nums">
                             <Show when={row.commits > 0}>
                               <span
                                 class="inline-flex items-center gap-0.5"

@@ -102,7 +102,7 @@ export function BrainSurface(props: BrainSurfaceProps) {
     <Show
       when={props.repoPath}
       fallback={
-        <div class="h-full flex items-center justify-center text-sm text-muted-foreground">
+        <div class="h-full flex items-center justify-center text-title text-muted-foreground">
           Open a repository to browse its brain.
         </div>
       }
@@ -117,7 +117,7 @@ export function BrainSurface(props: BrainSurfaceProps) {
                 value={query()}
                 onInput={(e) => setQuery(e.currentTarget.value)}
                 placeholder="Search entries…"
-                class="flex-1 bg-transparent text-xs focus:outline-none"
+                class="flex-1 bg-transparent text-body focus:outline-none"
               />
             </div>
             <div class="flex flex-wrap gap-1">
@@ -134,7 +134,7 @@ export function BrainSurface(props: BrainSurfaceProps) {
             </div>
             <button
               onClick={() => setComposing(true)}
-              class="w-full flex items-center justify-center gap-1 px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+              class="w-full flex items-center justify-center gap-1 px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
             >
               <Plus class="w-3 h-3" /> Quick note
             </button>
@@ -142,12 +142,12 @@ export function BrainSurface(props: BrainSurfaceProps) {
           <div ref={scrollRef} class="flex-1 overflow-y-auto scrollbar-thin">
             <Show
               when={!entries.loading}
-              fallback={<div class="p-3 text-xs text-muted-foreground">Loading…</div>}
+              fallback={<div class="p-3 text-body text-muted-foreground">Loading…</div>}
             >
               <Show
                 when={filtered().length > 0}
                 fallback={
-                  <div class="p-3 text-xs text-muted-foreground">
+                  <div class="p-3 text-body text-muted-foreground">
                     {query().trim() || typeFilter()
                       ? "No matching entries."
                       : "No entries yet — capture one with Quick note."}
@@ -175,13 +175,13 @@ export function BrainSurface(props: BrainSurfaceProps) {
                               >
                                 <div class="flex items-center gap-1.5">
                                   <span
-                                    class={`text-[10px] capitalize tracking-wide shrink-0 ${TYPE_COLORS[e().entryType]}`}
+                                    class={`text-micro capitalize tracking-wide shrink-0 ${TYPE_COLORS[e().entryType]}`}
                                   >
                                     {e().entryType}
                                   </span>
-                                  <span class="truncate text-[12px] font-medium">{e().title}</span>
+                                  <span class="truncate text-body font-medium">{e().title}</span>
                                 </div>
-                                <div class="mt-0.5 text-[10px] text-muted-foreground truncate">
+                                <div class="mt-0.5 text-micro text-muted-foreground truncate">
                                   {e().project ?? (e().labels.length > 0 ? e().labels.join(", ") : "—")}
                                 </div>
                               </button>
@@ -215,7 +215,7 @@ export function BrainSurface(props: BrainSurfaceProps) {
             <Show
               when={detail()}
               fallback={
-                <div class="h-full flex items-center justify-center text-sm text-muted-foreground">
+                <div class="h-full flex items-center justify-center text-title text-muted-foreground">
                   Select an entry to read it.
                 </div>
               }
@@ -223,22 +223,22 @@ export function BrainSurface(props: BrainSurfaceProps) {
               {(d) => (
                 <div class="mx-auto max-w-[860px] px-10 py-8">
                   <div class="flex items-center gap-2 mb-1">
-                    <span class={`text-[10px] capitalize tracking-wide ${TYPE_COLORS[d().entryType]}`}>
+                    <span class={`text-micro capitalize tracking-wide ${TYPE_COLORS[d().entryType]}`}>
                       {d().entryType}
                     </span>
                     <Show when={d().project}>
-                      {(p) => <span class="text-[11px] text-muted-foreground">{p()}</span>}
+                      {(p) => <span class="text-label text-muted-foreground">{p()}</span>}
                     </Show>
                   </div>
-                  <h1 class="text-xl font-semibold mb-1">{d().title}</h1>
-                  <div class="flex flex-wrap items-center gap-1.5 mb-6 text-[11px] text-muted-foreground">
+                  <h1 class="text-heading font-semibold mb-1">{d().title}</h1>
+                  <div class="flex flex-wrap items-center gap-1.5 mb-6 text-label text-muted-foreground">
                     <Show when={d().created}>{(c) => <span>{c()}</span>}</Show>
                     <For each={d().labels}>
                       {(l) => <span class="px-1.5 py-0.5 rounded bg-muted/60">{l}</span>}
                     </For>
                   </div>
                   <div
-                    class="markdown-body text-[14px] leading-[1.7] text-foreground"
+                    class="markdown-body text-title leading-[1.7] text-foreground"
                     innerHTML={renderMarkdown(d().body)}
                   />
                 </div>
@@ -255,7 +255,7 @@ function FilterChip(props: { active: boolean; onClick: () => void; children: JSX
   return (
     <button
       onClick={props.onClick}
-      class={`px-2 py-0.5 rounded text-[10px] border transition-colors ${
+      class={`px-2 py-0.5 rounded text-micro border transition-colors ${
         props.active
           ? "border-primary/40 bg-primary/15 text-primary"
           : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -357,39 +357,39 @@ function QuickNoteForm(props: {
 
   return (
     <div class="mx-auto max-w-[640px] px-10 py-8 space-y-3">
-      <h2 class="text-sm font-semibold">Quick note</h2>
+      <h2 class="text-title font-semibold">Quick note</h2>
       <input
         type="text"
         value={title()}
         onInput={(e) => setTitle(e.currentTarget.value)}
         placeholder="Title"
-        class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+        class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 text-title focus:outline-none focus:ring-1 focus:ring-ring"
       />
       <textarea
         value={body()}
         onInput={(e) => setBody(e.currentTarget.value)}
         placeholder="Body (markdown)"
         rows={8}
-        class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+        class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 text-title font-mono focus:outline-none focus:ring-1 focus:ring-ring resize-y"
       />
       <input
         type="text"
         value={labelsInput()}
         onInput={(e) => setLabelsInput(e.currentTarget.value)}
         placeholder="Labels, comma-separated (at least one)"
-        class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+        class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 text-title focus:outline-none focus:ring-1 focus:ring-ring"
       />
       <div class="flex items-center gap-2">
         <button
           onClick={submit}
           disabled={saving()}
-          class="px-3 py-1 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 disabled:opacity-50"
+          class="px-3 py-1 rounded bg-primary text-primary-foreground text-body hover:bg-primary/90 disabled:opacity-50"
         >
           {saving() ? "Saving…" : "Save"}
         </button>
         <button
           onClick={props.onCancel}
-          class="px-3 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-accent/40"
+          class="px-3 py-1 rounded text-body text-muted-foreground hover:text-foreground hover:bg-accent/40"
         >
           Cancel
         </button>

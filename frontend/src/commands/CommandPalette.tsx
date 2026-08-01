@@ -174,13 +174,13 @@ function PaletteRow(props: { row: Row; highlighted: boolean }) {
       <Show when={props.row.sort === "action" ? props.row : undefined}>
         {(row) => (
           <>
-            <span class="text-[10px] tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
+            <span class="text-micro tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
               {row().action.group ?? ""}
             </span>
             <span class="flex-1 truncate">
               <FuzzyText text={row().action.label} ranges={row().ranges} />
               <Show when={row().action.description}>
-                {(d) => <span class="ml-2 text-[11px] text-muted-foreground/80">· {d()}</span>}
+                {(d) => <span class="ml-2 text-label text-muted-foreground/80">· {d()}</span>}
               </Show>
             </span>
             <Accelerator actionId={row().action.id} />
@@ -191,14 +191,14 @@ function PaletteRow(props: { row: Row; highlighted: boolean }) {
       <Show when={props.row.sort === "tab" ? props.row : undefined}>
         {(row) => (
           <>
-            <span class="text-[10px] tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
+            <span class="text-micro tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
               open
             </span>
             <TabKindIcon kind={row().tab.kind} />
             <span class="flex-1 truncate">
               <FuzzyText text={row().tab.label} ranges={row().ranges} />
               <Show when={row().tab.detail}>
-                {(d) => <span class="ml-2 text-[11px] text-muted-foreground/80">· {d()}</span>}
+                {(d) => <span class="ml-2 text-label text-muted-foreground/80">· {d()}</span>}
               </Show>
             </span>
           </>
@@ -208,13 +208,13 @@ function PaletteRow(props: { row: Row; highlighted: boolean }) {
       <Show when={props.row.sort === "file" ? props.row : undefined}>
         {(row) => (
           <>
-            <span class="text-[10px] tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
+            <span class="text-micro tracking-wide text-muted-foreground/70 w-16 shrink-0 truncate">
               recent
             </span>
             <FileClock class="w-3.5 h-3.5 shrink-0 opacity-60" />
             <span class="flex-1 truncate">
               <FuzzyText text={row().file.label} ranges={row().ranges} />
-              <span class="ml-2 text-[11px] text-muted-foreground/80 font-mono">
+              <span class="ml-2 text-label text-muted-foreground/80 font-mono">
                 {row().file.path}
               </span>
             </span>
@@ -232,7 +232,7 @@ function Accelerator(props: { actionId: string }) {
   return (
     <Show when={label()}>
       {(s) => (
-        <span class="ml-auto shrink-0 text-right text-[10px] text-muted-foreground font-mono tracking-wide">
+        <span class="ml-auto shrink-0 text-right text-micro text-muted-foreground font-mono tracking-wide">
           {s()}
         </span>
       )}

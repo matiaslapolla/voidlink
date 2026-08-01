@@ -73,7 +73,7 @@ export function MarkdownPreview(props: MarkdownPreviewProps) {
 
   return (
     <div class={`markdown-preview h-full overflow-y-auto bg-background ${props.class ?? ""}`}>
-      <div class="markdown-body mx-auto max-w-[860px] px-10 py-8 text-[14px] leading-[1.7] text-foreground" innerHTML={html()} />
+      <div class="markdown-body mx-auto max-w-[860px] px-10 py-8 text-title leading-[1.7] text-foreground" innerHTML={html()} />
     </div>
   );
 }

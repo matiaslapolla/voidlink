@@ -350,7 +350,7 @@ export function CompareTab(props: Props) {
           type="button"
           onClick={toggleMergeBase}
           aria-pressed={props.tab.useMergeBase}
-          class={`mb-0.5 flex items-center gap-1 px-2 py-1 text-[11px] rounded-md border transition-colors ${
+          class={`mb-0.5 flex items-center gap-1 px-2 py-1 text-label rounded-md border transition-colors ${
             props.tab.useMergeBase
               ? "bg-primary/15 border-primary/40 text-primary"
               : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -369,7 +369,7 @@ export function CompareTab(props: Props) {
           onClick={toggleIgnoreWhitespace}
           aria-label="Toggle ignore whitespace"
           aria-pressed={ignoreWhitespace()}
-          class={`mb-0.5 flex items-center gap-1 px-2 py-1 text-[11px] rounded-md border transition-colors ${
+          class={`mb-0.5 flex items-center gap-1 px-2 py-1 text-label rounded-md border transition-colors ${
             ignoreWhitespace()
               ? "bg-primary/15 border-primary/40 text-primary"
               : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -389,7 +389,7 @@ export function CompareTab(props: Props) {
             onClick={() => setDiffMode("inline")}
             aria-label="Inline (unified) view"
             aria-pressed={diffMode() === "inline"}
-            class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors ${
+            class={`flex items-center gap-1 px-2 py-0.5 text-label rounded transition-colors ${
               diffMode() === "inline"
                 ? "bg-primary/15 text-primary"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -404,7 +404,7 @@ export function CompareTab(props: Props) {
             onClick={() => setDiffMode("split")}
             aria-label="Split (side by side) view"
             aria-pressed={diffMode() === "split"}
-            class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors ${
+            class={`flex items-center gap-1 px-2 py-0.5 text-label rounded transition-colors ${
               diffMode() === "split"
                 ? "bg-primary/15 text-primary"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
@@ -434,9 +434,9 @@ export function CompareTab(props: Props) {
         <Show
           when={props.tab.baseRef && props.tab.headRef}
           fallback={
-            <div class="flex-1 flex flex-col items-center justify-center text-muted-foreground text-[12px] gap-2 text-center px-6">
+            <div class="flex-1 flex flex-col items-center justify-center text-muted-foreground text-body gap-2 text-center px-6">
               <p>Pick two refs to compare.</p>
-              <p class="text-muted-foreground/60 text-[11px]">
+              <p class="text-muted-foreground/60 text-label">
                 Branches, tags, commit SHAs, and revision expressions like{" "}
                 <span class="font-mono">HEAD~3</span> are all accepted.
               </p>
@@ -455,7 +455,7 @@ export function CompareTab(props: Props) {
               // this guard exists to keep it out of.
               when={failed() || !diff.loading || diff.latest}
               fallback={
-                <div class="h-full flex items-center justify-center text-muted-foreground text-[11px]">
+                <div class="h-full flex items-center justify-center text-muted-foreground text-label">
                   Computing diff…
                 </div>
               }
@@ -464,10 +464,10 @@ export function CompareTab(props: Props) {
                 when={!errMessage()}
                 fallback={
                   <div class="h-full flex flex-col items-center justify-center px-3 text-center gap-2">
-                    <p class="text-destructive text-[12px]">{errMessage()}</p>
+                    <p class="text-destructive text-body">{errMessage()}</p>
                     <button
                       onClick={() => refetch()}
-                      class="text-[11px] px-2 py-0.5 rounded border border-border hover:bg-accent/40"
+                      class="text-label px-2 py-0.5 rounded border border-border hover:bg-accent/40"
                     >
                       Retry
                     </button>

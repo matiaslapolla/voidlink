@@ -129,7 +129,7 @@ export function GitSyncControls(props: {
       >
         <ArrowDownToLine class="w-3 h-3" />
         <Show when={behind() > 0}>
-          <span class="text-[10px] text-destructive">{behind()}</span>
+          <span class="text-micro text-destructive">{behind()}</span>
         </Show>
       </button>
       <button

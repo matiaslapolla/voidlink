@@ -50,12 +50,12 @@ export function TabCycleOverlay() {
       <Portal>
         <div class="fixed inset-0 z-[var(--z-cycle)] flex items-center justify-center pointer-events-none">
           <div
-            class="w-[320px] max-w-[80vw] bg-popover border border-border rounded-lg shadow-xl overflow-hidden"
+            class="w-[320px] max-w-[80vw] material-structural border border-border rounded-lg shadow-xl overflow-hidden"
             role="listbox"
             aria-label="Recently used tabs"
             aria-live="polite"
           >
-            <div class="px-3 py-1.5 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
+            <div class="px-3 py-1.5 border-b border-border text-micro uppercase tracking-wider text-muted-foreground">
               Recent tabs
             </div>
             <div class="py-1 max-h-[50vh] overflow-y-auto scrollbar-thin">
@@ -67,7 +67,7 @@ export function TabCycleOverlay() {
                     /// Selected uses the app's tinted-primary idiom (§11.5) and
                     /// carries a 1px border in *both* states, so moving the
                     /// selection costs no layout (§7.6).
-                    class="flex items-center gap-2.5 px-3 py-1.5 text-[13px] border"
+                    class="flex items-center gap-2.5 px-3 py-1.5 text-ui border"
                     classList={{
                       "bg-primary/15 border-primary/40 text-primary": cycleIndex() === i(),
                       "border-transparent text-muted-foreground": cycleIndex() !== i(),
@@ -79,7 +79,7 @@ export function TabCycleOverlay() {
                 )}
               </For>
             </div>
-            <div class="px-3 py-1.5 border-t border-border text-[10px] text-muted-foreground">
+            <div class="px-3 py-1.5 border-t border-border text-micro text-muted-foreground">
               Hold Ctrl · Tab to cycle · release to switch
             </div>
           </div>

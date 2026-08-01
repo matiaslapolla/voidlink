@@ -234,7 +234,7 @@ export function CommitGraph(props: {
       style={{ height: `${ROW_H}px` }}
       title={`${c.shortOid} · ${c.summary}`}
     >
-      <span class="font-mono text-[11px] text-muted-foreground tabular-nums shrink-0 w-[52px]">
+      <span class="font-mono text-label text-muted-foreground tabular-nums shrink-0 w-[52px]">
         {c.shortOid}
       </span>
       {/* Ref decoration chips. */}
@@ -258,16 +258,16 @@ export function CommitGraph(props: {
         </span>
       </Show>
       <span
-        class={`flex-1 min-w-0 truncate text-[13px] ${
+        class={`flex-1 min-w-0 truncate text-ui ${
           isSel() ? "text-foreground" : "text-foreground/90"
         }`}
       >
         {c.summary || <span class="text-muted-foreground italic">(no message)</span>}
       </span>
-      <span class="shrink-0 text-[11px] text-muted-foreground truncate max-w-[140px] hidden sm:inline">
+      <span class="shrink-0 text-label text-muted-foreground truncate max-w-[140px] hidden sm:inline">
         {c.authorName}
       </span>
-      <span class="shrink-0 text-[11px] text-muted-foreground tabular-nums w-[64px] text-right">
+      <span class="shrink-0 text-label text-muted-foreground tabular-nums w-[64px] text-right">
         {relTime(c.commitTime, now())}
       </span>
       </div>
@@ -279,7 +279,7 @@ export function CommitGraph(props: {
       {/* Header */}
       <div class="shrink-0 flex items-center gap-2 px-4 h-9 border-b border-border">
         <GitCommitHorizontal class="w-4 h-4 text-primary shrink-0" />
-        <span class="text-[13px] font-medium">Commit graph</span>
+        <span class="text-ui font-medium">Commit graph</span>
         {/* "of N" is genuinely not available — the total would cost a second
             full walk of every ref — but "200 commits" read as a statement about
             the *repository*, and in a repository with ten thousand of them that
@@ -290,7 +290,7 @@ export function CommitGraph(props: {
         <Show when={settled()}>
           {(rows) => (
             <span
-              class="text-[11px] text-muted-foreground tabular-nums"
+              class="text-label text-muted-foreground tabular-nums"
               title={
                 rows().length === limit()
                   ? "The newest commits across every branch. Load more to walk further back."
@@ -313,7 +313,7 @@ export function CommitGraph(props: {
             <button
               onClick={() => setLimit((l) => l + 200)}
               disabled={commits.loading}
-              class="text-[11px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-50 disabled:cursor-default"
+              class="text-label px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-50 disabled:cursor-default"
               title="Load more history"
             >
               {commits.loading ? "Loading…" : "Load more"}
@@ -342,7 +342,7 @@ export function CommitGraph(props: {
         <Show
           when={!commits.loading || settled()}
           fallback={
-            <div class="flex items-center justify-center gap-2 py-10 text-muted-foreground text-[12px]">
+            <div class="flex items-center justify-center gap-2 py-10 text-muted-foreground text-body">
               <Loader2 class="w-4 h-4 animate-spin" />
               Loading history…
             </div>
@@ -361,17 +361,17 @@ export function CommitGraph(props: {
                 fallback={
                   <div class="flex flex-col items-center justify-center gap-2 py-16 px-6 text-center">
                     <AlertTriangle class="w-6 h-6 text-destructive opacity-80" />
-                    <p class="text-[12px] text-destructive">
+                    <p class="text-body text-destructive">
                       Failed to load commit graph
                     </p>
-                    <p class="text-[11px] font-mono text-muted-foreground break-words">
+                    <p class="text-label font-mono text-muted-foreground break-words">
                       {commits.error instanceof Error
                         ? commits.error.message
                         : String(commits.error)}
                     </p>
                     <button
                       onClick={() => void refetch()}
-                      class="mt-1 text-[11px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+                      class="mt-1 text-label px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
                     >
                       Try again
                     </button>
@@ -380,7 +380,7 @@ export function CommitGraph(props: {
               >
                 <div class="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
                   <GitCommitHorizontal class="w-6 h-6 opacity-60" />
-                  <p class="text-[12px]">No commits to graph yet.</p>
+                  <p class="text-body">No commits to graph yet.</p>
                 </div>
               </Show>
             }
@@ -522,7 +522,7 @@ function RefChip(props: {
   };
   return (
     <span
-      class={`inline-flex items-center gap-0.5 px-1.5 h-[16px] rounded-full text-[10px] font-medium leading-none border ${tone()}`}
+      class={`inline-flex items-center gap-0.5 px-1.5 h-[16px] rounded-full text-micro font-medium leading-none border ${tone()}`}
       title={
         props.kind === "detached"
           ? "HEAD is detached at this commit"

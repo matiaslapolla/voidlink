@@ -108,13 +108,13 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
     <Show
       when={!firstLoad()}
       fallback={
-        <div class="px-2.5 py-2 text-[12px] text-muted-foreground">Loading stack…</div>
+        <div class="px-2.5 py-2 text-body text-muted-foreground">Loading stack…</div>
       }
     >
       <Show
         when={stack.error ? undefined : stack.latest}
         fallback={
-          <div class="px-2.5 py-2.5 text-[12px] text-muted-foreground leading-snug space-y-2">
+          <div class="px-2.5 py-2.5 text-body text-muted-foreground leading-snug space-y-2">
             <div>
               <Layers class="w-3.5 h-3.5 inline-block mr-1 opacity-60 align-[-2px]" />
               Not on a stack.
@@ -122,7 +122,7 @@ export function StackSidebarSection(props: StackSidebarSectionProps) {
             <button
               onClick={() => void startStackFromHead()}
               disabled={busy()}
-              class="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              class="flex items-center gap-1 text-label px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Create a child branch off the current branch and start a stack"
             >
               <Plus class="w-3 h-3" />
@@ -169,7 +169,7 @@ function StackChain(props: {
       </For>
       <TrunkRow trunk={props.stack.trunk} />
       <Show when={props.stack.needsRestack}>
-        <div class="mt-1.5 mx-1 px-2 py-1 rounded bg-warning/10 border border-warning/30 text-[11px] text-warning flex items-center gap-1">
+        <div class="mt-1.5 mx-1 px-2 py-1 rounded bg-warning/10 border border-warning/30 text-label text-warning flex items-center gap-1">
           <AlertTriangle class="w-3 h-3" />
           Parent moved — needs restack.
         </div>
@@ -178,7 +178,7 @@ function StackChain(props: {
         <button
           onClick={() => props.onBranchOnTop(topBranch())}
           disabled={props.busy}
-          class="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class="flex items-center gap-1 text-label px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           title={`Create a new branch on top of ${topBranch()}`}
         >
           <Plus class="w-3 h-3" />
@@ -186,7 +186,7 @@ function StackChain(props: {
         </button>
         <button
           onClick={props.onOpenTab}
-          class="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+          class="flex items-center gap-1 text-label px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
           title="Open the full stack workspace tab"
         >
           <ExternalLink class="w-3 h-3" />
@@ -207,7 +207,7 @@ function StackRow(props: { branch: StackBranch; isBottom: boolean }) {
   };
   return (
     <div
-      class={`group flex items-center gap-1 px-1.5 py-1 rounded text-[12px] ${
+      class={`group flex items-center gap-1 px-1.5 py-1 rounded text-body ${
         props.branch.isHead
           ? "bg-primary/10 text-primary"
           : "text-foreground/85 hover:bg-accent/40"
@@ -220,7 +220,7 @@ function StackRow(props: { branch: StackBranch; isBottom: boolean }) {
         {props.branch.name}
       </span>
       <Show when={props.branch.aheadOfParent > 0}>
-        <span class="text-success tabular-nums text-[11px]">
+        <span class="text-success tabular-nums text-label">
           ↑{props.branch.aheadOfParent}
         </span>
       </Show>
@@ -229,7 +229,7 @@ function StackRow(props: { branch: StackBranch; isBottom: boolean }) {
       </Show>
       <Show when={props.branch.prNumber}>
         {(n) => (
-          <span class="flex items-center gap-0.5 text-[10px] text-muted-foreground/80 tabular-nums">
+          <span class="flex items-center gap-0.5 text-micro text-muted-foreground/80 tabular-nums">
             <GitPullRequest class="w-2.5 h-2.5" />
             {n()}
           </span>
@@ -241,10 +241,10 @@ function StackRow(props: { branch: StackBranch; isBottom: boolean }) {
 
 function TrunkRow(props: { trunk: string }) {
   return (
-    <div class="flex items-center gap-1 px-1.5 py-1 text-[12px] text-muted-foreground">
+    <div class="flex items-center gap-1 px-1.5 py-1 text-body text-muted-foreground">
       <span class="w-3 text-center shrink-0 font-mono">└</span>
       <span class="truncate">{props.trunk}</span>
-      <span class="text-[10px] text-muted-foreground/70 ml-1 tracking-wide">
+      <span class="text-micro text-muted-foreground/70 ml-1 tracking-wide">
         Trunk
       </span>
     </div>
