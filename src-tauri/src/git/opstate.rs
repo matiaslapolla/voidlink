@@ -43,6 +43,97 @@ pub(crate) fn ensure_no_operation(repo: &Repository, action: &str) -> Result<(),
     }
 }
 
+/// Every directory that can hold in-progress operation state for this
+/// repository: this worktree's, plus every linked worktree's.
+///
+/// `repo.path()` is only ever *one* of them. For a linked worktree it is
+/// `.git/worktrees/<id>/`, and for the main one it is `.git/` — either way it
+/// answers for a single checkout, which is why `ensure_no_operation` could not
+/// see a rebase running next door.
+fn state_dirs(repo: &Repository) -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![repo.path().to_path_buf()];
+    // `watch::common_dir` already knows how to follow the `commondir` file a
+    // linked worktree's git dir carries — git2 0.19 has no `commondir()` and
+    // reconstructing the relative path by trimming components is guesswork.
+    let linked = crate::watch::common_dir(repo.path()).join("worktrees");
+    if let Ok(entries) = std::fs::read_dir(&linked) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path != dirs[0] {
+                dirs.push(path);
+            }
+        }
+    }
+    dirs
+}
+
+/// The operation whose state files sit in `dir`, if any. Same rules as
+/// `operation_name`, which is this applied to the opened repository.
+fn operation_at(dir: &Path) -> Option<&'static str> {
+    if dir.join("MERGE_HEAD").exists() {
+        Some("merge")
+    } else if dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists() {
+        Some("rebase")
+    } else if dir.join("CHERRY_PICK_HEAD").exists() {
+        Some("cherry-pick")
+    } else if dir.join("REVERT_HEAD").exists() {
+        Some("revert")
+    } else {
+        None
+    }
+}
+
+/// The branch the checkout owning `dir` is standing on, as a short name.
+///
+/// Mid-rebase HEAD is detached, so the branch being replayed is only recorded
+/// in `head-name` — which is precisely why "is HEAD this branch?" was not
+/// enough to catch the case this exists for.
+fn branch_under_operation(dir: &Path) -> Option<String> {
+    for state in ["rebase-merge", "rebase-apply"] {
+        if let Ok(head_name) = std::fs::read_to_string(dir.join(state).join("head-name")) {
+            let trimmed = head_name.trim();
+            if let Some(short) = trimmed.strip_prefix("refs/heads/") {
+                return Some(short.to_string());
+            }
+        }
+    }
+    // Merge, cherry-pick and revert leave HEAD attached, so the checkout's own
+    // HEAD names the branch.
+    let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
+    let target = head.trim().strip_prefix("ref: ")?.to_string();
+    Some(target.strip_prefix("refs/heads/")?.to_string())
+}
+
+/// Refuse to move `branch` while *some* checkout of this repository is
+/// mid-operation on it.
+///
+/// `ensure_no_operation` only ever looked at the opened repository's own git
+/// dir, but a linked worktree keeps its rebase state in
+/// `.git/worktrees/<id>/rebase-merge`. So a rebase running in another worktree
+/// was invisible here, and renaming the branch it was replaying rewrote the ref
+/// its state files point at — after which `--continue` and `--abort` can never
+/// find it again and the replayed commits are reachable only from the reflog.
+///
+/// Scoped to the branch rather than blanket-refusing every mutation, because
+/// worktrees exist so that one checkout being busy does not stop work in
+/// another. Blocking a rename in worktree A because worktree B is rebasing
+/// something unrelated would take away the reason to have worktrees at all.
+pub(crate) fn ensure_branch_free(
+    repo: &Repository,
+    branch: &str,
+    action: &str,
+) -> Result<(), String> {
+    for dir in state_dirs(repo) {
+        let Some(op) = operation_at(&dir) else { continue };
+        if branch_under_operation(&dir).as_deref() == Some(branch) {
+            return Err(format!(
+                "a {op} is in progress on '{branch}' in another worktree — finish it or abort it before you {action}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a commit only when committing cannot be what finishes the operation.
 ///
 /// A merge, cherry-pick or revert is *completed* by committing, so those must
@@ -188,6 +279,56 @@ mod tests {
         assert!(!repo.path().join("MERGE_HEAD").exists());
         assert!(!repo.path().join("rebase-merge").exists());
         assert_eq!(operation_name(&repo), None);
+    }
+
+    /// The linked-worktree hole. `ensure_no_operation` reads the *opened*
+    /// repository's git dir, which for the main worktree is `.git/` — a rebase
+    /// running in a linked worktree lives in `.git/worktrees/<id>/` and was
+    /// invisible from here, so renaming the branch it was replaying rewrote the
+    /// ref its state files name and `--continue` could never find it again.
+    #[test]
+    fn a_rebase_in_a_linked_worktree_protects_the_branch_it_is_replaying() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(tmp.path()).unwrap();
+
+        let state = repo.path().join("worktrees").join("side");
+        std::fs::create_dir_all(state.join("rebase-merge")).unwrap();
+        std::fs::write(state.join("rebase-merge").join("head-name"), "refs/heads/topic\n").unwrap();
+
+        // Nothing is happening *here*, which is the whole point.
+        assert!(ensure_no_operation(&repo, "rename a branch").is_ok());
+
+        let err = ensure_branch_free(&repo, "topic", "rename a branch")
+            .expect_err("the branch another worktree is rebasing must be off limits");
+        assert!(err.contains("rebase") && err.contains("topic"), "{err}");
+    }
+
+    /// ...and only that branch. Worktrees exist so one checkout being busy does
+    /// not stop work in another; a blanket refusal would take that away.
+    #[test]
+    fn an_unrelated_branch_is_untouched_by_another_worktrees_rebase() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(tmp.path()).unwrap();
+        let state = repo.path().join("worktrees").join("side");
+        std::fs::create_dir_all(state.join("rebase-merge")).unwrap();
+        std::fs::write(state.join("rebase-merge").join("head-name"), "refs/heads/topic\n").unwrap();
+
+        assert!(ensure_branch_free(&repo, "other", "delete a branch").is_ok());
+    }
+
+    /// A merge or cherry-pick leaves HEAD attached, so the state dir's own
+    /// `HEAD` names the branch rather than `head-name`.
+    #[test]
+    fn a_merge_in_a_linked_worktree_is_found_through_its_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(tmp.path()).unwrap();
+        let state = repo.path().join("worktrees").join("side");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("HEAD"), "ref: refs/heads/release\n").unwrap();
+        std::fs::write(state.join("MERGE_HEAD"), "x").unwrap();
+
+        let err = ensure_branch_free(&repo, "release", "delete a branch").unwrap_err();
+        assert!(err.contains("merge"), "{err}");
     }
 
     #[test]

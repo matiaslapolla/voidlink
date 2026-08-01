@@ -43,11 +43,20 @@ pub(crate) fn git_list_branches_impl(
             .map_err(|e| e.message().to_string())?;
         for item in iter {
             let (branch, _) = item.map_err(|e| e.message().to_string())?;
-            let name = branch
-                .name()
-                .map_err(|e| e.message().to_string())?
-                .unwrap_or("")
-                .to_string();
+            // `branch.name()` yields `None` for a name that is not valid UTF-8,
+            // and the row was then skipped: the branch was invisible, in a pane
+            // whose entire job is telling you which branches exist. A repo
+            // cloned from a filesystem that permits those names has them, and
+            // "it isn't in the list" is indistinguishable from "it isn't in the
+            // repo". Decode lossily instead and mark the row, so it is at least
+            // *there* while every action that takes a name stays off it.
+            let (name, lossy_name) = match branch.name_bytes() {
+                Ok(bytes) => match std::str::from_utf8(bytes) {
+                    Ok(s) => (s.to_string(), false),
+                    Err(_) => (String::from_utf8_lossy(bytes).into_owned(), true),
+                },
+                Err(e) => return Err(e.message().to_string()),
+            };
             if name.is_empty() {
                 continue;
             }
@@ -119,6 +128,15 @@ pub(crate) fn git_list_branches_impl(
                     (None, None)
                 };
 
+            // A symbolic ref under `refs/heads/` is an alias, not a branch.
+            // It listed as an ordinary row, so deleting it removed the alias
+            // while the user believed they had deleted its target — and the row
+            // said nothing at all about the indirection.
+            let symbolic_target = branch
+                .get()
+                .symbolic_target()
+                .map(|t| t.strip_prefix("refs/heads/").unwrap_or(t).to_string());
+
             branches.push(GitBranchInfo {
                 name,
                 is_head,
@@ -129,6 +147,8 @@ pub(crate) fn git_list_branches_impl(
                 ahead_behind_unknown,
                 last_commit_summary,
                 last_commit_time,
+                lossy_name,
+                symbolic_target,
             });
         }
     }
@@ -151,6 +171,8 @@ pub(crate) fn git_list_branches_impl(
                     ahead_behind_unknown: false,
                     last_commit_summary: None,
                     last_commit_time: None,
+                    lossy_name: false,
+                    symbolic_target: None,
                 });
             }
         }
@@ -215,6 +237,10 @@ pub(crate) fn git_delete_branch_impl(
     // `rebase-merge/head-name`, and "finish or abort first" is both easier to
     // act on and consistent with create, rename and checkout.
     super::opstate::ensure_no_operation(&repo, "delete a branch")?;
+    // Same reasoning, one worktree over: deleting the branch another worktree
+    // is mid-rebase on leaves the replayed commits reachable only from the
+    // reflog, and this repo's own git dir shows no operation at all.
+    super::opstate::ensure_branch_free(&repo, &name, "delete a branch")?;
     let mut branch = repo
         .find_branch(&name, BranchType::Local)
         .map_err(|e| e.message().to_string())?;
@@ -316,6 +342,11 @@ pub(crate) fn git_rename_branch_impl(
     // Renaming the branch a rebase is running on rewrites the ref its state
     // files point at, and `--continue` / `--abort` can then never find it again.
     super::opstate::ensure_no_operation(&repo, "rename a branch")?;
+    // ...and the same check for every *other* worktree of this repository. The
+    // guard above only sees the opened repo's git dir, but a linked worktree
+    // keeps its rebase state under `.git/worktrees/<id>/`, so a rename here of
+    // the branch it is replaying broke its `--continue` with nothing refusing.
+    super::opstate::ensure_branch_free(&repo, &old_name, "rename a branch")?;
     let mut branch = repo
         .find_branch(&old_name, BranchType::Local)
         .map_err(|e| e.message().to_string())?;
@@ -497,6 +528,49 @@ mod tests {
         );
         git_delete_branch_impl(root.to_string_lossy().into_owned(), "topic".into(), false)
             .expect("no force prompt for a contained branch");
+    }
+
+    /// A symbolic ref under `refs/heads/` is an alias, not a branch. It listed
+    /// as an ordinary row with nothing to say so, and deleting it removed the
+    /// alias while the user believed they had deleted `v2`.
+    #[test]
+    fn a_symbolic_head_ref_reports_what_it_points_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo(root);
+        write_file(root, "a.txt", "one\n");
+        let tip = commit_all(&repo, "base");
+        repo.branch("v2", &repo.find_commit(tip).unwrap(), false).unwrap();
+        repo.reference_symbolic("refs/heads/stable", "refs/heads/v2", false, "alias")
+            .unwrap();
+
+        let list = git_list_branches_impl(root.to_string_lossy().into_owned(), false).unwrap();
+        let alias = list.iter().find(|b| b.name == "stable").expect("still listed");
+        assert_eq!(alias.symbolic_target.as_deref(), Some("v2"));
+        let real = list.iter().find(|b| b.name == "v2").unwrap();
+        assert!(real.symbolic_target.is_none(), "a real branch points at nothing");
+    }
+
+    /// Deleting the branch another worktree is mid-rebase on leaves the
+    /// replayed commits reachable only from the reflog — and this repository's
+    /// own git dir shows no operation at all, so nothing refused it.
+    #[test]
+    fn delete_is_refused_for_a_branch_another_worktree_is_rebasing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo(root);
+        write_file(root, "a.txt", "one\n");
+        let tip = commit_all(&repo, "base");
+        repo.branch("topic", &repo.find_commit(tip).unwrap(), false).unwrap();
+
+        let state = repo.path().join("worktrees").join("side").join("rebase-merge");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("head-name"), "refs/heads/topic\n").unwrap();
+
+        let err = git_delete_branch_impl(root.to_string_lossy().into_owned(), "topic".into(), true)
+            .expect_err("another worktree is replaying this branch");
+        assert!(err.contains("another worktree"), "{err}");
+        assert!(repo.find_branch("topic", BranchType::Local).is_ok(), "it survives");
     }
 
     /// The regression: mid-rebase HEAD is detached, so `is_head()` is false for

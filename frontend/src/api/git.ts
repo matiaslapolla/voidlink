@@ -306,10 +306,15 @@ export const gitApi = {
     return invoke<void>("git_discard_file", { repoPath, path });
   },
 
-  discardAll(repoPath: string, includeUntracked?: boolean): Promise<void> {
+  /// `paths` limits the discard to those repo-relative paths. Pass it whenever
+  /// the changes list is filtered: without it the button reverted everything in
+  /// the repository, including the files the filter was hiding, while the list
+  /// in front of the user showed four.
+  discardAll(repoPath: string, includeUntracked?: boolean, paths?: string[]): Promise<void> {
     return invoke<void>("git_discard_all", {
       repoPath,
       includeUntracked: includeUntracked ?? false,
+      paths: paths ?? null,
     });
   },
 

@@ -57,6 +57,13 @@ pub(crate) fn git_list_refs_impl(repo_path: String) -> Result<RefList, String> {
     // commits the user was standing on. Both pushes are attempted; both are
     // allowed to fail (an unborn HEAD has nothing to push and no history).
     walk.push_glob("refs/heads/*").ok();
+    // Remote-tracking branches too. Without them a commit that exists only on a
+    // fetched remote branch — which is every commit a colleague pushed and you
+    // have not merged — could never be suggested, in a picker whose own branch
+    // list offers `origin/foo` two fields above. Pick the branch and the
+    // commits on it were not offered; that is the picker disagreeing with
+    // itself.
+    walk.push_glob("refs/remotes/*").ok();
     walk.push_head().ok();
     for oid in walk.take(RECENT_COMMITS_LIMIT).flatten() {
         let Ok(commit) = repo.find_commit(oid) else { continue };

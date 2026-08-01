@@ -78,9 +78,17 @@ pub(crate) fn git_file_status_impl(repo_path: String) -> Result<Vec<GitFileStatu
 
     let mut result = Vec::new();
     for entry in statuses.iter() {
-        let path = match entry.path() {
-            Some(p) => p.to_string(),
-            None => continue,
+        // `entry.path()` yields `None` when the path is not valid UTF-8, and
+        // the file was then skipped — dropped out of the changes list without a
+        // trace. That is the one outcome worse than a broken row: the user
+        // reads the list, commits, and the file is left behind having never
+        // been mentioned. Decode lossily and mark it instead.
+        let (path, lossy_path) = match std::str::from_utf8(entry.path_bytes()) {
+            Ok(p) => (p.to_string(), false),
+            Err(_) => (
+                String::from_utf8_lossy(entry.path_bytes()).into_owned(),
+                true,
+            ),
         };
         let s = entry.status();
 
@@ -111,6 +119,7 @@ pub(crate) fn git_file_status_impl(repo_path: String) -> Result<Vec<GitFileStatu
                 path,
                 status: "conflicted".to_string(),
                 staged: false,
+                lossy_path,
             });
             continue;
         }
@@ -123,6 +132,7 @@ pub(crate) fn git_file_status_impl(repo_path: String) -> Result<Vec<GitFileStatu
                 path: current_path(entry.head_to_index()),
                 status: status.to_string(),
                 staged: true,
+                lossy_path,
             });
         }
         if let Some(status) = worktree {
@@ -130,6 +140,7 @@ pub(crate) fn git_file_status_impl(repo_path: String) -> Result<Vec<GitFileStatu
                 path: current_path(entry.index_to_workdir()),
                 status: status.to_string(),
                 staged: false,
+                lossy_path,
             });
         } else if index.is_none() {
             // Neither side named a change, yet libgit2 handed us the entry. That
@@ -140,6 +151,7 @@ pub(crate) fn git_file_status_impl(repo_path: String) -> Result<Vec<GitFileStatu
                 path,
                 status: "modified".to_string(),
                 staged: false,
+                lossy_path,
             });
         }
     }

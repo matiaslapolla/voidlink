@@ -197,7 +197,7 @@ fn roots_for(repo_path: &Path) -> Result<Vec<PathBuf>, String> {
 /// git2 0.19 exposes no `commondir()`, so the file is read directly rather than
 /// reconstructed by trimming components — the relative path is git's to define,
 /// not ours to guess.
-fn common_dir(git_dir: &Path) -> PathBuf {
+pub(crate) fn common_dir(git_dir: &Path) -> PathBuf {
     let Ok(contents) = std::fs::read_to_string(git_dir.join("commondir")) else {
         return git_dir.to_path_buf();
     };
