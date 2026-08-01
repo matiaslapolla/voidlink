@@ -39,12 +39,29 @@ file exists to prevent.
 
 | # | Item | Why here |
 |---|---|---|
-| 1 | **A browser test project** (`*.browser.test.tsx`, Vitest 4 + Playwright, chromium, headless) | Every remaining untested surface in this codebase is untested for the same reason: jsdom has no layout engine. This stopped being a backlog of tests and became one missing capability. |
-| 2 | **BR-O1 — the overlay tax** | Ten hand-written `setOverlayOpen` effects in `App.tsx`, one per modal surface, each there because a child webview composites above the DOM. One self-registration mechanism — the shape `TAB_SPECS` already uses for tabs — makes the count one and the growth zero. |
-| 3 | **Run provenance on the diff** | "Which agent wrote this hunk", inline. Was ranked 13th of 14 when proposed and is now near the top: the journal already does the attribution and already labels it as inferred, so what is left is the surface. |
-| 4 | **Fan-out durability in Rust** | The real limit of fan-out: close the window and the orchestration is gone. `store/fanout.ts`'s header says why. Only worth doing if unattended overnight runs are the point — it is a project, not a flag. |
+| 1 | **BR-O1 — the overlay tax** | Ten hand-written `setOverlayOpen` effects in `App.tsx`, one per modal surface, each there because a child webview composites above the DOM. One self-registration mechanism — the shape `TAB_SPECS` already uses for tabs — makes the count one and the growth zero. |
+| 2 | **Run provenance on the diff** | "Which agent wrote this hunk", inline. Was ranked 13th of 14 when proposed and is now near the top: the journal already does the attribution and already labels it as inferred, so what is left is the surface. |
+| 3 | **Fan-out durability in Rust** | The real limit of fan-out: close the window and the orchestration is gone. `store/fanout.ts`'s header says why. Only worth doing if unattended overnight runs are the point — it is a project, not a flag. |
 
-### 1 — the browser test project
+**Done — a browser test project.** `*.browser.test.tsx`, Vitest 4 +
+`@vitest/browser-playwright`, chromium, headless, exactly the config sketched
+below. `frontend/vitest.config.ts` now has three projects; `unit` and `render`
+are unchanged, `browser` is new and `npm test` still runs only the first two.
+`frontend/src/test/setup.browser.ts` reuses `./tauri.ts` as-is (no jsdom
+assumptions to work around) and additionally imports the app's `index.css`,
+compiled for real by the Tailwind Vite plugin the browser project loads —
+geometry tests are only meaningful against the real cascade. Two files prove
+the capability: `CommitGraph.browser.test.tsx` (rows and the SVG gutter paint
+in agreement, including across the `VIRTUALIZE_ABOVE = 60` windowing
+threshold) and `TabStrip.browser.test.tsx` (the overflow chevron against a
+real `ResizeObserver`, a cross-group drag against a real `DataTransfer`, which
+jsdom does not implement at all). Both were verified to fail for the right
+reason when the Tailwind import is removed, so they are not passing on a
+coincidence. Detail moved into [testing.md](./features/testing.md#reaching-for-browser-instead-of-render)
+rather than kept here twice.
+
+<details>
+<summary>The config that was confirmed to work, for reference</summary>
 
 ```ts
 // npm i -D @vitest/browser-playwright playwright
@@ -52,7 +69,7 @@ import { playwright } from "@vitest/browser-playwright";
 
 {
   extends: true,
-  plugins: [solid()],
+  plugins: [solid(), tailwindcss()],
   resolve: { alias: { "@": … }, conditions: ["development", "browser"] },
   test: {
     name: { label: "browser", color: "cyan" },
@@ -68,28 +85,10 @@ import { playwright } from "@vitest/browser-playwright";
 }
 ```
 
-Confirmed against the Vitest v4.1.6 docs — the provider is a package now, not a
-string. The **file suffix picks the project**, exactly as the extension does
-today: `*.test.ts` → node, `*.test.tsx` → jsdom, `*.browser.test.tsx` →
-chromium. Three suffixes, three costs, and the filename says which you are
-paying.
+`tailwindcss()` was not in the original sketch — it turned out to be load-bearing
+once the first geometry test needed `overflow-auto` to actually clip.
 
-The rule, already written into [testing.md](./features/testing.md) and to be
-kept there: *use jsdom unless the assertion is about geometry. If the test would
-pass with `getBoundingClientRect` returning zeroes, it belongs in jsdom.*
-`browser` must not become the default — it is roughly two orders of magnitude
-slower per test, and a suite that takes minutes stops being run.
-
-**What is untestable until this exists:** `@tanstack/solid-virtual` lists
-(commit graph, diff renderer, file tree), tab-strip overflow, the splitter,
-sticky headers, the MRU overlay, xterm and Monaco. Mocking the measurement to
-make the test pass is testing the mock.
-
-**`src/test/layout.ts` is a stopgap, not this.** It fakes a viewport so a
-virtualizer renders rows at all, which makes "which rows exist" testable and
-leaves "where they landed" as fiction — the coordinates are arithmetic over
-numbers the helper invented. Overlap, clipping and scroll anchoring stay
-unanswerable.
+</details>
 
 ---
 
@@ -98,8 +97,8 @@ unanswerable.
 | Item | State |
 |---|---|
 | **The coverage backlog** | Partly done. `ChangedFileTree` (15 tests), `OperationBanner` (14), and the activity-escalation view axis (`ViewSwitcher.test.tsx`) are mounted. **`GitSidebar` is not** — it needs both providers, and it carries the confirmed status bug: a file staged *and* re-modified must appear in both sections, refresh must not blank the list, the error boundary must render. |
-| **The geometry rows of that backlog** | Blocked on item 1 above: `SplitDiffRenderer` + hunk actions, the commit graph's paint (the lane algorithm has unit tests; the paint has none), `TabStrip` overflow and drag-between-groups. |
-| **The runner as a thing you look at** | `@vitest/ui` for watch-mode triage; `npm run test:browser` and `npm run test:ui`, with `npm test` still running unit + render only so the fast loop stays fast. CI: unit + render on every push, browser on demand and pre-merge — Playwright's browsers are a ~300 MB download that must be cached or it dominates the run. |
+| **The geometry rows of that backlog** | No longer blocked — the `browser` project exists. Done: the commit graph's paint, `TabStrip` overflow and drag-between-groups. Still open: `SplitDiffRenderer` + hunk actions, the splitter, sticky headers, the MRU overlay, the file tree's own virtualized list. |
+| **The runner as a thing you look at** | Done. `@vitest/ui` installed, `npm run test:browser` and `npm run test:ui` both wired, `npm test` still runs unit + render only. **Still open:** wiring `browser` into CI on demand / pre-merge with the Playwright binary cached — the ~300 MB chromium download was free in this environment because another tool had already cached it, so the cache step itself is unverified. |
 
 ---
 
@@ -107,8 +106,8 @@ unanswerable.
 
 | Item | Notes |
 |---|---|
-| **Run provenance on the diff** | Item 3 above. |
-| **Fan-out durability** | Item 4 above. |
+| **Run provenance on the diff** | Item 2 above. |
+| **Fan-out durability** | Item 3 above. |
 | **Palette action sources** | Unchanged since it was proposed: let features contribute action sources to the palette rather than the palette knowing every feature. |
 | **Keyboard navigation over N worktrees' changed files** | All that is left of a "review across worktrees" proposal that Mission Control's Lineup otherwise superseded. Re-scope before building — most of what it was for now has a home. |
 | **An agent-written check-in summary** | Optional half of check-ins, not built. If it ever is, the labelling rule stands: a generated summary says it is generated. |
@@ -143,8 +142,11 @@ page, per-tab profiles, persisted history.
 which gives the host webview the keyboard back — carries confidence *reading*,
 not *proven*. What is proven is that `set_focus` was never called and that the
 wiring is tested. What is not is that OS focus was the user-visible cause,
-because that needs a click into a real page, and nothing in this repo can drive
-one until item 1 exists. If the symptom survives, the next suspect is BR-F2.
+because that needs a click into a real page. The `browser` project (top of
+this list, now done) can drive one in principle — Playwright and a real
+Chromium are there — but nothing has driven this specific click yet; that
+would be its own test against `BrowserPane`, not a side effect of building the
+project. If the symptom survives, the next suspect is BR-F2.
 
 ---
 
@@ -208,7 +210,7 @@ more to reach than it looks.
   `unstable` **and** `devtools`, held by the single `add_child` call in
   `src-tauri/src/browser/mod.rs`. What would reopen it: a Tauri break that costs
   more than a day, or the agent tie-in concluding it needs a second engine.
-  Note that the overlay tax (item 2) was an argument against the *overlay
+  Note that the overlay tax (item 1) was an argument against the *overlay
   mechanism* and read as an argument against the browser.
 - **The graph's "first parent keeps the mainline vertical" invariant is wrong,
   not the code.** Making it true would mean moving a claimed lane sideways

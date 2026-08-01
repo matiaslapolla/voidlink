@@ -1,22 +1,75 @@
 # Testing
 
-## The two projects
+## The three projects
 
-`frontend/vitest.config.ts` defines two vitest projects, and the file extension
+`frontend/vitest.config.ts` defines three vitest projects, and the file suffix
 picks which one a test runs in.
 
 | Project | Files | Environment | For |
 | --- | --- | --- | --- |
 | `unit` | `src/**/*.test.ts` | `node` | Pure logic — stores, parsers, reducers, the lane algorithm |
 | `render` | `src/**/*.test.tsx` | `jsdom` | Components, actually mounted |
+| `browser` | `src/**/*.browser.test.tsx` | real headless Chromium (Playwright) | Components whose correctness *is* their geometry |
 
-`npx vitest run` runs both. `npx vitest run --project render` runs one.
+`npx vitest run` runs all three. `npx vitest run --project render` runs one.
+`npm test` runs **unit + render only** — see below for why `browser` is not in
+that set.
 
-The split is deliberate. The unit project loads no Solid compiler and builds no
-jsdom, which is why ~860 tests finish in about a second and a half; putting them
-all in jsdom would tax every one of them for the benefit of a handful. It also
-makes the extension informative: **if a test file ends in `.tsx`, it mounts
-something.**
+The split between unit and render is deliberate. The unit project loads no
+Solid compiler and builds no jsdom, which is why ~860 tests finish in about a
+second and a half; putting them all in jsdom would tax every one of them for
+the benefit of a handful. It also makes the extension informative: **if a test
+file ends in `.tsx`, it mounts something.** `.browser.test.tsx` extends that
+rule rather than breaking it: three suffixes, three costs, and the filename
+says which you are paying.
+
+## Reaching for `browser` instead of `render`
+
+jsdom has no layout engine. `getBoundingClientRect` returns zeroes for every
+element, there is no scrolling and no real CSS cascade, and
+`IntersectionObserver`/`ResizeObserver` are stubs `src/test/setup.ts` installs
+just so mounting doesn't throw. A test that measures anything in jsdom is
+measuring the stub, not the component — and a test that would pass with
+`getBoundingClientRect` returning zeroes belongs in `render`, not `browser`.
+
+That is exactly the surfaces the `render` project cannot reach: the
+`@tanstack/solid-virtual` lists (commit graph, diff renderer, file tree),
+tab-strip overflow, the splitter, sticky headers, the MRU overlay, xterm,
+Monaco. Two are proven now —
+[`CommitGraph.browser.test.tsx`](../../frontend/src/components/git/history/CommitGraph.browser.test.tsx)
+checks that rows and the SVG gutter overlay agree on where a row actually is
+on screen, including across the windowing threshold `CommitGraph.tsx` applies
+above 60 rows; [`TabStrip.browser.test.tsx`](../../frontend/src/components/layout/TabStrip.browser.test.tsx)
+checks the overflow chevron against a real `ResizeObserver` and drags a tab
+between two pane groups with a real `DataTransfer` — a constructor jsdom does
+not implement at all.
+
+`src/test/setup.browser.ts` mirrors `setup.ts`'s Tauri stub — same fake, same
+`./tauri.ts`, imported rather than forked — but skips the jsdom stubs entirely:
+a real browser needs no `matchMedia`/`ResizeObserver`/`scrollIntoView`
+pretending to work, because they already do. It does add one thing `setup.ts`
+doesn't: an import of the app's `index.css`, and the browser project's own Vite
+config loads the Tailwind plugin to compile it. Geometry tests are only
+meaningful against the real cascade — `overflow-auto` has to actually clip,
+`flex-1` has to actually size a scroll container, or a "windowing" test would
+never see anything windowed.
+
+```tsx
+// frontend/src/components/git/history/CommitGraph.browser.test.tsx
+const rows = screen.getAllByRole("option");
+const tops = rows.map((r) => r.getBoundingClientRect().top);
+const rowHeight = tops[1] - tops[0];
+expect(rowHeight).toBeGreaterThan(10); // 0 in jsdom; this is the tell
+```
+
+Run it with `npm run test:browser`, or interactively with `npm run test:ui`
+(`@vitest/ui`, useful for watch-mode triage across any project). `npm test`
+deliberately excludes `browser`: it is roughly two orders of magnitude slower
+per test than `render`, and a suite that takes minutes stops being run. CI
+should run `unit` + `render` on every push and `browser` on demand or
+pre-merge — not because the tests are less trustworthy, but because Playwright's
+browser binaries are a **~300 MB download** (`npx playwright install chromium`)
+that dominates a cold run unless it is cached between them.
 
 ## Writing a render test
 
@@ -130,17 +183,13 @@ in a test — the config's own comment said "this is not a component test
 harness", and it was accurate.
 
 **That backlog is being burned down.** The harness exists, the Tauri stub makes
-each new test cheap, and the timeline and Mission Control use both.
-
-What remains untestable here rather than merely untested: jsdom has no layout
-engine. `getBoundingClientRect` returns zeroes, there is no scrolling and no CSS
-cascade, so any surface whose correctness *is* its geometry — the virtualized
-lists (commit graph, diff renderer, file tree), tab-strip overflow, the
-splitter, sticky headers, the MRU overlay, xterm, Monaco — cannot be proven
-here. Mocking the measurement to make the test pass is testing the mock. Those
-want a real browser (Vitest browser mode, Playwright provider), which is a
-separate project and a separate cost. It is the top of
-[`../TODO.md`](../TODO.md), with the config that was confirmed to work.
+each new test cheap, and the timeline and Mission Control use both. The
+geometry half of it — commit graph paint, tab-strip overflow — now has the
+`browser` project to land in; see [Reaching for `browser` instead of
+`render`](#reaching-for-browser-instead-of-render) above. Still open: the
+splitter, sticky headers, the MRU overlay, `SplitDiffRenderer` and its hunk
+actions, and the file tree's own virtualized list — proven capability, not yet
+proven coverage. `../TODO.md` tracks what is left.
 
 The rule, so it does not get re-litigated per test:
 
