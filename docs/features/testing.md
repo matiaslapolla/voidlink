@@ -33,16 +33,41 @@ measuring the stub, not the component — and a test that would pass with
 `getBoundingClientRect` returning zeroes belongs in `render`, not `browser`.
 
 That is exactly the surfaces the `render` project cannot reach: the
-`@tanstack/solid-virtual` lists (commit graph, diff renderer, file tree),
-tab-strip overflow, the splitter, sticky headers, the MRU overlay, xterm,
-Monaco. Two are proven now —
+`@tanstack/solid-virtual` lists (commit graph, file tree), tab-strip overflow,
+the splitter, sticky headers, the MRU overlay, xterm, Monaco. Five are proven
+now —
 [`CommitGraph.browser.test.tsx`](../../frontend/src/components/git/history/CommitGraph.browser.test.tsx)
 checks that rows and the SVG gutter overlay agree on where a row actually is
 on screen, including across the windowing threshold `CommitGraph.tsx` applies
 above 60 rows; [`TabStrip.browser.test.tsx`](../../frontend/src/components/layout/TabStrip.browser.test.tsx)
 checks the overflow chevron against a real `ResizeObserver` and drags a tab
 between two pane groups with a real `DataTransfer` — a constructor jsdom does
-not implement at all.
+not implement at all;
+[`SplitDiffRenderer.browser.test.tsx`](../../frontend/src/components/git/shared/SplitDiffRenderer.browser.test.tsx)
+reveals the hunk toolbar with a real hover (`opacity-0 group-hover:opacity-100`
+is a fact jsdom's absent stylesheet cannot state at all), scrolls 400px into a
+hunk to watch its `sticky` header stay pinned and hand the slot to the next
+one, and puts a 2000-character line into one side of a split row to prove the
+other column does not move;
+[`Splitter.browser.test.tsx`](../../frontend/src/components/layout/Splitter.browser.test.tsx)
+measures the 8px hit area around the 1px rule, checks a hover changes colour
+and nothing about the box, and resolves `calc(var(--island-gap) / 2 - 4px)` —
+a custom property inside a `calc()`, which is also why `islandGapPx()` can only
+ever return its own fallback in jsdom;
+[`FileTree.browser.test.tsx`](../../frontend/src/components/files/FileTree.browser.test.tsx)
+windows a 500-file directory, the one list whose rows are *measured*
+(`virtualizer.measureElement`) rather than estimated.
+
+**Falsify a browser test before you keep it.** Every one of the five files was
+run against a deliberately broken component — the Tailwind import removed, or
+the single class the test is about deleted — and confirmed to fail for the
+right reason. This is not ceremony: two assertions were rewritten because of
+it. `SplitDiffRenderer`'s column-width check passed with `flex-1` removed
+(it compared the two columns to each other, where it should have compared each
+to the row), and `FileTree`'s offset check asserted `index × rowHeight`, which
+a dynamically-measured list does not satisfy by design. A geometry test that
+passes against a broken layout is worse than no test, and the only way to know
+is to break the layout.
 
 `src/test/setup.browser.ts` mirrors `setup.ts`'s Tauri stub — same fake, same
 `./tauri.ts`, imported rather than forked — but skips the jsdom stubs entirely:
@@ -89,11 +114,14 @@ it("does the thing", async () => {
 no rerender, and the function is what gives the library a reactive root to own.
 
 `src/test/setup.ts` runs first for this project only. It installs the jest-dom
-matchers, unmounts between tests, stubs the three things jsdom does not
+matchers, unmounts between tests, stubs the four things jsdom does not
 implement that components reach for anyway — `matchMedia` (every reduced-motion
-check), `ResizeObserver` (anything measuring a pane) and `scrollIntoView` (every
-list with a cursor) — and fakes the Tauri boundary. Unstubbed, the first three
-throw during mount and the failure names the wrong thing.
+check), `ResizeObserver` (anything measuring a pane), `scrollIntoView` (every
+list with a cursor) and pointer capture (`Splitter.onPointerDown` calls
+`setPointerCapture` on its first line) — and fakes the Tauri boundary.
+Unstubbed, all four throw, and the pointer-capture one throws from inside an
+event handler: the test that clicked stays green and Vitest reports an
+unhandled error beside whichever test happened to run last.
 
 ### The Tauri boundary
 
@@ -182,14 +210,13 @@ the 2026-07-30 git-surfaces audit were shipped having never been mounted once
 in a test — the config's own comment said "this is not a component test
 harness", and it was accurate.
 
-**That backlog is being burned down.** The harness exists, the Tauri stub makes
-each new test cheap, and the timeline and Mission Control use both. The
-geometry half of it — commit graph paint, tab-strip overflow — now has the
-`browser` project to land in; see [Reaching for `browser` instead of
-`render`](#reaching-for-browser-instead-of-render) above. Still open: the
-splitter, sticky headers, the MRU overlay, `SplitDiffRenderer` and its hunk
-actions, and the file tree's own virtualized list — proven capability, not yet
-proven coverage. `../TODO.md` tracks what is left.
+**That backlog is now down to one row.** `GitSidebar` — the surface that
+carried the most findings and had never been mounted — has 31 tests; the
+splitter, sticky headers, `SplitDiffRenderer` and its hunk actions, and the
+file tree's virtualized list all have theirs, split between the two projects
+by the rule below rather than by component. What is left is the **MRU
+overlay**, which lives inside `MainSurface` and needs that whole surface
+mounted rather than a component lifted out of it. `../TODO.md` tracks it.
 
 The rule, so it does not get re-litigated per test:
 
