@@ -21,10 +21,18 @@ the code — without the alt-tab, and without a second app's worth of chrome.
 1. `+` tab menu → **New browser tab**. It opens at `https://example.com`; there
    is no prompt, because one fewer modal is one fewer thing fighting the child
    webview for the top of the paint stack.
-2. Type in the address bar and press Enter. Bare hosts get `https://`;
-   `localhost` and `127.0.0.1` get `http://` (dev servers don't do TLS).
+2. Type in the address bar and press Enter. Bare hosts get `https://`, unless
+   the host is on this machine or this network — loopback, `10.x`,
+   `172.16–31.x`, `192.168.x`, `169.254.x`, IPv6 unique- and link-local,
+   `*.localhost` and `*.local` all get `http://`, because no public certificate
+   authority can have vouched for them and dev servers don't do TLS. Input that
+   isn't an address at all is refused with a toast rather than sent anywhere.
 3. Back / Forward / Reload sit left of the address bar; zoom and the devtools
-   wrench sit right of it. Reload becomes a spinner while a page is loading.
+   wrench sit right of it. Reload becomes a spinner while a page is loading, and
+   its tooltip says which half of the load you are in: **Connecting…** means
+   nothing has answered yet, **Loading…** means a server has and the page is
+   arriving. A load stuck on *Connecting* is the closest this engine can get to
+   telling you a load has failed — see Limits.
 4. Zoom steps through a fixed ladder, per tab, and is remembered across a
    reload. The percentage appears between the two buttons only when it isn't
    100%, and clicking it resets.
@@ -81,18 +89,27 @@ to break across patch releases.
 | `browser_close` / `browser_close_orphans` | Teardown, and crash recovery on boot |
 | `browser_toggle_devtools` | Platform inspector for the page, answering its own state |
 
-Three events flow back, all carrying the tab id because every tab hears every
+Four events flow back, all carrying the tab id because every tab hears every
 tab's events:
 
-- `voidlink://browser-navigating` — `{ tabId, url }`, emitted when a page
-  *starts* going somewhere. Without it the address bar named the page being left
-  for the whole of every load, and nothing on screen said a load was happening.
-  No traversal flags: the history hasn't folded the load in yet, and provisional
-  flags would flicker the buttons against a stack that hasn't moved.
+- `voidlink://browser-navigating` — `{ tabId, url }`, emitted when a load is
+  *requested*, before DNS. **This one is not main-frame-only**: wry's macOS
+  navigation policy never checks `isMainFrame`, so it fires for every iframe a
+  page loads. Nothing that names the tab — the address bar, the tab label — may
+  be driven from it, or an ad frame renames the tab. All it can be trusted for
+  is "something is in flight".
+- `voidlink://browser-committed` — `{ tabId, url }`, emitted when the page's own
+  document commits: a server answered and bytes are arriving. Main-frame only,
+  so this is the earliest event that may name the tab, and it is what moves the
+  address bar during a load.
 - `voidlink://browser-navigated` — `{ tabId, url, canGoBack, canGoForward }`,
   emitted when a page load finishes. The traversal flags ride along so the
   frontend never keeps a second copy of the history to derive them from.
 - `voidlink://browser-title` — `{ tabId, title }`.
+
+Neither mid-flight event carries traversal flags: the history hasn't folded the
+load in yet, and provisional flags would flicker the buttons against a stack
+that hasn't moved.
 
 ### History is ours, not the page's
 
@@ -103,9 +120,19 @@ No script of VoidLink's ever enters a browser tab.
 
 The stack behaves the way a browser's does: navigating after going back
 truncates the forward entries rather than branching, and reloading the current
-page doesn't grow it. A flag on the tab marks a traversal in flight, so the page
-load that back/forward *causes* moves the cursor instead of pushing — without it
-Back would append the page you just left and could never reach the start.
+page doesn't grow it.
+
+Each traversal queues the URL it asked for, held until the page load it causes
+settles, so the load that back/forward *causes* moves the cursor instead of
+pushing — without that, Back would append the page you just left and could never
+reach the start. It is a queue matched by URL rather than a flag, because a flag
+couldn't survive two traversals inside one page load: held-down Back set it
+twice and cleared it once, and a burst that wry coalesced into a single load left
+it set forever, so the next address typed was folded in as if it had been a
+traversal. A load whose URL is in the queue is a traversal, and anything queued
+ahead of it was superseded; a load whose URL is in neither the queue nor the
+stack, while a traversal is outstanding, is a redirect off the page you went
+back to, and overwrites that entry rather than truncating everything ahead of it.
 
 ### The compositing constraint
 
@@ -141,15 +168,24 @@ for, which is what cleans up after a crash.
 - **No find-in-page**, and this is the one item here the engine genuinely cannot
   do: `wry` exposes no find, and the alternative is evaluating script inside the
   page — which this feature refuses on purpose (see *Security*).
-- **No search fallback.** Input that isn't an address becomes `https://<what you
-  typed>` and fails to parse; it doesn't go to a search engine.
+- **No search fallback.** Input that isn't an address is refused with a toast
+  saying so. It doesn't go to a search engine, and which engine — or whether a
+  git workbench should send keystrokes to one at all — is an open decision.
 - **No per-tab profiles or incognito.** Tabs share the app's cookie jar.
 - **No persisted history.** The back/forward stack is in memory, capped at 200
   entries, and dies with the tab; only the current URL, title and zoom are
   persisted.
-- **No load-failure state.** A DNS or TLS failure happens inside the page, after
-  the navigate command has already returned, so the spinner keeps going and the
-  old page stays on screen.
+- **No load-failure state**, and this one is a property of the engine rather
+  than a gap in the wiring. `PageLoadEvent` has two variants, `Started` and
+  `Finished`, and wry 0.55.1 synthesises no third: on macOS its navigation
+  delegate simply doesn't implement `didFailProvisionalNavigation`, on Linux
+  `LoadEvent::Failed` falls into a `_ => ()` arm, and on Windows a failed
+  `NavigationCompleted` is reported as `Finished` without consulting its
+  `IsSuccess`. So a DNS or TLS failure produces a request event, then nothing.
+  What the spinner's tooltip can honestly say is how far the load got — stuck on
+  *Connecting* means nothing ever answered. Declaring it *failed* would need a
+  timeout (which lies about a slow page) or polling `url()` (a poll where an
+  event belongs), and neither is here.
 - **Back is a page stack, not a route stack.** A single-page app navigating via
   `pushState` fires no page load, so Back steps to the last full load rather
   than the previous SPA route.
