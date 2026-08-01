@@ -189,10 +189,33 @@ Writing the first of those corrected an assumption in this document's own
 reading of the component: `a/b` and `a/c` do **not** compact into one row, since
 `a` has two children and merging there would lose the sibling relationship.
 
-**Still open, unchanged:** CMP-F6/F10/F15/F16/F18–F22/F28–F32, WT-W3/W4/W6/W9,
-WT-S2–S6, WT-D3/D4, BR-A4/A5/A7/A8/A11/B3/C3–C6/D3/E2/F5/F6/F7/G8, DIFF-A7/A8,
-the Track 1 and Track 2 "Lower" lists, GRAPH-O4. All MEDIUM or below; none is a
-correctness defect that loses work or misreports the repository.
+**Still open after the third pass:** CMP-F6/F10/F15/F16/F18–F22/F28–F32,
+WT-W3/W4/W6/W9, WT-S2–S6, WT-D3/D4, BR-A4/A5/A7/A8/A11/B3/C3–C6/D3/E2/F5/F6/F7/G8,
+DIFF-A7/A8, the Track 1 and Track 2 "Lower" lists, GRAPH-O4. All MEDIUM or
+below; none is a correctness defect that loses work or misreports the
+repository. (The Track 5 half of that list is closed by the fourth pass below.)
+
+### #8 ledger — fourth pass (2026-08-01), Track 5's remainder
+
+| id | what |
+| --- | --- |
+| WT-S2 | **fixed.** The stash pane opens its diff addressed by the stash's commit **oid** (`<oid>^1..<oid>`), which is the only identity a stash has that the stack shifting cannot move. `CompareTab` gained an optional `label`, so the tab still reads `stash@{1} WIP` — a snapshot of what was clicked, which is allowed to go stale, unlike the refs. The oid form still triggers `stash_untracked_tree` (it keys on the commit's shape, not the ref's spelling), pinned by a test so fixing the retarget could not quietly re-break WT-S1. |
+| WT-S3 | **deleted**, not revived. `git_stash_show` had no caller in either tree, and its `^1..` body was the WT-S1 bug preserved in amber for whoever wired it up next. The command, its `lib.rs` registration and `gitApi.stashShow` are gone; the compare tab is the one stash-diff path. |
+| WT-S4 | **fixed.** `stash_drop` goes through `retry_on_lock` like apply and pop. It rewrites `refs/stash` and its reflog, so it contends for `refs/stash.lock` exactly as they contend for the index. |
+| WT-S5 | **fixed.** Apply and pop return `OpResult`, and the pane routes `conflicted` into the merge editor like `doPull`. Writing the test corrected the audit's reading: a conflicting `stash_apply` returns **`Ok`** from libgit2 — markers written, index unmerged, success reported — so classification asks `has_unmerged_paths` on *both* arms, not just the error one. Trusting the `Result` would have said "Applied stash" over a tree full of `<<<<<<<`. |
+| WT-S6 | **fixed.** The drop confirm is awaited inside `run()`. Branch delete keeps its confirm outside deliberately (its own comment says why); the stash case is different because every button the open dialog leaves live *shifts the stack the pending answer is about*. |
+| WT-W3 | **fixed.** `worktree list --porcelain -z`, parsed on the NUL. The non-`-z` form is still parsed as a fallback on an old git — a listing that refuses to run is worse than one that mis-splits a path — and the parser picks the terminator off the presence of a NUL, which cannot be ambiguous. |
+| WT-W4 | **fixed, by dropping.** `run_git_bytes` leaves stdout as bytes, and a worktree record whose path is not valid UTF-8 is dropped with a warning instead of coming back with `U+FFFD` where its bytes were. A lossy path is worse than no path: the row renders with working buttons, every one of which addresses a directory that does not exist. `first` still advances across a dropped record, so the drop cannot promote the next row to main. |
+| WT-W6 | **fixed.** When neither side can be canonicalized, the fallback compares *lexical* keys (empty and `.` components popped) rather than raw `Path`s, so `/repo` and `/repo/` agree and some row is still marked current. `/tmp` vs `/private/tmp` deliberately still does not resolve — that needs the filesystem, and this path runs precisely when the filesystem cannot answer. |
+| WT-W9 | **fixed.** `Command::spawn` runs on its own thread behind `recv_timeout`, and the budget now starts *before* the spawn rather than after it, so one timeout means one timeout rather than two. An abandoned spawn that eventually returns finds the channel closed and reaps its own child. The comment at `worktree.rs:7-10` is now true. |
+| WT-D3 | **fixed.** `reject_escaping_rel_path` on both halves of `apply_setup`. No live exploit — the values are backend-generated — but setup copies in both directions, so an unchecked `..` reads outside the source and writes outside the destination, and the assertion is free. |
+| WT-D4 | **fixed.** The wizard classifies against local *and* remote branches (`classifyWorktreeBranch`), and step 1 says which of the three it will do under the input box. A remote-only name is passed as an *existing* branch so git's own DWIM makes it a tracking branch; two remotes carrying the name is ambiguous and falls back to branching off HEAD, which is what git would do anyway. |
+
+**Coverage.** `StashesPane` and `NewWorktreeWizard` are mounted in tests for the
+first time (7 and 4 tests), plus `classifyWorktreeBranch` (8) and the compare
+tab's label (2). Rust: 306 → 315.
+
+**Track 5 is closed.** Every finding in it is fixed or deliberately deleted.
 
 ### Notes from #7
 
