@@ -39,6 +39,8 @@ which just open a compare tab with the refs pre-filled.
 |---|---|
 | `Swap base and head` | Reverses the comparison. |
 | `Merge-base` toggle | On (default) = three-dot `base...head`, "changes since divergence". Off = two-dot direct diff. |
+| `Ignore WS` toggle | Ignores whitespace-only changes. Per tab — see below. |
+| `Inline` / `Split` | Diff render mode. Per tab, render-only — never refetches. |
 | `Refresh diff` | Re-runs the diff. |
 
 ### Changed-file tree
@@ -55,8 +57,12 @@ which just open a compare tab with the refs pre-filled.
 | Shortcut | Action |
 |---|---|
 | `Mod+Shift+C` | Compare branches… (stands down inside a terminal) |
-| `Mod+Shift+D` | Toggle inline / split diff |
 | `Mod+W` | Close the compare tab |
+
+`Mod+Shift+D` ("Toggle inline / split diff") no longer reaches a compare tab.
+It flips the global `diffMode` pref the working-tree diff toolbar uses, and
+compare tabs stopped reading that pref when diff mode became per-tab — use the
+tab's own `Inline` / `Split` toolbar control instead.
 
 Inside a ref picker: `↓` opens and moves down, `↑` moves back up and out of the
 list, `Enter` commits the highlight or — with nothing highlighted — the raw
@@ -74,8 +80,12 @@ Compare tabs survive a reload. They are stored in
 `useMergeBase`, `selectedFilePath`, `treeMode`, and `treeFilter`. Reopening a
 closed compare tab (`Mod+Shift+T`) gives it a fresh id.
 
-The tree pane width (default 320, clamped 220–600) persists too, but **globally**
-— one width shared by every compare tab.
+The tree pane width (default 320, clamped 220–600) persists per tab.
+
+`diffMode` and `ignoreWhitespace` persist per tab too, and only when set away
+from their default (`"inline"`, `false`) — a tab that never touched either
+control serializes exactly as it did before these existed, the same narrow-blob
+convention the browser tab's `zoom` uses.
 
 ## Gotchas and limits
 
@@ -100,11 +110,14 @@ The tree pane width (default 320, clamped 220–600) persists too, but **globall
   disappears from the file list entirely, exactly as `git diff -w` does, so the
   tree, the counts and the body always describe the same diff. A mode-only
   change survives it and renders an explanation rather than a blank pane.
-- **The diff mode and ignore-whitespace settings are global**, not per compare
-  tab. Ignore-whitespace is part of the resource key, so toggling it refetches.
-  Neither has a control inside the compare surface, which is why they are not
-  per-tab: the state would have nothing to change it. The **tree width** *is*
-  per tab, since the divider is right there.
+- **Diff mode and ignore-whitespace are per compare tab**, deliberately not the
+  global `diffMode`/`ignoreWhitespace` prefs the working-tree diff toolbar
+  drives — those still exist and still apply there. `ignoreWhitespace` sits in
+  the diff resource's key, so flipping one tab's toggle refetches exactly that
+  tab; a shared global toggle would instead refetch every open compare tab at
+  once, each re-running a full diff behind the same per-repo git mutex the
+  compare payload budget (CMP-F10) exists to bound. `diffMode` is render-only
+  and never touches the key, so switching it never refetches anything.
 - **Compare tabs dedupe** on (base, head, merge-base). Ten clicks in the commit
   graph reuse one tab; a blank picker tab is exempt.
 - **Folder expand/collapse survives a refetch**, because the state is keyed on

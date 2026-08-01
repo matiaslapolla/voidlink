@@ -7,7 +7,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { ArrowLeftRight, GitMerge, RotateCw } from "lucide-solid";
+import { ArrowLeftRight, Columns2, GitMerge, RotateCw, Rows3, Space } from "lucide-solid";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
 import {
@@ -39,7 +39,7 @@ type Props = {
 };
 
 export function CompareTab(props: Props) {
-  const { state, actions } = useAppStore();
+  const { actions } = useAppStore();
   /// The element the drag measures against, held directly.
   ///
   /// It used to be re-found by id on every mousemove — a document-wide lookup
@@ -93,7 +93,15 @@ export function CompareTab(props: Props) {
           // be applied to the answer afterwards, which left the tree, the
           // counts and the footer describing a different diff from the one on
           // screen.
-          ignoreWhitespace: state.ignoreWhitespace,
+          //
+          // Per tab, not the global `state.ignoreWhitespace` the working-tree
+          // toolbar drives — that is the whole point of TODO row 6. Reading
+          // the global here would mean the toolbar toggle refetches every
+          // open compare tab at once, each re-running a full diff behind the
+          // same per-repo git mutex (CMP-F10). Keying on the tab's own field
+          // means flipping one tab's control invalidates only this memo, and
+          // only this tab's resource refetches.
+          ignoreWhitespace: props.tab.ignoreWhitespace ?? false,
         }
       : null,
   );
@@ -261,6 +269,20 @@ export function CompareTab(props: Props) {
     });
   }
 
+  /// Resolved view of the tab's optional fields — `undefined` on the tab means
+  /// "at the shipped default", both here and in what gets persisted. See
+  /// `CompareTab` in `store/layout/tabs.ts` for why they stay optional.
+  const diffMode = () => props.tab.diffMode ?? "inline";
+  const ignoreWhitespace = () => props.tab.ignoreWhitespace ?? false;
+
+  function setDiffMode(mode: "inline" | "split") {
+    actions.setCompareDiffMode(props.worktreeId, props.tab.id, mode);
+  }
+
+  function toggleIgnoreWhitespace() {
+    actions.setCompareIgnoreWhitespace(props.worktreeId, props.tab.id, !ignoreWhitespace());
+  }
+
   const errMessage = () => {
     const e = diff.error;
     if (!e) return null;
@@ -335,6 +357,57 @@ export function CompareTab(props: Props) {
           <GitMerge class="w-3 h-3" />
           Merge-base
         </button>
+        <button
+          type="button"
+          onClick={toggleIgnoreWhitespace}
+          aria-label="Toggle ignore whitespace"
+          aria-pressed={ignoreWhitespace()}
+          class={`mb-0.5 flex items-center gap-1 px-2 py-1 text-[11px] rounded-md border transition-colors ${
+            ignoreWhitespace()
+              ? "bg-primary/15 border-primary/40 text-primary"
+              : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+          }`}
+          title="Ignore whitespace-only changes"
+        >
+          <Space class="w-3 h-3" />
+          Ignore WS
+        </button>
+        <div
+          role="group"
+          aria-label="Diff view mode"
+          class="mb-0.5 flex items-center gap-0.5 rounded-md border border-border p-0.5"
+        >
+          <button
+            type="button"
+            onClick={() => setDiffMode("inline")}
+            aria-label="Inline (unified) view"
+            aria-pressed={diffMode() === "inline"}
+            class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors ${
+              diffMode() === "inline"
+                ? "bg-primary/15 text-primary"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
+            title="Inline (unified)"
+          >
+            <Rows3 class="w-3 h-3" />
+            Inline
+          </button>
+          <button
+            type="button"
+            onClick={() => setDiffMode("split")}
+            aria-label="Split (side by side) view"
+            aria-pressed={diffMode() === "split"}
+            class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors ${
+              diffMode() === "split"
+                ? "bg-primary/15 text-primary"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
+            title="Side by side"
+          >
+            <Columns2 class="w-3 h-3" />
+            Split
+          </button>
+        </div>
         <button
           type="button"
           onClick={() => refetch()}
@@ -429,6 +502,7 @@ export function CompareTab(props: Props) {
               file={selectedFile()}
               baseRef={props.tab.baseRef}
               headRef={props.tab.headRef}
+              diffMode={diffMode()}
             />
           </div>
         </Show>

@@ -29,7 +29,7 @@ import {
   writeJson,
 } from "./persistence";
 import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
-import type { GitSectionKey, PanelId } from "./prefs";
+import type { DiffMode, GitSectionKey, PanelId } from "./prefs";
 import {
   findGroup,
   groupList,
@@ -1200,6 +1200,35 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         produce((s) => {
           const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
           if (tab) tab.treeWidth = clampCompareTreeWidth(width);
+        }),
+      );
+    },
+
+    /// Per tab, deliberately not `setDiffMode` below. `CompareDiffPane` reads
+    /// this instead of the global `state.diffMode` the working-tree toolbar
+    /// drives — rendering only, so unlike `setCompareIgnoreWhitespace` it
+    /// touches no resource key and refetches nothing.
+    setCompareDiffMode(wtId: string, tabId: string, mode: DiffMode) {
+      setState(
+        produce((s) => {
+          const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+          if (tab) tab.diffMode = mode;
+        }),
+      );
+    },
+
+    /// Per tab, deliberately not `toggleIgnoreWhitespace` below. That global
+    /// toggle is shared with the working-tree diff toolbar; flipping it would
+    /// refetch every open compare tab at once, each re-running a full diff
+    /// behind the same per-repo git mutex (CMP-F10 is the payload budget that
+    /// exists to bound that serialization). `ignoreWhitespace` sits in
+    /// `CompareTab.tsx`'s resource key, so writing it here refetches exactly
+    /// this tab and no other.
+    setCompareIgnoreWhitespace(wtId: string, tabId: string, value: boolean) {
+      setState(
+        produce((s) => {
+          const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+          if (tab) tab.ignoreWhitespace = value;
         }),
       );
     },
