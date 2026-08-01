@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import { isGitWindow, requestWorktreeWizardOnMain } from "@/api/windows";
+import { setOverlayOpen } from "./overlay";
 
 /// Cross-component request channel for the new-worktree flow, mirroring the
 /// toast / prompt pattern: a module-level signal drives a single host mounted
@@ -49,6 +50,12 @@ export function requestNewWorktree(opts: {
     repoRoot: opts.repoRoot,
     sourcePath: opts.sourcePath ?? opts.repoRoot,
   });
+  // The wizard is a modal surface like any other (see `commands/overlay.ts`),
+  // but its "open" state is "is a request queued", not a plain boolean, so it
+  // cannot be a `createOverlay`. Registering here — at the one place a
+  // request is created — keeps it the same distance from the state change
+  // that `createOverlay` gives boolean overlays for free.
+  setOverlayOpen("worktree-wizard", true);
 }
 
 export function newWorktreeRequest() {
@@ -57,6 +64,7 @@ export function newWorktreeRequest() {
 
 export function clearNewWorktreeRequest(): void {
   setRequest(null);
+  setOverlayOpen("worktree-wizard", false);
 }
 
 /// The directory new worktrees land in, relative to the repository root.

@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import { gitApi } from "@/api/git";
 import { aiSecretBindings } from "@/store/settings";
+import { createOverlay } from "./overlay";
 import type { DiffResult } from "@/types/git";
 
 /// One source of repo state that was folded into the prompt. Surfaced under
@@ -24,7 +25,10 @@ export interface AgentMessage {
 // scratch surface, not a persisted document.
 const [threads, setThreads] = createSignal<Record<string, AgentMessage[]>>({});
 const [busy, setBusy] = createSignal(false);
-const [panelOpen, setPanelOpen] = createSignal(false);
+/// A modal surface like the palette or the switchers — `createOverlay`
+/// registers it with the embedded-browser overlay count as a side effect of
+/// opening/closing rather than through a separate `App.tsx` effect.
+const panel = createOverlay("agent");
 
 export function agentThread(wtId: string): AgentMessage[] {
   return threads()[wtId] ?? [];
@@ -33,10 +37,10 @@ export function agentBusy() {
   return busy();
 }
 export function agentPanelOpen() {
-  return panelOpen();
+  return panel.isOpen();
 }
 export function toggleAgentPanel(open?: boolean) {
-  setPanelOpen((v) => (open === undefined ? !v : open));
+  panel.set(open === undefined ? !panel.isOpen() : open);
 }
 export function clearAgentThread(wtId: string) {
   setThreads((t) => ({ ...t, [wtId]: [] }));
