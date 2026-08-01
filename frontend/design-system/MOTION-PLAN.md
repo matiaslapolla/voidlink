@@ -57,6 +57,59 @@ Recorded so a future refactor does not "fix" it:
 
 ---
 
+## 0.5 Status — 2026-08-01
+
+Written after implementing the plan. Ordered by phase, not by finding.
+
+**Landed.** Phase 1 in full (`components/ui/`: `Button`, `Tooltip` + the
+`use:tooltip` directive and `TooltipLayer`, `Menu`, `Dialog`, `Disclosure`,
+`cn`), the named type scale across ~600 sites with `--text-scale` behind it,
+the `:not([data-motion])` escape from the transition floor, and the cleanups
+F5 / F14 / F23 / F24. Phase 2's toast, context menu and disclosure motion, plus
+the shared tab indicator (F15) and the `ViewSwitcher` thumb (F17). Phase 4
+entire: two material weights and the `prefers-reduced-transparency` hook.
+
+Two hygiene tests were added, so the type scale cannot silently regrow: one
+fails the build on `text-[Npx]` under `src/components/`, one on Tailwind's own
+`text-xs`/`text-sm`/`text-lg` scale.
+
+**Not attempted: Phase 3 (F16), the pointer-event tab drag.** It is the one
+item here that cannot be validated without running the app — release velocity,
+rubber-banding and the spring settle are all *feel*, and jsdom can assert none
+of them. It also cannot be done by halves: the strip's drag carries four
+outcomes (reorder within a kind, move between pane groups, join or leave a tab
+group, split a pane on a drop at an edge), all of them currently routed through
+HTML5 `dragover`/`drop`, and a pointer-driven reorder living beside an
+HTML5 cross-pane drag means two mechanisms racing for one gesture. Doing it
+properly means the drop targets stop listening for drag events and start
+hit-testing a broadcast pointer position — including `PaneDropOverlay` — which
+is the 3–4 days §4 budgets. Left whole rather than left half-done.
+
+**F13 was already resolved before this plan was written, and the audit is
+wrong about it.** `layout/Splitter.tsx` at the audited commit already has the
+8px hit area with a 1px visual rule (`w-2` strip, `w-px` rule), keyboard
+resize (arrows, `Shift` for larger steps, `Home`/`End`, `Enter` to reset) and
+double-click-to-reset, with the `title` stating all three. Nothing was needed.
+
+**Corrections to §1 worth recording**, since a later reader will otherwise
+take the findings as measured fact:
+
+- **F4's premise is only true at one setting.** `text-xs` and `text-[12px]`
+  compute alike at `ui.textSize: base` and differ at `sm` and `xl`, because one
+  is rem and the other is not. Collapsing them naively would have frozen ~117
+  sites that *did* honour the preference; `--text-scale` is what made the
+  collapse lossless, and it also repairs the ~471 sites that never honoured it.
+- **F9's `Dialog` migration is built but not yet applied to the eight
+  dialogs.** The primitive wraps native `<dialog>` + `showModal()` and carries
+  the enter/exit F10 asks for; adopting it at each of the eight is a
+  per-dialog change with its own tests and is not in this pass.
+- **F3's codemod of the 271 `title=` sites is not done.** The primitive and the
+  directive exist; replacing 271 attributes is mechanical but each one needs to
+  be read to tell an informative `title` from one that restates a visible
+  label, and a blind codemod would attach a tooltip to both.
+
+---
+
 ## 1. Findings
 
 Severity · confidence. Nothing dropped; low-severity items are recorded rather
