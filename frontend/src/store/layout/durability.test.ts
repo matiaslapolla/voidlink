@@ -7,7 +7,7 @@
 ///      on boot — including the three that were memory-only (terminal, history,
 ///      brain) and the workbench's active-tab pointer, which had never been
 ///      persisted at all.
-///   2. **Reopen-closed covers all ten kinds**, driven by the registry's
+///   2. **Reopen-closed covers all eleven kinds**, driven by the registry's
 ///      `closedSnapshot`, and the history outlives the reload.
 ///   3. **A corrupt or half-written blob costs exactly one key.** Not the boot,
 ///      not a white screen, and not the other nine keys.
@@ -117,13 +117,12 @@ afterEach(() => {
 });
 
 describe("session restore", () => {
-  it("brings back every persisted kind, including the three that were memory-only", async () => {
+  it("brings back every persisted kind, including the two that were memory-only", async () => {
     backing.set(
       STORAGE_KEYS.terminalTabs,
       JSON.stringify({ [WT_ID]: [{ id: "term-1", label: "build", cwd: "/repo" }] }),
     );
     backing.set(STORAGE_KEYS.historyTabs, JSON.stringify({ [WT_ID]: [{ id: "hist-1" }] }));
-    backing.set(STORAGE_KEYS.brainTabs, JSON.stringify({ [WT_ID]: [{ id: "brain-1" }] }));
     backing.set(
       STORAGE_KEYS.browserTabs,
       JSON.stringify({ [WT_ID]: [{ id: "web-1", url: "https://example.com" }] }),
@@ -132,12 +131,23 @@ describe("session restore", () => {
       STORAGE_KEYS.stackTabs,
       JSON.stringify({ [WT_ID]: [{ id: "st-1", trunk: "main", topBranch: "feat" }] }),
     );
+    backing.set(
+      STORAGE_KEYS.agentTabs,
+      JSON.stringify({
+        [WT_ID]: [{ id: "agent-1", agentId: "claude-sonnet", title: "Reviewer" }],
+      }),
+    );
 
     await withStoreAsync(async (store) => {
       expect(store.state.historyTabsByWorktree[WT_ID]).toHaveLength(1);
-      expect(store.state.brainTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(store.state.browserTabsByWorktree[WT_ID][0].url).toBe("https://example.com");
       expect(store.state.stackTabsByWorktree[WT_ID][0].topBranch).toBe("feat");
+      // Same tab id, so the thread's transcript — which is keyed by it — is
+      // still reachable after the reload.
+      const agent = store.state.agentTabsByWorktree[WT_ID][0];
+      expect(agent.id).toBe("agent-1");
+      expect(agent.agentId).toBe("claude-sonnet");
+      expect(agent.title).toBe("Reviewer");
 
       // The terminal's PTY is spawned, so it arrives a tick later.
       await Promise.resolve();
@@ -193,7 +203,7 @@ describe("reopen closed tabs", () => {
     await withStoreAsync(async (store) => {
       const { actions, state } = store;
       // Open one of every kind. Files/diffs/conflicts/previews live in the
-      // editor window's pointer; the other six in the workbench's.
+      // editor window's pointer; the other seven in the workbench's.
       actions.openFileTab(WT_ID, "/repo/a.ts");
       await actions.spawnTerminal(WT_ID);
       actions.openDiffTab(WT_ID, "/repo/b.ts");
@@ -202,8 +212,8 @@ describe("reopen closed tabs", () => {
       actions.openConflictTab(WT_ID, "/repo/c.ts");
       actions.openHistoryTab(WT_ID);
       actions.openPreviewTab(WT_ID, "/repo/README.md");
-      actions.openBrainTab(WT_ID);
       actions.openBrowserTab(WT_ID, "https://example.com");
+      actions.openAgentTab(WT_ID, "claude-sonnet", "Reviewer");
 
       const ids = {
         file: state.openFilesByWorktree[WT_ID][0].id,
@@ -214,8 +224,8 @@ describe("reopen closed tabs", () => {
         conflict: state.conflictTabsByWorktree[WT_ID][0].id,
         history: state.historyTabsByWorktree[WT_ID][0].id,
         preview: state.previewTabsByWorktree[WT_ID][0].id,
-        brain: state.brainTabsByWorktree[WT_ID][0].id,
         browser: state.browserTabsByWorktree[WT_ID][0].id,
+        agent: state.agentTabsByWorktree[WT_ID][0].id,
       };
 
       actions.closeFileTab(WT_ID, ids.file);
@@ -226,8 +236,8 @@ describe("reopen closed tabs", () => {
       actions.closeConflictTab(WT_ID, ids.conflict);
       actions.closeHistoryTab(WT_ID, ids.history);
       actions.closePreviewTab(WT_ID, ids.preview);
-      actions.closeBrainTab(WT_ID, ids.brain);
       actions.closeBrowserTab(WT_ID, ids.browser);
+      actions.closeAgentTab(WT_ID, ids.agent);
 
       expect(state.closedTabsByWorktree[WT_ID]).toHaveLength(10);
 
@@ -238,8 +248,8 @@ describe("reopen closed tabs", () => {
         popped.push(tab!.type);
       }
       expect(popped).toEqual([
+        "agent",
         "browser",
-        "brain",
         "preview",
         "history",
         "conflict",
@@ -260,9 +270,12 @@ describe("reopen closed tabs", () => {
       expect(state.conflictTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.historyTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.previewTabsByWorktree[WT_ID]).toHaveLength(1);
-      expect(state.brainTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.browserTabsByWorktree[WT_ID]).toHaveLength(1);
       expect(state.terminalsByWorktree[WT_ID]).toHaveLength(1);
+      // A fresh thread on the same agent, under the title it was closed with.
+      expect(state.agentTabsByWorktree[WT_ID]).toHaveLength(1);
+      expect(state.agentTabsByWorktree[WT_ID][0].agentId).toBe("claude-sonnet");
+      expect(state.agentTabsByWorktree[WT_ID][0].title).toBe("Reviewer");
     });
   });
 
@@ -368,5 +381,44 @@ describe("corrupt and half-written blobs", () => {
     backing.set(STORAGE_KEYS.stackTabs, "}}}");
     withStore(() => {});
     expect(reported).toEqual([STORAGE_KEYS.stackTabs, STORAGE_KEYS.stackTabs]);
+  });
+});
+
+/// CMP-F31. The tree width used to be one `localStorage` key shared by every
+/// compare tab in every window, so widening the tree to read a deep vendored
+/// path also widened it in the tab next door showing three root-level files —
+/// and only after a reload, since nothing told the live tabs.
+describe("compare tree width", () => {
+  it("belongs to one tab and not its neighbour", () => {
+    withStore((store) => {
+      const { actions, state } = store;
+      const wide = actions.openCompareTab(WT_ID, { baseRef: "main", headRef: "feat" });
+      const narrow = actions.openCompareTab(WT_ID, { baseRef: "main", headRef: "other" });
+
+      actions.setCompareTreeWidth(WT_ID, wide, 500);
+
+      const tabs = state.compareTabsByWorktree[WT_ID];
+      expect(tabs.find((t) => t.id === wide)!.treeWidth).toBe(500);
+      expect(tabs.find((t) => t.id === narrow)!.treeWidth).toBe(320);
+    });
+  });
+
+  /// A stored width is user-writable and outlives the version of the app that
+  /// wrote it, so an out-of-range one has to come back as something the pane
+  /// can still be dragged out of.
+  it("clamps a width the pane could not be recovered from", () => {
+    withStore((store) => {
+      const { actions, state } = store;
+      const id = actions.openCompareTab(WT_ID, { baseRef: "main", headRef: "feat" });
+
+      actions.setCompareTreeWidth(WT_ID, id, 0);
+      expect(state.compareTabsByWorktree[WT_ID][0].treeWidth).toBe(220);
+
+      actions.setCompareTreeWidth(WT_ID, id, 10_000);
+      expect(state.compareTabsByWorktree[WT_ID][0].treeWidth).toBe(600);
+
+      actions.setCompareTreeWidth(WT_ID, id, Number.NaN);
+      expect(state.compareTabsByWorktree[WT_ID][0].treeWidth).toBe(320);
+    });
   });
 });

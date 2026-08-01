@@ -81,9 +81,13 @@ LC_NUMERIC LC_TIME LC_MONETARY TZ TMPDIR XDG_CONFIG_HOME XDG_DATA_HOME
 XDG_CACHE_HOME XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY SSH_AUTH_SOCK
 ```
 
-plus `TERM=xterm-256color` and `COLORTERM=truecolor`. `PATH` is deliberately
-dropped so `/etc/zprofile`'s `path_helper` and your shell rc files rebuild it
-from scratch, exactly as Terminal.app would.
+plus `TERM=xterm-256color`, `COLORTERM=truecolor` and
+`VOIDLINK_SHELL_INTEGRATION=1`. `PATH` is deliberately dropped so
+`/etc/zprofile`'s `path_helper` and your shell rc files rebuild it from scratch,
+exactly as Terminal.app would.
+
+That last variable is a **marker, not an install** — see
+[shell integration](#shell-integration) for why it stops there.
 
 ## Addons
 
@@ -173,7 +177,7 @@ leading one is gone.
 | Idle shell, or a TUI open but not working, in the tab you are looking at | `idle` | green, no glow | still |
 | A foreground process actively working — busy **and** producing output | `working` | green, glowing | pulsing |
 | Something finished, or a program sent a notification, while you were elsewhere | `notify` | **cyan** | still |
-| The shell exited non-zero | `failed` | red | still |
+| A command exited non-zero, or the shell did | `failed` | red | still |
 
 `notify` outranks `working`, and that ordering is the point of the whole design.
 A TUI keeps its shell in the foreground for its entire life, so the busy signal
@@ -216,6 +220,11 @@ the two clocks cannot disagree for longer than one tick.
 
 ### What counts as "finished"
 
+In a shell with [integration](#shell-integration) the shell says so itself and
+the poll stands down entirely — see that section for its own three rules.
+Everything below is the fallback path, which is what every shell used until
+2026-08-01 and what an unconfigured one still uses.
+
 The process poll samples every 1500 ms, which is coarse enough to invent events.
 Two rules filter it:
 
@@ -243,6 +252,39 @@ mark is, so the two cannot disagree. It used to fire from inside a sidebar row's
 own poll, which meant no notification at all whenever the Terminals section was
 collapsed.
 
+## Shell integration
+
+`failed` used to be reachable only when the *shell itself* died. The activity
+poll sees a foreground process go away and never how it went, so a `cargo build`
+that failed in an open shell raised the same mark as one that succeeded. Only
+the shell knows `$?`.
+
+Source one line into your rc and it tells us:
+
+```zsh
+source /path/to/voidlink/shell-integration/voidlink.zsh   # or .bash
+```
+
+The snippet prints [OSC 133 semantic
+prompts](../../shell-integration/README.md) — `C` before a command runs,
+`D ; <exit-code>` after — the same sequences iTerm2, VS Code, WezTerm and kitty
+consume. voidlink parses them out of the stream and a non-zero code raises
+`failed`.
+
+**Settings → Terminal → Shell integration** says how many open shells are
+actually emitting. It reports what was observed, not what was configured: there
+is no way to ask a shell what it sourced.
+
+**voidlink will not install this for you**, and that is a decision rather than an
+omission. The alternative is pointing `ZDOTDIR` at a generated directory that
+re-sources your real config — which contradicts the whole point of the
+[environment rebuild](#environment) above, breaks your prompt and your plugin
+manager if the ordering is wrong, and has no equivalent for fish or nushell. The
+reasoning is written out in `create_pty`.
+
+**Without it, nothing is worse than it was.** The poll still reports a command
+finishing; it just never claims a status nobody gave it.
+
 ## Gotchas and limits
 
 - **Terminals always open at the workspace's repo root.** There is no per-cwd
@@ -252,13 +294,43 @@ collapsed.
   tab and the sidebar row show its name instead of `Terminal N`; the static
   label stays in the tooltip and returns when the process exits. The name is
   polled, so it lags a command's start by up to 1500 ms.
-- **The process name is a heuristic, not `comm`.** It is the foreground
+- **The process name is a heuristic, not `comm`.** It starts as the foreground
   process group's executable basename (`proc_pidpath` on macOS,
-  `/proc/{pid}/exe` on Linux). When that is a runtime — `node`, `python`,
-  `bun`, `env`, a shell — the first non-flag argv entry is used instead, so
-  `node .../cli.js` reads as the package directory (`claude-code`) rather than
-  `node`. argv comes from `sysctl kern.procargs2` on macOS and
-  `/proc/{pid}/cmdline` on Linux. Windows reports no name at all.
+  `/proc/{pid}/exe` on Linux) and is then refined three ways, because that
+  basename lies in three distinct situations. argv comes from
+  `sysctl kern.procargs2` on macOS and `/proc/{pid}/cmdline` on Linux. Windows
+  reports no name at all.
+
+  1. **The path names a release, not a program.** Both platforms' exec-path
+     primitives resolve symlinks, and version-pinned installers point a stable
+     `bin/` symlink at a file named after the version — Claude Code's
+     `~/.local/bin/claude` → `~/.local/share/claude/versions/2.1.220`. So the
+     one thing you wanted (`claude`) is the one thing that gets resolved away,
+     and the tab wore `2.1.220`. When the basename is version-shaped (optional
+     `v`, then digits and dots), `argv[0]` wins instead — it is what you
+     invoked, and it still says `claude`. `argv[0]` is normalised on the way
+     past: a login shell's leading dash goes, and only the first word is kept
+     (Claude Code's background helpers set `argv[0]` to `claude bg-pty-host`).
+     If `argv[0]` is version-shaped too, the package directory the release sits
+     in is read off the path — but only when the release file is directly
+     inside a version container (`versions/`, `releases/`, `installs/`…), so a
+     version-shaped binary in `/usr/local/bin` cannot report `local`.
+  2. **The binary is a runtime** — `node`, `python`, `bun`, `env`, a shell. Then
+     the first *meaningful* argv entry is the answer, so `node .../cli.js` reads
+     as the package directory (`claude-code`) rather than `node`. Flags are
+     skipped (which makes `python -m http.server` resolve to `http.server`) and
+     so are package-manager subcommand verbs, so `pnpm run dev` reads as `dev`
+     and `uv run pytest` as `pytest` rather than both reading as `run`.
+  3. **The runtime is a shell with `-c`.** Then there is no script, only a
+     command line, and the first word of it is the answer: `bash -c 'npm run
+     build'` reads as `npm`. Taking only the first word is the point — the rest
+     is a pipeline, a redirect or a quoted argument, and applying the path logic
+     to the whole string produced tab labels hundreds of characters long.
+
+  Every candidate is finally gated on looking like a program name at all: no
+  whitespace, no shell punctuation, at most 32 characters. A candidate that
+  fails the gate is discarded rather than truncated, and the tab keeps its own
+  label.
 - **cwd** comes from `proc_pidinfo(PROC_PIDVNODEPATHINFO)` on macOS and
   `/proc/{pid}/cwd` on Linux. The "busy" indicator, which uses `tcgetpgrp`,
   works on both.
@@ -303,6 +375,13 @@ collapsed.
       still green within ~1.5s of the last byte.
 - [ ] `claude` (or `vim`, or `lazygit`) sitting at its prompt: **green, still** —
       not orange, not pulsing. This is the reported bug.
+- [ ] Run `claude` from a version-pinned install (`~/.local/bin/claude`, a
+      symlink into `~/.local/share/claude/versions/<version>`), including via an
+      env-prefixed alias. The tab reads **`claude`**, not the version number.
+- [ ] `bash -c 'npm run build'`: the tab reads `npm`. No tab label is ever longer
+      than a program name, whatever you put after `-c`.
+- [ ] `pnpm run dev` (or `uv run pytest`): the tab reads `dev` (`pytest`), not
+      `run`.
 - [ ] Type into `claude` so it starts thinking: it goes to pulsing green, and
       back to still when it stops.
 - [ ] `sleep 30`: reads as idle. Expected — see the gotcha.

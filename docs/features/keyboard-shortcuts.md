@@ -52,8 +52,10 @@ the shell as XOFF.
 | `Mod+Shift+D` | Toggle inline / split diff |
 | `Mod+Alt+M` | Maximize the focused pane group (toggle) |
 | `Mod+Alt+Z` | Zen mode — hide the rail, both sidebars and every tab strip |
-| `Mod+Alt+[` | Navigate back |
-| `Mod+Alt+]` | Navigate forward |
+| `Mod+Alt+←` | Navigate back |
+| `Mod+Alt+→` | Navigate forward |
+| `Mod+Alt+[` / `Mod+Alt+]` | Back / forward (alternates) |
+| `Mod+Shift+[` / `Mod+Shift+]` | Back / forward (alternates) |
 
 ### Tabs
 
@@ -62,18 +64,26 @@ the shell as XOFF.
 | `Mod+W` | Close tab |
 | `Mod+Shift+W` | Close window |
 | `Mod+Shift+T` | Reopen last closed tab |
-| `Mod+Alt+→` | Next tab |
-| `Mod+Alt+←` | Previous tab |
-| `Mod+Shift+]` | Next tab (alternate) |
-| `Mod+Shift+[` | Previous tab (alternate) |
 | `Ctrl+Tab` | Cycle tabs in most-recently-used order (hold to see the list) |
 | `Ctrl+Shift+Tab` | Cycle MRU backwards |
 | `Mod+Shift+E` | Go to an open tab by name |
 | `Mod+Alt+1` … `Mod+Alt+9` | Jump to tab 1–9 in the focused group |
 | `Mod+Alt+0` | Jump to the last tab in the focused group |
 
-Tab navigation answers to both conventions: `Mod+Alt+Arrow` is what Safari and
-Chrome use, `Mod+Shift+[`/`]` is what VS Code uses. Both fire.
+**There is no chord for document-order tab stepping.** `tab.next` and
+`tab.prev` still exist and are still in the palette; they simply have no
+accelerator.
+
+That was a deliberate cut. Four models for moving between tabs is one too many:
+MRU cycling covers "the one I was just in", jump-to-N covers "that one, by
+position", and back/forward covers "where I came from". Document-order stepping
+is the one nobody reaches for once MRU exists, and it was holding two chord
+pairs to do it.
+
+The freed chords went to back/forward, which is the motion `Mod+Alt+Arrow`
+describes in every browser, with both bracket pairs kept as alternates. If you
+genuinely want stepping back, bind it yourself — the actions are registered and
+the keymap is one table.
 
 `Mod+W` closes the **tab**, not the window. That takes a custom application
 menu to achieve: Tauri's default menu binds `Cmd+W` to Close Window, and on

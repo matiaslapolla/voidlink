@@ -1,3 +1,4 @@
+import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import {
   For,
   Index,
@@ -19,14 +20,23 @@ import {
   FilePlus2,
   GitCommitHorizontal,
   Brain,
+  History as TimelineIcon,
+  Radar as MissionIcon,
   Globe,
+  Bot,
 } from "lucide-solid";
 import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTab";
 import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { CommitGraph } from "@/components/git/history/CommitGraph";
-import { BrainSurface } from "@/components/brain/BrainSurface";
+import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
+import { commitDiffBase, resolveCommitDiffBase } from "@/commands/commitDiff";
+import { TimelineSurface } from "@/components/timeline/TimelineSurface";
+import { MissionSurface } from "@/components/mission/MissionSurface";
 import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
+import { AgentThreadView } from "@/components/agent/AgentThreadView";
+import { agentThread, dropAgentThread } from "@/commands/agent";
+import { agentById, defaultAgentId } from "@/store/settings";
 import {
   MenuItem,
   PaneDropOverlay,
@@ -43,13 +53,19 @@ import {
   escalate,
   noteBell,
   noteFinished,
+  isWindowFocused,
   publishHiddenActivity,
+  publishHiddenWorktreeActivity,
+  publishViewActivity,
+  publishWorktreeActivity,
   setVisibleTabs,
   signalsOf,
   tabMark,
   tabSignals,
   trackWindowFocus,
 } from "@/store/activity";
+import { currentStackedView } from "@/commands/environment";
+import { notifyApi } from "@/api/notify";
 import { notifyTerminal } from "@/commands/terminalNotify";
 import { watchTerminal } from "@/store/terminalWatch";
 import type { ActivitySignal } from "@/components/layout/StatusLed";
@@ -62,21 +78,25 @@ import {
   type SplitOrientation,
 } from "@/store/layout";
 import { useAppStore } from "@/store/LayoutContext";
-import { useSettings } from "@/store/settings";
 import { fsApi } from "@/api/fs";
 import { gitApi } from "@/api/git";
 import { recordBranchUse } from "@/commands/branchMru";
 import { pushToast } from "@/commands/toast";
+import { openBrain } from "@/commands/registry";
 
 interface MainSurfaceProps {
   /// Hand a file to the editor window. The workbench has no editor of its own
   /// any more, so every path that used to open a Monaco tab — a terminal
   /// deep-link, a new file from the "+" menu — routes through here.
   onOpenFile: (path: string, line?: number, column?: number) => void;
+  /// Open Settings → AI. An agent pane with no configured CLI has to be able to
+  /// send the user somewhere; the pane body is not allowed to reach for the
+  /// settings dialog itself.
+  onOpenSettings: () => void;
 }
 
 /// The workbench's tab surface: terminals, branch compares, stacks, the commit
-/// graph, brain and the embedded browser.
+/// graph and the embedded browser.
 ///
 /// Files, diffs, merges and markdown previews used to live here too. They moved
 /// to the editor window (`EditorApp.tsx`), which is why this component no longer
@@ -108,8 +128,10 @@ export function MainSurface(props: MainSurfaceProps) {
     activeCompareTabs,
     activeStackTabs,
     activeHistoryTabs,
-    activeBrainTabs,
+    activeTimelineTabs,
+    activeMissionTabs,
     activeBrowserTabs,
+    activeAgentTabs,
     activeItem,
     activePinnedTabs,
     workbenchTabIds,
@@ -117,7 +139,6 @@ export function MainSurface(props: MainSurfaceProps) {
     focusedGroupId,
     actions,
   } = useAppStore();
-  const { settings } = useSettings();
 
   const isPinned = (id: string) => activePinnedTabs().includes(id);
 
@@ -153,10 +174,16 @@ export function MainSurface(props: MainSurfaceProps) {
       out.push({
         kind: "compare",
         id: tab.id,
-        label: `${short(tab.baseRef) || "?"}..${short(tab.headRef) || "?"}`,
+        // A tab that named itself keeps its name: a stash diff addresses its
+        // trees by oid, and the derived label would be two shas the user never
+        // saw. The refs still show in the tooltip, which is where "what is this
+        // actually diffing" belongs.
+        label: tab.label || `${short(tab.baseRef) || "?"}..${short(tab.headRef) || "?"}`,
         prefix: "compare · ",
         icon: <GitBranchPlus class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
-        title: `Compare: ${tab.baseRef || "?"}..${tab.headRef || "?"}`,
+        title: tab.label
+          ? `${tab.label} — ${tab.baseRef || "?"}..${tab.headRef || "?"}`
+          : `Compare: ${tab.baseRef || "?"}..${tab.headRef || "?"}`,
         activity: tabMark(tab.id),
         mono: true,
         labelWidth: "max-w-[200px]",
@@ -189,13 +216,25 @@ export function MainSurface(props: MainSurfaceProps) {
         draggable: false,
       });
     }
-    for (const tab of activeBrainTabs()) {
+    for (const tab of activeTimelineTabs()) {
       out.push({
-        kind: "brain",
+        kind: "timeline",
         id: tab.id,
-        label: "brain",
-        icon: <Brain class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
-        title: "Brain",
+        label: "timeline",
+        icon: <TimelineIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
+        title: "Timeline",
+        activity: tabMark(tab.id),
+        pinnable: false,
+        draggable: false,
+      });
+    }
+    for (const tab of activeMissionTabs()) {
+      out.push({
+        kind: "mission",
+        id: tab.id,
+        label: "mission",
+        icon: <MissionIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
+        title: "Mission Control",
         activity: tabMark(tab.id),
         pinnable: false,
         draggable: false,
@@ -216,8 +255,34 @@ export function MainSurface(props: MainSurfaceProps) {
         draggable: false,
       });
     }
+    for (const tab of activeAgentTabs()) {
+      out.push({
+        kind: "agent",
+        id: tab.id,
+        label: tab.title?.trim() || "Agent",
+        icon: <Bot class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
+        // The question the thread opened with, so two tabs on the same agent are
+        // told apart by what they are about rather than by position.
+        title: agentTabTitle(tab.id, tab.title),
+        activity: tabMark(tab.id),
+        labelWidth: "max-w-[160px]",
+        // Unlike the browser there is nothing structural stopping either:
+        // the thread is store state keyed by tab id, so it moves wherever the
+        // tab moves and survives being pinned.
+        pinnable: true,
+        draggable: true,
+      });
+    }
     return out;
   });
+
+  /// Tooltip for an agent tab: the agent's name, plus the first thing asked in
+  /// that thread. The label can only show one of the two.
+  function agentTabTitle(tabId: string, name: string | undefined): string {
+    const agent = name?.trim() || "Agent";
+    const first = agentThread(state.activeWorktreeId, tabId).find((m) => m.role === "user");
+    return first ? `${agent} — ${first.content}` : agent;
+  }
 
   // ── The pane tree ────────────────────────────────────────────────────────
 
@@ -290,17 +355,51 @@ export function MainSurface(props: MainSurfaceProps) {
   // is made here and published outward: group headers get theirs through the
   // strip's reserved slot, the status bar through `publishHiddenActivity`.
 
+  /// Whether the workbench is the surface in front of the user.
+  ///
+  /// In stacked mode the editor and the git client are *views* of this window,
+  /// and a view that is not in front is `visibility: hidden` over a workbench
+  /// that stays mounted and keeps running. So "this pane is on screen" and
+  /// "the user can see this pane" stop being the same question, and every
+  /// answer below has to ask the second one. Always true in detached mode,
+  /// where the satellites are windows and hide nothing.
+  const workbenchInFront = () => currentStackedView() === "workbench";
+
   /// Which tabs the user can actually see. Feeding this back into the activity
   /// store is what stops a command you watched finish from leaving a badge,
   /// and what clears `bell` / `finished` when a tab comes to the front. Under
   /// zen the panes are still on screen — zen hides chrome, not content — so
   /// the front tab of a visible group still counts as seen.
+  ///
+  /// A covered workbench sees *nothing*. Without that clause a terminal that
+  /// finished while the user was reading a diff in the editor view counted as
+  /// watched, `noteFinished` returned early, and the event raised no mark at
+  /// all — the one case §7.5.3 rule 1 exists for, in the arrangement that
+  /// makes it easiest to miss.
   createEffect(() => {
     const seen: string[] = [];
-    for (const [groupId, tabId] of frontTabIds()) {
-      if (tabId && visibleGroups().has(groupId)) seen.push(tabId);
+    if (workbenchInFront()) {
+      for (const [groupId, tabId] of frontTabIds()) {
+        if (tabId && visibleGroups().has(groupId)) seen.push(tabId);
+      }
     }
     setVisibleTabs(seen);
+
+    // The same set, told to Rust's notifier, so a banner is never raised for
+    // something the user is already looking at. Deliberately fed from *this*
+    // effect rather than computed separately: two notions of "visible" that can
+    // disagree is how you get a banner suppressed in one place and shown in the
+    // other for the same event.
+    //
+    // Repositories rather than tab ids, because an event carries a repo — and
+    // the tab→repo join belongs in the store that owns the mapping.
+    const repo = repoRoot();
+    void notifyApi
+      .setVisible(seen.length && repo ? [repo] : [], isWindowFocused())
+      // Fire-and-forget, like `record()`: failing to tell the notifier what is
+      // on screen costs one redundant banner, and is not worth propagating into
+      // a render effect.
+      .catch(() => {});
   });
 
   /// Whether this OS window has focus, which `setVisibleTabs` needs in order to
@@ -355,12 +454,15 @@ export function MainSurface(props: MainSurfaceProps) {
   /// group membership, what is on screen or which group has focus.
   const escalation = createMemo(() => {
     void tabSignals();
+    const owner = actions.tabWorktreeMap();
+    // Every signalling tab in the window, not just the ones in the rendered
+    // worktree's pane tree. Walking `groupTabIds()` — as this used to — meant a
+    // signal in another worktree was never even in the input, which is why it
+    // reached no surface at all.
     const live = new Map<string, ActivitySignal[]>();
-    for (const [, ids] of groupTabIds()) {
-      for (const id of ids) {
-        const s = signalsOf(id);
-        if (s.length) live.set(id, s);
-      }
+    for (const id of Object.keys(tabSignals())) {
+      const s = signalsOf(id);
+      if (s.length) live.set(id, s);
     }
     return escalate({
       tabSignals: live,
@@ -369,15 +471,30 @@ export function MainSurface(props: MainSurfaceProps) {
       focusedGroupId: focusedGroupId(),
       collapsedTabGroups: collapsedTabGroups(),
       zen: isZen(),
+      tabWorktree: owner,
+      activeWorktreeId: state.activeWorktreeId,
+      // No `tabView`: every tab in this window's escalation input is a
+      // workbench tab, which is what the default already assumes. The editor
+      // view's tabs escalate inside `EditorView`, over its own strip.
+      currentView: currentStackedView(),
     });
   });
 
 
-  /// Hand the off-screen half to the status bar. An effect rather than the
-  /// status bar reading `escalation()` directly, because the two components
-  /// are siblings in `AppShell` with no shared ancestor that knows geometry.
+  /// Hand the off-screen half to the status bar, and the per-worktree half to
+  /// the rail. Effects rather than the two components reading `escalation()`
+  /// directly, because all three are siblings in `AppShell` with no shared
+  /// ancestor that knows geometry.
   createEffect(() => publishHiddenActivity(escalation().statusBar));
-  onCleanup(() => publishHiddenActivity(null));
+  createEffect(() => publishWorktreeActivity(escalation().worktrees));
+  createEffect(() => publishHiddenWorktreeActivity(escalation().worktreeStatusBar));
+  createEffect(() => publishViewActivity(escalation().views));
+  onCleanup(() => {
+    publishHiddenActivity(null);
+    publishWorktreeActivity(new Map());
+    publishHiddenWorktreeActivity(null);
+    publishViewActivity(new Map());
+  });
 
   // ── Group geometry ───────────────────────────────────────────────────────
   // Each group's body box, measured relative to this component's root, so the
@@ -529,8 +646,10 @@ export function MainSurface(props: MainSurfaceProps) {
       case "compare": actions.selectCompareTab(wtId, tab.id); break;
       case "stack": actions.selectStackTab(wtId, tab.id); break;
       case "history": actions.selectHistoryTab(wtId, tab.id); break;
-      case "brain": actions.selectBrainTab(wtId, tab.id); break;
+      case "timeline": actions.selectTimelineTab(wtId, tab.id); break;
+      case "mission": actions.selectMissionTab(wtId, tab.id); break;
       case "browser": actions.selectBrowserTab(wtId, tab.id); break;
+      case "agent": actions.selectAgentTab(wtId, tab.id); break;
     }
   }
 
@@ -544,8 +663,16 @@ export function MainSurface(props: MainSurfaceProps) {
       case "compare": actions.closeCompareTab(wtId, tab.id); break;
       case "stack": actions.closeStackTab(wtId, tab.id); break;
       case "history": actions.closeHistoryTab(wtId, tab.id); break;
-      case "brain": actions.closeBrainTab(wtId, tab.id); break;
+      case "timeline": actions.closeTimelineTab(wtId, tab.id); break;
+      case "mission": actions.closeMissionTab(wtId, tab.id); break;
       case "browser": actions.closeBrowserTab(wtId, tab.id); break;
+      case "agent":
+        actions.closeAgentTab(wtId, tab.id);
+        // Reopen-last-closed mints a fresh tab id by design, so nothing can
+        // address this conversation again; keeping it would only ride every
+        // future `voidlink-agent-threads` write.
+        dropAgentThread(wtId, tab.id);
+        break;
     }
   }
 
@@ -573,9 +700,7 @@ export function MainSurface(props: MainSurfaceProps) {
     void refreshBranchNames();
   });
   onMount(() => {
-    const handler = () => void refreshBranchNames();
-    window.addEventListener("voidlink:refresh-git", handler);
-    onCleanup(() => window.removeEventListener("voidlink:refresh-git", handler));
+    onCleanup(onGitRefsChanged(() => void refreshBranchNames()));
   });
 
   /// The ⌘K "Open commit graph" command (registered in commands/registry.ts)
@@ -612,7 +737,7 @@ export function MainSurface(props: MainSurfaceProps) {
         pushToast(`Switched to ${branch}.`, "info", 2500);
       }
       window.dispatchEvent(new CustomEvent("voidlink:refresh-files"));
-      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+      emitGitRefsChanged();
     } catch (e) {
       pushToast(e instanceof Error ? e.message : String(e), "error", 5000);
     }
@@ -671,7 +796,7 @@ export function MainSurface(props: MainSurfaceProps) {
       // A new file is invisible to the sidebar until the file tree re-lists
       // its dir and the git status re-runs (the file is untracked).
       window.dispatchEvent(new CustomEvent("voidlink:refresh-files"));
-      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+      emitGitRefsChanged();
       closeMenu();
     } catch (e) {
       setNewFileError(e instanceof Error ? e.message : String(e));
@@ -797,10 +922,29 @@ export function MainSurface(props: MainSurfaceProps) {
                 onNewTerminal={() => void onNewTerminal()}
                 onNewCompare={onNewCompare}
                 onOpenBrain={() => {
-                  actions.openBrainTab(state.activeWorktreeId);
+                  // An overlay since cut C2, not a tab — but still reachable
+                  // from the same menu, because the menu is where somebody
+                  // looks for it.
+                  openBrain();
+                  closeMenu();
+                }}
+                onOpenTimeline={() => {
+                  actions.openTimelineTab(state.activeWorktreeId);
+                  closeMenu();
+                }}
+                onOpenMission={() => {
+                  actions.openMissionTab(state.activeWorktreeId);
                   closeMenu();
                 }}
                 onNewBrowser={onNewBrowser}
+                onNewAgent={() => {
+                  actions.openAgentTab(
+                    state.activeWorktreeId,
+                    defaultAgentId(),
+                    agentById(defaultAgentId())?.name,
+                  );
+                  closeMenu();
+                }}
               />
             }
           />
@@ -945,11 +1089,18 @@ export function MainSurface(props: MainSurfaceProps) {
                 props.onOpenFile(full, line, column);
               }}
               onOpenSha={(sha) => {
-                if (!repoRoot()) return;
-                actions.openCompareTab(state.activeWorktreeId, {
-                  baseRef: `${sha}^`,
-                  headRef: sha,
-                  useMergeBase: false,
+                const root = repoRoot();
+                if (!root) return;
+                // Asked rather than assumed. `` `${sha}^` `` does not resolve
+                // for a root commit, so the first commit in a repository —
+                // clicked out of `git log` output like any other — opened a
+                // compare tab onto an error.
+                void resolveCommitDiffBase(root, sha).then((baseRef) => {
+                  actions.openCompareTab(state.activeWorktreeId, {
+                    baseRef,
+                    headRef: sha,
+                    useMergeBase: false,
+                  });
                 });
               }}
               branchNames={branchNames}
@@ -966,11 +1117,21 @@ export function MainSurface(props: MainSurfaceProps) {
           <Show when={activeRepoPath()}>
             {(repo) => (
               <div class={paneClass()} style={paneStyle(tab.id)}>
-                <CompareTabView
-                  repoPath={repo()}
-                  tab={tab}
-                  worktreeId={state.activeWorktreeId}
-                />
+                {/* A rejected `git_compare` does not merely blank this pane: the
+                    throw aborts the update that was carrying it, and every
+                    effect downstream of `CompareTab`'s files memo stays marked
+                    stale forever. Refresh, Retry, the merge-base toggle and
+                    swapping base/head then all re-run the fetch and change
+                    nothing on screen, while the tab's activity dot keeps
+                    spinning. The boundary's reset is the only thing that
+                    rebuilds those computations. */}
+                <GitErrorBoundary surface="This comparison">
+                  <CompareTabView
+                    repoPath={repo()}
+                    tab={tab}
+                    worktreeId={state.activeWorktreeId}
+                  />
+                </GitErrorBoundary>
               </div>
             )}
           </Show>
@@ -994,11 +1155,55 @@ export function MainSurface(props: MainSurfaceProps) {
         )}
       </For>
 
-      {/* Brain tabs */}
-      <For each={activeBrainTabs()}>
+      {/* Timeline tabs (the event log) */}
+      <For each={activeTimelineTabs()}>
         {(tab) => (
           <div class={paneClass()} style={paneStyle(tab.id)}>
-            <BrainSurface vaultPath={settings.brain.vaultPath} />
+            <TimelineSurface repoPath={activeRepoPath() ?? ""} />
+          </div>
+        )}
+      </For>
+
+      {/* Mission Control (the lineup, the check-in and the hills) */}
+      <For each={activeMissionTabs()}>
+        {(tab) => (
+          <div class={paneClass()} style={paneStyle(tab.id)}>
+            <MissionSurface
+              workspaceId={state.activeWorkspaceId}
+              repoPath={activeRepoPath() ?? undefined}
+              onOpen={(row) => {
+                // The Lineup spans every workspace, so a row's worktree is
+                // usually not the one this window is showing. `selectWorktree`
+                // switches workspaces too, which is exactly the navigation the
+                // surface exists to enable.
+                if (row.worktreeId) actions.selectWorktree(row.worktreeId);
+              }}
+              onInspectLeg={(leg) => {
+                // A leg's work is a branch. Comparing it against the branch it
+                // came from is how you read what the agent actually did.
+                actions.openCompareTab(state.activeWorktreeId, {
+                  headRef: leg.branch,
+                  useMergeBase: true,
+                });
+              }}
+            />
+          </div>
+        )}
+      </For>
+
+      {/* Agent tabs. Kept mounted like every other pane body: a turn streams
+          into the store rather than into this component, so a tab in the
+          background keeps growing its answer and reports itself through the
+          strip's LED. */}
+      <For each={activeAgentTabs()}>
+        {(tab) => (
+          <div class={paneClass()} style={paneStyle(tab.id)}>
+            <AgentThreadView
+              wtId={state.activeWorktreeId}
+              tabId={tab.id}
+              agentId={tab.agentId}
+              onOpenSettings={props.onOpenSettings}
+            />
           </div>
         )}
       </For>
@@ -1016,6 +1221,7 @@ export function MainSurface(props: MainSurfaceProps) {
               groupVisible={tabGroupVisible(tab.id)}
               onUrlChange={(url) => actions.setBrowserUrl(state.activeWorktreeId, tab.id, url)}
               onTitleChange={(title) => actions.setBrowserTitle(state.activeWorktreeId, tab.id, title)}
+              onZoomChange={(zoom) => actions.setBrowserZoom(state.activeWorktreeId, tab.id, zoom)}
             />
           </div>
         )}
@@ -1027,18 +1233,27 @@ export function MainSurface(props: MainSurfaceProps) {
           <Show when={activeRepoPath()}>
             {(repo) => (
               <div class={paneClass()} style={paneStyle(tab.id)}>
-                <CommitGraph
-                  repoPath={repo()}
-                  onOpenCommit={(oid) => {
-                    // Reuse the existing commit-diff path: a compare tab of
-                    // <oid>^..<oid> shows exactly what the commit changed.
-                    actions.openCompareTab(state.activeWorktreeId, {
-                      baseRef: `${oid}^`,
-                      headRef: oid,
-                      useMergeBase: false,
-                    });
-                  }}
-                />
+                {/* `CommitGraph` reads its resource inside the lane memo, so a
+                    repository that moved out from under us takes the whole
+                    window white rather than rendering the graph's own error
+                    state — which is unreachable without something above it to
+                    catch the throw. */}
+                <GitErrorBoundary surface="The commit graph">
+                  <CommitGraph
+                    repoPath={repo()}
+                    onOpenCommit={(oid, parentOids) => {
+                      // `commitDiffBase` rather than a literal `<oid>^`, which
+                      // does not resolve for a root commit — clicking the first
+                      // commit in a repository used to error here and error
+                      // *differently* from the sidebar's history section.
+                      actions.openCompareTab(state.activeWorktreeId, {
+                        baseRef: commitDiffBase(parentOids),
+                        headRef: oid,
+                        useMergeBase: false,
+                      });
+                    }}
+                  />
+                </GitErrorBoundary>
               </div>
             )}
           </Show>
@@ -1107,7 +1322,7 @@ export function MainSurface(props: MainSurfaceProps) {
       <Show when={!activeRepoPath()}>
         <div class="island absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-3 bg-background z-10">
           <TerminalSquare class="w-7 h-7 opacity-60" />
-          <p class="text-[13px]">Select a repository in the sidebar to start working.</p>
+          <p class="text-[13px]">Open a folder from the workspace rail to start working.</p>
         </div>
       </Show>
     </div>
@@ -1138,7 +1353,10 @@ function NewTabMenu(props: {
   onNewTerminal: () => void;
   onNewCompare: () => void;
   onOpenBrain: () => void;
+  onOpenTimeline: () => void;
+  onOpenMission: () => void;
   onNewBrowser: () => void;
+  onNewAgent: () => void;
 }) {
   // The parent tab bar uses `overflow-x-auto`, which clips any descendant
   // absolutely-positioned dropdown. Render the menu in a Portal and anchor
@@ -1208,7 +1426,7 @@ function NewTabMenu(props: {
         aria-label="New tab"
         aria-haspopup="menu"
         aria-expanded={props.open}
-        title={props.disabled ? "Select a repository first" : "New tab"}
+        title={props.disabled ? "Open a folder first" : "New tab"}
         class={`mx-1 p-1 rounded transition-colors shrink-0 ${
           props.disabled
             ? "text-muted-foreground/40 cursor-not-allowed"
@@ -1274,11 +1492,20 @@ function NewTabMenu(props: {
               <MenuItem onClick={props.onEnterFileMode} icon={<FilePlus2 class="w-3.5 h-3.5" />}>
                 New file at root…
               </MenuItem>
+              <MenuItem onClick={props.onOpenTimeline} icon={<TimelineIcon class="w-3.5 h-3.5" />}>
+                Timeline
+              </MenuItem>
+              <MenuItem onClick={props.onOpenMission} icon={<MissionIcon class="w-3.5 h-3.5" />}>
+                Mission Control
+              </MenuItem>
               <MenuItem onClick={props.onOpenBrain} icon={<Brain class="w-3.5 h-3.5" />}>
                 Brain
               </MenuItem>
               <MenuItem onClick={props.onNewBrowser} icon={<Globe class="w-3.5 h-3.5" />}>
                 New browser tab
+              </MenuItem>
+              <MenuItem onClick={props.onNewAgent} icon={<Bot class="w-3.5 h-3.5" />}>
+                New agent thread
               </MenuItem>
             </Show>
           </div>

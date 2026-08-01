@@ -1,3 +1,5 @@
+import { emitGitRefsChanged } from "@/commands/gitEvents";
+import { shellsWithIntegration } from "@/store/terminalWatch";
 import {
   Show,
   For,
@@ -10,7 +12,6 @@ import {
   type JSX,
 } from "solid-js";
 import { Check, Layers, Loader2, RefreshCw, RotateCcw, Search, Trash2, X } from "lucide-solid";
-import { open } from "@tauri-apps/plugin-dialog";
 import { gitApi } from "@/api/git";
 import type { ConfigEntry, ConfigScope, ConfigSnapshot } from "@/types/git";
 import {
@@ -25,6 +26,7 @@ import {
   AI_KEY_PRESETS,
   aiKeyBindings,
   useSettings,
+  type AgentRosterEntry,
   type AiKeyBinding,
   type CursorStyle,
   type EditorCoreSettings,
@@ -50,6 +52,7 @@ import {
   type SettingHit,
 } from "@/store/settingsSearch";
 import { withLanguageOverride, withoutLanguageOverride } from "@/store/settingsJson";
+import { NotificationsPane } from "@/components/settings/NotificationsPane";
 import { SettingsJsonPane } from "./SettingsJsonPane";
 import { FuzzyText } from "@/commands/QuickPick";
 import { MONACO_LANGUAGE_IDS } from "@/components/editor/monaco";
@@ -79,7 +82,16 @@ interface SettingsDialogProps {
   gotoSetting?: string;
 }
 
-type Tab = "ui" | "theme" | "editor" | "terminal" | "keyboard" | "ai" | "git" | "stack" | "brain";
+type Tab =
+  | "ui"
+  | "theme"
+  | "editor"
+  | "terminal"
+  | "keyboard"
+  | "notifications"
+  | "ai"
+  | "git"
+  | "stack";
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const [tab, setTab] = createSignal<Tab>("ui");
@@ -163,10 +175,10 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "editor"} onClick={() => setTab("editor")}>Editor</TabButton>
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</TabButton>
+            <TabButton active={tab() === "notifications"} onClick={() => setTab("notifications")}>Notifications</TabButton>
             <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
             <TabButton active={tab() === "git"} onClick={() => setTab("git")}>Git</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
-            <TabButton active={tab() === "brain"} onClick={() => setTab("brain")}>Brain</TabButton>
           </div>
 
           <div class="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs">
@@ -175,10 +187,10 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <Show when={tab() === "editor"}><EditorPane initialQuery={props.gotoSetting} /></Show>
             <Show when={tab() === "terminal"}><TerminalPane /></Show>
             <Show when={tab() === "keyboard"}><KeyboardPane /></Show>
+            <Show when={tab() === "notifications"}><NotificationsPane /></Show>
             <Show when={tab() === "ai"}><AiPane /></Show>
             <Show when={tab() === "git"}><GitPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>
-            <Show when={tab() === "brain"}><BrainPane /></Show>
           </div>
 
           <div class="flex items-center justify-between px-4 py-2.5 border-t border-border">
@@ -1098,6 +1110,55 @@ function TerminalPane() {
         <ToggleRow label="Scroll on input" value={settings.terminal.scrollOnUserInput}
           onChange={(v) => updateTerminal({ scrollOnUserInput: v })} />
       </Section>
+
+      <Section title="Shell integration">
+        <ShellIntegrationRow />
+      </Section>
+    </div>
+  );
+}
+
+/// Read-only, and the only control-shaped thing on it is the absence of one.
+///
+/// There is nothing to toggle here: whether a shell emits OSC 133 is decided by
+/// what its startup files sourced, which this app deliberately does not write
+/// (see `create_pty` in `src-tauri/src/lib.rs` for that decision). A switch
+/// would be a control that cannot do what it says.
+///
+/// It reports **what was observed**, never what was configured. There is no way
+/// to ask a shell what it sourced, so "active in N shells" is the only claim
+/// this surface can honestly make — and a zero is not a diagnosis. It is
+/// worded as such: a shell without integration is not broken, it is the state
+/// this app shipped in for a year, and it degrades to reporting `finished` from
+/// the process poll exactly as it always did.
+function ShellIntegrationRow() {
+  const count = shellsWithIntegration;
+  return (
+    <div class="space-y-2 text-[11px] leading-relaxed">
+      <div class="flex items-center gap-2">
+        <span
+          class={`size-1.5 rounded-full ${count() > 0 ? "bg-success" : "bg-muted-foreground/40"}`}
+          aria-hidden="true"
+        />
+        <span class="text-foreground/90">
+          {count() > 0
+            ? `Active in ${count()} open ${count() === 1 ? "shell" : "shells"}`
+            : "Not detected in any open shell"}
+        </span>
+      </div>
+      <p class="text-muted-foreground">
+        Lets voidlink read a command's exit status, so a build that{" "}
+        <em>failed</em> is marked differently from one that merely ended. Without
+        it, a finished command still reports — just without a status. Add this to
+        the end of your shell's rc file and open a new terminal:
+      </p>
+      <code class="block rounded border border-border bg-muted/40 px-2 py-1 font-mono text-[10px] text-foreground/80 overflow-x-auto whitespace-pre">
+        source /path/to/voidlink/shell-integration/voidlink.zsh
+      </code>
+      <p class="text-muted-foreground/70">
+        A <span class="font-mono">.bash</span> version sits beside it. Both are
+        no-ops outside voidlink, and neither touches your prompt.
+      </p>
     </div>
   );
 }
@@ -1361,7 +1422,8 @@ function AiPane() {
           </For>
         </div>
       </Section>
-      <Section title="Repo agent">
+      <AgentRosterSection />
+      <Section title="Agent fallback command">
         <TextRow
           label="Command"
           value={settings.ai.agentCommand}
@@ -1369,14 +1431,94 @@ function AiPane() {
           onInput={(v) => updateAi({ agentCommand: v })}
         />
         <p class="text-[11px] text-muted-foreground leading-relaxed pl-28">
-          Used by the repo agent ({shortcutLabel("agent.toggle")}). A prompt
-          grounded in your live workspace state — branch, status, recent log,
-          staged diff, open files — is piped to stdin; stdout is the answer.
-          Leave blank to reuse the commit command.
+          Used by any agent above that leaves its own command blank — and, if
+          this is blank too, the commit command. A prompt grounded in your live
+          workspace state — branch, status, recent log, staged diff, open files —
+          is piped to stdin; stdout is the answer ({shortcutLabel("agent.toggle")}).
         </p>
       </Section>
       <ProviderKeysSection />
     </div>
+  );
+}
+
+// ─── Agent roster ───────────────────────────────────────────────────────────
+
+const AGENT_INPUT_CLASS =
+  "min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono outline-2 outline-transparent transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring";
+
+/// The workspace's named agents. An agent tab is bound to one of these rows, so
+/// two rows pointing at differently-configured CLIs can answer side by side.
+///
+/// Edits are written straight through on every keystroke, like every other row
+/// in this dialog — there is no Save button to be out of sync with, and a
+/// half-typed command is only ever spawned when the user asks the agent to run.
+///
+/// The last row's remove button stays *present* and disabled rather than
+/// disappearing (§7.6): a control that vanishes teaches nothing, and the reason
+/// a roster can't be emptied is exactly what the user needs told.
+function AgentRosterSection() {
+  const { settings, addAgent, updateAgent, removeAgent } = useSettings();
+  const soleEntry = () => settings.ai.agents.length <= 1;
+
+  return (
+    <Section title="Agents">
+      <p class="text-[11px] text-muted-foreground leading-relaxed">
+        Each agent is a name plus the CLI command its prompt is piped to. Bind an
+        agent tab to one of these; leave a command blank to use the fallback
+        below.
+      </p>
+      <For each={settings.ai.agents}>
+        {(entry: AgentRosterEntry) => (
+          <div class="flex items-center gap-1.5">
+            <input
+              type="text"
+              value={entry.name}
+              placeholder="Repo agent"
+              aria-label="Agent name"
+              onInput={(e) => updateAgent(entry.id, { name: e.currentTarget.value })}
+              class={`w-28 shrink-0 ${AGENT_INPUT_CLASS}`}
+            />
+            <input
+              type="text"
+              value={entry.commandTemplate}
+              placeholder="optional — falls back to the command below"
+              aria-label={`Command for ${entry.name || "this agent"}`}
+              onInput={(e) => updateAgent(entry.id, { commandTemplate: e.currentTarget.value })}
+              class={`flex-1 ${AGENT_INPUT_CLASS}`}
+            />
+            <button
+              onClick={() => {
+                if (soleEntry()) return;
+                removeAgent(entry.id);
+              }}
+              aria-disabled={soleEntry()}
+              title={
+                soleEntry()
+                  ? "A roster needs at least one agent"
+                  : `Remove ${entry.name || "this agent"} from the roster`
+              }
+              aria-label={`Remove ${entry.name || "this agent"} from the roster`}
+              class={`p-1 rounded text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                soleEntry()
+                  ? "opacity-40 cursor-not-allowed"
+                  : "hover:text-destructive hover:bg-destructive/10"
+              }`}
+            >
+              <X class="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </For>
+      <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
+        <button
+          onClick={() => addAgent("New agent", "")}
+          class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Add agent
+        </button>
+      </div>
+    </Section>
   );
 }
 
@@ -1663,8 +1805,6 @@ function AddCustomKey(props: { onAdded: () => void }) {
     </div>
   );
 }
-
-// ─── Brain Pane ─────────────────────────────────────────────────────────────
 
 // ─── Git Pane ───────────────────────────────────────────────────────────────
 
@@ -2203,49 +2343,6 @@ function RepoIdentityOverrides() {
   );
 }
 
-function BrainPane() {
-  const { settings, updateBrain } = useSettings();
-
-  const pickVaultPath = async () => {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "Select the brain-kb vault folder",
-    });
-    if (!selected || Array.isArray(selected)) return;
-    updateBrain({ vaultPath: selected });
-  };
-
-  return (
-    <div class="space-y-4">
-      <p class="text-[11px] text-muted-foreground leading-relaxed">
-        A local git clone of your brain-kb vault (typed entries + notes). This
-        must be the same directory the <code>brain</code> CLI writes to — its
-        own path lives separately in <code>~/.config/brain/config.json</code>,
-        so the two have to be pointed at each other by hand.
-      </p>
-      <Section title="Vault">
-        <div class="flex items-center gap-3">
-          <span class="w-28 text-muted-foreground shrink-0">Path</span>
-          <input
-            type="text"
-            value={settings.brain.vaultPath}
-            placeholder="/path/to/brain-kb"
-            onInput={(e) => updateBrain({ vaultPath: e.currentTarget.value })}
-            class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-          <button
-            onClick={pickVaultPath}
-            class="px-2 py-1 rounded border border-border text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
-          >
-            Browse…
-          </button>
-        </div>
-      </Section>
-    </div>
-  );
-}
-
 // ─── Stack Pane ─────────────────────────────────────────────────────────────
 
 const DEFAULT_TRUNK_HINT = "main, master, develop, trunk";
@@ -2290,7 +2387,7 @@ function StackPane() {
       );
       // Discovery in the sidebar reads trunks fresh; broadcast so STACK
       // section adopts the new rule immediately.
-      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+      emitGitRefsChanged();
       refetch();
     } catch (e) {
       pushToast(String(e), "error");

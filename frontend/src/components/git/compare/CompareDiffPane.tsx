@@ -1,21 +1,23 @@
-import { Show, createMemo } from "solid-js";
+import { Show, createMemo, createResource } from "solid-js";
 import { GitCompare } from "lucide-solid";
-import { useAppStore } from "@/store/LayoutContext";
+import type { DiffMode } from "@/store/layout";
 import type { FileDiff } from "@/types/git";
 import {
   DiffRenderer,
-  applyIgnoreWhitespace,
 } from "@/components/git/shared/SplitDiffRenderer";
+import { ProvenanceNote } from "@/components/git/shared/ProvenanceNote";
+import { isCommitOid, loadCommitProvenance } from "@/components/git/shared/provenance";
 
 // Right-hand side of the Compare tab. Receives a single FileDiff and
-// delegates to the shared renderer. Inherits the global diffMode and
-// ignoreWhitespace toggles so the Compare experience matches working-tree
-// diff conventions.
+// delegates to the shared renderer. `diffMode` comes from the owning
+// CompareTab's own per-tab state, not the global working-tree toggle —
+// see CompareTab.tsx for why the two are kept separate.
 
 type Props = {
   file: FileDiff | null;
   baseRef: string;
   headRef: string;
+  diffMode: DiffMode;
 };
 
 function displayPath(file: FileDiff): { primary: string; rename: string | null } {
@@ -28,13 +30,24 @@ function displayPath(file: FileDiff): { primary: string; rename: string | null }
 }
 
 export function CompareDiffPane(props: Props) {
-  const { state } = useAppStore();
+  /// The file exactly as the backend produced it. "Ignore whitespace" is now a
+  /// diff option rather than a post-hoc filter here, so what this renders and
+  /// what the tree counts are the same diff.
+  const transformed = createMemo<FileDiff | null>(() => props.file ?? null);
 
-  const transformed = createMemo<FileDiff | null>(() => {
-    const f = props.file;
-    if (!f) return null;
-    return state.ignoreWhitespace ? applyIgnoreWhitespace(f) : f;
-  });
+  /// The agent the journal already credited this commit to, if any.
+  ///
+  /// Only asked when the head is a full oid — which is what
+  /// `commands/commitDiff.ts` puts there when a commit's own diff is opened. A
+  /// compare of two *branches* spans many commits, and naming one agent over a
+  /// range that several of them contributed to would be a claim the log does
+  /// not support: there is no per-hunk evidence to say which commit inside the
+  /// range a given hunk came from. So that case shows nothing rather than
+  /// something plausible.
+  const [provenance] = createResource(
+    () => (isCommitOid(props.headRef) ? props.headRef : null),
+    (oid) => loadCommitProvenance(oid).catch(() => null),
+  );
 
   return (
     <div class="flex flex-col h-full bg-background min-w-0">
@@ -48,15 +61,25 @@ export function CompareDiffPane(props: Props) {
         }
       >
         {(f) => {
-          const path = displayPath(f());
+          // A function, not `const path = displayPath(f())`.
+          //
+          // A non-keyed `<Show>` runs this callback inside `untrack()` and
+          // re-runs it only when the condition flips falsy→truthy — its
+          // condition memo compares `!a === !b`, so file → *different* file is
+          // not a change it reacts to. Computing the path once therefore froze
+          // the header on whichever file was selected first: the +/− counts and
+          // the diff body updated (they read `f()` during render, which does
+          // track), while the name above them kept naming a file you were no
+          // longer looking at.
+          const path = () => displayPath(f());
           return (
             <>
               <div class="flex items-center gap-3 px-3 py-1.5 border-b border-border shrink-0 text-[11px]">
                 <div class="flex-1 min-w-0">
-                  <div class="font-medium truncate">{path.primary}</div>
-                  <Show when={path.rename}>
+                  <div class="font-medium truncate">{path().primary}</div>
+                  <Show when={path().rename}>
                     <div class="text-muted-foreground/80 truncate">
-                      renamed from <span class="font-mono">{path.rename}</span>
+                      renamed from <span class="font-mono">{path().rename}</span>
                     </div>
                   </Show>
                 </div>
@@ -74,8 +97,9 @@ export function CompareDiffPane(props: Props) {
                   </span>
                 </div>
               </div>
+              <ProvenanceNote provenance={provenance()} />
               <div class="flex-1 overflow-auto scrollbar-thin font-mono text-[12px] leading-[1.5]">
-                <DiffRenderer file={f()} mode={state.diffMode} />
+                <DiffRenderer file={f()} mode={props.diffMode} />
               </div>
             </>
           );

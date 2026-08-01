@@ -49,6 +49,9 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 # secret-service. Deliberately NOT a self-rolled vault or tauri-plugin-stronghold
 # — the point is that the key lives where the OS already guards credentials.
 keyring = "4.1"
+notify-debouncer-full = "0.7.0"
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav"] }
+tauri-plugin-notification = "2.3.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

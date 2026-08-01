@@ -17,7 +17,7 @@
 //! id. Labels are derived from that id (`voidlink-browser-<uuid>`) so a crash
 //! leaves recognisable orphans for [`browser_close_orphans`] to sweep.
 //!
-//! Two things are deliberate:
+//! Three things are deliberate:
 //!
 //! - **The child webview gets no capability.** `capabilities/default.json` is
 //!   scoped to the `main` webview label precisely so a page the user loads
@@ -26,6 +26,36 @@
 //!   back/forward would otherwise mean evaluating `history.back()` inside an
 //!   untrusted remote document. We keep a URL stack instead and navigate to
 //!   entries, so no script of ours ever enters the page.
+//! - **Where a tab may go is decided here, not in the address bar.** See
+//!   [`navigation_refusal`]. The navigation hook is the only point every frame
+//!   passes through, so it is the only place a policy can actually hold: a
+//!   filter on the bar stops the user typing a `file://` URL and stops nothing
+//!   at all from a page that embeds one. Because a cancelled navigation is
+//!   silent, every refusal emits [`BLOCKED_EVENT`] on its way out.
+//!
+//! One thing this module cannot do, established by reading the pinned
+//! dependency rather than inferred, because every "obvious" fix for it is a
+//! guess dressed up as an event:
+//!
+//! **There is no load-failure signal, at any layer.** `PageLoadEvent` has two
+//! variants, `Started` and `Finished`, and wry 0.55.1 never synthesises a third
+//! from what the platform tells it. On macOS its `WKNavigationDelegate`
+//! (`wkwebview/class/wry_navigation_delegate.rs`) implements
+//! `didCommitNavigation` and `didFinishNavigation` and simply does not
+//! implement `didFailProvisionalNavigation`. On Linux the `load-changed` match
+//! sends `LoadEvent::Failed` to a `_ => ()` arm. On Windows it is worse than
+//! absent: `NavigationCompleted` fires for failures too, and wry maps it to
+//! `Finished` without consulting the event's `IsSuccess`, so a refused
+//! connection arrives here indistinguishable from a page that loaded.
+//!
+//! So a DNS failure, a refused connection or a bad certificate produces
+//! [`NAVIGATING_EVENT`], then nothing, forever. What this module emits instead
+//! is the *commit* — [`COMMITTED_EVENT`], from `PageLoadEvent::Started`, which
+//! was being discarded — so a load that never reached a server is at least
+//! distinguishable from one that is merely slow. Deciding that a load has
+//! *failed* still needs either a timeout (which lies about a slow page) or
+//! polling `url()` (a poll where an event belongs); neither is here, and
+//! neither should be added without measuring a real failure first.
 
 use std::sync::Arc;
 
@@ -40,10 +70,159 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, 
 const LABEL_PREFIX: &str = "voidlink-browser-";
 
 const NAVIGATED_EVENT: &str = "voidlink://browser-navigated";
+const NAVIGATING_EVENT: &str = "voidlink://browser-navigating";
+const COMMITTED_EVENT: &str = "voidlink://browser-committed";
 const TITLE_EVENT: &str = "voidlink://browser-title";
+const BLOCKED_EVENT: &str = "voidlink://browser-blocked";
 
 fn label_for(tab_id: &str) -> String {
     format!("{LABEL_PREFIX}{tab_id}")
+}
+
+// ─── Navigation policy ────────────────────────────────────────────────────────
+
+/// Why a navigation was refused. Two reasons rather than one because they are
+/// two different mistakes: a scheme refusal means "a browser tab does not open
+/// that kind of thing at all", and a file refusal means "that file is on disk
+/// and this tab cannot display it" — the second is the one a user can act on by
+/// picking a different file, so collapsing them into one message would hide the
+/// only actionable half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Refusal {
+    /// Not `http`, `https` or `file` — and not one of the page-internal schemes
+    /// below.
+    Scheme,
+    /// `file://`, but not something the tab can render as a document.
+    FileType,
+}
+
+/// Extensions a `file://` URL may carry.
+///
+/// The rule the repo owner set is "HTML, plain text and PDF — everything else
+/// is refused", and this is that rule spelled out. It is an extension list
+/// rather than a filesystem probe on purpose, and the reason is not laziness:
+/// this function runs inside the navigation hook, on **every frame a page
+/// loads**, so it must not touch the disk. It also would not buy anything if it
+/// did — see [`navigation_refusal`] on directories.
+///
+/// What this list is *not* is a promise that the platform renders each one. An
+/// extension the OS has no MIME mapping for downloads or blanks instead of
+/// rendering, and that is the platform's business. The safety property this
+/// list carries is the refusal: nothing outside it is handed to the webview at
+/// all, so an `.exe`, a `.dmg`, a `.key`, an `~/.ssh/id_rsa` or a sqlite
+/// database can never be pulled into a tab by a page that asks for it.
+///
+/// The named types, and the siblings that are literally the same type:
+/// HTML (`html`, `htm`, `xhtml`), plain text (`txt`, `text`, `log`, `md`,
+/// `markdown`, `csv`, `tsv`, `json`, `xml`, `yaml`, `yml`, `toml` — every one
+/// of them a text file, and every one of them a thing a git workbench actually
+/// has lying around), and PDF.
+///
+/// Images are deliberately absent even though a webview renders them: they are
+/// not one of the three named types, and `svg` in particular is a script
+/// carrier wearing a picture's extension.
+const RENDERABLE_FILE_EXTENSIONS: &[&str] = &[
+    "html", "htm", "xhtml", // HTML
+    "txt", "text", "log", "md", "markdown", "csv", "tsv", "json", "xml", "yaml", "yml",
+    "toml", // plain text
+    "pdf",  // PDF
+];
+
+/// Whether a browser tab may go to `url`, and why not if it may not.
+///
+/// **This is the enforcement point, and it is here rather than in the address
+/// bar because this is what subframes pass through.** wry's macOS navigation
+/// policy never consults `isMainFrame`, so the hook this feeds sees every
+/// iframe a page loads — which is the whole reason the policy is worth having:
+/// an address-bar filter stops the user typing `file:///Users/…`, and stops
+/// nothing at all from a page that embeds it in a hidden frame. The address bar
+/// runs the same rule in TypeScript (`frontend/src/components/browser/url.ts`,
+/// `navigationRefusal`) so that a URL this will silently drop is refused with a
+/// message before it is ever sent; the two lists are kept identical and each
+/// has the other's case table in its tests. That duplication is the price of a
+/// language boundary, not a design.
+///
+/// The schemes, and why each:
+///
+/// - `http`, `https` — the web. The thing the tab is for.
+/// - `file` — allowed *only* for a document the tab can render. The child
+///   webview holds no Tauri capability, so this was never a route to an app
+///   command; what it was is an unrestricted local file reader reachable by any
+///   page that asks. Narrowing it to renderable documents keeps the useful case
+///   (open the HTML coverage report a test run just wrote) and removes the rest.
+/// - `about`, `blob` — **allowed, and this is the exception worth naming.**
+///   Neither addresses anything outside the document that created it:
+///   `about:blank` and `about:srcdoc` are how ordinary pages build frames they
+///   then write into, and a `blob:` URL is minted by the page and scoped to its
+///   own origin. Refusing them would not block an attack, it would break
+///   ordinary web pages — silently, because a cancelled navigation produces no
+///   error anywhere. A policy that runs on every frame has to be judged on what
+///   it breaks as well as on what it stops.
+/// - everything else — refused. `data:` is in "everything else" on purpose:
+///   real browsers block top-level `data:` navigation because a `data:` page
+///   renders attacker-authored HTML under a URL nobody can read, and the tab
+///   here has an address bar that would show exactly that.
+///
+/// Percent-encoding is not decoded before the extension is read, so
+/// `file:///x%2Ehtml` is refused rather than allowed. That is the direction to
+/// fail in: an encoding trick makes the policy *stricter*, never looser.
+fn navigation_refusal(url: &url::Url) -> Option<Refusal> {
+    match url.scheme() {
+        "http" | "https" => None,
+        // Page-internal, and load-bearing for ordinary pages. See above.
+        "about" | "blob" => None,
+        "file" => {
+            let path = url.path();
+            // A trailing slash names a directory, and a directory listing is
+            // none of the three types the policy allows. Refused, deliberately:
+            // an allowed listing turns one refusal into a file browser the user
+            // can walk out of, which is exactly the unrestricted local read this
+            // policy exists to remove — and this app already has a file tree.
+            //
+            // A directory reached *without* the trailing slash lands in the
+            // no-extension arm below and is refused there, for the same reason
+            // and with the same message. That the two paths agree is why this
+            // function never needs to stat anything: knowing whether an
+            // extensionless path is a directory or a binary would not change the
+            // answer, and a syscall per frame to learn something that changes no
+            // answer is a cost with no benefit.
+            if path.is_empty() || path.ends_with('/') {
+                return Some(Refusal::FileType);
+            }
+            let name = path.rsplit('/').next().unwrap_or("");
+            match name.rsplit_once('.') {
+                // A non-empty stem is required so a dotfile literally named
+                // `.html` is not mistaken for an HTML document.
+                Some((stem, ext)) if !stem.is_empty() && is_renderable_extension(ext) => None,
+                _ => Some(Refusal::FileType),
+            }
+        }
+        _ => Some(Refusal::Scheme),
+    }
+}
+
+/// Case-insensitive because a file can be named `REPORT.HTML` and the case of
+/// an extension has never meant anything on macOS or Windows.
+fn is_renderable_extension(ext: &str) -> bool {
+    RENDERABLE_FILE_EXTENSIONS
+        .iter()
+        .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+}
+
+/// What a command says when it refuses a URL it was asked to load directly.
+///
+/// The *frame* path does not use this: a cancelled subframe has no command to
+/// return an error to, so it emits [`BLOCKED_EVENT`] and the frontend writes the
+/// sentence. This is the other half — `browser_open` and `browser_navigate`
+/// refusing before they dispatch — and it exists so that a caller that skipped
+/// the address bar's own check still gets told why rather than watching a
+/// command succeed against a page that never moved.
+fn refusal_reason(reason: Refusal) -> &'static str {
+    match reason {
+        Refusal::Scheme => "a browser tab only opens web pages and local files",
+        Refusal::FileType => "a local file has to be a web page, a text file or a PDF",
+    }
 }
 
 // ─── History ──────────────────────────────────────────────────────────────────
@@ -56,6 +235,16 @@ pub(crate) struct History {
     entries: Vec<String>,
     cursor: usize,
 }
+
+/// How many entries one tab's back stack keeps.
+///
+/// The stack was unbounded, which is a slow leak rather than a bug: a tab left
+/// on a page that redirects on a timer grows it forever, and every entry is an
+/// owned `String`. Dropping the *oldest* entries is the only truncation that
+/// costs nothing a user would notice — the far end of a long history is the
+/// part nobody walks back to, and the alternative (refusing to record) would
+/// break Back for the pages they actually are on.
+const MAX_HISTORY: usize = 200;
 
 impl History {
     /// Record a page the user arrived at by navigating *forward* — typing an
@@ -72,6 +261,16 @@ impl History {
         }
         self.entries.push(url.to_string());
         self.cursor = self.entries.len() - 1;
+
+        // Trim from the front, and move the cursor by exactly what was dropped
+        // — a cursor left pointing at its old index would silently address a
+        // different page, which is the one way this could corrupt rather than
+        // merely forget.
+        if self.entries.len() > MAX_HISTORY {
+            let overflow = self.entries.len() - MAX_HISTORY;
+            self.entries.drain(..overflow);
+            self.cursor -= overflow;
+        }
     }
 
     fn back(&mut self) -> Option<String> {
@@ -98,6 +297,22 @@ impl History {
         self.cursor + 1 < self.entries.len()
     }
 
+    /// Point the current entry at where the page actually ended up.
+    ///
+    /// Used when a traversal lands somewhere other than the entry it asked for
+    /// — a Back to a URL that redirects. Pushing instead would truncate every
+    /// forward entry, so Forward would stop working because a page you went
+    /// *back* to moved; overwriting keeps the stack describing what is on
+    /// screen and leaves the rest of it reachable.
+    fn replace_current(&mut self, url: &str) {
+        if let Some(entry) = self.entries.get_mut(self.cursor) {
+            entry.clear();
+            entry.push_str(url);
+        } else {
+            self.push(url);
+        }
+    }
+
     #[cfg(test)]
     fn current(&self) -> Option<&str> {
         self.entries.get(self.cursor).map(String::as_str)
@@ -106,15 +321,89 @@ impl History {
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
+/// How many outstanding traversals one tab remembers.
+///
+/// A traversal that never produces a page load — wry does not always fire one
+/// for a navigation to a URL the webview considers it is already on — would
+/// otherwise sit in the queue forever, and the next *genuine* navigation would
+/// be mistaken for its late arrival and swallowed. Held-down Back is the only
+/// thing that fills this at all, so anything past a couple of dozen is already
+/// a queue that lost track and is better dropped than trusted.
+const MAX_PENDING_TRAVERSALS: usize = 32;
+
 pub(crate) struct TabState {
     label: String,
     history: History,
-    /// Set while a back/forward-issued navigation is in flight.
+    /// The URLs back/forward asked for, in the order they were asked for,
+    /// each held until the page load it causes settles.
     ///
-    /// Without it the page load that traversal *causes* would look identical to
-    /// a fresh navigation and get pushed, so Back would append the page you
-    /// just came from and the cursor could never reach the start of the stack.
-    traversing: bool,
+    /// A queue rather than the boolean this started as. The boolean was set by
+    /// every traversal and cleared by the first load to come back, so two
+    /// traversals inside one page load — a held-down Back, a keybinding repeat
+    /// — left the second load looking like a fresh navigation. Worse, a burst
+    /// that wry *coalesced* into one load left the flag set forever, and the
+    /// next address the user typed was then folded into history as if it had
+    /// been a traversal, so Back skipped it.
+    ///
+    /// Matching by URL rather than by count is what makes both cases decidable:
+    /// a load whose URL is somewhere in the queue is a traversal (and anything
+    /// queued ahead of it was superseded), and a load whose URL is in neither
+    /// the queue nor the future is a redirect off the traversal that is still
+    /// outstanding.
+    pending_traversals: std::collections::VecDeque<String>,
+}
+
+impl TabState {
+    fn new(label: String) -> Self {
+        Self {
+            label,
+            history: History::default(),
+            pending_traversals: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Record that a traversal to `url` has been issued.
+    fn expect_traversal(&mut self, url: &str) {
+        if self.pending_traversals.len() >= MAX_PENDING_TRAVERSALS {
+            self.pending_traversals.pop_front();
+        }
+        self.pending_traversals.push_back(url.to_string());
+    }
+
+    /// Undo [`Self::expect_traversal`] when the navigation it was recorded for
+    /// never got dispatched.
+    fn cancel_traversal(&mut self) {
+        self.pending_traversals.pop_back();
+    }
+
+    /// Fold a settled page load into this tab's history, answering the
+    /// traversal flags the frontend's buttons enable off.
+    ///
+    /// Pure, and separated from [`on_page_settled`] for exactly that reason:
+    /// the callback around it needs an `AppHandle` that no unit test in this
+    /// repo can build, and the decision it makes — push, ignore, or overwrite —
+    /// is the entire correctness of the back button.
+    fn settle(&mut self, url: &str) -> (bool, bool) {
+        match self.pending_traversals.iter().position(|u| u == url) {
+            // Our traversal landed. Anything queued ahead of it was superseded
+            // by a later Back before it ever loaded, so it is dropped too — the
+            // cursor already moved for all of them.
+            Some(index) => {
+                self.pending_traversals.drain(..=index);
+            }
+            // A load nobody asked for, while a traversal is still outstanding:
+            // the page we went back to redirected. The cursor is already on the
+            // entry that redirected, so point it at where the page ended up
+            // rather than pushing, which would discard everything ahead of it.
+            None if !self.pending_traversals.is_empty() => {
+                self.pending_traversals.pop_front();
+                self.history.replace_current(url);
+            }
+            // An ordinary navigation: typed, clicked, or redirected into.
+            None => self.history.push(url),
+        }
+        (self.history.can_go_back(), self.history.can_go_forward())
+    }
 }
 
 pub(crate) type BrowserStore = Arc<DashMap<String, TabState>>;
@@ -158,6 +447,51 @@ struct NavigatedPayload {
     can_go_forward: bool,
 }
 
+/// The shape of both mid-flight events: a tab has *asked* to go somewhere
+/// ([`NAVIGATING_EVENT`]) and a tab's document has *committed*
+/// ([`COMMITTED_EVENT`]).
+///
+/// They are two events rather than one because the gap between them is the only
+/// thing this engine can tell you about a load that is going wrong. See the
+/// module header: a load that fails at DNS, connect or TLS produces the first
+/// and never the second, so "asked but never committed" is as close to a
+/// failure signal as the pinned dependency gets. A load that has committed and
+/// not finished is a slow page; a load that has not committed has not reached a
+/// server at all.
+///
+/// Carries no traversal flags. They are only meaningful once the history has
+/// folded the load in, and sending a provisional pair would make the buttons
+/// flicker against a stack that has not moved yet.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NavigatingPayload {
+    tab_id: String,
+    url: String,
+}
+
+/// A navigation the policy cancelled.
+///
+/// It exists because cancelling is *silent*. `on_navigation` returning `false`
+/// stops the page moving and produces no error, no load event and nothing on
+/// screen — which reads exactly like the app having frozen, and is a worse bug
+/// than the unrestricted `file://` this policy removes. So every refusal says
+/// so, and this is how.
+///
+/// **It carries no frame information, because there is none to carry.** wry's
+/// macOS navigation policy never consults `isMainFrame`, so this module cannot
+/// tell a tab the user aimed somewhere from a page pulling ten blocked iframes.
+/// De-duplication is therefore the frontend's, and it is done with the
+/// mechanism that already exists for it: the toast `source` key collapses
+/// repeats from one cause into a single toast with a count, so a page with ten
+/// blocked frames produces one line and the number ten, not ten lines.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockedPayload {
+    tab_id: String,
+    url: String,
+    reason: Refusal,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TitlePayload {
@@ -181,6 +515,13 @@ pub async fn browser_open<R: Runtime>(
     store: tauri::State<'_, BrowserStore>,
 ) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|e| format!("{url}: {e}"))?;
+    // Same policy the navigation hook enforces, applied before the webview
+    // exists. Without it a tab could be *created* pointing at a refused URL and
+    // the hook would cancel it silently, leaving a blank tab nobody could
+    // explain.
+    if let Some(reason) = navigation_refusal(&parsed) {
+        return Err(refusal_reason(reason).to_string());
+    }
     let label = label_for(&tab_id);
 
     // A stale entry means a previous pane never cleaned up (hot reload, a
@@ -195,16 +536,64 @@ pub async fn browser_open<R: Runtime>(
     let load_tab = tab_id.clone();
     let title_app = app.clone();
     let title_tab = tab_id.clone();
+    let nav_app = app.clone();
+    let nav_tab = tab_id.clone();
 
     let builder = WebviewBuilder::<R>::new(&label, WebviewUrl::External(parsed))
         // The child renders untrusted remote pages: no drag-drop hijacking of
         // the host window, and no Tauri IPC surface (it holds no capability).
         .disable_drag_drop_handler()
-        .on_page_load(move |_webview: tauri::Webview<R>, payload: PageLoadPayload<'_>| {
-            if !matches!(payload.event(), PageLoadEvent::Finished) {
-                return;
+        // Fires when the page *asks* to go somewhere, and decides whether it
+        // may. This is the app's URL policy and the only place it can be
+        // enforced: it sees **every frame** a page loads, not just the address
+        // the user typed, so a page that embeds `file:///Users/…` in a hidden
+        // iframe is stopped here and would not be stopped by any filter on the
+        // bar above. See [`navigation_refusal`] for the rule.
+        //
+        // A refusal emits before it returns `false`, and that ordering is the
+        // point. `false` cancels *silently* — the page simply does not move,
+        // with no error, no load event and nothing on screen — so a policy that
+        // blocks and says nothing is indistinguishable from an app that has
+        // frozen, which is a worse bug than the one being fixed.
+        .on_navigation(move |url| {
+            if let Some(reason) = navigation_refusal(url) {
+                let _ = nav_app.emit(
+                    BLOCKED_EVENT,
+                    BlockedPayload {
+                        tab_id: nav_tab.clone(),
+                        url: url.to_string(),
+                        reason,
+                    },
+                );
+                return false;
             }
-            on_page_settled(&load_app, &load_tab, payload.url().as_str());
+            let _ = nav_app.emit(
+                NAVIGATING_EVENT,
+                NavigatingPayload {
+                    tab_id: nav_tab.clone(),
+                    url: url.to_string(),
+                },
+            );
+            true
+        })
+        .on_page_load(move |_webview: tauri::Webview<R>, payload: PageLoadPayload<'_>| {
+            let url = payload.url().as_str();
+            match payload.event() {
+                // The document committed: a server answered and bytes are
+                // arriving. Nothing was listening for this before, and it is
+                // the only evidence the pinned engine offers that a load which
+                // has not finished is a load that has actually *begun*.
+                PageLoadEvent::Started => {
+                    let _ = load_app.emit(
+                        COMMITTED_EVENT,
+                        NavigatingPayload {
+                            tab_id: load_tab.clone(),
+                            url: url.to_string(),
+                        },
+                    );
+                }
+                PageLoadEvent::Finished => on_page_settled(&load_app, &load_tab, url),
+            }
         })
         .on_document_title_changed(move |_webview, title| {
             let _ = title_app.emit(
@@ -220,14 +609,7 @@ pub async fn browser_open<R: Runtime>(
         .add_child(builder, rect.position(), rect.size())
         .map_err(|e| e.to_string())?;
 
-    store.insert(
-        tab_id,
-        TabState {
-            label,
-            history: History::default(),
-            traversing: false,
-        },
-    );
+    store.insert(tab_id, TabState::new(label));
     Ok(())
 }
 
@@ -244,13 +626,7 @@ fn on_page_settled<R: Runtime>(app: &AppHandle<R>, tab_id: &str, url: &str) {
         let Some(mut tab) = store.get_mut(tab_id) else {
             return;
         };
-        if tab.traversing {
-            // The cursor already moved when back()/forward() chose this URL.
-            tab.traversing = false;
-        } else {
-            tab.history.push(url);
-        }
-        (tab.history.can_go_back(), tab.history.can_go_forward())
+        tab.settle(url)
     };
 
     let _ = app.emit(
@@ -274,6 +650,13 @@ pub async fn browser_navigate<R: Runtime>(
     store: tauri::State<'_, BrowserStore>,
 ) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|e| format!("{url}: {e}"))?;
+    // Refused here as well as in the hook, so the caller learns *why*. The hook
+    // would cancel this anyway, but it cancels without a word — a command that
+    // returned `Ok(())` over a page that never moved would be the freeze this
+    // policy is written to avoid.
+    if let Some(reason) = navigation_refusal(&parsed) {
+        return Err(refusal_reason(reason).to_string());
+    }
     let label = label_of(&store, &tab_id)?;
     let webview = app.get_webview(&label).ok_or("browser tab not found")?;
     webview.navigate(parsed).map_err(|e| e.to_string())
@@ -311,7 +694,7 @@ pub async fn browser_forward<R: Runtime>(
 /// Move the cursor and navigate to whatever it landed on.
 ///
 /// The cursor moves *before* the navigation so a page load racing back in can
-/// see `traversing` already set. If the navigation itself fails the move is
+/// already find the target queued. If the navigation itself fails the move is
 /// rolled back, otherwise the stack would silently drift from what is on
 /// screen.
 fn traverse<R: Runtime>(
@@ -332,21 +715,27 @@ fn traverse<R: Runtime>(
             // disabled, but a keyboard binding can still fire.
             None => return Ok(()),
             Some(url) => {
-                tab.traversing = true;
+                tab.expect_traversal(&url);
                 (tab.label.clone(), url)
             }
         }
     };
 
-    let parsed = url::Url::parse(&target).map_err(|e| e.to_string())?;
-    let result = app
-        .get_webview(&label)
-        .ok_or_else(|| "browser tab not found".to_string())
-        .and_then(|w| w.navigate(parsed).map_err(|e| e.to_string()));
+    // The parse is inside the result chain, not a `?` above it: every entry in
+    // the stack parsed once already, so a failure here is unreachable — but if
+    // it ever happened, an early return would leave the cursor moved and the
+    // traversal queued for a load that is never coming.
+    let result = url::Url::parse(&target)
+        .map_err(|e| e.to_string())
+        .and_then(|parsed| {
+            app.get_webview(&label)
+                .ok_or_else(|| "browser tab not found".to_string())
+                .and_then(|w| w.navigate(parsed).map_err(|e| e.to_string()))
+        });
 
     if result.is_err() {
         if let Some(mut tab) = store.get_mut(tab_id) {
-            tab.traversing = false;
+            tab.cancel_traversal();
             if backwards {
                 tab.history.forward();
             } else {
@@ -357,19 +746,53 @@ fn traverse<R: Runtime>(
     result
 }
 
+/// Give keyboard focus back to the app's own webview.
+///
+/// **This is the whole fix for the dead address bar**, and it is a fix that
+/// cannot be replaced by anything on the frontend. A child webview is a sibling
+/// native view, so once the user clicks into a page it holds the OS keyboard
+/// focus and every keystroke goes to the page — including the ones aimed at the
+/// address bar. The host webview cannot take focus back by itself: it never
+/// receives the keys, so no keybinding of ours can fire, and
+/// `HTMLElement.focus()` moves focus only *within* a webview that already has
+/// it. Somebody outside both has to say which one is active, and on this
+/// boundary that somebody is Rust.
+///
+/// Focuses by elimination rather than by the `main` label: the git window hosts
+/// its own webview under a different label, and a command that hard-coded
+/// `main` would silently focus the wrong window's UI.
 #[tauri::command]
-pub async fn browser_set_rect<R: Runtime>(
+pub async fn browser_focus_host<R: Runtime>(window: tauri::Window<R>) -> Result<(), String> {
+    let host = window
+        .webviews()
+        .into_iter()
+        .find(|w| !w.label().starts_with(LABEL_PREFIX))
+        .ok_or("this window has no app webview")?;
+    host.set_focus().map_err(|e| e.to_string())
+}
+
+/// Scale the page. Tauri applies this to the webview itself, so it survives
+/// navigation within the tab and needs no script in the page.
+#[tauri::command]
+pub async fn browser_set_zoom<R: Runtime>(
     tab_id: String,
-    rect: Rect,
+    factor: f64,
     app: AppHandle<R>,
     store: tauri::State<'_, BrowserStore>,
 ) -> Result<(), String> {
     let label = label_of(&store, &tab_id)?;
     let webview = app.get_webview(&label).ok_or("browser tab not found")?;
-    webview
-        .set_position(rect.position())
-        .map_err(|e| e.to_string())?;
-    webview.set_size(rect.size()).map_err(|e| e.to_string())
+    webview.set_zoom(clamp_zoom(factor)).map_err(|e| e.to_string())
+}
+
+/// Zoom bounds. Below a quarter the page is unreadable and above five the
+/// scrollbars are the only thing on screen — both are states a user reaches by
+/// holding a button down and then cannot read their way out of.
+fn clamp_zoom(factor: f64) -> f64 {
+    if factor.is_nan() {
+        return 1.0;
+    }
+    factor.clamp(0.25, 5.0)
 }
 
 /// Position and reveal in one call.
@@ -418,35 +841,68 @@ pub async fn browser_hide<R: Runtime>(
     Ok(())
 }
 
+/// Tear down a tab's webview. Closing a tab that is not open is **not** an
+/// error, and this is the decision rather than an oversight.
+///
+/// The audit asked whether the silent `Ok(())` for an unknown `tab_id` was a
+/// lie worth turning into an error. Every caller says no. There are three, all
+/// in `BrowserPane.tsx`, and all three discard the result on purpose because
+/// all three run during or after unmount, where there is no component left to
+/// show a message on and nothing a user could do about one:
+///
+/// 1. cleanup's close, which by design *expects* to find nothing — that is the
+///    whole shape of the open-still-in-flight race the `disposed` flag exists
+///    for, so an error here would report the normal path as a failure;
+/// 2. the in-flight `open` discovering the tab was closed under it;
+/// 3. the same discovery on `navigate`'s retry path.
+///
+/// So an error would change nothing observable and would misdescribe the one
+/// sequence this command exists to make safe. What *was* wrong is narrower and
+/// is fixed here: the close was gated on finding a store entry, so a webview
+/// whose entry had already been removed — a double close, anything the store
+/// lost track of — was left on screen compositing above the whole UI with
+/// nothing owning it. The label is derived from the tab id, so no lookup is
+/// needed to name it, and closing by label makes this idempotent in the
+/// direction that matters.
 #[tauri::command]
 pub async fn browser_close<R: Runtime>(
     tab_id: String,
     app: AppHandle<R>,
     store: tauri::State<'_, BrowserStore>,
 ) -> Result<(), String> {
-    if let Some((_, tab)) = store.remove(&tab_id) {
-        if let Some(webview) = app.get_webview(&tab.label) {
-            webview.close().map_err(|e| e.to_string())?;
-        }
+    store.remove(&tab_id);
+    if let Some(webview) = app.get_webview(&label_for(&tab_id)) {
+        webview.close().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// Open the platform inspector against the page.
+/// Toggle the platform inspector against the page, answering whether it is now
+/// open.
 ///
 /// Available in every build on purpose — an embedded browser you cannot
 /// inspect is only half a dev tool — which is why `devtools` is a feature on
 /// the `tauri` dependency rather than relying on `debug_assertions`.
+///
+/// A toggle rather than an open: the inspector is a window the app put on the
+/// user's screen, and the button that produced it is the obvious place to reach
+/// for to make it go away. `open_devtools` on an already-open inspector does
+/// nothing, so the old command's button was dead half the time it was pressed.
 #[tauri::command]
-pub async fn browser_open_devtools<R: Runtime>(
+pub async fn browser_toggle_devtools<R: Runtime>(
     tab_id: String,
     app: AppHandle<R>,
     store: tauri::State<'_, BrowserStore>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let label = label_of(&store, &tab_id)?;
     let webview = app.get_webview(&label).ok_or("browser tab not found")?;
-    webview.open_devtools();
-    Ok(())
+    if webview.is_devtools_open() {
+        webview.close_devtools();
+        Ok(false)
+    } else {
+        webview.open_devtools();
+        Ok(true)
+    }
 }
 
 /// Close browser webviews the store has no entry for.
@@ -553,6 +1009,366 @@ mod tests {
         h.push("https://a.test/");
         assert!(h.can_go_forward());
         assert_eq!(h.current(), Some("https://a.test/"));
+    }
+
+    /// A page that redirects on a timer would otherwise grow the stack for as
+    /// long as the tab is open.
+    #[test]
+    fn the_stack_is_capped_and_drops_the_oldest() {
+        let mut h = History::default();
+        for i in 0..MAX_HISTORY + 50 {
+            h.push(&format!("https://{i}.test/"));
+        }
+        assert_eq!(h.entries.len(), MAX_HISTORY);
+        assert_eq!(h.entries[0], "https://50.test/");
+        assert_eq!(h.current(), Some("https://249.test/"));
+    }
+
+    /// The cursor is an index into a vector that just lost entries from its
+    /// front. Moving it by anything other than the number dropped would leave
+    /// Back addressing a different page than the one it names.
+    #[test]
+    fn capping_keeps_the_cursor_on_the_same_page() {
+        let mut h = History::default();
+        for i in 0..MAX_HISTORY {
+            h.push(&format!("https://{i}.test/"));
+        }
+        h.back();
+        h.back();
+        let before = h.current().map(str::to_string);
+        h.forward();
+        h.forward();
+        h.push("https://overflow.test/");
+        assert_eq!(h.entries.len(), MAX_HISTORY);
+        assert_eq!(h.current(), Some("https://overflow.test/"));
+        h.back();
+        h.back();
+        h.back();
+        assert_eq!(h.current().map(str::to_string), before);
+    }
+
+    #[test]
+    fn zoom_is_clamped_and_survives_nonsense() {
+        assert_eq!(clamp_zoom(1.0), 1.0);
+        assert_eq!(clamp_zoom(0.0), 0.25);
+        assert_eq!(clamp_zoom(-3.0), 0.25);
+        assert_eq!(clamp_zoom(99.0), 5.0);
+        assert_eq!(clamp_zoom(f64::NAN), 1.0);
+    }
+
+    // ─── Settling a page load ────────────────────────────────────────────────
+    //
+    // `on_page_settled` needs an `AppHandle` no unit test in this repo can
+    // build, which is why this decision was moved onto `TabState` — the
+    // callback around it is three lines of plumbing and the decision inside it
+    // is the whole correctness of the back button.
+
+    /// Drive a tab the way the real one is driven: traversals are recorded when
+    /// issued, loads settle afterwards, in whatever order they arrive.
+    fn tab(urls: &[&str]) -> TabState {
+        let mut t = TabState::new("test".into());
+        for u in urls {
+            t.settle(u);
+        }
+        t
+    }
+
+    #[test]
+    fn an_ordinary_load_is_pushed() {
+        let mut t = tab(&["https://a.test/"]);
+        assert_eq!(t.settle("https://b.test/"), (true, false));
+        assert_eq!(t.history.current(), Some("https://b.test/"));
+    }
+
+    /// The traversal's own load must not be pushed, or Back would append the
+    /// page you just came from and the cursor could never reach the start.
+    #[test]
+    fn a_traversals_own_load_is_not_pushed() {
+        let mut t = tab(&["https://a.test/", "https://b.test/"]);
+        t.history.back();
+        t.expect_traversal("https://a.test/");
+        assert_eq!(t.settle("https://a.test/"), (false, true));
+        assert_eq!(t.history.entries.len(), 2);
+        assert_eq!(t.history.current(), Some("https://a.test/"));
+    }
+
+    /// BR-H3. Two traversals inside one page load — a held-down Back, a
+    /// keybinding repeat. The boolean this replaced was set twice and cleared
+    /// once, so the second load looked like a fresh navigation.
+    #[test]
+    fn a_burst_of_traversals_settles_without_disturbing_the_stack() {
+        let mut t = tab(&["https://a.test/", "https://b.test/", "https://c.test/"]);
+        t.history.back();
+        t.expect_traversal("https://b.test/");
+        t.history.back();
+        t.expect_traversal("https://a.test/");
+
+        t.settle("https://b.test/");
+        let flags = t.settle("https://a.test/");
+
+        assert_eq!(flags, (false, true));
+        assert_eq!(
+            t.history.entries,
+            vec!["https://a.test/", "https://b.test/", "https://c.test/"]
+        );
+        assert_eq!(t.history.current(), Some("https://a.test/"));
+        assert!(t.pending_traversals.is_empty());
+    }
+
+    /// The worse half of the same bug. wry does not promise one load per
+    /// `navigate`, so a burst can coalesce into a single load — and a queue
+    /// that only matched the front would then keep an entry forever and eat the
+    /// *next* address the user typed.
+    #[test]
+    fn a_coalesced_burst_drops_the_traversals_it_superseded() {
+        let mut t = tab(&["https://a.test/", "https://b.test/", "https://c.test/"]);
+        t.history.back();
+        t.expect_traversal("https://b.test/");
+        t.history.back();
+        t.expect_traversal("https://a.test/");
+
+        // Only the last one ever loads.
+        t.settle("https://a.test/");
+        assert!(t.pending_traversals.is_empty());
+
+        // The next real navigation must still be recorded.
+        t.settle("https://d.test/");
+        assert_eq!(t.history.current(), Some("https://d.test/"));
+        assert!(!t.history.can_go_forward());
+    }
+
+    /// Going back to a page that redirects. Pushing would discard everything
+    /// ahead of the cursor, so Forward would stop working because a page you
+    /// went *back* to moved.
+    #[test]
+    fn a_traversal_that_redirects_moves_the_entry_rather_than_the_stack() {
+        let mut t = tab(&["https://a.test/", "https://b.test/", "https://c.test/"]);
+        t.history.back();
+        t.history.back();
+        t.expect_traversal("https://a.test/");
+
+        let flags = t.settle("https://a.test/moved");
+
+        assert_eq!(flags, (false, true));
+        assert_eq!(
+            t.history.entries,
+            vec!["https://a.test/moved", "https://b.test/", "https://c.test/"]
+        );
+        assert!(t.pending_traversals.is_empty());
+    }
+
+    /// A traversal whose navigation never got dispatched must not leave the
+    /// queue expecting a load that is not coming.
+    #[test]
+    fn a_cancelled_traversal_leaves_nothing_outstanding() {
+        let mut t = tab(&["https://a.test/", "https://b.test/"]);
+        t.expect_traversal("https://a.test/");
+        t.cancel_traversal();
+        assert!(t.pending_traversals.is_empty());
+
+        t.settle("https://c.test/");
+        assert_eq!(t.history.current(), Some("https://c.test/"));
+    }
+
+    /// Held-down Back against a tab whose loads never arrive. The queue is a
+    /// bound, not a log: past the cap it has already lost track, and an
+    /// unbounded one would grow for as long as the key is held.
+    #[test]
+    fn the_traversal_queue_is_bounded() {
+        let mut t = TabState::new("test".into());
+        for i in 0..MAX_PENDING_TRAVERSALS + 10 {
+            t.expect_traversal(&format!("https://{i}.test/"));
+        }
+        assert_eq!(t.pending_traversals.len(), MAX_PENDING_TRAVERSALS);
+        assert_eq!(t.pending_traversals.front().unwrap(), "https://10.test/");
+    }
+
+    // ─── The navigation policy ───────────────────────────────────────────────
+    //
+    // The rule is pure and the hook around it is four lines, which is the whole
+    // reason it was written this way: the hook itself needs a real child webview
+    // and a page that tries to navigate, and neither exists in a unit test.
+    // What is proven below is the *decision*. That `on_navigation` is wired to
+    // it, and that returning `false` cancels, is read from the pinned API
+    // (`tauri` 2.11.2: "Returning `false` cancels the navigation") and from
+    // wry's macOS navigation policy — not executed.
+    //
+    // The frontend half (`url.ts`, `navigationRefusal`) carries this same case
+    // table in `url.test.ts`. Two languages, one rule; if either table is
+    // edited alone the address bar and the hook stop agreeing, which is the
+    // failure this pair of tests is really guarding.
+
+    fn refusal(url: &str) -> Option<Refusal> {
+        navigation_refusal(&url::Url::parse(url).expect("test URL should parse"))
+    }
+
+    #[test]
+    fn the_web_is_allowed() {
+        assert_eq!(refusal("https://example.com/"), None);
+        assert_eq!(refusal("http://192.168.1.5:3000/app?q=1#top"), None);
+    }
+
+    /// Not one of the three named types, and every one of them a way to reach
+    /// something a browser tab has no business opening.
+    #[test]
+    fn every_other_scheme_is_refused() {
+        for url in [
+            "ftp://files.test/x",
+            "smb://share.test/x",
+            "javascript:alert(1)",
+            "vscode://file/etc/passwd",
+            "mailto:someone@test",
+            "tauri://localhost/",
+        ] {
+            assert_eq!(refusal(url), Some(Refusal::Scheme), "{url}");
+        }
+    }
+
+    /// `data:` renders attacker-authored HTML under an address nobody can read,
+    /// and this tab has an address bar that would show exactly that. Real
+    /// browsers block top-level `data:` for the same reason.
+    #[test]
+    fn data_urls_are_refused() {
+        assert_eq!(
+            refusal("data:text/html,<h1>hi</h1>"),
+            Some(Refusal::Scheme)
+        );
+    }
+
+    /// The exception that keeps this policy from breaking the ordinary web.
+    /// Neither scheme addresses anything outside the document that made it, and
+    /// both are how a page builds frames it then writes into — refusing them
+    /// would cancel page machinery, silently, on sites doing nothing wrong.
+    #[test]
+    fn page_internal_schemes_are_allowed() {
+        assert_eq!(refusal("about:blank"), None);
+        assert_eq!(refusal("about:srcdoc"), None);
+        assert_eq!(
+            refusal("blob:https://example.com/8f3c-4a2b"),
+            None
+        );
+    }
+
+    #[test]
+    fn renderable_local_files_are_allowed() {
+        for url in [
+            "file:///Users/me/coverage/index.html",
+            "file:///Users/me/notes.htm",
+            "file:///Users/me/page.xhtml",
+            "file:///var/log/build.log",
+            "file:///Users/me/README.md",
+            "file:///Users/me/data.json",
+            "file:///Users/me/rows.csv",
+            "file:///Users/me/Cargo.toml",
+            "file:///Users/me/spec.pdf",
+        ] {
+            assert_eq!(refusal(url), None, "{url}");
+        }
+    }
+
+    /// The point of the whole change. A page could pull any of these into a
+    /// frame and read it off the user's disk.
+    #[test]
+    fn unrenderable_local_files_are_refused() {
+        for url in [
+            "file:///Users/me/.ssh/id_rsa",
+            "file:///Users/me/wallet.dat",
+            "file:///Applications/Thing.app/Contents/MacOS/thing",
+            "file:///Users/me/photo.png",
+            "file:///Users/me/diagram.svg",
+            "file:///Users/me/archive.zip",
+            "file:///Users/me/db.sqlite3",
+        ] {
+            assert_eq!(refusal(url), Some(Refusal::FileType), "{url}");
+        }
+    }
+
+    /// A file's extension is not case-sensitive on the two platforms most of
+    /// these files come from, so a policy that was would refuse `REPORT.HTML`
+    /// and look broken.
+    #[test]
+    fn the_extension_match_ignores_case() {
+        assert_eq!(refusal("file:///Users/me/REPORT.HTML"), None);
+        assert_eq!(refusal("file:///Users/me/Spec.PdF"), None);
+        assert_eq!(refusal("FILE:///Users/me/a.html"), None);
+    }
+
+    /// A query string and a fragment are not part of the path, and a rule that
+    /// read the whole URL would see `.html?v=2` and refuse a page that is fine.
+    #[test]
+    fn a_query_or_fragment_does_not_change_the_verdict() {
+        assert_eq!(refusal("file:///Users/me/a.html?v=2"), None);
+        assert_eq!(refusal("file:///Users/me/a.html#section-3"), None);
+        assert_eq!(refusal("file:///Users/me/a.html?v=2#s"), None);
+        // …and neither may it *rescue* one: an unrenderable file does not
+        // become renderable by carrying `?x=.html`.
+        assert_eq!(
+            refusal("file:///Users/me/secret.key?x=.html"),
+            Some(Refusal::FileType)
+        );
+        assert_eq!(
+            refusal("file:///Users/me/secret.key#a.html"),
+            Some(Refusal::FileType)
+        );
+    }
+
+    /// A directory listing is none of the three allowed types, and allowing one
+    /// would turn a single refusal into a file browser the user can walk out of.
+    /// Both spellings of a directory have to agree, because only one of them is
+    /// distinguishable from a file without touching the disk.
+    #[test]
+    fn directories_are_refused_both_ways_round() {
+        assert_eq!(refusal("file:///Users/me/"), Some(Refusal::FileType));
+        assert_eq!(refusal("file:///"), Some(Refusal::FileType));
+        // No trailing slash: indistinguishable from an extensionless file, and
+        // refused as one. That the two answers match is why this rule never
+        // needs to stat anything.
+        assert_eq!(refusal("file:///Users/me/Documents"), Some(Refusal::FileType));
+        // A directory whose *name* has a renderable extension. The trailing
+        // slash is checked first, so this does not slip through.
+        assert_eq!(refusal("file:///Users/me/site.html/"), Some(Refusal::FileType));
+    }
+
+    #[test]
+    fn a_path_with_no_extension_is_refused() {
+        assert_eq!(refusal("file:///etc/hosts"), Some(Refusal::FileType));
+        assert_eq!(refusal("file:///Users/me/Makefile"), Some(Refusal::FileType));
+        // A dot in a *directory* along the way is not the file's extension.
+        assert_eq!(
+            refusal("file:///Users/me/v1.2/changelog"),
+            Some(Refusal::FileType)
+        );
+    }
+
+    /// A dotfile named `.html` is a dotfile, not an HTML document — and
+    /// `~/.htaccess`-shaped things are exactly what a hostile frame would ask
+    /// for if an empty stem counted.
+    #[test]
+    fn a_dotfile_is_not_its_own_extension() {
+        assert_eq!(refusal("file:///Users/me/.html"), Some(Refusal::FileType));
+        assert_eq!(refusal("file:///Users/me/.md"), Some(Refusal::FileType));
+        // A dotfile that then carries a real extension is fine.
+        assert_eq!(refusal("file:///Users/me/.config/notes.md"), None);
+    }
+
+    /// Percent-encoding must never *widen* the policy. A path that only looks
+    /// renderable once decoded is refused, which is the safe direction to be
+    /// wrong in.
+    #[test]
+    fn percent_encoding_cannot_smuggle_an_extension() {
+        assert_eq!(refusal("file:///Users/me/a%2Ehtml"), Some(Refusal::FileType));
+        // An encoded space in the name is ordinary and must still be allowed.
+        assert_eq!(refusal("file:///Users/me/my%20notes.md"), None);
+    }
+
+    /// The refusal reasons are two because they are two different mistakes, and
+    /// only one of them is something the user can do anything about.
+    #[test]
+    fn the_two_reasons_say_different_things() {
+        assert_ne!(
+            refusal_reason(Refusal::Scheme),
+            refusal_reason(Refusal::FileType)
+        );
     }
 
     #[test]

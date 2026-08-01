@@ -1,12 +1,29 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
-import { ArrowLeft, ArrowRight, RotateCw, Wrench } from "lucide-solid";
+import { ArrowLeft, ArrowRight, Loader2, RotateCw, Wrench, ZoomIn, ZoomOut } from "lucide-solid";
 import { browserApi, type WebviewRect } from "@/api/webview";
 import { isOverlayOpen } from "@/commands/overlay";
 import { pushToast } from "@/commands/toast";
 import type { BrowserTab } from "@/store/layout";
-import { normalizeUrl } from "@/components/browser/url";
+import { readAddress, refusalMessage } from "@/components/browser/url";
 
 export { browserTabLabel, normalizeUrl } from "@/components/browser/url";
+
+/// How far a load has got, as far as the engine will say.
+///
+/// Three states rather than a boolean because the middle one is the only thing
+/// the pinned engine can tell you about a load that is going wrong. There is no
+/// load-failure event at any layer (measured against wry 0.55.1 — see the Rust
+/// module header), so a DNS failure, a refused connection or a bad certificate
+/// looks exactly like a slow page: a spinner that never stops. `connecting`
+/// separates the two honestly, without a timeout that would lie about a slow
+/// page: a load stuck here has not reached a server, and one stuck at `loading`
+/// has, and is simply big or slow.
+type LoadPhase = "idle" | "connecting" | "loading";
+
+/// The scale ladder, matching what a browser's own zoom does. A ladder rather
+/// than a multiplier so the steps are reproducible and 100% is always exactly
+/// reachable — compounding 1.1× lands on 0.99 and never comes home.
+const ZOOM_STEPS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
 
 /// One embedded browser tab.
 ///
@@ -37,6 +54,9 @@ export function BrowserPane(props: {
   groupVisible?: boolean;
   onUrlChange: (url: string) => void;
   onTitleChange: (title: string) => void;
+  /// Persist the page scale. Optional so a caller with no store still gets a
+  /// working zoom for the life of the tab.
+  onZoomChange?: (zoom: number) => void;
 }) {
   let anchor: HTMLDivElement | undefined;
   let addressInput: HTMLInputElement | undefined;
@@ -45,12 +65,26 @@ export function BrowserPane(props: {
   const [address, setAddress] = createSignal(props.tab.url);
   const [canGoBack, setCanGoBack] = createSignal(false);
   const [canGoForward, setCanGoForward] = createSignal(false);
+  const [phase, setPhase] = createSignal<LoadPhase>("idle");
+  const loading = () => phase() !== "idle";
+  const [devtoolsOpen, setDevtoolsOpen] = createSignal(false);
+  const [zoom, setZoom] = createSignal(props.tab.zoom ?? 1);
   const [rect, setRect] = createSignal<WebviewRect>({ x: 0, y: 0, width: 1, height: 1 });
 
   // Captured once: the pane is keyed by tab id upstream, so this never changes
   // for the life of the component, and the cleanup path must not depend on
   // props still being alive.
   const tabId = props.tab.id;
+
+  /// Set by cleanup, read by the `open` that may still be in flight.
+  ///
+  /// Closing a tab while its webview is still being built used to leak it: the
+  /// close command found no store entry (the open had not inserted one yet),
+  /// did nothing, and the open then finished and put a child webview on screen
+  /// that no component owned — which the Rust module's own header calls a far
+  /// worse failure than losing a page. Nothing could dismiss it before the next
+  /// boot swept it as an orphan.
+  let disposed = false;
 
   function measure(): WebviewRect {
     if (!anchor) return { x: 0, y: 0, width: 1, height: 1 };
@@ -83,15 +117,58 @@ export function BrowserPane(props: {
 
     // Every tab hears every tab's events, so each one filters by id.
     const unlisteners: Promise<() => void>[] = [
+      // Deliberately does *not* touch the address bar. wry's macOS navigation
+      // policy never checks `isMainFrame`, so this fires for every iframe the
+      // page loads — driving the address off it would show an ad frame's URL
+      // as the tab's address. All it may be trusted for is "something is in
+      // flight", and it is the only event that fires before DNS.
+      browserApi.onNavigating((e) => {
+        if (e.tabId !== tabId) return;
+        if (phase() === "idle") setPhase("connecting");
+      }),
+      // The page's own document committed: main-frame only, and the earliest
+      // event that may name the tab. The address bar's job during a load is to
+      // say where you are going, not where you were. Same focus rule as below:
+      // the input belongs to whoever is typing in it.
+      browserApi.onCommitted((e) => {
+        if (e.tabId !== tabId) return;
+        setPhase("loading");
+        if (!addressHasFocus()) setAddress(e.url);
+      }),
       browserApi.onNavigated((e) => {
         if (e.tabId !== tabId) return;
         setError(null);
+        setPhase("idle");
         setCanGoBack(e.canGoBack);
         setCanGoForward(e.canGoForward);
         // Don't yank the address out from under someone mid-type. The input
         // is the user's while it has focus; the page's the rest of the time.
-        if (document.activeElement !== addressInput) setAddress(e.url);
+        if (!addressHasFocus()) setAddress(e.url);
         props.onUrlChange(e.url);
+      }),
+      // The URL policy refused a navigation, in Rust, at the hook. Saying so
+      // is not optional: cancelling produces no error, no load event and no
+      // change on screen, so a page that quietly refuses to move is
+      // indistinguishable from an app that has hung — a worse bug than the
+      // unrestricted `file://` the policy removes.
+      //
+      // Coalesced by tab, because the hook cannot tell a subframe from a
+      // top-level navigation (wry's macOS policy never checks `isMainFrame`)
+      // and a single page can pull ten blocked frames. The `source` key is the
+      // toast module's own mechanism for exactly this: repeats from one cause
+      // fold into one toast carrying a count, so ten blocked frames read as one
+      // line and the number ten. Keyed by tab id rather than by URL — the news
+      // is "this page is being stopped", not "this particular URL was", and a
+      // per-URL key would put ten lines back on screen.
+      browserApi.onBlocked((e) => {
+        if (e.tabId !== tabId) return;
+        pushToast(
+          refusalMessage(e.url, e.reason),
+          "warning",
+          6000,
+          undefined,
+          `browser-blocked:${tabId}`,
+        );
       }),
       browserApi.onTitleChanged((e) => {
         if (e.tabId !== tabId) return;
@@ -102,13 +179,23 @@ export function BrowserPane(props: {
     void (async () => {
       try {
         await browserApi.open(tabId, props.tab.url, measure());
+        // The tab was closed while its webview was being built. Nothing owns
+        // what just got created, so close it here — the close command that ran
+        // during cleanup found no store entry and did nothing.
+        if (disposed) {
+          void browserApi.close(tabId).catch(() => {});
+          return;
+        }
         setReady(true);
+        if (zoom() !== 1) void browserApi.setZoom(tabId, zoom()).catch(() => {});
       } catch (e) {
+        if (disposed) return;
         fail(e instanceof Error ? e.message : String(e), "Could not open the browser tab");
       }
     })();
 
     onCleanup(() => {
+      disposed = true;
       ro.disconnect();
       window.removeEventListener("resize", onReflow);
       window.removeEventListener("scroll", onReflow, true);
@@ -116,6 +203,41 @@ export function BrowserPane(props: {
       void browserApi.close(tabId).catch(() => {});
     });
   });
+
+  /// Whether the address input holds focus *and* the host webview is the one
+  /// receiving keys.
+  ///
+  /// `document.activeElement` alone is not enough. A webview keeps its last
+  /// active element while the OS focus sits in a sibling webview, so after the
+  /// user clicks the page the input still looks focused here — and the guard
+  /// built on it would stop the address bar updating for the rest of the tab's
+  /// life, on every link the user then clicked.
+  function addressHasFocus(): boolean {
+    return document.hasFocus() && document.activeElement === addressInput;
+  }
+
+  /// Take the OS keyboard focus back from the page, then put it where the click
+  /// aimed it.
+  ///
+  /// Both halves are needed and in this order. Without the Rust call the host
+  /// never receives keystrokes at all; without the re-focus afterwards the
+  /// click's own focus was applied to a webview that did not have the OS focus
+  /// yet, and the platform hands it to whatever it considers first responder.
+  function reclaimFocus(target: EventTarget | null) {
+    void browserApi
+      .focusHost()
+      .then(() => {
+        if (disposed) return;
+        if (target === addressInput) {
+          addressInput?.focus();
+          addressInput?.select();
+        }
+      })
+      .catch(() => {
+        // Focus is best-effort: on a platform where this fails the address bar
+        // is no worse off than it was, and a toast per click would be noise.
+      });
+  }
 
   /// Single source of truth for "should the page be on screen". Anything that
   /// paints over the tab — a modal, a menu, another tab being active — has to
@@ -138,12 +260,69 @@ export function BrowserPane(props: {
     })();
   });
 
-  async function navigate(url: string) {
-    const normalized = normalizeUrl(url);
-    if (!normalized) return;
+  /// Step the page scale through a fixed ladder rather than by a multiplier,
+  /// so repeated presses land on the same values every time and "back to 100%"
+  /// is always reachable by pressing the other button.
+  function stepZoom(direction: 1 | -1) {
+    const index = ZOOM_STEPS.findIndex((s) => s >= zoom() - 0.001);
+    const at = index === -1 ? ZOOM_STEPS.length - 1 : index;
+    const next = ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, Math.max(0, at + direction))];
+    if (next === zoom()) return;
+    setZoom(next);
+    props.onZoomChange?.(next);
+    void browserApi.setZoom(tabId, next).catch((e: unknown) => {
+      pushToast(`Zoom failed: ${e instanceof Error ? e.message : String(e)}`, "error", 6000);
+    });
+  }
+
+  async function navigate(input: string) {
+    const address = readAddress(input);
+    if (address.kind === "empty") return;
+    if (address.kind === "not-an-address") {
+      // Used to be prefixed with `https://` regardless and sent to Rust, where
+      // it failed `Url::parse` and came back as a red toast naming a parser
+      // error — a message that reads like a bug in the app rather than a typo.
+      // Nothing is sent; the page on screen is left alone.
+      //
+      // A search engine would go here. Which one, and whether a git workbench
+      // should send keystrokes to one at all, is an open product decision, and
+      // guessing it inside an audit fix is how a browser ends up quietly
+      // shipping a default search provider.
+      //
+      // A toast rather than the error state: the error state hides the webview
+      // and replaces it with a retry screen, and throwing away the page the
+      // user was reading because they mistyped into the bar above it is a much
+      // larger punishment than the mistake.
+      pushToast(`"${address.input}" is not an address`, "error", 6000);
+      return;
+    }
+    if (address.kind === "refused") {
+      // The URL policy would cancel this at the hook, and cancelling there is
+      // silent — the user would press Enter and watch nothing happen at all.
+      // Refused here instead, with the reason, before anything is sent. Same
+      // toast the blocked-frame path raises, and the same `source` key, so a
+      // user who types a refused address while a page is pulling refused frames
+      // still sees one line rather than two.
+      pushToast(
+        refusalMessage(address.url, address.reason),
+        "warning",
+        6000,
+        undefined,
+        `browser-blocked:${tabId}`,
+      );
+      return;
+    }
+    const normalized = address.url;
     // The old title describes the page we're leaving. Cleared here rather than
     // on the navigated event, because the new page's title arrives *during*
     // its load — clearing on arrival would wipe the title we just received.
+    //
+    // Nor may it move to the navigating event, which is the obvious-looking
+    // fix for the title surviving a *link* click: that event fires for every
+    // iframe on macOS, so the tab would be renamed to nothing by any page with
+    // an ad frame in it. The link-click case is still open; it needs a
+    // main-frame-only start event, which is what `onCommitted` now is, and a
+    // decision about whether a blank tab label mid-load beats a stale one.
     props.onTitleChange("");
     try {
       if (ready()) {
@@ -153,6 +332,11 @@ export function BrowserPane(props: {
         // again" button is for — navigating a webview that was never built
         // would just fail again with a less useful message.
         await browserApi.open(tabId, normalized, measure());
+        // Same race as the mount path: a retry can land after the tab closed.
+        if (disposed) {
+          void browserApi.close(tabId).catch(() => {});
+          return;
+        }
         setReady(true);
       }
       setError(null);
@@ -176,8 +360,17 @@ export function BrowserPane(props: {
   return (
     <div class="absolute inset-0 flex flex-col bg-background">
       {/* Address bar. Lives *outside* the webview rectangle — anything drawn
-          inside it would be hidden behind the page. */}
-      <div class="h-9 shrink-0 flex items-center gap-1 px-2 border-b border-border bg-sidebar">
+          inside it would be hidden behind the page.
+
+          `pointerdown` on the whole strip rather than on the input alone:
+          every control in here either expects keys or expects the host to be
+          the active webview, and the page has held the OS focus since the user
+          last clicked it. On the *down* rather than the click, so the focus
+          request is already in flight while the button is still held. */}
+      <div
+        onPointerDown={(e) => reclaimFocus(e.target)}
+        class="h-9 shrink-0 flex items-center gap-1 px-2 border-b border-border bg-sidebar"
+      >
         <button
           onClick={guarded(() => browserApi.back(tabId), "Back failed")}
           disabled={!canGoBack()}
@@ -196,13 +389,32 @@ export function BrowserPane(props: {
         >
           <ArrowRight class="w-3.5 h-3.5" />
         </button>
+        {/* One control, two states. A separate spinner would mean the strip
+            reflowing every time a page starts loading, and the thing you reach
+            for to stop waiting is the same thing you reach for to try again.
+
+            The load *phase* rides in the tooltip rather than in the strip: a
+            load that never leaves "Connecting" is one that never reached a
+            server, which is the only thing this engine can say about a
+            failure, and it is worth being able to find out — but not worth a
+            permanent piece of chrome that reads "Loading" for a quarter of a
+            second. */}
         <button
           onClick={guarded(() => browserApi.reload(tabId), "Reload failed")}
-          title="Reload"
+          title={
+            phase() === "connecting"
+              ? "Connecting…"
+              : phase() === "loading"
+                ? "Loading…"
+                : "Reload"
+          }
           aria-label="Reload page"
+          aria-busy={loading()}
           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40"
         >
-          <RotateCw class="w-3.5 h-3.5" />
+          <Show when={loading()} fallback={<RotateCw class="w-3.5 h-3.5" />}>
+            <Loader2 class="w-3.5 h-3.5 animate-spin" />
+          </Show>
         </button>
         <input
           ref={(el) => (addressInput = el)}
@@ -217,10 +429,51 @@ export function BrowserPane(props: {
           class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-[12px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
         />
         <button
-          onClick={guarded(() => browserApi.openDevtools(tabId), "Could not open devtools")}
-          title="Open devtools"
-          aria-label="Open devtools"
-          class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40"
+          onClick={() => stepZoom(-1)}
+          disabled={zoom() <= ZOOM_STEPS[0]}
+          title="Zoom out"
+          aria-label="Zoom out"
+          class="p-1 rounded text-muted-foreground enabled:hover:text-foreground enabled:hover:bg-accent/40 disabled:opacity-30"
+        >
+          <ZoomOut class="w-3.5 h-3.5" />
+        </button>
+        {/* Only while it is not 100%: a percentage that never changes is a
+            permanent piece of chrome saying nothing. */}
+        <Show when={zoom() !== 1}>
+          <button
+            onClick={() => {
+              setZoom(1);
+              props.onZoomChange?.(1);
+              void browserApi.setZoom(tabId, 1).catch(() => {});
+            }}
+            title="Reset zoom"
+            aria-label={`Zoom ${Math.round(zoom() * 100)} percent, reset`}
+            class="px-1 text-[10px] tabular-nums rounded text-muted-foreground hover:text-foreground hover:bg-accent/40"
+          >
+            {Math.round(zoom() * 100)}%
+          </button>
+        </Show>
+        <button
+          onClick={() => stepZoom(1)}
+          disabled={zoom() >= ZOOM_STEPS[ZOOM_STEPS.length - 1]}
+          title="Zoom in"
+          aria-label="Zoom in"
+          class="p-1 rounded text-muted-foreground enabled:hover:text-foreground enabled:hover:bg-accent/40 disabled:opacity-30"
+        >
+          <ZoomIn class="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={guarded(async () => {
+            setDevtoolsOpen(await browserApi.toggleDevtools(tabId));
+          }, "Could not toggle devtools")}
+          title={devtoolsOpen() ? "Close devtools" : "Open devtools"}
+          aria-label={devtoolsOpen() ? "Close devtools" : "Open devtools"}
+          aria-pressed={devtoolsOpen()}
+          class="p-1 rounded hover:bg-accent/40"
+          classList={{
+            "text-primary": devtoolsOpen(),
+            "text-muted-foreground hover:text-foreground": !devtoolsOpen(),
+          }}
         >
           <Wrench class="w-3.5 h-3.5" />
         </button>

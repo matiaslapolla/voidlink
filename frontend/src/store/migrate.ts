@@ -29,9 +29,24 @@
 /// the "a corrupt blob costs one key, never the boot" policy that
 /// `layout/persistence.ts` enforces at read time.
 
-export const LAYOUT_VERSION = 2;
+/// v2 → v3 retires `voidlink-brain-tabs`. Cut C2 of the 2026-07-29 audit turned
+/// the brain tab kind into a palette-invoked overlay, so nothing reads that key
+/// any more. It is *deleted* rather than left to rot: a stale blob naming tabs
+/// no loader understands is exactly the kind of thing that reads as data loss
+/// when somebody opens devtools two years from now, and this is the one moment
+/// we still know what it meant.
+///
+/// This is also the first step that removes a key rather than rewriting one,
+/// which is why `KeyValueStore` gained `removeItem` and the impure shell learned
+/// to treat "was present, is now null" as a deletion.
+
+export const LAYOUT_VERSION = 3;
 export const LAYOUT_VERSION_KEY = "voidlink-layout-version";
 export const WORKSPACES_KEY = "voidlink-workspaces";
+
+/// Keys written by builds that no longer exist. Read by the migration only so
+/// it can delete them.
+export const RETIRED_STORAGE_KEYS = ["voidlink-brain-tabs"] as const;
 
 /// The keys the layout store persists tab state under, spelled out here rather
 /// than imported from `layout/persistence.ts`. This module is deliberately
@@ -55,6 +70,7 @@ export type StorageSnapshot = Record<string, string | null>;
 export interface KeyValueStore {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 interface V0Workspace {
@@ -72,6 +88,7 @@ export const MIGRATION_INPUT_KEYS = [
   LAYOUT_VERSION_KEY,
   WORKSPACES_KEY,
   ...TAB_STORAGE_KEYS,
+  ...RETIRED_STORAGE_KEYS,
 ] as const;
 
 function parseVersion(raw: string | null): number {
@@ -177,9 +194,19 @@ function migrateV1ToV2(snapshot: StorageSnapshot): StorageSnapshot {
 /// target is greater than N, in order, then gets stamped with the current
 /// version. Each step is a pure `StorageSnapshot → StorageSnapshot` and is
 /// idempotent on its own output.
+/// v2 → v3: drop the keys of cut features. `null` here means "delete", which
+/// `runLayoutMigration` distinguishes from "absent" by comparing against what it
+/// read.
+function migrateV2ToV3(snapshot: StorageSnapshot): StorageSnapshot {
+  const out: StorageSnapshot = { ...snapshot };
+  for (const key of RETIRED_STORAGE_KEYS) out[key] = null;
+  return out;
+}
+
 const STEPS: { to: number; apply: (s: StorageSnapshot) => StorageSnapshot }[] = [
   { to: 1, apply: migrateV0ToV1 },
   { to: 2, apply: migrateV1ToV2 },
+  { to: 3, apply: migrateV2ToV3 },
 ];
 
 /// Pure transform from whatever version is on disk up to `LAYOUT_VERSION`.
@@ -209,7 +236,14 @@ export function runLayoutMigration(storage: KeyValueStore): boolean {
 
   let wrote = false;
   for (const [key, value] of Object.entries(after)) {
-    if (value === null || value === before[key]) continue;
+    if (value === before[key]) continue;
+    // Present before, gone after: a retired key. Absent both times falls out at
+    // the equality check above, so this never removes what was never there.
+    if (value === null) {
+      storage.removeItem(key);
+      wrote = true;
+      continue;
+    }
     storage.setItem(key, value);
     wrote = true;
   }

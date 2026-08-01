@@ -58,7 +58,6 @@ function contents(snap: WorkspaceSnapshot): string {
   add(t.previews.length, "preview");
   add(t.browsers.length, "browser tab");
   if (t.history) parts.push("commit graph");
-  if (t.brain) parts.push("brain");
   if (parts.length === 0) return "no tabs";
   return parts.join(" · ");
 }

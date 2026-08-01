@@ -11,7 +11,7 @@ workspace            a folder you opened — usually a git repo
 └── worktree         one checkout of that repo (the main one, plus any `git worktree add`)
     └── pane group   one tab strip and the area under it; 1–8 per worktree, in a split tree
         └── tab group   an optional named, coloured, collapsible set of tabs in that strip
-            └── tab      a terminal, a compare, a stack, the commit graph, brain, a browser page…
+            └── tab      a terminal, a compare, a stack, the commit graph, a browser page…
 ```
 
 Tab groups are the one optional level. A tab in no tab group renders exactly as
@@ -26,6 +26,15 @@ A folder, opened from the workspace rail. It carries a name (renameable by
 double-click), a repo root when the folder is a git repository, and a list of
 worktrees. Workspaces persist across restarts; there is no limit on how many
 you keep open, and `Mod+1` … `Mod+9` jump to the first nine.
+
+Every workspace's header row in the rail carries three actions, hidden until you
+hover it: **open folder** (the folder icon), **new worktree** (`+`) and **close
+workspace** (`×`). Open folder is the way a workspace acquires — or changes — its
+root, and it works on any workspace in the rail without making it active first:
+cancel the dialog and nothing moves, complete it and that workspace becomes the
+active one so you land in front of what you just opened. The files sidebar's
+header runs the same pick for the *active* workspace, so a subdirectory pick
+resolves to the same repository root from either entry point.
 
 A workspace that is not a git repository still opens — you just get no
 worktrees, no git sidebar content, and an empty state saying so.
@@ -175,12 +184,16 @@ its storage key, serializer, closed-tab shape, equality function, label and
 | `compare` | workbench | yes | yes |
 | `stack` | workbench | yes | yes |
 | `history` (commit graph) | workbench | no (one per worktree) | no |
-| `brain` | workbench | no (one per worktree) | no |
 | `browser` | workbench | no | no (the page is a child webview keyed by tab id) |
 | `file` | editor | yes | yes |
 | `diff` | editor | yes | yes |
 | `conflict` | editor | yes | — |
 | `preview` | editor | yes | yes |
+
+`brain` was an eleventh kind until cut C2 of the 2026-07-29 workbench audit. It
+is now a
+palette-invoked overlay — see [project brain](./project-brain.md) for why a surface
+that reports no state does not earn a strip slot.
 
 The workbench and the standalone editor window show different kinds out of
 different state, but through the *same* `TabStrip` component: callers flatten
@@ -250,6 +263,13 @@ Escalation, in order:
 4. A signal in a pane group that is **not on screen at all** — maximized away,
    or every group under zen — shows in the **status bar**, as a
    `n hidden panes` segment carrying the mark.
+5. A signal on a tab belonging to a **different worktree** shows on that
+   worktree's row in the rail. Under zen, where the rail is hidden, it moves to
+   a status-bar segment naming the worktrees instead.
+6. In **stacked mode**, a signal belonging to a view that is not the one in
+   front shows on that view's segment of the title-bar switcher
+   (`Workbench | Editor | Git`). Detached mode has no step 6: the satellites
+   are windows, each with its own status bar to escalate to.
 
 The steps compose rather than replace each other: a failure on a tab inside a
 collapsed group inside a maximized-away pane still reaches the status bar,
@@ -259,27 +279,109 @@ So: run a failing build in a terminal in group B, focus group A, and the failure
 is visible from A without opening B. Maximize A and it moves to the status bar.
 Enter zen and it stays there.
 
+**Step 5 was missing until 2026-07-31, and the failure mode was not "the mark
+went to the wrong place" — it was that the mark went nowhere.** `escalate()` had
+no concept of a worktree, and the pane tree it reasons over only exists for the
+worktree on screen, so a signal raised anywhere else matched no group, fell out
+of every branch and reached no surface at all. It went unnoticed for as long as
+it did because until agents ran in several worktrees at once, nothing ever
+signalled outside the one being looked at; fan-out ended that.
+
+The active worktree never gets a rail mark. Its signals are already resolved by
+steps 1–4, and a dot repeating them would be a fifth surface saying what four
+already say. The view in front never gets a segment mark, for the same reason.
+
+**Step 6 exists because a covered view hides every earlier stop at once.** A
+stacked view that is not in front is `visibility: hidden` over a workbench that
+stays mounted and keeps running — so its panes, its strips, its rail *and* its
+status bar are all covered, and steps 1–5 have nowhere left to land. Worse, the
+workbench went on reporting its front tabs as *seen*: a command that finished
+while you were reading a diff in the editor view counted as watched, and raised
+no mark at all. A covered workbench now sees nothing, which is what turns that
+event back into a signal for step 6 to carry.
+
+Today only the workbench raises signals — terminals, agent runs, compares and
+stacks all live there — so it is the only segment that lights up in practice.
+The routing is per tab, so an editor or git signal would land on its own
+segment the day something raises one.
+
 `failed` never clears on focus alone — glancing at a pane is not the same as
 having read the error in it. `bell` and `finished` do clear when the tab comes
 to the front.
 
-Where the terminal's three events come from:
+Where the terminal's events come from:
 
 | Event | Source | Signal |
 |---|---|---|
 | Bell (`BEL`) | xterm's `onBell` | `bell` |
 | A foreground command started | the PTY process poll going busy | `running` |
 | A foreground command ended | the poll going idle | `finished`, and only if you were looking elsewhere |
+| A command ended **with a status** | `OSC 133 ; D ; <code>` from the shell | `failed` on non-zero, otherwise `finished` |
 
 The poll is refcounted in `store/terminalWatch.ts` and shared between the tab
 strip and the pane layer. It used to live in the strip; it had to move, because
 zen renders no strips and a shell watched only while its strip is mounted
 reports nothing exactly when you have the least chance of noticing.
 
-**Known gap:** a shell's *exit code* is not observable from the frontend —
-`pty-exit` is emitted with a unit payload — so `failed` is currently only
-raised by non-terminal work (a failed AI commit draft). Closing that gap needs
-the Rust side to report the exit status.
+### `failed`, from a command inside a live shell
+
+The last row is [shell integration](../../shell-integration/README.md), and it
+closed the oldest hole in this vocabulary. The poll can see *that* a foreground
+process went away and never *how* — so `noteFinished(tabId, true)` was
+hardcoded, and `failed`, the top of the precedence chain, was unreachable from
+the surface you spend the most time in. A `cargo build` that failed in an open
+shell raised the same mark as one that succeeded.
+
+Only the shell knows `$?`. So it says so, in the OSC 133 semantic prompt
+sequences every terminal that solved this consumes: `C` before a command runs,
+`D ; <exit-code>` after. `store/semanticPrompt.ts` parses them,
+`store/terminalWatch.ts` turns them into the same `noteFinished` call the poll
+makes — with the truth for its `ok` argument instead of an assumption.
+
+Three rules keep the red mark meaning something, all of them pure and tested:
+
+* **Under a second is not news.** Unlike the poll, integration sees *every*
+  command. `grep` finding nothing exits 1, and so does half of what a shell
+  script does. A failure gets no easier a gate than a success here, deliberately:
+  `failed` is the only signal that must be acknowledged rather than dismissed by
+  looking, so a spurious one costs strictly more.
+* **A `D` with no `C` is not news.** We attached mid-command and know only that
+  something ended.
+* **The alternate screen is not news.** `:cq` exits non-zero; leaving vim the
+  deliberate way is not a build failing. Same rule the poll already had.
+
+**One command, one source.** A shell that has proved it emits marks takes the
+completion event over entirely and the poll stands down — it keeps only the job
+the marks cannot do, turning `working` back off. Two sources would put a
+`terminal.command.failed` *and* a `terminal.command.finished` in the log for one
+build, and fire two OS banners saying opposite things.
+
+**You have to set it up, and that is a decision rather than an omission.** VS
+Code and Kitty inject their integration by pointing `ZDOTDIR` at a generated
+directory. VoidLink does not: `create_pty` goes out of its way to make the
+shell's environment identical to how Terminal.app spawns one, a mis-ordered
+`ZDOTDIR` breaks your prompt and your plugin manager to earn a badge, and it
+could not be done for fish or nushell at all. The reasoning is written where the
+PTY is spawned. What the app *does* export is a marker,
+`VOIDLINK_SHELL_INTEGRATION`, which is what makes the snippet a no-op in every
+other terminal.
+
+**It only ever adds.** A shell without integration behaves exactly as it did
+before this existed — poll-inferred `finished`, never a claimed status. Settings
+→ Terminal → Shell integration reports how many open shells are actually
+emitting, which is the only honest thing that surface can say: there is no way
+to ask a shell what it sourced.
+
+**Escalation is in-app only.** For work you are not at the machine for, the
+same signals also drive OS notifications — as a separate policy over the event
+log, not as a second copy of this one. See
+[Notifications and sound](./notifications.md).
+
+**What remains uncovered**, now that shell integration closed the main gap: a
+shell whose rc has not been set up, and any shell there is no snippet for (fish,
+nushell). Both fall back to poll-inferred `finished`, which is what this app did
+for everything until 2026-08-01 — a smaller silence than "`failed` is
+unreachable", and one the user can end in one line.
 
 ## Layout presets
 
@@ -328,9 +430,21 @@ Two rules make it work on a narrow window:
   a window too narrow for even the top-priority chip, the bar overflows by a
   few pixels rather than showing nothing but a `⋯`.
 
-Resting priorities, highest first: background activity, focus mode (zen /
-maximized), branch, AI draft, ahead/behind, dirty, stack, blame, workspace
-count.
+Resting priorities, highest first: background activity, worktree activity, focus
+mode (zen / maximized), branch, ahead/behind, dirty, stack, AI draft.
+
+Two of those numbers are argued rather than assumed:
+
+- **AI draft sits below the standing facts, not above them.** Drafting a commit
+  message is a transient operation; ahead/behind and dirty are things that are
+  *true about the repository*. A resting rank above them meant a transient
+  outranked a fact for the whole life of the process. The draft segment carries
+  a live signal, so the first rule above already pulls it to the front while it
+  is happening — the signal does the work, and the resting rank goes last.
+- **There is no workspace-count chip any more.** It had the lowest priority, so
+  it was the first thing overflow collapsed into `⋯` and was almost never on
+  screen; and what it reported is in the rail, which is visible everywhere
+  except zen. Usually hidden and always redundant is a dead affordance.
 
 The bar also carries an off-screen `aria-live="polite"` region announcing
 escalated activity, because a badge that only exists visually is not proactive

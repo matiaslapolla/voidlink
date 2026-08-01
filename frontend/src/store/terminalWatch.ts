@@ -35,9 +35,32 @@
 /// foreground pid's CPU state because it needs no new IPC and no per-platform
 /// `/proc` reading, and because the failure mode is "quiet dot" rather than
 /// "permanently wrong dot".
+///
+/// ## Why the poll is not the only source any more
+///
+/// The poll can see *that* a foreground process went away and never *how* it
+/// went. That is the whole reason `failed` — the top of §7.5.3's precedence
+/// chain — used to be unreachable from a terminal: `noteFinished(tabId, true)`
+/// was hardcoded below, because `true` was the only claim the observable
+/// supported. Only the shell knows `$?`.
+///
+/// So a second source now feeds the same rules: OSC 133 semantic prompts,
+/// parsed in `store/semanticPrompt.ts` and delivered here by
+/// `noteSemanticPrompt`. When a shell emits them, its `D` mark is authoritative
+/// and the poll's falling-edge completion is **suppressed for that shell** —
+/// see `poll`. When it does not, nothing changes: the poll path below is
+/// exactly what it was, which is the point. Shell integration is opt-in and a
+/// shell without it must behave no worse than it did yesterday, never claiming
+/// a status nobody told it.
 import { createSignal, onCleanup, type Accessor } from "solid-js";
 import { terminalApi } from "@/api/terminal";
 import { noteFinished, noteWorking } from "@/store/activity";
+import { record } from "@/store/journal";
+import {
+  commandFailed,
+  commandIsNews,
+  type SemanticPromptMark,
+} from "@/store/semanticPrompt";
 
 const POLL_MS = 1500;
 
@@ -96,6 +119,29 @@ interface PtyState {
   /// the whole span because by the falling edge the app has already restored the
   /// normal buffer.
   busySpanAlt: boolean;
+  /// The foreground process's name, captured *during* the span. By the falling
+  /// edge the shell is idle again and `info.name` is null, so the one piece of
+  /// information that makes a completion worth recording has to be kept as it
+  /// goes past.
+  busyName: string | null;
+
+  // ── Shell integration (OSC 133)
+  /// This shell has emitted at least one semantic prompt mark, so it is wired
+  /// up and its `D` marks are the authority on completion. Latched rather than
+  /// re-derived per command: integration is a property of the shell's startup
+  /// files, and a shell that has proved it once does not stop having it —
+  /// whereas a *single* command that produces no marks (a `read` at a prompt, a
+  /// TUI that swallows the hooks) would un-latch a per-command flag and hand
+  /// the poll back a shell it would then report without a status.
+  integrated: boolean;
+  /// When the current command started (`C`), or `null` between commands. Also
+  /// `null` when we attached mid-command, which is what makes "we saw the end
+  /// but not the beginning" distinguishable from "it took no time at all".
+  commandStartedAt: number | null;
+  /// The alternate-screen equivalent of `busySpanAlt`, for the C→D span. Kept
+  /// separately because the two spans do not coincide: the poll's span starts
+  /// up to 1500ms late and ends up to 1500ms after the command really did.
+  commandSpanAlt: boolean;
 
   // ── Poll lifetime
   refs: number;
@@ -126,6 +172,10 @@ function stateFor(ptyId: string): PtyState {
     busySamples: 0,
     busyPid: null,
     busySpanAlt: false,
+    busyName: null,
+    integrated: false,
+    commandStartedAt: null,
+    commandSpanAlt: false,
     refs: 0,
     timer: null,
     tabId: null,
@@ -181,13 +231,121 @@ export function noteTerminalOutput(ptyId: string, byteLength: number): void {
 export function noteTerminalAltScreen(ptyId: string, active: boolean): void {
   const state = stateFor(ptyId);
   state.altScreen = active;
-  if (active) state.busySpanAlt = true;
+  if (active) {
+    state.busySpanAlt = true;
+    state.commandSpanAlt = true;
+  }
 }
 
 /// Is this shell producing output right now? Exposed for tests and for the
 /// sidebar, which needs the same `working` derivation the tab strip uses.
 export function terminalOutputActive(ptyId: string): boolean {
   return states.get(ptyId)?.outputActive() ?? false;
+}
+
+// ── Shell integration ───────────────────────────────────────────────────────
+
+/// How many live shells have proved they emit OSC 133.
+///
+/// Reactive, and it exists for exactly one surface: the settings screen's
+/// "shell integration" row, which has to answer *did my rc change work?*. A
+/// count of shells that have actually emitted a mark is the only honest answer
+/// available — there is no way to ask a shell what it sourced — so the row says
+/// what was observed and nothing more.
+const [integratedCount, setIntegratedCount] = createSignal(0);
+
+/// The number of open shells emitting semantic prompts. Reactive.
+export const shellsWithIntegration = integratedCount;
+
+/// Does this specific shell have integration? Used by the poll to decide who
+/// owns the completion event.
+export function terminalIsIntegrated(ptyId: string): boolean {
+  return states.get(ptyId)?.integrated ?? false;
+}
+
+/// A semantic prompt mark arrived from a shell. `TerminalPane` parses it out of
+/// the OSC 133 handler and forwards it; the component decides nothing.
+///
+/// **Must not be called during scrollback replay.** Re-attaching a pane re-feeds
+/// every byte the session ever produced through the parser, so every `D` the
+/// shell has *ever* written would arrive again — a worktree switch would repaint
+/// the whole morning's failures as fresh red marks. The caller gates on the same
+/// `replaying` flag that already suppresses the emulator's query answers, for
+/// the same reason: a replay is us repainting the past, not the past happening.
+export function noteSemanticPrompt(ptyId: string, mark: SemanticPromptMark): void {
+  const state = stateFor(ptyId);
+  if (!state.integrated) {
+    state.integrated = true;
+    setIntegratedCount((n) => n + 1);
+  }
+
+  switch (mark.kind) {
+    case "command-start":
+      state.commandStartedAt = Date.now();
+      state.commandSpanAlt = state.altScreen;
+      return;
+    case "command-end":
+      endCommand(state, mark.exitCode);
+      return;
+    // `A` and `B` bracket the prompt itself. Nothing between them is a command,
+    // so there is no state to keep — they are here only as the evidence above
+    // that this shell is wired up at all.
+    case "prompt-start":
+    case "prompt-end":
+      return;
+  }
+}
+
+/// A command ended, with a status the shell actually reported.
+function endCommand(state: PtyState, exitCode: number | null): void {
+  const startedAt = state.commandStartedAt;
+  const wasFullScreen = state.commandSpanAlt;
+  state.commandStartedAt = null;
+  state.commandSpanAlt = false;
+
+  const durationMs = startedAt === null ? null : Date.now() - startedAt;
+  const failed = commandFailed(exitCode);
+  const news = commandIsNews({ durationMs, exitCode, wasFullScreen });
+
+  if (news) {
+    // The command's own name is the poll's to know — `D` carries a status and
+    // nothing else, and inventing a proprietary extension to carry the command
+    // line (VS Code's OSC 633) would mean shipping a sequence only our own
+    // snippet emits. The poll has been sampling the foreground process for the
+    // life of the span and has not yet seen the falling edge, so `busyName` is
+    // still the right answer; it is only null for commands too short for the
+    // poll to have caught, and those are below the news threshold anyway.
+    const name = state.busyName ?? state.name();
+    record({
+      kind: failed ? "terminal.command.failed" : "terminal.command.finished",
+      subject: name ?? undefined,
+      // Says "finished" and not "succeeded" when the status is unknown, on the
+      // same principle the poll's summary already followed: never claim a
+      // result nobody reported.
+      summary: failed
+        ? `${name ?? "a command"} failed (exit ${exitCode})`
+        : `${name ?? "a command"} finished`,
+      data: {
+        process: name,
+        tabId: state.tabId,
+        exitCode,
+        // Real, not a lower bound: this is C's timestamp to D's, which is the
+        // shell telling us rather than us sampling.
+        durationMs,
+        source: "osc133",
+      },
+    });
+  }
+
+  if (!state.tabId) return;
+  if (news) {
+    // The one line this whole feature exists for. `ok === false` is the only
+    // path to `failed` from a terminal, and `noteFinished` — not this module —
+    // owns what that means for the badge.
+    noteFinished(state.tabId, !failed);
+  } else {
+    noteWorking(state.tabId, false);
+  }
 }
 
 // ── The poll ────────────────────────────────────────────────────────────────
@@ -225,6 +383,7 @@ async function poll(ptyId: string, state: PtyState) {
       state.busySamples = 1;
       state.busyPid = info.pid ?? null;
       state.busySpanAlt = state.altScreen;
+      state.busyName = info.name;
     } else {
       state.busySamples += 1;
       if ((info.pid ?? null) !== state.busyPid) {
@@ -232,6 +391,9 @@ async function poll(ptyId: string, state: PtyState) {
         state.busySamples = 1;
         state.busyPid = info.pid ?? null;
         state.busySpanAlt = state.altScreen;
+        state.busyName = info.name;
+      } else if (info.name) {
+        state.busyName = info.name;
       }
     }
     if (state.altScreen) state.busySpanAlt = true;
@@ -243,13 +405,62 @@ async function poll(ptyId: string, state: PtyState) {
 
   // Falling edge. `working` goes off either way; whether it counts as news is
   // the hysteresis question.
+  //
+  // Except in a shell that emits OSC 133, where it is not this module's
+  // question at all. Two sources reporting the same command would put a
+  // `terminal.command.failed` and a `terminal.command.finished` in the log for
+  // one `cargo build`, and fire two OS notifications saying opposite things —
+  // the badge would survive it (`failed` outranks `notify`) but the log and the
+  // banners would not. The shell's own status is strictly better information
+  // than a poll's silence, so the poll stands down entirely and keeps only the
+  // job the marks cannot do: turning `working` back off.
+  //
+  // `busyName` is deliberately *not* cleared here, unlike below. The two clocks
+  // are independent: the poll can sample idle in the gap between the command
+  // exiting and the shell writing its `D`, and clearing the name in that window
+  // would leave the record saying "a command failed" for something we knew the
+  // name of a moment earlier. It is overwritten on the next rising edge, so it
+  // cannot leak into a later command.
+  if (state.integrated) {
+    state.busySamples = 0;
+    state.busyPid = null;
+    state.busySpanAlt = false;
+    if (state.tabId) noteWorking(state.tabId, false);
+    return;
+  }
+
   const news = completionIsNews({
     samples: state.busySamples,
     wasFullScreen: state.busySpanAlt,
   });
+  // Recorded before the badge decision, and on the *same* rule.
+  //
+  // `completionIsNews` is the right gate for the log too, for a reason worth
+  // stating: it is what separates "a command ran" from "the shell was busy for
+  // a moment". Everything it rejects is a sub-second command or somebody
+  // quitting an editor, and a log full of those is a log nobody reads. The
+  // badge and the record are the same event seen at two zoom levels, so they
+  // must not be able to disagree about whether it happened.
+  if (news && state.busyName) {
+    record({
+      kind: "terminal.command.finished",
+      subject: state.busyName,
+      // The poll cannot see the exit status — only that the foreground process
+      // went away — so the summary claims completion and not success.
+      summary: `${state.busyName} finished`,
+      data: {
+        process: state.busyName,
+        tabId: state.tabId,
+        // Lower bound: the span was observed for this long. The command started
+        // at some point in the poll interval before the first busy sample.
+        approxMs: state.busySamples * POLL_MS,
+      },
+    });
+  }
   state.busySamples = 0;
   state.busyPid = null;
   state.busySpanAlt = false;
+  state.busyName = null;
   if (!state.tabId) return;
   if (news) {
     // `noteFinished` decides whether that is a badge (the user was elsewhere) or
@@ -290,6 +501,7 @@ export function watchTerminal(tabId: string, ptyId: string): TerminalWatch {
     state.timer = null;
     if (state.idleTimer) clearTimeout(state.idleTimer);
     state.idleTimer = null;
+    if (state.integrated) setIntegratedCount((n) => Math.max(0, n - 1));
     states.delete(ptyId);
   });
 
@@ -307,4 +519,5 @@ export function resetTerminalWatchers(): void {
     if (state.idleTimer) clearTimeout(state.idleTimer);
   }
   states.clear();
+  setIntegratedCount(0);
 }

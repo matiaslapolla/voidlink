@@ -25,7 +25,7 @@ export function applyEditorRequest(
       actions.openFileTab(worktreeId, req.path);
       break;
     case "open-diff":
-      actions.openDiffTab(worktreeId, req.filePath);
+      actions.openDiffTab(worktreeId, req.filePath, req.staged ?? false);
       break;
     case "open-conflict":
       actions.openConflictTab(worktreeId, req.filePath);

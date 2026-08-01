@@ -1,0 +1,240 @@
+# TODO — everything open, in one place
+
+The single list of what is live. It replaces the ledgers that used to live in
+`docs/specs/`, which were retired on 2026-07-31 once each had been worked down
+to its open rows.
+
+On **2026-08-01** the list was worked in eleven parallel tracks, and the six
+questions that were left over — the ones no amount of engineering could answer —
+were then answered by the repo owner and built in four more. **Nothing on this
+list is blocked on a decision any more.**
+
+What remains is of three kinds, in this order: things the pinned dependency
+cannot express, ordinary unblocked work, and things written against a product
+that has since changed and want re-scoping before anyone builds them.
+
+The two audits still hold the evidence, and a finding is worth more with its
+severity, confidence and reasoning attached than as a line in a list:
+[git surfaces](./audits/2026-07-30-git-surfaces.md) and
+[embedded browser](./audits/2026-07-31-embedded-browser.md).
+
+**Ranking rule:** by what each unblocks, not by severity.
+
+---
+
+## Contents
+
+- [Blocked on the dependency](#blocked-on-the-dependency)
+- [Open — small and unblocked](#open--small-and-unblocked)
+- [Open — needs re-scoping first](#open--needs-re-scoping-first)
+- [Deliberately deferred](#deliberately-deferred)
+- [Shipped 2026-08-01](#shipped-2026-08-01)
+- [Decided — do not relitigate](#decided--do-not-relitigate)
+
+---
+
+## Blocked on the dependency
+
+Not decisions, not effort — the engine does not expose what these need. Each
+was measured rather than assumed, and the measurement is the durable part.
+
+- **Declaring a load failed** (BR-N2). There is no load-failure signal at any
+  layer of the pin: macOS never implements `didFailProvisionalNavigation`,
+  Linux drops `LoadEvent::Failed` on a wildcard arm, and Windows maps a *failed*
+  `NavigationCompleted` to `Finished` without consulting `IsSuccess` — so on
+  Windows a failure arrives indistinguishable from a success and is pushed into
+  history. What shipped instead is the event that was being discarded:
+  `PageLoadEvent::Started` splits the spinner into *Connecting* and *Loading*.
+  Actually declaring failure still needs a timeout (a lie on a slow page) or
+  `url()` polling (a poll where an event belongs), and still should not ship
+  unmeasured.
+- **A subframe navigation on a settled page can strand the spinner** (BR-N6
+  residue). Clearing it needs the same signal BR-N2 does not have.
+- **SPA routes are invisible to Back** (BR-H2). Structural: fixing it means
+  script in the page, which the security posture refuses.
+- **Find-in-page.** `wry` exposes no find, and the alternative is
+  `eval_script`. The one QoL item the current engine genuinely cannot do.
+- **A real splitter *drag* in a test.** The browser project's `userEvent`
+  exposes `hover`/`click`/`dragAndDrop` and no raw mouse, and `dragAndDrop`
+  gives no intermediate positions — so "clamping does not hard-stop the
+  pointer" cannot be driven. The keyboard clamp is covered in jsdom; the
+  pointer one needs a custom Playwright command.
+
+---
+
+## Open — small and unblocked
+
+Ordinary work. Nothing here is waiting on anything.
+
+| Item | Notes |
+|---|---|
+| **The MRU overlay has no test** | The one row left in the coverage backlog. It lives inside `MainSurface` rather than as an extractable component, so covering it means mounting the whole workbench surface — a different-sized job from the five that landed, and a shallow test if rushed. |
+| **`browser` is not wired into CI** | On demand and pre-merge, with the Playwright binary cached. The ~300 MB chromium download was free locally because another tool had already cached it, so **the cache step itself is unverified** — treat the number as Playwright's published size, not as measured here. |
+| **Shell integration has no fish or nushell snippet** | Neither has a hook shape shared with zsh or bash. The parser is shell-agnostic, so a port is small. Both currently fall back to poll-inferred `finished`, exactly as before. |
+| **OSC 9/777 are not replay-gated** | Re-attaching a pane re-badges historical notifications. Exactly the family of bug the `replaying` gate added for OSC 133 prevents; only 133 was gated, to keep that diff to its stated task. |
+| **`ownedCleanup` in `TerminalPane` overwrites rather than accumulates** | `teardown = fn`, so only the last registration survives. The earlier ones are covered incidentally by `term.dispose()`, and `clearTimeout(replayGuard)` never runs. Pre-existing and latent. |
+| **The splitter's gap comment reads backwards from CSS's sign convention** | It says the strip is "pushed outward" by `gap/2 - 4px`; in CSS `right: -1px` puts the strip's centre *inside* the pane's right edge. The code is self-consistent and the test asserts the exact span, but the prose is ambiguous. Needs someone who knows whether the island box includes its gap. |
+| **A `BrowserPane` click test** | The browser project can drive a real click now, which is what BR-F1's confidence caveat was waiting on. Nothing has driven this specific one yet — see the caveat below. |
+| **Diff virtualization** | `SplitDiffRenderer` is not windowed. Same size of change as the commit-graph windowing, which took a pass of its own. |
+| **`VirtualFileList`'s virtualized branch** | Below 40 files — the common case — rows are stable. Above it, `<For each={virtualizer.getVirtualItems()}>` still yields fresh objects each pass; that is tanstack's own churn. |
+
+---
+
+## Open — needs re-scoping first
+
+Written against a product that has since changed. Do not build these as
+specified; work out what is left of them first.
+
+- **Keyboard navigation over N worktrees' changed files.** All that survives of
+  a "review across worktrees" proposal that Mission Control's Lineup otherwise
+  superseded.
+- **An agent-written check-in summary.** If it is ever built, the labelling rule
+  stands: a generated summary says it is generated.
+- **Client mode.** Positioning rather than mechanism — largely the Lineup and
+  check-ins with writes removed.
+- **Moving the fan-out run *list* into Rust.** Liveness moved; the list did not,
+  so a window only reconciles runs it already has a local record of and a run
+  started from another window is invisible to one that never persisted it. The
+  same cross-window `localStorage` limitation `journal/mod.rs` describes
+  generally — worth solving once, for both.
+
+---
+
+## Deliberately deferred
+
+Here so each reads as a decision rather than an oversight.
+
+- **Visual regression** (`toMatchScreenshot`). It needs one OS to be
+  authoritative for the baselines or every screenshot diffs on font hinting,
+  and this repo has no CI container.
+- **E2E through the real Tauri binary** (`tauri-driver`/WebDriver). The only
+  thing that would test the three-window behaviour end to end, which is where
+  this app's genuinely hard bugs live. A separate project with its own flake
+  budget.
+
+---
+
+## Shipped 2026-08-01
+
+Eleven tracks, worked in parallel worktrees and merged in dependency order.
+Recorded compactly; the detail is in the feature docs and the audits.
+
+| Track | What landed |
+|---|---|
+| **BR-O1, the overlay tax** | Overlays self-register (`createOverlay`); `App.tsx` lost 7 of its 8 hand-written effects. Two surfaces turned out never to have been registered at all — the cheat sheet and the snapshot manager — live instances of the silent failure the finding describes. |
+| **A browser test project** | `*.browser.test.tsx` in headless chromium, with the real cascade. `npm test` still runs unit + render only. |
+| **The coverage backlog** | `GitSidebar` mounted for the first time (31 tests) plus five geometry files. Every browser test was falsified by breaking what it claims; **two were wrong and were rewritten**. |
+| **Compare** | Eleven findings. Two of the audit's own readings corrected rather than implemented. |
+| **Worktrees and stashes** | Track 5 closed entirely. A conflicting `stash_apply` returns `Ok` from libgit2 — the old code said "Applied stash" over a tree full of conflict markers. |
+| **Branches, diff, graph** | The audit's long tail, plus both of its unnumbered "known gaps". `git_discard_all` honoured no pathspec on its untracked half: "delete N untracked files" would have deleted all of them. |
+| **The browser's deferred findings** | Six closed, two left to decisions above, and **BR-N6 found**: wry's macOS navigation policy never checks `isMainFrame`, so the address bar was being driven by every iframe a page loaded. |
+| **OSC 133 shell integration** | `failed` is reachable from a terminal command for the first time, so `terminal.command.failed` — already in the notifier's defaults — fires instead of never. |
+| **Fan-out durability** | A Rust supervisor owns the legs; a run's lifetime is the app's, not the webview's. Unattended output is buffered and replayed rather than dropped. |
+| **Run provenance** | File-level on the working tree, commit-level on a commit, nothing on a branch range — the granularity the evidence actually supports. |
+| **Palette action sources** | Features contribute their own actions; 462 lines left `App.tsx`. Behaviour preservation proven id-for-id against the pre-refactor list. |
+| **The browser's URL policy** (BR-S3, answering the old decision row 2) | **The decision: `http`, `https`, and `file://` — but `file://` only for what the tab can render (HTML, plain text, PDF). Everything else refused, `data:` included.** Enforced at `on_navigation`, which is the only point every *frame* passes through, so a page embedding a `file://` iframe is stopped and not merely a user typing one. A directory is refused, both spellings, and the two answers agreeing is why the rule never stats anything. Because `false` cancels silently, every refusal emits `voidlink://browser-blocked`, coalesced onto one toast per tab so ten blocked frames read as one line and a count. `about:`/`blob:` are allowed as page-internal — refusing them would break working sites rather than stop anything. The address bar runs the same rule in TS so it refuses before it sends; both halves carry the same case table in their tests. |
+| **Compare tabs' own diff-mode and whitespace controls** | Row 6's decision: per-tab controls, not a shared global toggle, because `ignoreWhitespace` sits in the diff resource's key — a global flip would refetch every open compare tab at once behind the same per-repo git mutex CMP-F10 bounds. The premise the decision assumed — that per-tab state already existed — did not hold: `CompareTab` had no `diffMode`/`ignoreWhitespace` fields at all, and the tab was silently reading the *global* prefs the working-tree toolbar owns, meaning every open compare tab already refetched together on that toolbar's toggle. Both fields are now genuinely per-tab, optional and `undefined` at default so an untouched tab's persisted blob does not grow. |
+| **CMP-F22, a remote row's ahead/behind** | The one item that left "blocked on a decision" by getting the decision. What was decided, and what it cost to encode, is recorded below. |
+
+**The decision CMP-F22 was waiting on, recorded.** *A remote-tracking branch is
+compared to the local branch of the same name* — `origin/feat` against `feat`.
+It answers the local row's question from the other side ("have I pulled what is
+up there, have I pushed what is down here"), so the remote row is the subject of
+its own counts: `↑` is what the remote has that you do not. **A remote branch
+with no local counterpart shows no chip at all** — not a zero, not a dash. That
+required fixing the type rather than the render: `ahead`/`behind` became one
+nullable `AheadBehind { ahead, behind, against }`, because two `u32`s cannot
+tell "nothing to compare against" from "compared, and level", and the second is
+a real `↑0 ↓0` that must render. `against` rides along because a bare `↑2 ↓0` on
+a remote row is ambiguous to anyone who has not read this paragraph; the row's
+tooltip spells the comparison out. The walk only runs for a remote branch that
+has a local counterpart, and identical tips short-circuit — measured at 500
+remote branches, the cost tracks how many branches *you* checked out, not how
+many were pushed. See [branches and sync](./features/branches-and-sync.md).
+| **BR-F7, force-push** | Landed after the eleven, once the decision below was made. Force is reachable from a non-fast-forward rejection and from nowhere else; `git_push` now reports a failure *class* so the offer can be withheld from auth, transport and hook failures. |
+
+**The decision behind BR-F7, recorded.** *Where does a destructive push live,
+and how is it confirmed?* — **force-push is reachable only as a recovery action
+after the remote rejects an ordinary push as non-fast-forward.** Never a button
+beside Push, never an overflow item, never a context menu. "Fetch and rebase" is
+the first and default offer; force is the second and reads as the lesser path;
+and force is disabled until a fetch fresh enough to hold a lease has landed.
+"Fresh enough" resolved to **two minutes** — a bound on the user's memory of the
+fetch, not on the remote, which is covered instead by a re-check immediately
+before the push.
+
+The audit's caveat survives intact and is written into the code, the feature doc
+and the confirm: libgit2 has no `--force-with-lease` primitive, so the check is
+client-side and **the race window is real**. It is one fetch round trip plus the
+push connection, and anything landing on the remote inside it is overwritten
+unseen. Nothing in the UI says "safe".
+
+**One live caveat carried forward.** BR-F1's fix — `browser_focus_host`, which
+gives the host webview the keyboard back — is still confidence *reading*, not
+*proven*. What is proven is that `set_focus` was never called and that the
+wiring is tested; what is not is that OS focus was the user-visible cause. Note
+that **BR-N6 is a second, independent cause of the same complaint**, so a
+symptom that survives one fix does not indict it.
+
+**And one shaped the same way as BR-F1's.** The URL policy's *rule* is proven
+twice over — the same case table in Rust and in TypeScript, boundary by
+boundary. That `on_navigation` returning `false` actually stops a real child
+webview is **read from the pinned API, not executed**: it needs an OS-level
+native view and a page trying to navigate, which no harness here can host. The
+refusal *event* is driven in `BrowserPane.test.tsx`, so what a user sees when a
+frame is blocked is covered; what is not is that the frame was blocked.
+
+**And one that matters more.** Fan-out durability's whole point — survival
+across an OS-level app restart — is **not covered by any test**. An in-memory
+registry cannot be exercised across a process boundary in a unit test. It is
+reasoned, not proven.
+
+---
+
+## Decided — do not relitigate
+
+The documents that argued these are gone. The conclusions are not, and each
+cost more to reach than it looks.
+
+- **The embedded browser is kept.** Cutting it was ranked the highest-value
+  removal in the app; the call went the other way, and it is being invested in
+  as an agent-drivable surface. The cost is real and accepted: `tauri` stays
+  pinned `=2.11.2` with `unstable` and `devtools`, held by the single
+  `add_child` call in `src-tauri/src/browser/mod.rs`.
+- **Provenance is not hunk-level, and there is no `"hunk"` scope to pass.** The
+  journal attributes by overlapping time, never authorship, and for uncommitted
+  lines there is no per-line evidence anywhere in the system. A hunk chip would
+  be a fabrication dressed as precision.
+- **Shell integration is sourced by the user, not injected.** Rewriting
+  `ZDOTDIR`/`--rcfile` contradicts the `env_clear()` block whose point is a PTY
+  environment identical to Terminal.app's, breaks prompts and plugin managers to
+  earn a status badge, and would work for two shells while being silent for the
+  rest.
+- **`interrupted` is a frontend reading, not a Rust state.** The supervisor
+  either knows a leg's true state or has no record of the run. Reconciliation
+  can only ever upgrade a leg the supervisor confirms — it can never invent one.
+- **The graph's "first parent keeps the mainline vertical" invariant is wrong,
+  not the code.** Making it true would move a claimed lane sideways mid-flight,
+  and the earlier child's segments are already emitted in the old column, so the
+  line would arrive at one column and leave from another. A broken edge is worse
+  than a kink.
+- **"Load more" refetching the whole window is not worth a `skip` parameter.**
+  libgit2 walks from the tips regardless, so the walk — the dominant cost — is
+  paid either way.
+- **Notification sound is split by channel, not by a `.sound(...)` flag.** A
+  banner gets the platform's own sound, which respects Do Not Disturb; a `rodio`
+  cue plays only where there is no banner. Double-sounding is impossible by
+  construction.
+- **The address bar does not reach a search engine.** Unparseable input is
+  classified and refused with a toast; nothing is sent to Rust and no engine is
+  contacted. A git workbench sending keystrokes to a search box is a product
+  posture, and the posture is no. (BR-N3, answered 2026-08-01)
+- **An ordinary agent turn writes no `agent.turn.*` record.** Answered
+  2026-08-01, and the consequence is accepted rather than overlooked: the
+  notification defaults, the check-in model and the trigger rules keep reading a
+  kind nothing writes, and a finished agent-panel turn stays un-attributable on
+  the diff once it is over. Emitting it would start firing a default banner,
+  which is a change to what the app *does*.
+- **The project brain is per-repo and app-owned**, under `.voidlink/brain`. It
+  shares the six type names with the `brain` CLI and no code, no config and no
+  vault.

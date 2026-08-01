@@ -1,3 +1,4 @@
+import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import {
   For,
   Show,
@@ -82,13 +83,11 @@ export function StackTab(props: Props) {
   // Refresh on the shared git-refresh signal so a checkout / commit elsewhere
   // immediately reflects in the stack tab.
   onMount(() => {
-    const handler = () => refetch();
-    window.addEventListener("voidlink:refresh-git", handler);
-    onCleanup(() => window.removeEventListener("voidlink:refresh-git", handler));
+    onCleanup(onGitRefsChanged(() => refetch()));
   });
 
   function broadcastRefresh() {
-    window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+    emitGitRefsChanged();
   }
 
   async function onBranchOnTop(parent: string) {

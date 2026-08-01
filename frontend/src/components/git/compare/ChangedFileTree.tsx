@@ -9,8 +9,9 @@ import { StatusBadge } from "@/components/git/shared/StatusBadge";
 // per-folder rollups, compact-folder collapsing, and a fuzzy filter.
 //
 // Tree shape:
-//   - Internal nodes are folders; their key is the joined relative path.
-//   - Leaves are files; their key is `newPath ?? oldPath`.
+//   - Internal nodes are folders; their path is the joined relative path and
+//     their key is that plus a trailing slash.
+//   - Leaves are files; their path and key are both `newPath ?? oldPath`.
 // Compact-mode collapses chains of single-child folders into one segment.
 
 type Props = {
@@ -26,6 +27,17 @@ type Props = {
 interface TreeNode {
   // Path relative to the repo root, joined with "/".
   path: string;
+  /// The node's identity, distinct from its path.
+  ///
+  /// A path does not identify a row, because a commit can turn a file into a
+  /// directory (or the reverse) and then both exist in one diff: `swap`
+  /// deleted as a file, `swap/inner.ts` added under a directory of the same
+  /// name. Both nodes carried `path: "swap"`, so anything keyed on the path —
+  /// the collapse set, and any future selection or scroll-to — could not tell
+  /// which of the two rows it meant. Folders get a trailing slash, which is
+  /// exactly the character git itself uses to tell the two apart and which no
+  /// path component may contain.
+  key: string;
   // The display segment(s) used for this row. With compact folders enabled,
   // a chain `a/b/c` whose only descendant lives below collapses into a single
   // node displayed as `a/b/c`.
@@ -47,6 +59,7 @@ function pathOf(file: FileDiff): string {
 function buildTree(files: FileDiff[]): TreeNode {
   const root: TreeNode = {
     path: "",
+    key: "",
     label: "",
     children: [],
     additions: 0,
@@ -63,10 +76,11 @@ function buildTree(files: FileDiff[]): TreeNode {
     for (let i = 0; i < parts.length - 1; i++) {
       const seg = parts[i];
       const segPath = parts.slice(0, i + 1).join("/");
-      let next = cursor.children!.find((c) => c.path === segPath && c.children);
+      let next = cursor.children!.find((c) => c.key === `${segPath}/`);
       if (!next) {
         next = {
           path: segPath,
+          key: `${segPath}/`,
           label: seg,
           children: [],
           additions: 0,
@@ -80,6 +94,7 @@ function buildTree(files: FileDiff[]): TreeNode {
 
     cursor.children!.push({
       path: fullPath,
+      key: fullPath,
       label: parts[parts.length - 1],
       children: null,
       additions: file.additions,
@@ -117,6 +132,7 @@ function buildTree(files: FileDiff[]): TreeNode {
       const only = collapsed[0];
       return {
         path: only.path,
+        key: only.key,
         label: `${node.label}/${only.label}`,
         children: only.children,
         additions: only.additions,
@@ -139,6 +155,30 @@ function fuzzyMatches(filter: string, path: string): boolean {
 
 export function ChangedFileTree(props: Props) {
   const tree = createMemo(() => buildTree(props.files));
+
+  /// Which folders the user collapsed, by node key.
+  ///
+  /// Owned here rather than by each `FolderRow`, because the rows do not
+  /// survive a refetch: `buildTree` allocates all-new nodes, `<For>` keys by
+  /// object identity, and every row is therefore disposed and recreated —
+  /// taking a `createSignal(true)` inside it with them. So every folder sprang
+  /// back open on every git pulse, which with the filesystem watcher running is
+  /// often. Keys outlive the nodes; the state is keyed on those instead — and
+  /// on the node *key* rather than its path, because a file and a directory of
+  /// the same name can both be in one diff and share a path.
+  ///
+  /// Collapsed-set rather than open-set so a folder that appears for the first
+  /// time defaults to open, which is what the previous `createSignal(true)`
+  /// meant.
+  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set());
+  const isOpen = (key: string) => !collapsed().has(key);
+  const toggleOpen = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const filteredFiles = createMemo(() => {
     if (!props.filter) return props.files;
@@ -228,6 +268,8 @@ export function ChangedFileTree(props: Props) {
                 filter={props.filter}
                 selectedPath={props.selectedPath}
                 onSelect={props.onSelect}
+                isOpen={isOpen}
+                onToggle={toggleOpen}
                 isRoot
               />
             </Show>
@@ -235,18 +277,26 @@ export function ChangedFileTree(props: Props) {
         </Show>
       </div>
 
-      {/* Footer summary */}
+      {/* Footer summary.
+          Counts the files actually listed. It used to reduce over the
+          unfiltered `props.files` while the body above showed the filtered
+          set, so typing into the filter left a footer describing a different
+          list — and "of N" is spelled out rather than implied, so a filtered
+          view never looks like the whole diff. */}
       <Show when={props.files.length > 0}>
         <div class="px-3 py-1 border-t border-border text-[10px] text-muted-foreground tabular-nums shrink-0 flex items-center justify-between">
           <span>
-            {props.files.length} file{props.files.length === 1 ? "" : "s"}
+            {filteredFiles().length} file{filteredFiles().length === 1 ? "" : "s"}
+            <Show when={filteredFiles().length !== props.files.length}>
+              <span class="opacity-70"> of {props.files.length}</span>
+            </Show>
           </span>
           <span>
             <span class="text-success">
-              +{props.files.reduce((s, f) => s + f.additions, 0)}
+              +{filteredFiles().reduce((s, f) => s + f.additions, 0)}
             </span>{" "}
             <span class="text-destructive">
-              −{props.files.reduce((s, f) => s + f.deletions, 0)}
+              −{filteredFiles().reduce((s, f) => s + f.deletions, 0)}
             </span>
           </span>
         </div>
@@ -261,6 +311,8 @@ function TreeBranch(props: {
   filter: string;
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  isOpen: (key: string) => boolean;
+  onToggle: (key: string) => void;
   isRoot?: boolean;
 }) {
   // Hide branches that don't contain any matching file when filter is active.
@@ -290,6 +342,8 @@ function TreeBranch(props: {
             filter={props.filter}
             selectedPath={props.selectedPath}
             onSelect={props.onSelect}
+            isOpen={props.isOpen}
+            onToggle={props.onToggle}
           />
         </Show>
       )}
@@ -318,6 +372,8 @@ function RootChildren(props: { node: TreeNode; props: Parameters<typeof TreeBran
             filter={props.props.filter}
             selectedPath={props.props.selectedPath}
             onSelect={props.props.onSelect}
+            isOpen={props.props.isOpen}
+            onToggle={props.props.onToggle}
           />
         </Show>
       )}
@@ -331,16 +387,18 @@ function FolderRow(props: {
   filter: string;
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  isOpen: (key: string) => boolean;
+  onToggle: (key: string) => void;
 }) {
-  const [open, setOpen] = createSignal(true);
   // When filter is active, force-open so matches are revealed.
-  const isOpen = () => open() || props.filter.length > 0;
+  const isOpen = () => props.isOpen(props.node.key) || props.filter.length > 0;
+  const setOpen = () => props.onToggle(props.node.key);
 
   return (
     <div>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen()}
         class="flex items-center w-full text-left gap-1 pr-2 py-0.5 hover:bg-accent/30 transition-colors"
         style={{ "padding-left": `${props.depth * 12 + 6}px` }}
         aria-expanded={isOpen()}
@@ -379,6 +437,8 @@ function FolderRow(props: {
                 filter={props.filter}
                 selectedPath={props.selectedPath}
                 onSelect={props.onSelect}
+                isOpen={props.isOpen}
+                onToggle={props.onToggle}
               />
             </Show>
           )}
@@ -394,7 +454,11 @@ function FileRow(props: {
   selectedPath: string | null;
   onSelect: (path: string) => void;
 }) {
-  const file = props.node.file!;
+  // Reactive. It used to be read once at creation, which was safe only because
+  // every row was rebuilt on every refetch — the very thing fixed above. Fixing
+  // one without the other would have turned a cosmetic annoyance into a row
+  // showing another file's status.
+  const file = () => props.node.file!;
   const sel = () => props.selectedPath === props.node.path;
   return (
     <button
@@ -406,11 +470,11 @@ function FileRow(props: {
       style={{ "padding-left": `${props.depth * 12 + 18}px` }}
       title={props.node.path}
     >
-      <StatusBadge status={file.status} />
+      <StatusBadge status={file().status} />
       <span class="flex-1 truncate">{props.node.label}</span>
       <span class="text-[10px] tabular-nums text-muted-foreground/70 shrink-0">
-        <span class="text-success">+{file.additions}</span>{" "}
-        <span class="text-destructive">−{file.deletions}</span>
+        <span class="text-success">+{file().additions}</span>{" "}
+        <span class="text-destructive">−{file().deletions}</span>
       </span>
     </button>
   );

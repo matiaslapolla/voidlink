@@ -37,6 +37,7 @@ import {
   Columns2,
 } from "lucide-solid";
 import { gitApi } from "@/api/git";
+import { resolveCommitDiffBase } from "@/commands/commitDiff";
 import { isMac } from "@/api/platform";
 import {
   bridgeGitRefsAcrossWindows,
@@ -235,6 +236,20 @@ export function EditorSurface(props: {
   const activeFilePath = () => {
     const item = activeItem();
     return item?.type === "file" ? item.path : null;
+  };
+
+  /// Which diff the changes list should highlight as open.
+  ///
+  /// Not `activeFilePath()`, which this used to be: that is the active *file*
+  /// tab's absolute path, while the changes list keys on repo-relative paths,
+  /// so the highlight could never match and no row was ever marked open. The
+  /// diff tab's `filePath` is already repo-relative, and its `staged` flag
+  /// picks which of the file's two possible rows is the one showing.
+  const activeDiffTarget = () => {
+    const item = activeItem();
+    if (item?.type !== "diff") return null;
+    const tab = snapshot().diffs.find((t) => t.id === item.id);
+    return tab ? { path: tab.filePath, staged: !!tab.staged } : null;
   };
 
   // ── Editor groups ────────────────────────────────────────────────────────
@@ -472,17 +487,24 @@ export function EditorSurface(props: {
   /// take — a compare tab at `oid^..oid`. Compare is a workbench surface, so
   /// this goes out as a request and follows it there; in stacked mode both calls
   /// resolve to the local store and a view switch, which is why there is one
-  /// path and not two. A root commit has no `^` and lands on an empty base,
-  /// which is the same behaviour the terminal's SHA links already have.
+  /// path and not two.
+  ///
+  /// The base is *asked for* rather than assembled: `` `${oid}^` `` does not
+  /// resolve for a root commit, so blaming the first line of the first file in a
+  /// repository opened a compare tab onto an error. See `resolveCommitDiffBase`.
   function revealCommit(oid: string) {
-    send({
-      kind: "open-compare",
-      baseRef: `${oid}^`,
-      headRef: oid,
-      useMergeBase: false,
-      selectedFilePath: activeFilePath(),
+    const repo = repoPath();
+    if (!repo) return;
+    void resolveCommitDiffBase(repo, oid).then((baseRef) => {
+      send({
+        kind: "open-compare",
+        baseRef,
+        headRef: oid,
+        useMergeBase: false,
+        selectedFilePath: activeFilePath(),
+      });
+      void focusMainWindow();
     });
-    void focusMainWindow();
   }
 
   // ── Git status, for the panel on the right ────────────────────────────────
@@ -1055,7 +1077,11 @@ export function EditorSurface(props: {
                       class="absolute inset-0"
                       style={{ display: tab.id === activeIdOf("diff") ? "block" : "none" }}
                     >
-                      <DiffTabView repoPath={path()} filePath={tab.filePath} />
+                      <DiffTabView
+                        repoPath={path()}
+                        filePath={tab.filePath}
+                        staged={tab.staged}
+                      />
                     </div>
                   )}
                 </For>
@@ -1121,7 +1147,7 @@ export function EditorSurface(props: {
                       void refreshGit();
                       emitGitRefsChanged();
                     }}
-                    selectedFile={activeFilePath()}
+                    selectedFile={activeDiffTarget()}
                   />
                 </div>
               </aside>

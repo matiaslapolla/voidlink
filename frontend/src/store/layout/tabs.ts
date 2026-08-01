@@ -10,7 +10,7 @@
 ///
 /// Two deliberate non-goals, both of which the workbench prompt assumed away:
 ///
-///   1. **The ten `*ByWorktree` records are not collapsed into one
+///   1. **The eleven `*ByWorktree` records are not collapsed into one
 ///      `Record<TabKind, …>`.** `state.openFilesByWorktree[wtId]` is read
 ///      directly by ~40 components and by `layout.test.ts`, which the
 ///      decomposition is required to leave untouched. The registry names the
@@ -24,12 +24,21 @@
 ///      `layout.test.ts` hydrates a store from `voidlink-editor-tabs` by name.
 import type { TerminalSession } from "@/types/workspace";
 import { STORAGE_KEYS } from "./persistence";
+import type { DiffMode } from "./prefs";
 
 // ── Tab shapes ────────────────────────────────────────────────────────────
 
 export interface DiffTab {
   id: string;
   filePath: string;
+  /// Which side of the index this tab shows: `true` is `git diff --cached`,
+  /// `false` is `git diff`.
+  ///
+  /// Part of the identity, not a view option — see `equals` below. A file that
+  /// is both staged and modified has two rows in the sidebar and two genuinely
+  /// different diffs behind them; keying tabs on the path alone made the second
+  /// row focus the first row's tab, so one of the two was unreachable.
+  staged: boolean;
 }
 
 export interface ConflictTab {
@@ -48,10 +57,22 @@ export interface PreviewTab {
   filePath: string;
 }
 
-/// A Brain (second-brain vault browser) tab. Reads a single vault path from
-/// settings, not per-tab state, so — like HistoryTab — one per workspace is
-/// all we ever need.
-export interface BrainTab {
+/// A Timeline (event log) tab. Like `HistoryTab` it carries no
+/// per-tab state — the filters live in the component and are not worth
+/// persisting — so one per worktree is all there ever needs to be.
+export interface TimelineTab {
+  id: string;
+}
+
+/// A Mission Control tab. Singleton and stateless like the three above: which
+/// section is showing is view state, and the lineup, check-in and hills all
+/// read from Rust rather than from anything worth persisting.
+///
+/// Held per worktree like every other collection here, but note that what it
+/// *renders* is not worktree-scoped — Mission Control deliberately spans every
+/// workspace. The per-worktree keying is about where the tab lives, not about
+/// what it shows.
+export interface MissionTab {
   id: string;
 }
 
@@ -71,9 +92,49 @@ export interface BrowserTab {
   id: string;
   url: string;
   title?: string;
+  /// Page scale, applied to the webview itself. Per tab rather than global: a
+  /// dashboard that needs 150% and a docs page that does not are the normal
+  /// pair, and `undefined` means 1 so nothing persisted before zoom existed
+  /// comes back scaled.
+  zoom?: number;
+}
+
+/// An AI agent thread. A peer of a diff or a terminal rather than a slide-over,
+/// so a thread gets splits, drag-between-groups, the activity LED, tab-group
+/// colouring, the switcher, the MRU, reopen-closed and session restore for free
+/// — none of which a bespoke panel would have had without reimplementing all of
+/// it.
+///
+/// Modelled on `BrowserTab`, not on `HistoryTab`: several threads per worktree is
+/// the normal case (one asking about the diff, one refactoring), so this carries
+/// per-tab payload and is never deduped.
+export interface AgentTab {
+  id: string;
+  /// Which roster entry (`settings.ai.agents[]`) this thread talks to.
+  agentId: string;
+  /// The agent's display name, snapshotted at open time. The registry cannot
+  /// reach settings, so the label reads this; a roster rename shows up on the
+  /// next tab opened rather than retroactively.
+  title?: string;
 }
 
 export type CompareTreeMode = "tree" | "flat";
+
+export const COMPARE_TREE_WIDTH_DEFAULT = 320;
+export const COMPARE_TREE_WIDTH_MIN = 220;
+export const COMPARE_TREE_WIDTH_MAX = 600;
+
+/// Every width goes through here, including the restored one.
+///
+/// Persisted layout is user-writable and survives a version of the app that
+/// wrote it differently, so a stored `0` or a `NaN` from a half-finished drag
+/// would otherwise come back as a tree pane the user cannot see or cannot
+/// shrink — with no control left on screen to fix it with.
+export function clampCompareTreeWidth(value: unknown): number {
+  const n = typeof value === "number" ? value : Number.NaN;
+  if (!Number.isFinite(n)) return COMPARE_TREE_WIDTH_DEFAULT;
+  return Math.min(COMPARE_TREE_WIDTH_MAX, Math.max(COMPARE_TREE_WIDTH_MIN, n));
+}
 
 export interface CompareTab {
   id: string;
@@ -83,6 +144,32 @@ export interface CompareTab {
   selectedFilePath: string | null;
   treeMode: CompareTreeMode;
   treeFilter: string;
+  /// Width of the tree pane, in pixels.
+  ///
+  /// Per tab, like the mode and the filter beside it. It used to live in one
+  /// `localStorage` key shared by every compare tab in every window, so
+  /// widening the tree to read a deep vendored path also widened it in the tab
+  /// next door that was showing three root-level files — and the change only
+  /// appeared there after a reload, since nothing told the other tab.
+  treeWidth: number;
+  /// What to call this comparison when the refs themselves are not worth
+  /// reading. A stash diff addresses its two trees by raw commit oid — the only
+  /// identity a stash has that survives the stack shifting under it — and
+  /// `4f2a1c9^1..4f2a1c9` in the tab strip tells the user nothing about which
+  /// stash they opened. Optional, so tabs persisted before it existed still
+  /// deserialize and fall back to the derived label.
+  label?: string;
+  /// Per tab, deliberately not the global `diffMode` the working-tree diff
+  /// toolbar uses. Optional and `undefined` at the shipped default ("inline")
+  /// so an ordinary compare tab's persisted blob doesn't grow just for opening
+  /// it — only a tab someone actually switched to split carries the field.
+  diffMode?: DiffMode;
+  /// Per tab, and part of `CompareTab.tsx`'s resource key — see that file for
+  /// why. A global toggle would refetch every open compare tab at once, each
+  /// re-running a full diff behind the same per-repo git mutex (CMP-F10); keyed
+  /// per tab, flipping one only refetches that one. `undefined` at the default
+  /// (`false`) for the same narrow-blob reason as `diffMode` above.
+  ignoreWhitespace?: boolean;
 }
 
 /// Persistent identifier for a stack tab. We don't cache the chain itself —
@@ -105,15 +192,17 @@ export type ActiveItem =
   | { type: "conflict"; id: string }
   | { type: "history"; id: string }
   | { type: "preview"; id: string; path: string }
-  | { type: "brain"; id: string }
-  | { type: "browser"; id: string };
+  | { type: "timeline"; id: string }
+  | { type: "mission"; id: string }
+  | { type: "browser"; id: string }
+  | { type: "agent"; id: string };
 
 /// Snapshot of a closed tab kept so `reopenLastClosedTab` can recreate
 /// it. We capture *enough state* to reconstruct, not the original id —
 /// reopening always produces a fresh id so we don't collide with any
 /// future tab.
 ///
-/// All ten kinds are here, not the four this union started with. A terminal's
+/// All eleven kinds are here, not the four this union started with. A terminal's
 /// PTY really is gone, but its cwd and label are exactly what a *new* terminal
 /// in the same place needs — the same trade session restore already makes —
 /// and "close a terminal by accident, lose the pane" was the single most
@@ -121,7 +210,9 @@ export type ActiveItem =
 export type ClosedTab =
   | { type: "file"; path: string }
   | { type: "terminal"; label: string; cwd: string }
-  | { type: "diff"; filePath: string }
+  // `staged` optional: closed-tab history persisted before the field existed
+  // still deserializes, and absent means the unstaged side.
+  | { type: "diff"; filePath: string; staged?: boolean }
   | {
       type: "compare";
       baseRef: string;
@@ -130,13 +221,19 @@ export type ClosedTab =
       selectedFilePath: string | null;
       treeMode: CompareTreeMode;
       treeFilter: string;
+      label?: string;
     }
   | { type: "stack"; trunk: string; topBranch: string }
   | { type: "conflict"; filePath: string }
   | { type: "history" }
   | { type: "preview"; filePath: string }
-  | { type: "brain" }
-  | { type: "browser"; url: string; title?: string };
+  | { type: "timeline" }
+  | { type: "mission" }
+  | { type: "browser"; url: string; title?: string }
+  /// The thread's transcript is not in here. What a reopen brings back is a tab
+  /// pointed at the same roster entry; the conversation itself lives under
+  /// `STORAGE_KEYS.agentThreads`, keyed by the tab id that is gone by now.
+  | { type: "agent"; agentId: string; title?: string };
 
 // ── The registry ──────────────────────────────────────────────────────────
 
@@ -149,10 +246,12 @@ export type TabKind =
   | "conflict"
   | "history"
   | "preview"
-  | "brain"
-  | "browser";
+  | "timeline"
+  | "mission"
+  | "browser"
+  | "agent";
 
-/// Maps a kind to the tab type it holds. Keeps `TAB_SPECS` honest without ten
+/// Maps a kind to the tab type it holds. Keeps `TAB_SPECS` honest without eleven
 /// separate generic parameters at every call site.
 export interface TabTypes {
   file: OpenFileTab;
@@ -163,8 +262,10 @@ export interface TabTypes {
   conflict: ConflictTab;
   history: HistoryTab;
   preview: PreviewTab;
-  brain: BrainTab;
+  timeline: TimelineTab;
+  mission: MissionTab;
   browser: BrowserTab;
+  agent: AgentTab;
 }
 
 /// The `AppStoreState` fields that hold per-worktree tab collections. Declared
@@ -179,8 +280,10 @@ export type TabCollectionKey =
   | "conflictTabsByWorktree"
   | "historyTabsByWorktree"
   | "previewTabsByWorktree"
-  | "brainTabsByWorktree"
-  | "browserTabsByWorktree";
+  | "timelineTabsByWorktree"
+  | "missionTabsByWorktree"
+  | "browserTabsByWorktree"
+  | "agentTabsByWorktree";
 
 /// Where a kind's tabs live on disk.
 ///
@@ -193,8 +296,8 @@ export interface TabStorage {
 }
 
 /// What a `restore()` is allowed to reach for. Deliberately tiny: restoring a
-/// tab is a pure projection of its payload for nine of the ten kinds, and the
-/// tenth needs one process spawned.
+/// tab is a pure projection of its payload for ten of the eleven kinds, and the
+/// eleventh needs one process spawned.
 export interface TabRestoreContext {
   /// The restoring worktree's directory. A terminal's fresh PTY is rooted here
   /// and not at the persisted `cwd`: the saved path may not exist any more,
@@ -212,7 +315,7 @@ export interface TabKindSpec<K extends TabKind = TabKind> {
   stateKey: TabCollectionKey;
   /// `null` for kinds that are memory-only today. Session restore (Wave 4)
   /// turns these on; the serializers below are already written for it, which
-  /// is why `tabs.test.ts` round-trips all ten kinds and not just the seven
+  /// is why `tabs.test.ts` round-trips all eleven kinds and not just the seven
   /// that currently persist.
   storage: TabStorage | null;
   /// Projection to plain JSON. Never emits `undefined` fields as `null`.
@@ -221,7 +324,7 @@ export interface TabKindSpec<K extends TabKind = TabKind> {
   /// validation — this is user-editable JSON on disk, and a malformed entry
   /// should cost one tab, not the boot.
   deserialize(raw: unknown): TabTypes[K] | null;
-  /// Bring a persisted tab back on boot. Nine kinds are `deserialize` with a
+  /// Bring a persisted tab back on boot. Ten kinds are `deserialize` with a
   /// promise around it; the terminal is why the promise is there at all.
   ///
   /// A restored tab keeps its **persisted id**. Pins, pane-tree claims, the
@@ -245,7 +348,7 @@ const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 
-/// `{ id, path }` and `{ id, filePath }` cover six of the ten kinds; these two
+/// `{ id, path }` and `{ id, filePath }` cover six of the eleven kinds; these two
 /// helpers are why the specs below read as declarations rather than as code.
 function pathTab<T extends { id: string; path: string }>(raw: unknown): T | null {
   if (!isRecord(raw)) return null;
@@ -257,6 +360,18 @@ function filePathTab<T extends { id: string; filePath: string }>(raw: unknown): 
   if (!isRecord(raw)) return null;
   if (typeof raw.id !== "string" || typeof raw.filePath !== "string") return null;
   return { id: raw.id, filePath: raw.filePath } as T;
+}
+
+/// `filePathTab` plus the index side.
+///
+/// `staged` defaults to `false` rather than rejecting the row: tabs persisted
+/// before the field existed are all unstaged views, which is what the single
+/// diff the app could produce back then actually showed.
+function diffTab(raw: unknown): DiffTab | null {
+  const base = filePathTab<{ id: string; filePath: string }>(raw);
+  if (!base) return null;
+  const staged = isRecord(raw) && raw.staged === true;
+  return { ...base, staged };
 }
 
 function idOnlyTab<T extends { id: string }>(raw: unknown): T | null {
@@ -305,6 +420,14 @@ function deserializeCompare(raw: unknown): CompareTab | null {
     selectedFilePath: typeof raw.selectedFilePath === "string" ? raw.selectedFilePath : null,
     treeMode: raw.treeMode === "flat" ? "flat" : "tree",
     treeFilter: typeof raw.treeFilter === "string" ? raw.treeFilter : "",
+    treeWidth: clampCompareTreeWidth(raw.treeWidth),
+    // `undefined` rather than the shipped default: keeps a tab that never
+    // touched these controls indistinguishable, post-round-trip, from one that
+    // was never serialized with them at all. A garbage persisted value (an
+    // older or newer build's stray string) falls back the same way rather than
+    // reaching a renderer with no branch for it.
+    diffMode: raw.diffMode === "split" ? "split" : undefined,
+    ignoreWhitespace: raw.ignoreWhitespace === true ? true : undefined,
   };
 }
 
@@ -328,6 +451,28 @@ function deserializeBrowser(raw: unknown): BrowserTab | null {
     url: raw.url,
     // Absent in state persisted before titles were tracked; the tab label
     // falls back to the host until the page reports one.
+    title: typeof raw.title === "string" ? raw.title : undefined,
+    // Finite and positive or nothing: a persisted `null`, `0` or `NaN` would
+    // reach `set_zoom` and render the page at a size nobody can read their way
+    // out of. Rust clamps too — this stops the bad value being remembered.
+    zoom:
+      typeof raw.zoom === "number" && Number.isFinite(raw.zoom) && raw.zoom > 0
+        ? raw.zoom
+        : undefined,
+  };
+}
+
+function deserializeAgent(raw: unknown): AgentTab | null {
+  if (!isRecord(raw)) return null;
+  // `agentId` is required and not defaulted: a thread whose roster entry we
+  // cannot name would render a panel with no model behind it, which is a worse
+  // outcome than the tab not coming back.
+  if (typeof raw.id !== "string" || typeof raw.agentId !== "string") return null;
+  return {
+    id: raw.id,
+    agentId: raw.agentId,
+    // Absent when the roster entry was unnamed at open time; the label falls
+    // back to "Agent".
     title: typeof raw.title === "string" ? raw.title : undefined,
   };
 }
@@ -372,12 +517,12 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     kind: "diff",
     stateKey: "diffTabsByWorktree",
     storage: { key: STORAGE_KEYS.editorTabs, field: "diffs" },
-    serialize: (t) => ({ id: t.id, filePath: t.filePath }),
-    deserialize: (raw) => filePathTab<DiffTab>(raw),
-    restore: async (raw) => filePathTab<DiffTab>(raw),
-    equals: (a, b) => a.filePath === b.filePath,
-    label: (t) => basename(t.filePath),
-    closedSnapshot: (t) => ({ type: "diff", filePath: t.filePath }),
+    serialize: (t) => ({ id: t.id, filePath: t.filePath, staged: t.staged }),
+    deserialize: (raw) => diffTab(raw),
+    restore: async (raw) => diffTab(raw),
+    equals: (a, b) => a.filePath === b.filePath && a.staged === b.staged,
+    label: (t) => (t.staged ? `${basename(t.filePath)} (staged)` : basename(t.filePath)),
+    closedSnapshot: (t) => ({ type: "diff", filePath: t.filePath, staged: t.staged }),
   },
 
   compare: {
@@ -455,23 +600,39 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     closedSnapshot: (t) => ({ type: "preview", filePath: t.filePath }),
   },
 
-  brain: {
-    kind: "brain",
-    stateKey: "brainTabsByWorktree",
-    storage: { key: STORAGE_KEYS.brainTabs },
+  timeline: {
+    kind: "timeline",
+    stateKey: "timelineTabsByWorktree",
+    storage: { key: STORAGE_KEYS.timelineTabs },
     serialize: (t) => ({ id: t.id }),
-    deserialize: (raw) => idOnlyTab<BrainTab>(raw),
-    restore: async (raw) => idOnlyTab<BrainTab>(raw),
+    deserialize: (raw) => idOnlyTab<TimelineTab>(raw),
+    restore: async (raw) => idOnlyTab<TimelineTab>(raw),
     equals: () => true,
-    label: () => "Brain",
-    closedSnapshot: () => ({ type: "brain" }),
+    label: () => "Timeline",
+    closedSnapshot: () => ({ type: "timeline" }),
+  },
+
+  mission: {
+    kind: "mission",
+    stateKey: "missionTabsByWorktree",
+    storage: { key: STORAGE_KEYS.missionTabs },
+    serialize: (t) => ({ id: t.id }),
+    deserialize: (raw) => idOnlyTab<MissionTab>(raw),
+    restore: async (raw) => idOnlyTab<MissionTab>(raw),
+    equals: () => true,
+    label: () => "Mission Control",
+    closedSnapshot: () => ({ type: "mission" }),
   },
 
   browser: {
     kind: "browser",
     stateKey: "browserTabsByWorktree",
     storage: { key: STORAGE_KEYS.browserTabs },
-    serialize: (t) => (t.title === undefined ? { id: t.id, url: t.url } : { ...t }),
+    // The narrow form is for the common tab — no title yet, never zoomed — so
+    // the stored blob stays small. Both optional fields have to be checked, or
+    // a zoomed tab whose page never reported a title loses its scale on reload.
+    serialize: (t) =>
+      t.title === undefined && t.zoom === undefined ? { id: t.id, url: t.url } : { ...t },
     deserialize: (raw) => deserializeBrowser(raw),
     restore: async (raw) => deserializeBrowser(raw),
     // Two tabs on the same site is a normal thing to want, and each owns its
@@ -486,6 +647,25 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
       }
     },
     closedSnapshot: (t) => ({ type: "browser", url: t.url, title: t.title }),
+  },
+
+  agent: {
+    kind: "agent",
+    stateKey: "agentTabsByWorktree",
+    /// The tab, not the conversation. The transcript is a much larger blob with
+    /// a different write rhythm (every streamed message, not every tab open), so
+    /// it gets its own key — see `STORAGE_KEYS.agentThreads`.
+    storage: { key: STORAGE_KEYS.agentTabs },
+    serialize: (t) =>
+      t.title === undefined ? { id: t.id, agentId: t.agentId } : { ...t },
+    deserialize: (raw) => deserializeAgent(raw),
+    restore: async (raw) => deserializeAgent(raw),
+    // Two threads with the same agent is a normal thing to want — one asking
+    // about the diff, one refactoring — so agent tabs are never deduped by
+    // roster entry, exactly as browser tabs are not deduped by URL.
+    equals: (a, b) => a.id === b.id,
+    label: (t) => t.title?.trim() || "Agent",
+    closedSnapshot: (t) => ({ type: "agent", agentId: t.agentId, title: t.title }),
   },
 };
 
@@ -503,8 +683,10 @@ export const TAB_KIND_GROUP_LABELS: Record<TabKind, string> = {
   conflict: "Conflicts",
   history: "Commit graph",
   preview: "Previews",
-  brain: "Brain",
+  timeline: "Timeline",
+  mission: "Mission Control",
   browser: "Browser",
+  agent: "Agents",
 };
 
 /// Render/iteration order. Also the order the tab strip lays kinds out in, so
@@ -518,8 +700,10 @@ export const TAB_KINDS: TabKind[] = [
   "conflict",
   "history",
   "preview",
-  "brain",
+  "timeline",
+  "mission",
   "browser",
+  "agent",
 ];
 
 /// Deserialize one kind's `Record<worktreeId, T[]>`, seeding an empty list for
@@ -569,7 +753,11 @@ export function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
     case "terminal":
       return b.type === "terminal" && a.label === b.label && a.cwd === b.cwd;
     case "diff":
-      return b.type === "diff" && a.filePath === b.filePath;
+      // Same file, opposite side of the index: two different diffs, so two
+      // separate entries in the reopen history.
+      return (
+        b.type === "diff" && a.filePath === b.filePath && !!a.staged === !!b.staged
+      );
     case "compare":
       return (
         b.type === "compare" && a.baseRef === b.baseRef && a.headRef === b.headRef
@@ -582,9 +770,14 @@ export function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
       return b.type === "preview" && a.filePath === b.filePath;
     case "browser":
       return b.type === "browser" && a.url === b.url;
+    // The roster entry, not the title: closing two threads on the same agent is
+    // one entry in the LIFO, because reopening either produces the same tab.
+    case "agent":
+      return b.type === "agent" && a.agentId === b.agentId;
     // Singletons: same type is same tab.
     case "history":
-    case "brain":
+    case "timeline":
+    case "mission":
       return true;
   }
 }
@@ -607,7 +800,9 @@ export function deserializeClosedTab(raw: unknown): ClosedTab | null {
     }
     case "diff": {
       const filePath = str(raw.filePath);
-      return filePath === null ? null : { type: "diff", filePath };
+      return filePath === null
+        ? null
+        : { type: "diff", filePath, staged: raw.staged === true };
     }
     case "conflict": {
       const filePath = str(raw.filePath);
@@ -642,22 +837,37 @@ export function deserializeClosedTab(raw: unknown): ClosedTab | null {
       const url = str(raw.url);
       return url === null ? null : { type: "browser", url, title: str(raw.title) ?? undefined };
     }
+    case "agent": {
+      const agentId = str(raw.agentId);
+      return agentId === null
+        ? null
+        : { type: "agent", agentId, title: str(raw.title) ?? undefined };
+    }
     case "history":
       return { type: "history" };
-    case "brain":
-      return { type: "brain" };
+    case "timeline":
+      return { type: "timeline" };
+    case "mission":
+      return { type: "mission" };
     default:
       return null;
   }
 }
 
 /// The four kinds the editor window renders. The workbench renders the other
-/// six, and each window has its own active-item pointer.
+/// eight, and each window has its own active-item pointer.
 export const EDITOR_TAB_KINDS: TabKind[] = ["file", "diff", "conflict", "preview"];
 
 export function isEditorKind(kind: string): boolean {
   return EDITOR_TAB_KINDS.includes(kind as TabKind);
 }
+
+/// The kinds the workbench renders, in registry order — the complement of
+/// `EDITOR_TAB_KINDS`, derived rather than spelled out so a new kind lands in
+/// the pane tree by being registered. Mission Control spent its first release
+/// missing from a hand-written copy of this list, which made its tab
+/// unclaimable by any pane group and so invisible: opening it did nothing.
+export const WORKBENCH_TAB_KINDS: TabKind[] = TAB_KINDS.filter((k) => !isEditorKind(k));
 
 // ── The editor window's shared blob ───────────────────────────────────────
 

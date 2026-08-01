@@ -46,6 +46,12 @@ export function statusLetter(status: string): StatusGlyph {
       return { letter: "C", tone: "info", label: "Copied" };
     case "conflicted":
       return { letter: "U", tone: "warning", label: "Conflicted" };
+    // No backend path emits `unmerged` — `git_file_status` says `conflicted`
+    // and so does the diff walker. Kept as a deliberate alias rather than
+    // deleted as dead: `unmerged` is git's own word for the same state, it is
+    // what a hand-written call site or a future porcelain parser would most
+    // likely pass, and the default arm would answer that with `?` — a status
+    // the reader cannot act on where a perfectly knowable one exists.
     case "unmerged":
       return { letter: "U", tone: "warning", label: "Unmerged" };
     default:

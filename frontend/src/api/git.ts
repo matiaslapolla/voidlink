@@ -14,6 +14,7 @@ import type {
   GitRepoInfo,
   OpResult,
   PullResult,
+  PushOutcome,
   RefList,
   RemoteInfo,
   SafeCheckoutResult,
@@ -24,6 +25,31 @@ import type {
   WorktreeSetupReport,
 } from "@/types/git";
 import type { GraphCommit } from "@/types/history";
+
+/// Calls in flight, keyed by what they are asking for.
+const inFlight = new Map<string, Promise<unknown>>();
+
+/// Share one round trip between callers that ask for the same thing at the same
+/// time.
+///
+/// Deliberately *not* a cache: nothing is retained past settlement, so this can
+/// never serve a stale answer. It only collapses the window in which two
+/// subscribers, woken by the same refresh pulse, would each start their own
+/// identical request.
+///
+/// Rejections are shared too — a caller that would have failed on its own
+/// still fails, with the same error.
+export function coalesceInFlight<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const existing = inFlight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const promise = run().finally(() => {
+    // Only clear our own entry: a later call that started after this one
+    // settled owns the key now, and deleting it would orphan its followers.
+    if (inFlight.get(key) === promise) inFlight.delete(key);
+  });
+  inFlight.set(key, promise);
+  return promise;
+}
 
 export const gitApi = {
   repoInfo(repoPath: string): Promise<GitRepoInfo> {
@@ -120,20 +146,16 @@ export const gitApi = {
   /// Stash button, an auto-stash on branch switch, a `git stash` typed into the
   /// app's own terminal — shifts every entry down, so a remembered position
   /// silently addresses someone else's work. Drop is irreversible.
-  stashApply(repoPath: string, index: number, oid: string): Promise<void> {
-    return invoke<void>("git_stash_apply", { repoPath, index, oid });
+  stashApply(repoPath: string, index: number, oid: string): Promise<OpResult> {
+    return invoke<OpResult>("git_stash_apply", { repoPath, index, oid });
   },
 
-  stashPop(repoPath: string, index: number, oid: string): Promise<void> {
-    return invoke<void>("git_stash_pop", { repoPath, index, oid });
+  stashPop(repoPath: string, index: number, oid: string): Promise<OpResult> {
+    return invoke<OpResult>("git_stash_pop", { repoPath, index, oid });
   },
 
   stashDrop(repoPath: string, index: number, oid: string): Promise<void> {
     return invoke<void>("git_stash_drop", { repoPath, index, oid });
-  },
-
-  stashShow(repoPath: string, index: number): Promise<DiffResult> {
-    return invoke<DiffResult>("git_stash_show", { repoPath, index });
   },
 
   listRemotes(repoPath: string): Promise<RemoteInfo[]> {
@@ -265,8 +287,34 @@ export const gitApi = {
     return invoke<void>("git_config_unset", { repoPath, key, scope });
   },
 
-  push(repoPath: string, remote?: string, branch?: string): Promise<void> {
-    return invoke<void>("git_push", { repoPath, remote, branch });
+  /// Resolves even when the push was rejected — `ok` and `failure` carry the
+  /// verdict. Only a failure to get as far as talking to a remote rejects.
+  push(repoPath: string, remote?: string, branch?: string): Promise<PushOutcome> {
+    return invoke<PushOutcome>("git_push", { repoPath, remote, branch });
+  },
+
+  /// What the last fetch recorded for `refs/remotes/<remote>/<branch>` — the
+  /// value a force-push lease is taken on. `null` when there is no tracking
+  /// ref, in which case no lease can be held.
+  remoteTrackingOid(repoPath: string, remote: string, branch: string): Promise<string | null> {
+    return invoke<string | null>("git_remote_tracking_oid", { repoPath, remote, branch });
+  },
+
+  /// Force-push, honouring a lease taken from a fetch. Rejects — by design —
+  /// when the remote moved since. See `git/push.rs` for the race window this
+  /// narrows but does not close.
+  pushForceWithLease(
+    repoPath: string,
+    remote: string,
+    branch: string,
+    expectedRemoteOid: string,
+  ): Promise<void> {
+    return invoke<void>("git_push_force_with_lease", {
+      repoPath,
+      remote,
+      branch,
+      expectedRemoteOid,
+    });
   },
 
   fetch(repoPath: string, remote?: string): Promise<void> {
@@ -281,10 +329,15 @@ export const gitApi = {
     return invoke<void>("git_discard_file", { repoPath, path });
   },
 
-  discardAll(repoPath: string, includeUntracked?: boolean): Promise<void> {
+  /// `paths` limits the discard to those repo-relative paths. Pass it whenever
+  /// the changes list is filtered: without it the button reverted everything in
+  /// the repository, including the files the filter was hiding, while the list
+  /// in front of the user showed four.
+  discardAll(repoPath: string, includeUntracked?: boolean, paths?: string[]): Promise<void> {
     return invoke<void>("git_discard_all", {
       repoPath,
       includeUntracked: includeUntracked ?? false,
+      paths: paths ?? null,
     });
   },
 
@@ -292,8 +345,20 @@ export const gitApi = {
     return invoke<void>("git_discard_hunk", { repoPath, file, hunkIndex });
   },
 
-  diffWorking(repoPath: string, stagedOnly?: boolean): Promise<DiffResult> {
-    return invoke<DiffResult>("git_diff_working", { repoPath, stagedOnly });
+  /// `ignoreWhitespace` is a property of the diff, not of the render: it goes
+  /// to libgit2 so the file list, the counts and the content all come from one
+  /// diff. It used to be applied client-side after the fact, which left the
+  /// three disagreeing.
+  diffWorking(
+    repoPath: string,
+    stagedOnly?: boolean,
+    ignoreWhitespace?: boolean,
+  ): Promise<DiffResult> {
+    return invoke<DiffResult>("git_diff_working", {
+      repoPath,
+      stagedOnly,
+      ignoreWhitespace: ignoreWhitespace ?? false,
+    });
   },
 
   diffRefs(
@@ -301,12 +366,14 @@ export const gitApi = {
     baseRef: string,
     headRef: string,
     useMergeBase?: boolean,
+    ignoreWhitespace?: boolean,
   ): Promise<DiffResult> {
     return invoke<DiffResult>("git_diff_refs", {
       repoPath,
       baseRef,
       headRef,
       useMergeBase: useMergeBase ?? true,
+      ignoreWhitespace: ignoreWhitespace ?? false,
     });
   },
 
@@ -393,8 +460,19 @@ export const gitApi = {
     return invoke<void>("git_resolve_conflict", { repoPath, filePath, content });
   },
 
+  /// Enumerate a repository's worktrees.
+  ///
+  /// Concurrent calls for the same repository share one round trip — see
+  /// `coalesceInFlight`. This is the most expensive read in the app (two `git`
+  /// subprocesses per worktree, all inside the per-repo lock) and it has two
+  /// independent callers that both wake on the same refresh pulse: the sidebar's
+  /// `WorktreesPane` and the rail's `hydrateAllWorktrees`. Every pulse therefore
+  /// paid for it twice, which was tolerable while pulses only followed a button
+  /// press and is not now that a filesystem watcher emits them.
   listWorktrees(repoPath: string): Promise<WorktreeInfo[]> {
-    return invoke<WorktreeInfo[]>("git_list_worktrees", { repoPath });
+    return coalesceInFlight(`worktrees:${repoPath}`, () =>
+      invoke<WorktreeInfo[]>("git_list_worktrees", { repoPath }),
+    );
   },
 
   addWorktree(
@@ -417,6 +495,13 @@ export const gitApi = {
   /// not a rejection.
   removeWorktree(repoPath: string, path: string, force?: boolean): Promise<string> {
     return invoke<string>("git_remove_worktree", { repoPath, path, force: force ?? false });
+  },
+
+  /// Clear a worktree's lock. Without this a locked worktree was a dead end:
+  /// `remove` refuses, `--force` refuses too (git wants `remove -f -f` for a
+  /// lock), and nothing in the app could clear it.
+  unlockWorktree(repoPath: string, path: string): Promise<void> {
+    return invoke<void>("git_unlock_worktree", { repoPath, path });
   },
 
   /// Read-only inspection of what a new worktree would need. `sourcePath`

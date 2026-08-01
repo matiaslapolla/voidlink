@@ -4,13 +4,16 @@
 /// `spec.serialize`, through `JSON.stringify`, and back in through
 /// `spec.deserialize`. If that round trip is lossy for one kind, that kind
 /// silently loses tabs on the next boot — which is the failure mode this file
-/// exists to make impossible to introduce quietly. It runs over *all ten*
+/// exists to make impossible to introduce quietly. It runs over *all eleven*
 /// kinds, including the three that are memory-only today, because Wave 4's
 /// session restore turns those on and the serializers have to already be right.
 import { describe, expect, it } from "vitest";
 import {
+  EDITOR_TAB_KINDS,
   TAB_KINDS,
   TAB_SPECS,
+  WORKBENCH_TAB_KINDS,
+  isEditorKind,
   closedTabsEqual,
   deserializeClosedTab,
   deserializeTabRecord,
@@ -27,7 +30,10 @@ import {
 const FIXTURES: { [K in TabKind]: TabTypes[K] } = {
   file: { id: "f1", path: "/repo/src/main.ts" },
   terminal: { id: "t1", ptyId: "pty-9", label: "Terminal 2", cwd: "/repo" },
-  diff: { id: "d1", filePath: "/repo/src/a.ts" },
+  // `staged: true` deliberately: the deserializer defaults the field to
+  // `false`, so a `false` fixture would round-trip even if `serialize` dropped
+  // it entirely.
+  diff: { id: "d1", filePath: "/repo/src/a.ts", staged: true },
   compare: {
     id: "c1",
     baseRef: "main",
@@ -36,13 +42,23 @@ const FIXTURES: { [K in TabKind]: TabTypes[K] } = {
     selectedFilePath: "/repo/src/b.ts",
     treeMode: "flat",
     treeFilter: "src/",
+    // Not the default, so a `serialize` that dropped the field would be caught
+    // rather than round-tripping by coincidence.
+    treeWidth: 420,
+    // Same reasoning as `treeWidth`, for the two fields TODO row 6 added: both
+    // set away from their default ("inline", `false`) so a `serialize` that
+    // dropped either would be caught rather than round-tripping by luck.
+    diffMode: "split",
+    ignoreWhitespace: true,
   },
   stack: { id: "s1", trunk: "main", topBranch: "feature-3" },
   conflict: { id: "x1", filePath: "/repo/src/c.ts" },
   history: { id: "h1" },
   preview: { id: "p1", filePath: "/repo/README.md" },
-  brain: { id: "b1" },
+  timeline: { id: "tl1" },
+  mission: { id: "mc1" },
   browser: { id: "w1", url: "https://example.com/docs", title: "Docs" },
+  agent: { id: "a1", agentId: "claude-sonnet", title: "Reviewer" },
 };
 
 /// What a round trip is *expected* to produce, where that differs from the
@@ -60,6 +76,17 @@ describe("tab registry", () => {
     for (const kind of TAB_KINDS) expect(TAB_SPECS[kind].kind).toBe(kind);
   });
 
+  /// A kind that is in neither list is rendered by neither window. Mission
+  /// Control was exactly that for a release: registered, given a strip entry
+  /// and a pane body, and absent from the workbench list the pane tree claims
+  /// ids from — so opening it did nothing at all.
+  it("assigns every kind to exactly one window", () => {
+    expect([...EDITOR_TAB_KINDS, ...WORKBENCH_TAB_KINDS].slice().sort()).toEqual(
+      TAB_KINDS.slice().sort(),
+    );
+    for (const kind of WORKBENCH_TAB_KINDS) expect(isEditorKind(kind)).toBe(false);
+  });
+
   it("round-trips every kind through serialize → JSON → deserialize", () => {
     for (const kind of TAB_KINDS) {
       const spec = TAB_SPECS[kind] as (typeof TAB_SPECS)[TabKind];
@@ -70,6 +97,35 @@ describe("tab registry", () => {
       const back = (spec.deserialize as (raw: unknown) => unknown)(wire);
       expect(back, `${kind} failed to deserialize`).toEqual(expectedRoundTrip(kind));
     }
+  });
+
+  it("keeps a compare tab at default diff settings narrow, like the browser tab's zoom", () => {
+    // The fixture above sets both fields away from their default to prove they
+    // survive; this proves the opposite direction — a tab that never touched
+    // the diff-mode or ignore-whitespace controls must not carry them into the
+    // persisted blob at all. Modelled on "round-trips an agent tab whose
+    // roster entry had no name" below, and on `browser`'s narrow-form comment
+    // in `TAB_SPECS`.
+    const wire = JSON.parse(
+      JSON.stringify(
+        TAB_SPECS.compare.serialize({
+          id: "c2",
+          baseRef: "main",
+          headRef: "feature",
+          useMergeBase: true,
+          selectedFilePath: null,
+          treeMode: "tree",
+          treeFilter: "",
+          treeWidth: 320,
+        }),
+      ),
+    );
+    expect(wire).not.toHaveProperty("diffMode");
+    expect(wire).not.toHaveProperty("ignoreWhitespace");
+    expect(TAB_SPECS.compare.deserialize(wire)).toMatchObject({
+      diffMode: undefined,
+      ignoreWhitespace: undefined,
+    });
   });
 
   it("considers a round-tripped tab equal to the original", () => {
@@ -107,7 +163,7 @@ describe("tab registry", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("can reopen every one of the ten kinds", () => {
+  it("can reopen every one of the eleven kinds", () => {
     const reopenable = TAB_KINDS.filter((kind) => {
       const spec = TAB_SPECS[kind] as (typeof TAB_SPECS)[TabKind];
       return (spec.closedSnapshot as (t: unknown) => unknown)(FIXTURES[kind]) !== null;
@@ -129,6 +185,52 @@ describe("tab registry", () => {
       expect(back, `${kind} lost its closed snapshot`).toEqual(snapshot);
       expect(closedTabsEqual(snapshot!, back!)).toBe(true);
     }
+  });
+
+  it("round-trips an agent tab whose roster entry had no name", () => {
+    // The fixture above populates `title`, which proves the field survives but
+    // not that its absence does — and an unnamed roster entry is the case that
+    // reaches `serialize` with `undefined`.
+    const wire = JSON.parse(
+      JSON.stringify(TAB_SPECS.agent.serialize({ id: "a2", agentId: "local-llama" })),
+    );
+    expect(wire).toEqual({ id: "a2", agentId: "local-llama" });
+    expect(TAB_SPECS.agent.deserialize(wire)).toEqual({
+      id: "a2",
+      agentId: "local-llama",
+      title: undefined,
+    });
+  });
+
+  it("drops an agent tab that names no roster entry", () => {
+    // A thread we cannot point at an agent would render a panel with no model
+    // behind it, so it costs the tab rather than the boot.
+    expect(TAB_SPECS.agent.deserialize({ id: "a3" })).toBeNull();
+    expect(TAB_SPECS.agent.deserialize({ agentId: "claude-sonnet" })).toBeNull();
+    expect(TAB_SPECS.agent.deserialize({ id: "a3", agentId: 7 })).toBeNull();
+    // A non-string title is ignored, not fatal: the label has a fallback.
+    expect(TAB_SPECS.agent.deserialize({ id: "a3", agentId: "x", title: 7 })).toEqual({
+      id: "a3",
+      agentId: "x",
+      title: undefined,
+    });
+  });
+
+  it("labels an agent tab Agent when its title is blank or missing", () => {
+    expect(TAB_SPECS.agent.label({ id: "a", agentId: "x" })).toBe("Agent");
+    expect(TAB_SPECS.agent.label({ id: "a", agentId: "x", title: "   " })).toBe("Agent");
+    expect(TAB_SPECS.agent.label({ id: "a", agentId: "x", title: "Reviewer" })).toBe("Reviewer");
+  });
+
+  it("never dedupes two threads on the same agent", () => {
+    // Modelled on the browser tab: the id is the identity, so opening a second
+    // thread with the same roster entry finds no existing tab to focus.
+    expect(
+      TAB_SPECS.agent.equals(
+        { id: "a1", agentId: "same" },
+        { id: "a2", agentId: "same" },
+      ),
+    ).toBe(false);
   });
 
   it("labels a browser tab by host when the page never reported a title", () => {

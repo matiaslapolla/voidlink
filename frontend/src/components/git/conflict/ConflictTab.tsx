@@ -1,3 +1,4 @@
+import { emitGitRefsChanged } from "@/commands/gitEvents";
 import { Show, createMemo, createResource, createSignal } from "solid-js";
 import { For } from "solid-js";
 import { Check, GitMerge, RotateCw, Save } from "lucide-solid";
@@ -60,7 +61,7 @@ export function ConflictTab(props: Props) {
     try {
       await gitApi.resolveConflict(props.repoPath, props.filePath, cur);
       pushToast(`Resolved ${shortName(props.filePath)}`, "success");
-      window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
+      emitGitRefsChanged();
       props.onResolved();
     } catch (e) {
       pushToast(`Resolve failed: ${e instanceof Error ? e.message : String(e)}`, "error", 6000);

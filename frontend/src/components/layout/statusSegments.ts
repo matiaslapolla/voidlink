@@ -61,15 +61,31 @@ export interface StatusSegment {
 /// pane you cannot see; the focus-mode chip is next because it is the only
 /// visible way out of zen; repo identity comes after that; ambient counters
 /// last.
+/// Two of these numbers are load-bearing in a way that is easy to get wrong, so
+/// they are argued rather than asserted:
+///
+///   • `aiDraft` sits *below* the standing facts, not above them. Drafting a
+///     commit message is a transient operation; `aheadBehind` and `dirty` are
+///     things that are true about the repository. A resting priority above them
+///     meant a transient outranked a fact for as long as the app was open. The
+///     registry already has the right mechanism for "this is happening now" —
+///     `orderSegments` pulls any segment carrying a live signal to the front —
+///     and the draft segment sets one. So the signal does the work, and the
+///     resting rank goes where a finished draft belongs: last.
+///   • there is no `workspaces`. See the note at its old call site in
+///     `StatusBar.tsx`.
 export const STATUS_PRIORITY = {
   backgroundActivity: 100,
+  /// Just below the hidden-pane mark and above everything else. Both are
+  /// §7.5.3's last stop; the pane-level one is more specific, so when the bar
+  /// is narrow enough to hold only one, it should be the one that names panes.
+  worktreeActivity: 95,
   focusMode: 90,
   branch: 80,
-  aiDraft: 70,
   aheadBehind: 60,
   dirty: 50,
   stack: 40,
-  workspaces: 10,
+  aiDraft: 20,
 } as const;
 
 /// Priority order, with live signals pulled to the front.

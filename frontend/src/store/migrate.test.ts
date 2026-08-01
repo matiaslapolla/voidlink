@@ -228,7 +228,10 @@ describe("migrateLayoutStorage v1 → v2", () => {
     const before = v1Snapshot();
     const after = migrateLayoutStorage(before);
 
-    expect(after[LAYOUT_VERSION_KEY]).toBe("2");
+    // Stamped at the *current* version, not at 2: every later step is a no-op
+    // on this fixture, which is the property the byte-identity checks below
+    // actually assert.
+    expect(after[LAYOUT_VERSION_KEY]).toBe(String(LAYOUT_VERSION));
     for (const key of [
       WORKSPACES_KEY,
       COMPARE_TABS_KEY,
@@ -320,6 +323,10 @@ describe("a v1 user's session after the upgrade", () => {
           selectedFilePath: "/repo/x.ts",
           treeMode: "flat",
           treeFilter: "src",
+          // State written before the tree width became per-tab carries none,
+          // so the deserializer supplies the default rather than a `NaN` the
+          // pane would render as no width at all.
+          treeWidth: 320,
         },
       ]);
       expect(s.stackTabsByWorktree[WT_A]).toEqual([
@@ -359,13 +366,19 @@ describe("runLayoutMigration", () => {
   function fakeStorage(initial: Record<string, string>) {
     const map = new Map(Object.entries(initial));
     const writes: string[] = [];
+    const removals: string[] = [];
     return {
       writes,
+      removals,
       map,
       getItem: (k: string) => map.get(k) ?? null,
       setItem: (k: string, v: string) => {
         writes.push(k);
         map.set(k, v);
+      },
+      removeItem: (k: string) => {
+        removals.push(k);
+        map.delete(k);
       },
     };
   }
@@ -384,6 +397,31 @@ describe("runLayoutMigration", () => {
     store.writes.length = 0;
     expect(runLayoutMigration(store)).toBe(false);
     expect(store.writes).toEqual([]);
+  });
+
+  /// v2 → v3, as a test. The brain tab kind was cut (2026-07-29 audit, C2), so
+  /// its key is deleted rather than left behind — and deleted *once*, which is
+  /// what the second run asserts.
+  it("removes the retired brain-tabs key, and only when it is there", () => {
+    const store = fakeStorage({ "voidlink-brain-tabs": JSON.stringify({ wt: [{ id: "b1" }] }) });
+
+    expect(runLayoutMigration(store)).toBe(true);
+    expect(store.removals).toEqual(["voidlink-brain-tabs"]);
+    expect(store.getItem("voidlink-brain-tabs")).toBeNull();
+
+    store.removals.length = 0;
+    store.writes.length = 0;
+    expect(runLayoutMigration(store)).toBe(false);
+    expect(store.removals).toEqual([]);
+  });
+
+  /// A key that was never there must not be "removed" — otherwise every boot
+  /// reports a write it did not make, and `runLayoutMigration`'s return value
+  /// stops meaning anything.
+  it("does not report a removal for a key that was already absent", () => {
+    const store = fakeStorage({});
+    runLayoutMigration(store);
+    expect(store.removals).toEqual([]);
   });
 
   it("stamps the version even when there is nothing to migrate", () => {

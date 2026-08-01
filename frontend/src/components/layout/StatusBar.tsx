@@ -1,3 +1,4 @@
+import { onGitRefsChanged } from "@/commands/gitEvents";
 /// The bottom bar: "what is the state of my repo, and of the panes I can't
 /// see, right now".
 ///
@@ -45,11 +46,12 @@ import { gitApi } from "@/api/git";
 import { stackApi } from "@/api/stack";
 import { isMac } from "@/api/platform";
 import { useAppStore } from "@/store/LayoutContext";
+import { worktreeLabel } from "@/types/workspace";
 import { aiCommitState } from "@/commands/aiCommit";
 import { formatChord } from "@/commands/keys";
 import { primaryChordFor } from "@/commands/keymap";
 import { isZen, maximizedGroupId, toggleMaximizedGroup, toggleZen } from "@/store/focusMode";
-import { hiddenActivity } from "@/store/activity";
+import { hiddenActivity, hiddenWorktreeActivity } from "@/store/activity";
 import { StatusLed } from "@/components/layout/StatusLed";
 import {
   STATUS_PRIORITY,
@@ -136,15 +138,26 @@ function chordLabel(actionId: string): string {
 export function StatusBar() {
   const { state, activeRepoPath } = useAppStore();
   const repoPath = () => activeRepoPath() ?? null;
+
+  /// A worktree's display name, for the segment that reports activity in one
+  /// the user is not in. Falls back to the id rather than to "somewhere": an
+  /// id at least tells you which of two similarly named checkouts it was.
+  const worktreeName = (worktreeId: string): string => {
+    for (const ws of state.workspaces) {
+      const wt = ws.worktrees.find((w) => w.id === worktreeId);
+      if (wt) return worktreeLabel(wt);
+    }
+    return worktreeId;
+  };
   const now = createFreshnessClock();
 
   /// Tracks an external "refresh" event so the bar follows the same
   /// refetch cadence as the git sidebar.
   const [tick, setTick] = createSignal(0);
   onMount(() => {
-    const onRefresh = () => setTick((t) => t + 1);
-    window.addEventListener("voidlink:refresh-git", onRefresh);
-    onCleanup(() => window.removeEventListener("voidlink:refresh-git", onRefresh));
+    // Through the shared helper, not a raw listener: raw listeners see every
+    // un-coalesced dispatch and cannot read the pulse's `remote` flag.
+    onCleanup(onGitRefsChanged(() => setTick((t) => t + 1)));
   });
 
   const [info] = createResource(
@@ -224,6 +237,32 @@ export function StatusBar() {
             <span class="tracking-wide">
               {count} hidden {count === 1 ? "pane" : "panes"}
             </span>
+          </>
+        ),
+      });
+    }
+
+    // The same rule, one container up. A signal in a worktree the user is not
+    // in normally lands on that worktree's rail row — but zen hides the rail,
+    // and then this is the only surface left. Emitted by `escalate` only in
+    // that case, so this is never a chip duplicating something already on
+    // screen (MASTER §7.6), and it names the worktrees rather than saying
+    // "something happened somewhere".
+    const elsewhere = hiddenWorktreeActivity();
+    if (elsewhere) {
+      const names = elsewhere.worktreeIds.map(worktreeName).filter(Boolean);
+      const shown = names.length ? names.join(", ") : `${elsewhere.worktreeIds.length} worktrees`;
+      out.push({
+        id: "worktree-activity",
+        priority: STATUS_PRIORITY.worktreeActivity,
+        align: "start",
+        signal: elsewhere.signal,
+        label: `Activity in ${shown} — ${elsewhere.signal}`,
+        title: `Zen mode is hiding the rail; ${shown} reported: ${elsewhere.signal}`,
+        render: () => (
+          <>
+            <StatusLed signal={elsewhere.signal} silent />
+            <span class="tracking-wide truncate max-w-[180px]">{shown}</span>
           </>
         ),
       });
@@ -385,17 +424,12 @@ export function StatusBar() {
     // `EditorStatusBar`, next to the buffer it is about, and the toggle is the
     // `view.toggle-blame` command — already scoped to `window: "editor"`.
 
-    out.push({
-      id: "workspaces",
-      priority: STATUS_PRIORITY.workspaces,
-      align: "end",
-      label: `${state.workspaces.length} workspaces open`,
-      render: () => (
-        <span class="opacity-60 font-mono">
-          {state.workspaces.length} workspace{state.workspaces.length === 1 ? "" : "s"}
-        </span>
-      ),
-    });
+    // No workspace counter here either, and for a reason worth writing down.
+    // It had the lowest resting priority in the registry, so it was the first
+    // thing the overflow rule collapsed into `⋯` — and what it reported, how
+    // many workspaces exist, is on screen already in the rail, which is visible
+    // everywhere except zen. A chip that is usually hidden and always redundant
+    // is a dead affordance (MASTER §7.6).
 
     return out;
   });

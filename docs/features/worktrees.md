@@ -67,7 +67,9 @@ Each row shows, in order:
 | `●` in warning colour | Uncommitted changes. |
 | `↑n` in success colour | n commits ahead of upstream. |
 | `↓n` in destructive colour | n commits behind upstream. |
-| Lock icon | The worktree is locked. |
+| `?` in muted colour | Its status could not be read — the directory may be gone or on an unmounted volume. **Not** the same as clean. |
+| `missing` in destructive colour | Git would prune it: the directory no longer exists. Opening is disabled. |
+| Lock icon (a button) | The worktree is locked. Click to unlock it. |
 | `main` badge | The first worktree git reports. |
 
 Dirty state comes from `git status --porcelain` run **inside that worktree**;
@@ -78,9 +80,23 @@ never breaks the listing.
 
 ### Removing
 
-The X button on a non-main row confirms with
-`Remove worktree "<label>"? Its directory will be deleted.`, then runs
-`git worktree remove <path>` followed by a best-effort `git worktree prune`.
+All three entry points — the X on a sidebar row, the rail's context menu, and
+the palette's `Remove current worktree…` — run the same flow, in
+`commands/worktreeRemove.ts`. It confirms with
+`Remove worktree "<label>"? Its directory will be deleted.`, runs
+`git worktree remove <path>`, then a best-effort `git worktree prune` whose
+failure is surfaced as a warning rather than dropped.
+
+If git refuses, the reason decides what is offered:
+
+| Refusal | What happens |
+|---|---|
+| Uncommitted work | Asks before `--force`. |
+| Locked | Offers to `git worktree unlock` first, then retries. |
+| Anything else (permissions, a main working tree, a missing directory) | Reports the error. Force is **not** offered, because it cannot help. |
+
+Every exit emits a refresh pulse, so the other surfaces stop listing a worktree
+that is gone.
 
 ## Keyboard shortcuts
 
@@ -94,14 +110,12 @@ No dedicated chords, but the command palette (`Mod+K`) carries the whole set:
   both land on `.worktrees/feature-x`, and the resulting
   `path already exists: <path>` is unrecoverable from the UI. Edit the
   Directory field to break the tie.
-- **A remote-only branch is treated as new.** The existence check only looks at
-  local branches, so `origin/feature/x` gets `worktree add -b feature/x`, which
-  creates a fresh local branch off `HEAD` instead of a tracking branch off the
-  remote.
-- **Force-remove is offered on *any* failure**, not just a dirty worktree. The
-  handler catches every exception and asks
-  `<msg>\n\nForce-remove anyway (discards changes)?` — including when the real
-  reason was something like "is a main working tree".
+- **A remote-only branch tracks, but only when one remote has it.** The wizard
+  classifies the name against local *and* remote branches and says which of the
+  three it will do under the input box. With exactly one remote carrying the
+  name, `worktree add <path> <branch>` lets git's own DWIM create a local branch
+  tracking it. Two remotes carrying the same name is ambiguous, so it falls back
+  to branching off `HEAD` — check the hint before pressing Create.
 - **`main` is positional, not semantic.** It is whichever record
   `git worktree list --porcelain` emits first, which is the main working tree —
   not "the worktree on the `main` branch". The badge text is a coincidence.
@@ -109,14 +123,15 @@ No dedicated chords, but the command palette (`Mod+K`) carries the whole set:
   branch. No upstream means a silent `0/0`, which the UI renders identically to
   "in sync" because zero-valued badges are hidden.
 - **Listing costs 2N+1 subprocesses** — one `worktree list` plus a `status` and
-  a `rev-list` per worktree — and re-runs on every git-refresh pulse. No
-  caching, no debounce beyond the shared event.
+  a `rev-list` per worktree. The per-worktree half runs concurrently, capped at
+  8 at a time, and concurrent callers share one round trip. It still re-runs on
+  every git-refresh pulse, and there is no cache.
 - **Opening a worktree as a workspace does not switch to it explicitly.** It
-  adds a workspace and sets its repo root.
-- **No detached worktrees**, no lock/unlock, no `worktree move`, no
-  `worktree repair`. `isLocked` is read-only. Only `list`, `add`, `remove`, and
-  `prune` are exposed.
-- **`worktree prune` runs unconditionally after every remove** and its failure
-  is discarded.
+  adds a workspace and sets its repo root. From the standalone git window it is
+  forwarded to the workbench, which is the only window with a rail.
+- **No `worktree move` and no `worktree repair`.** `list`, `add`, `remove`,
+  `unlock` and `prune` are exposed; the rest are not.
+- **Porcelain is parsed without `-z`**, so a path containing a newline splits
+  into a phantom row.
 - **Creating one re-lists everything** just to return the new row, re-running
   the whole enrichment pass.

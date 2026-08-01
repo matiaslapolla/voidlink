@@ -199,13 +199,21 @@ export const KEYMAP: readonly KeymapEntry[] = [
   {
     actionId: "ui.navigate-back",
     group: "View",
-    binding: { meta: true, alt: true, key: "[" },
-    note: "⌘⌥←/→ are already tab next/prev and ⌘⇧[ / ⌘⇧] are their VS Code alternates, so back/forward take the remaining bracket pair. The title bar carries the same two as buttons for anyone who would rather not remember it.",
+    binding: { meta: true, alt: true, key: "ArrowLeft" },
+    alternates: [
+      { meta: true, alt: true, key: "[" },
+      { meta: true, shift: true, key: "[" },
+    ],
+    note: "⌘⌥← is the browser back chord, and back/forward is what those arrows mean everywhere else. They were held by `tab.prev`/`tab.next` until MRU cycling made document-order stepping redundant; the bracket pairs stay as alternates because both spellings are muscle memory for somebody. The title bar carries the same two as buttons for anyone who would rather not remember it.",
   },
   {
     actionId: "ui.navigate-forward",
     group: "View",
-    binding: { meta: true, alt: true, key: "]" },
+    binding: { meta: true, alt: true, key: "ArrowRight" },
+    alternates: [
+      { meta: true, alt: true, key: "]" },
+      { meta: true, shift: true, key: "]" },
+    ],
   },
 
   // ── Tabs ──────────────────────────────────────────────────────────────
@@ -216,25 +224,22 @@ export const KEYMAP: readonly KeymapEntry[] = [
     note: "Only reaches us because the native menu's Close Window item was rebuilt without an accelerator — see `macos_menu` in src-tauri/src/menu.rs.",
   },
   { actionId: "tab.reopen-last", group: "Tabs", binding: { meta: true, shift: true, key: "t" } },
-  {
-    actionId: "tab.next",
-    group: "Tabs",
-    binding: { meta: true, alt: true, key: "ArrowRight" },
-    alternates: [
-      { meta: true, shift: true, key: "}" },
-      { meta: true, shift: true, key: "]" },
-    ],
-    note: "⌘⌥→ is the Safari/Chrome tab chord; ⌘⇧] is the VS Code one. Both are muscle memory for somebody, so both fire.",
-  },
-  {
-    actionId: "tab.prev",
-    group: "Tabs",
-    binding: { meta: true, alt: true, key: "ArrowLeft" },
-    alternates: [
-      { meta: true, shift: true, key: "{" },
-      { meta: true, shift: true, key: "[" },
-    ],
-  },
+
+  // `tab.next` and `tab.prev` are deliberately **palette-only**. They used to
+  // claim ⌘⌥←/→ plus the ⌘⇧[ / ⌘⇧] alternates, which made four separate models
+  // for moving between tabs: document-order stepping, MRU cycling, jump-to-N,
+  // and back/forward. MRU (`tab.mru-*`) covers "the one I was just in",
+  // jump-to-N covers "that one, by position", and `ui.navigate-*` covers "where
+  // I came from" — document-order stepping is the one nobody reaches for once
+  // MRU exists, and it was holding two chord pairs to do it.
+  //
+  // The actions stay registered and stay in the palette, so nothing became
+  // unreachable. `primaryChordFor` returning `undefined` is a supported state
+  // and renders as a palette entry with no accelerator.
+  //
+  // What the freed chords bought: ⌘⌥←/→ went to `ui.navigate-back/forward`,
+  // which is the motion those arrows actually describe, and the bracket pair
+  // ⌘⇧[ / ⌘⇧] came back as its VS Code-shaped alternate.
   {
     actionId: "tab.mru-next",
     group: "Tabs",
@@ -353,6 +358,12 @@ export const KEYMAP: readonly KeymapEntry[] = [
 
   // ── AI ────────────────────────────────────────────────────────────────
   { actionId: "agent.toggle", group: "AI", binding: { meta: true, shift: true, key: "a" } },
+  {
+    actionId: "agent.newTab",
+    group: "AI",
+    binding: { meta: true, alt: true, key: "a" },
+    note: "The slide-over is for a quick question; a tab is for a thread you want to keep, split, and come back to after a reload.",
+  },
 ];
 
 /// Every chord an entry claims, primary first.

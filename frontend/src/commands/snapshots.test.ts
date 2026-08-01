@@ -71,7 +71,6 @@ describe("snapshot migration", () => {
     expect(snap.tabs.previews).toEqual([]);
     expect(snap.tabs.browsers).toEqual([]);
     expect(snap.tabs.history).toBe(false);
-    expect(snap.tabs.brain).toBe(false);
     // v1 predates pane groups: a restore lands in the single-group default,
     // which is the layout the snapshot was taken in.
     expect(snap.panes).toBeNull();
@@ -138,7 +137,7 @@ describe("snapshot migration", () => {
         version: 2,
         name: "n",
         savedAt: 0,
-        tabs: { ...emptySnapshotTabs(), history: true, brain: true },
+        tabs: { ...emptySnapshotTabs(), history: true, timeline: true },
         panes: null,
         active: null,
         pinned: [],

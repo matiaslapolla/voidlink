@@ -163,8 +163,9 @@ exports it into the environment of the commands above. Presets ship for
   what it does, how to use it, its shortcuts, and its real limits. Start with
   [keyboard shortcuts](./docs/features/keyboard-shortcuts.md).
 - **[Manual de uso](./docs/manual-de-uso.md)** — guided walkthrough (Spanish).
-- **[Design docs](./docs/specs)** — the thinking behind branch compare and
-  stacked PRs.
+- **[Audits](./docs/audits/)** — read-only reviews of a surface, finding by
+  finding, each with a severity, a confidence level and the evidence behind it.
+- **[TODO](./docs/TODO.md)** — everything open, ranked, in one file.
 
 ---
 

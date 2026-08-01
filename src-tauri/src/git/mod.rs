@@ -82,15 +82,18 @@ use staging::{
 };
 use stash::{
     git_stash_apply_impl, git_stash_drop_impl, git_stash_list_impl, git_stash_pop_impl,
-    git_stash_save_impl, git_stash_show_impl, StashEntry,
+    git_stash_save_impl, StashEntry,
 };
 use status::{git_file_status_impl, git_log_impl};
 use tag::{
     git_create_tag_impl, git_delete_remote_tag_impl, git_delete_tag_impl, git_push_tag_impl,
 };
-use push::git_push_impl;
+use push::{
+    git_push_force_with_lease_impl, git_push_impl, git_remote_tracking_oid_impl, PushOutcome,
+};
 use worktree::{
-    git_add_worktree_impl, git_list_worktrees_impl, git_remove_worktree_impl, WorktreeInfo,
+    git_add_worktree_impl, git_list_worktrees_impl, git_remove_worktree_impl,
+    git_unlock_worktree_impl, WorktreeInfo,
 };
 use worktree_setup::{
     apply_setup, build_plan, write_defaults, DepAction, WorktreeDefaults, WorktreeSetupPlan,
@@ -102,7 +105,12 @@ use worktree_setup::{
 /// Shared git state. Today that is exactly one thing: the per-repository locks
 /// that make two commands fired from one click queue instead of interleaving
 /// inside libgit2's read-modify-write of the index or a ref. See `locking.rs`.
-#[derive(Default)]
+///
+/// `Clone` because `fanout::run_leg` needs an owned handle it can move into a
+/// `'static` background task spawned outside any single command invocation —
+/// `RepoLocks` is itself `Clone` over a `DashMap`, so this is one cheap
+/// reference-count bump, not a copy of the locks themselves.
+#[derive(Default, Clone)]
 pub struct GitState {
     locks: locking::RepoLocks,
 }
@@ -150,6 +158,31 @@ pub struct GitRepoInfo {
     pub has_conflicts: bool,
 }
 
+/// Ahead/behind counts for one ref, and what they were measured against.
+///
+/// Optional on the row rather than a pair of integers, because "nothing to
+/// compare against" and "compared, and level" are different facts that
+/// `ahead: 0, behind: 0` cannot tell apart. A remote-tracking branch with no
+/// local counterpart is the first; a remote-tracking branch sitting on the same
+/// commit as its local counterpart is the second. Flattened into two `u32`s
+/// they render identically, and the first would then assert an in-sync state
+/// nobody ever measured — the same class of lie `ahead_behind_unknown` was
+/// added to prevent for a walk that could not complete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AheadBehind {
+    /// Commits this row's own ref has that `against` does not.
+    pub ahead: u32,
+    /// Commits `against` has that this row's own ref does not.
+    pub behind: u32,
+    /// The ref the counts are measured against: the upstream for a local
+    /// branch, the local branch of the same short name for a remote-tracking
+    /// one. Carried on the row because `↑2 ↓0` on a remote-tracking branch is
+    /// ambiguous without it — the reader has no way to know the other side is
+    /// their own local branch rather than some upstream of the remote's.
+    pub against: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitBranchInfo {
@@ -157,12 +190,30 @@ pub struct GitBranchInfo {
     pub is_head: bool,
     pub is_remote: bool,
     pub upstream: Option<String>,
-    pub ahead: u32,
-    pub behind: u32,
+    /// The counts, when there is something to count against. See `AheadBehind`.
+    pub ahead_behind: Option<AheadBehind>,
     /// See `GitRepoInfo::ahead_behind_unknown`.
     pub ahead_behind_unknown: bool,
     pub last_commit_summary: Option<String>,
     pub last_commit_time: Option<i64>,
+    /// `name` went through a lossy UTF-8 conversion, so it is not the byte
+    /// string git holds.
+    ///
+    /// Such a branch used to be dropped from the list silently — it simply did
+    /// not exist as far as the UI was concerned. Listing it is better, but only
+    /// if every action that takes a name is refused: two different invalid
+    /// names can flatten to the same replacement character, and a delete or a
+    /// rename that hit the wrong one of those is exactly the kind of loss the
+    /// silence was hiding.
+    pub lossy_name: bool,
+    /// The ref this one is an alias for, when it is a symbolic ref under
+    /// `refs/heads/` rather than a branch.
+    ///
+    /// `git symbolic-ref refs/heads/stable refs/heads/v2` makes one, and it
+    /// rendered as an ordinary branch: deleting it removed the alias while the
+    /// user believed they had deleted the branch it named, with nothing on the
+    /// row to suggest otherwise.
+    pub symbolic_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +222,15 @@ pub struct GitFileStatus {
     pub path: String,
     pub status: String,
     pub staged: bool,
+    /// `path` went through a lossy UTF-8 conversion, so it is not the byte
+    /// string git holds and no command that takes a path can act on it.
+    ///
+    /// Such a file used to be dropped from the changes list entirely, which is
+    /// the worst of the three options: the user commits believing the list, and
+    /// the file is left behind with nothing having said it existed. Listed and
+    /// marked unactionable is at least true.
+    #[serde(default)]
+    pub lossy_path: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +275,28 @@ pub struct FileDiff {
     pub is_binary: bool,
     pub additions: u32,
     pub deletions: u32,
+    /// Blob oid of the **old** side, i.e. the content this diff was computed
+    /// against. `None` for an added or untracked file, which has no old side.
+    ///
+    /// Exists for hunk-level staging. A hunk patch is built from the diff the
+    /// user is looking at, and nothing guaranteed the file on disk still
+    /// matched it — a `git checkout` in the terminal, another editor writing,
+    /// or simply a diff left open for a while. libgit2's context matching
+    /// usually rejects a misfitting patch, but "usually" is libgit2 defending
+    /// us, not us being careful, and the action on the other end of that is
+    /// *discard*. Sending the oid back with the patch lets Rust refuse
+    /// outright when the basis has moved.
+    pub old_blob_oid: Option<String>,
+    /// Some of this file's lines were dropped before serialization.
+    ///
+    /// `additions`/`deletions` still count every line — only the stored
+    /// content stops. See the budget in `collect_diff`.
+    ///
+    /// `default` because this type is also *received* — hunk staging sends a
+    /// `FileDiff` back — and a field the frontend has no reason to set must
+    /// not make the whole command fail to deserialize.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +322,15 @@ pub struct RefList {
     pub branches: Vec<String>,
     pub tags: Vec<String>,
     pub recent_commits: Vec<RecentCommit>,
+    /// The commit HEAD is sitting on when it is **detached**, and `None`
+    /// otherwise.
+    ///
+    /// A detached HEAD is the one position in a repository that no listed ref
+    /// names, so the picker could not offer it at all: mid-bisect, mid-rebase,
+    /// or after checking out a tag, the thing the user is actually standing on
+    /// was the one thing they could not compare against without typing the
+    /// literal word themselves.
+    pub detached_head: Option<RecentCommit>,
 }
 
 // ─── Tauri command wrappers ──────────────────────────────────────────────────
@@ -421,14 +512,53 @@ pub async fn git_config_unset(
     blocking_git!(state, repo_path, git_config_unset_impl(repo_path, key, scope))
 }
 
+/// Push, answering *how* it failed rather than only that it did — the
+/// force-push recovery is offered for one failure class and withheld for the
+/// rest, and it cannot tell them apart from a message.
 #[tauri::command]
 pub async fn git_push(
     repo_path: String,
     remote: Option<String>,
     branch: Option<String>,
     state: tauri::State<'_, GitState>,
-) -> Result<(), String> {
+) -> Result<PushOutcome, String> {
     blocking_git!(state, repo_path, git_push_impl(repo_path, remote, branch))
+}
+
+/// What the last fetch recorded for `refs/remotes/<remote>/<branch>`: the value
+/// a force-push lease is taken on. `None` when there is no tracking ref, in
+/// which case no lease can be held and force must stay out of reach.
+#[tauri::command]
+pub async fn git_remote_tracking_oid(
+    repo_path: String,
+    remote: String,
+    branch: String,
+    state: tauri::State<'_, GitState>,
+) -> Result<Option<String>, String> {
+    blocking_git!(
+        state,
+        repo_path,
+        git_remote_tracking_oid_impl(repo_path, remote, branch)
+    )
+}
+
+/// Force-push, honouring a lease taken from a fetch. Errs — loudly, and by
+/// design — when the remote moved between that fetch and now. See
+/// `push::git_push_force_with_lease_impl` for the race window this does *not*
+/// close.
+#[tauri::command]
+pub async fn git_push_force_with_lease(
+    repo_path: String,
+    remote: Option<String>,
+    branch: Option<String>,
+    expected_remote_oid: String,
+    state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(
+        state,
+        repo_path,
+        git_push_force_with_lease_impl(repo_path, remote, branch, expected_remote_oid)
+    )
 }
 
 #[tauri::command]
@@ -463,10 +593,17 @@ pub async fn git_discard_file(
 pub async fn git_discard_all(
     repo_path: String,
     include_untracked: Option<bool>,
+    // `paths`: repo-relative paths to limit the discard to, when the changes
+    // list is filtered. Absent means every changed path, as before.
+    paths: Option<Vec<String>>,
     state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
     let inc = include_untracked.unwrap_or(false);
-    blocking_git!(state, repo_path, git_discard_all_impl(repo_path, inc))
+    blocking_git!(
+        state,
+        repo_path,
+        git_discard_all_impl(repo_path, inc, paths)
+    )
 }
 
 #[tauri::command]
@@ -483,10 +620,12 @@ pub async fn git_discard_hunk(
 pub async fn git_diff_working(
     repo_path: String,
     staged_only: Option<bool>,
+    ignore_whitespace: Option<bool>,
     state: tauri::State<'_, GitState>,
 ) -> Result<DiffResult, String> {
     let staged = staged_only.unwrap_or(false);
-    blocking_git!(state, repo_path, git_diff_working_impl(repo_path, staged))
+    let ws = ignore_whitespace.unwrap_or(false);
+    blocking_git!(state, repo_path, git_diff_working_impl(repo_path, staged, ws))
 }
 
 #[tauri::command]
@@ -495,10 +634,16 @@ pub async fn git_diff_refs(
     base_ref: String,
     head_ref: String,
     use_merge_base: Option<bool>,
+    ignore_whitespace: Option<bool>,
     state: tauri::State<'_, GitState>,
 ) -> Result<DiffResult, String> {
     let merge_base = use_merge_base.unwrap_or(true);
-    blocking_git!(state, repo_path, git_diff_refs_impl(repo_path, base_ref, head_ref, merge_base))
+    let ws = ignore_whitespace.unwrap_or(false);
+    blocking_git!(
+        state,
+        repo_path,
+        git_diff_refs_impl(repo_path, base_ref, head_ref, merge_base, ws)
+    )
 }
 
 #[tauri::command]
@@ -718,7 +863,7 @@ pub async fn git_stash_apply(
     index: usize,
     oid: String,
     state: tauri::State<'_, GitState>,
-) -> Result<(), String> {
+) -> Result<OpResult, String> {
     blocking_git!(state, repo_path, git_stash_apply_impl(repo_path, index, oid))
 }
 
@@ -728,7 +873,7 @@ pub async fn git_stash_pop(
     index: usize,
     oid: String,
     state: tauri::State<'_, GitState>,
-) -> Result<(), String> {
+) -> Result<OpResult, String> {
     blocking_git!(state, repo_path, git_stash_pop_impl(repo_path, index, oid))
 }
 
@@ -740,15 +885,6 @@ pub async fn git_stash_drop(
     state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
     blocking_git!(state, repo_path, git_stash_drop_impl(repo_path, index, oid))
-}
-
-#[tauri::command]
-pub async fn git_stash_show(
-    repo_path: String,
-    index: usize,
-    state: tauri::State<'_, GitState>,
-) -> Result<DiffResult, String> {
-    blocking_git!(state, repo_path, git_stash_show_impl(repo_path, index))
 }
 
 // ─── Remotes ─────────────────────────────────────────────────────────────────
@@ -965,6 +1101,17 @@ pub async fn git_remove_worktree(
 ) -> Result<String, String> {
     let f = force.unwrap_or(false);
     blocking_git!(state, repo_path, git_remove_worktree_impl(repo_path, path, f))
+}
+
+#[tauri::command]
+/// Clear a worktree's lock, so it can be removed or pruned again.
+#[allow(clippy::used_underscore_binding)]
+pub async fn git_unlock_worktree(
+    repo_path: String,
+    path: String,
+    state: tauri::State<'_, GitState>,
+) -> Result<(), String> {
+    blocking_git!(state, repo_path, git_unlock_worktree_impl(repo_path, path))
 }
 
 // ─── Worktree setup (env files, dependency dirs, per-repo defaults) ──────────

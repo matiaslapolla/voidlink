@@ -67,6 +67,24 @@ export function flushGitRefsChanged(): void {
   dispatchPulse();
 }
 
+/// Flush on the way out.
+///
+/// The 40ms coalescing window means a mutation that finishes just before the
+/// window closes — the last commit before a quit, a checkout followed
+/// immediately by ⌘W — leaves its pulse pending, and the timer dies with the
+/// page. The cross-window bridge then never re-publishes it, so the *other*
+/// windows keep showing pre-mutation state until something else happens to
+/// wake them. `pagehide` rather than `beforeunload`: it fires on the paths
+/// `beforeunload` misses, and this handler only dispatches a synchronous
+/// event.
+///
+/// Registered at module scope so it cannot be forgotten by a caller, and
+/// guarded for non-DOM environments because this module is imported by tests
+/// that run in node.
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushGitRefsChanged);
+}
+
 /// Subscribe to ref-change pulses. Returns an unsubscribe fn; pass it to
 /// SolidJS `onCleanup`. Use in any pane that owns a git-derived resource.
 ///

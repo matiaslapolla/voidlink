@@ -1,5 +1,6 @@
-import { createSignal } from "solid-js";
+import { createEffect, createSignal, onCleanup } from "solid-js";
 import { textPrompt } from "./prompt";
+import { createOverlay } from "./overlay";
 
 /// A user-invokable action surfaced by the Cmd+K palette and (optionally)
 /// bound to a global keyboard shortcut. Actions are registered once at app
@@ -50,12 +51,113 @@ export function getVisibleActions(): Action[] {
   return actions().filter((a) => !a.hidden);
 }
 
-/// Palette open state — shared so any caller (keybinding, button) can toggle it.
-const [paletteOpen, setPaletteOpen] = createSignal(false);
-const [fileFinderOpen, setFileFinderOpen] = createSignal(false);
-const [cheatSheetOpen, setCheatSheetOpen] = createSignal(false);
-const [worktreeSwitcherOpen, setWorktreeSwitcherOpen] = createSignal(false);
-const [tabSwitcherOpen, setTabSwitcherOpen] = createSignal(false);
+// ─── Action sources ───────────────────────────────────────────────────────
+/// This is the fix for PALETTE-SRC1: before it, the whole action catalog was
+/// one array assembled inside `App.tsx`, which had to import from — and
+/// therefore know about — every feature that wanted a palette entry: git,
+/// stack, worktrees, snapshots, layout presets, the agent panel. A feature
+/// couldn't contribute a row without `App.tsx` growing another import and
+/// another few dozen lines in that one array, the same "one file has to know
+/// the whole list" shape `TAB_SPECS` (`store/layout/tabs.ts`) and
+/// `createOverlay` (`commands/overlay.ts`) already fixed for tab kinds and
+/// modal surfaces.
+///
+/// A *source* is a feature's own reactive slice of the catalog: a function
+/// that returns the `Action[]` it currently wants registered, closing over
+/// whatever store state it needs. `registerActionSource` is the one thing a
+/// feature module calls — declaring its actions and registering them is the
+/// same act, so there is no second step (App.tsx wiring an effect) to forget.
+///
+/// `priority` makes this source's position in the composed catalog explicit
+/// rather than incidental. The palette's resting list (no query, action not
+/// recently used) falls back to registration order — see
+/// `CommandPalette.tsx`'s `rank` — so *some* order has to be picked, and
+/// leaving it to "whichever source's effect happened to fire most recently"
+/// would let two features that update at different rates drift apart in the
+/// list a user has already learned the shape of. Lower runs first; ties break
+/// by registration order.
+export type ActionSourceFn = () => Action[];
+
+interface ActionSourceEntry {
+  priority: number;
+  seq: number;
+  get: ActionSourceFn;
+}
+
+const [actionSources, setActionSources] = createSignal<ActionSourceEntry[]>([]);
+let actionSourceSeq = 0;
+
+/// Contribute a reactive slice of the palette catalog. Call once, at the
+/// point the feature owns the state its actions close over (typically once
+/// per component instance, the same place `useKeybindings` or
+/// `useModifierRelease` are called) — not inside an effect of your own; the
+/// composed catalog (`useActionSourceCatalog`, below) is the single effect
+/// that tracks every source's reads and rebuilds the whole list as one unit.
+///
+/// Returns an unregister function. Most callers never need it — the app has
+/// one instance of each source for its lifetime — but it exists so a source
+/// can be torn down (and so tests can register and clean up without leaking
+/// state into the next one).
+export function registerActionSource(priority: number, get: ActionSourceFn): () => void {
+  const entry: ActionSourceEntry = { priority, seq: actionSourceSeq++, get };
+  setActionSources((cur) => [...cur, entry]);
+  return () => setActionSources((cur) => cur.filter((e) => e !== entry));
+}
+
+/// The form every feature registration function (`registerGitActions`,
+/// `registerWorkspaceActions`, …) actually calls: `registerActionSource`,
+/// with its unregister function handed straight to `onCleanup`. Without this,
+/// a source outlives the component that declared it — harmless for `AppInner`
+/// today (it mounts once, for the app's lifetime), but a trap for the next
+/// context this runs in: a satellite window that *does* unmount its sources,
+/// or a test that mounts the same feature twice and finds its second
+/// registration's ids duplicated by a first one nothing ever tore down.
+export function useActionSource(priority: number, get: ActionSourceFn): void {
+  onCleanup(registerActionSource(priority, get));
+}
+
+/// Every source's actions, concatenated in priority order. A plain function,
+/// not a memo: it is only ever called from inside the tracked scope of
+/// `useActionSourceCatalog`'s effect, and calling `entry.get()` there is what
+/// makes that effect depend on whatever signals each source's closure reads —
+/// exactly as if all of it were still one hand-written array in one effect.
+function composeActionSources(): Action[] {
+  return [...actionSources()]
+    .sort((a, b) => a.priority - b.priority || a.seq - b.seq)
+    .flatMap((entry) => entry.get());
+}
+
+/// Wires the composed catalog into the registry. Call exactly once, from
+/// reactive scope that lives for the app's lifetime (`AppInner` in
+/// `App.tsx`) — after every feature has had the chance to call
+/// `registerActionSource`, though even that ordering is not load-bearing:
+/// a source registered after this runs still takes effect on the next
+/// dependency change, because `actionSources` is itself a signal this
+/// effect reads.
+export function useActionSourceCatalog(): void {
+  createEffect(() => {
+    const dispose = registerActions(composeActionSources());
+    onCleanup(dispose);
+  });
+}
+
+/// Palette open state — shared so any caller (keybinding, button) can toggle
+/// it. `createOverlay` rather than a bare `createSignal`: each of these is a
+/// modal surface the embedded browser has to hide behind (see
+/// `commands/overlay.ts`), and this way that is true by construction instead
+/// of by an `App.tsx` effect someone had to remember to add. The cheat sheet
+/// was never wired into that effect list before this change — an
+/// unregistered overlay that nobody had hit yet, and exactly the failure mode
+/// BR-O1 describes.
+const paletteOverlay = createOverlay("palette");
+const fileFinderOverlay = createOverlay("file-finder");
+const cheatSheetOverlay = createOverlay("cheat-sheet");
+const worktreeSwitcherOverlay = createOverlay("worktree-switcher");
+const tabSwitcherOverlay = createOverlay("tab-switcher");
+/// The project brain, same mechanism. Its overlay component used to register
+/// itself on mount and unregister on cleanup; owning the state here means the
+/// registration cannot disagree with whether the surface is actually open.
+const brainOverlay = createOverlay("brain");
 
 // ─── Recently-used actions ────────────────────────────────────────────────
 /// Ids in most-recent-first order, capped. In memory rather than persisted: the
@@ -92,19 +194,19 @@ export function runAction(action: Action): void | Promise<void> {
 }
 
 export function isPaletteOpen() {
-  return paletteOpen();
+  return paletteOverlay.isOpen();
 }
 
 export function openPalette() {
-  setPaletteOpen(true);
+  paletteOverlay.open();
 }
 
 export function closePalette() {
-  setPaletteOpen(false);
+  paletteOverlay.close();
 }
 
 export function isFileFinderOpen() {
-  return fileFinderOpen();
+  return fileFinderOverlay.isOpen();
 }
 
 // ─── Built-in commands ────────────────────────────────────────────────────
@@ -126,50 +228,68 @@ registerActions([
 ]);
 
 export function openFileFinder() {
-  setFileFinderOpen(true);
+  fileFinderOverlay.open();
 }
 
 export function closeFileFinder() {
-  setFileFinderOpen(false);
+  fileFinderOverlay.close();
 }
 
 export function isCheatSheetOpen() {
-  return cheatSheetOpen();
+  return cheatSheetOverlay.isOpen();
 }
 
 export function openCheatSheet() {
-  setCheatSheetOpen(true);
+  cheatSheetOverlay.open();
 }
 
 export function closeCheatSheet() {
-  setCheatSheetOpen(false);
+  cheatSheetOverlay.close();
+}
+
+/// The project brain, as an overlay rather than a tab.
+///
+/// It was a tab kind until the 2026-07-29 audit's cut C2: a vault viewer
+/// reports no state, and the tab strip is for things that do. Held here beside
+/// the other palette-invoked surfaces because that is what it now is — the
+/// difference from those is only that its panel is large enough to read in.
+export function isBrainOpen() {
+  return brainOverlay.isOpen();
+}
+
+export function openBrain() {
+  brainOverlay.open();
+}
+
+export function closeBrain() {
+  brainOverlay.close();
 }
 
 /// The worktree/workspace switcher: every worktree across every workspace, with
 /// its dirty/ahead/behind badges.
 export function isWorktreeSwitcherOpen() {
-  return worktreeSwitcherOpen();
+  return worktreeSwitcherOverlay.isOpen();
 }
 
 export function openWorktreeSwitcher() {
-  setWorktreeSwitcherOpen(true);
+  worktreeSwitcherOverlay.open();
 }
 
 export function closeWorktreeSwitcher() {
-  setWorktreeSwitcherOpen(false);
+  worktreeSwitcherOverlay.close();
 }
 
 /// "Go to open tab" — the same chrome, over what is already open.
 export function isTabSwitcherOpen() {
-  return tabSwitcherOpen();
+  return tabSwitcherOverlay.isOpen();
 }
 
 export function openTabSwitcher() {
-  setTabSwitcherOpen(true);
+  tabSwitcherOverlay.open();
 }
 
 export function closeTabSwitcher() {
-  setTabSwitcherOpen(false);
+  tabSwitcherOverlay.close();
 }
 
 /// Deep link into one editor setting by name.

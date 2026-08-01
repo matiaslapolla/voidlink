@@ -11,15 +11,29 @@
 /// hunks (see `diffModel.ts`) rather than fetched — there is no "read file at
 /// ref" command, and the reconstruction is exact.
 
-import { Show, createMemo, createResource, createSignal } from "solid-js";
-import { Columns2, GitCompare, RotateCw, Rows3, Space, Trash2, Plus } from "lucide-solid";
+import { Show, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  Columns2,
+  GitCompare,
+  RotateCw,
+  Rows3,
+  Space,
+  SplitSquareVertical,
+  Trash2,
+  Plus,
+} from "lucide-solid";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { fsApi } from "@/api/fs";
 import { gitApi } from "@/api/git";
-import { emitGitRefsChanged } from "@/commands/gitEvents";
+import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { pushToast } from "@/commands/toast";
 import { useAppStore } from "@/store/LayoutContext";
-import { applyIgnoreWhitespace } from "@/components/git/shared/SplitDiffRenderer";
+import {
+  DiffRenderer,
+  type HunkActions,
+} from "@/components/git/shared/SplitDiffRenderer";
+import { ProvenanceNote } from "@/components/git/shared/ProvenanceNote";
+import { loadFileProvenance } from "@/components/git/shared/provenance";
 import { workingTreeSides } from "./diffModel";
 import { MonacoDiffPane } from "./MonacoPanes";
 import type { FileDiff } from "@/types/git";
@@ -27,32 +41,138 @@ import type { FileDiff } from "@/types/git";
 interface DiffTabViewProps {
   repoPath: string;
   filePath: string;
+  /// Which side of the index to show: `true` is `git diff --cached`, `false` is
+  /// `git diff`. The sidebar decides it from the section the row was in.
+  staged?: boolean;
 }
 
 export function DiffTabView(props: DiffTabViewProps) {
   const { state, actions } = useAppStore();
   const [busy, setBusy] = createSignal(false);
 
+  /// Path as git names it — relative to the repo root. The staging commands
+  /// take repo-relative paths, and so do the `FileDiff` entries we match
+  /// against. The tab may carry either form depending on who opened it.
+  const relPath = () =>
+    props.filePath.startsWith(`${props.repoPath}/`)
+      ? props.filePath.slice(props.repoPath.length + 1)
+      : props.filePath;
+
+  /// Path as the filesystem names it.
+  ///
+  /// `fs_read_file` takes a real path, but the git sidebar opens diffs with
+  /// `entry.path()` straight from git2, which is repo-relative. The read
+  /// therefore failed and the `catch` below turned that into an empty string —
+  /// so Monaco was handed a blank working document and rendered the whole file
+  /// as deleted. Silent, because a file that genuinely cannot be read has to
+  /// stay non-fatal: a diff of a file deleted in the working tree is a real
+  /// thing to want to look at.
+  const absPath = () =>
+    props.filePath.startsWith("/") ? props.filePath : `${props.repoPath}/${props.filePath}`;
+
   /// Refetched together: the diff decides which lines changed, the working file
   /// supplies the text those line numbers point into. Reading them separately
   /// would let one refresh land against the other's file version.
   const [data, { refetch }] = createResource(
-    () => ({ repo: props.repoPath, file: props.filePath }),
-    async ({ repo, file }) => {
+    () => ({
+      repo: props.repoPath,
+      rel: relPath(),
+      abs: absPath(),
+      staged: props.staged ?? false,
+      // Part of the request, not of the render: filtering the answer afterwards
+      // left the header counts describing a different diff from the body.
+      ignoreWhitespace: state.ignoreWhitespace,
+    }),
+    async ({ repo, rel, abs, staged, ignoreWhitespace }) => {
       const [diff, working] = await Promise.all([
-        gitApi.diffWorking(repo),
-        fsApi.readFile(file).catch(() => ""),
+        gitApi.diffWorking(repo, staged, ignoreWhitespace),
+        fsApi.readFile(abs).catch(() => ""),
       ]);
-      const fileDiff =
-        diff.files.find((f) => (f.newPath ?? f.oldPath) === file) ?? null;
+      const fileDiff = diff.files.find((f) => (f.newPath ?? f.oldPath) === rel) ?? null;
       return { fileDiff, working };
     },
   );
 
-  const fileDiff = createMemo<FileDiff | null>(() => {
-    const raw = data()?.fileDiff ?? null;
-    if (!raw || !state.ignoreWhitespace) return raw;
-    return applyIgnoreWhitespace(raw);
+  /// Anything that moves the index or the working tree invalidates this diff,
+  /// and most of what moves them happens somewhere else — the sidebar's Stage
+  /// button, a commit, a checkout, another window. Without this the tab only
+  /// ever refreshed on its own two buttons, which is why staging from the
+  /// sidebar appeared to leave the diff untouched.
+  /// Who the journal thinks last wrote this file — file-level and inferred, and
+  /// the note says both. See `git/shared/provenance.ts` for why no hunk-level
+  /// claim is available to make here.
+  ///
+  /// Separate from the diff resource rather than folded into it: a failure to
+  /// answer "who" must not be able to take the diff down with it, which is the
+  /// same reason `record()` cannot throw. `null` on rejection means the note
+  /// simply does not render.
+  const [provenance, { refetch: refetchProvenance }] = createResource(
+    () => ({ repo: props.repoPath, abs: absPath() }),
+    ({ repo, abs }) => loadFileProvenance(repo, abs).catch(() => null),
+  );
+
+  onMount(() =>
+    onCleanup(
+      onGitRefsChanged(() => {
+        void refetch();
+        // The mtime the claim rests on moves whenever the file does, so a stale
+        // attribution would keep naming the agent that wrote the *previous*
+        // version — §7.5.4's stale-value failure, with a name attached.
+        void refetchProvenance();
+      }),
+    ),
+  );
+
+  /// Exactly what the backend returned. Nothing filters it here any more,
+  /// which is also what makes hunk indices safe to send back: the renderer
+  /// iterates the same array Rust will index into.
+  const fileDiff = createMemo<FileDiff | null>(() => data()?.fileDiff ?? null);
+
+  /// Per-hunk view. Local rather than a stored preference: you turn it on for
+  /// the file you are splitting up, not forever.
+  const [hunkMode, setHunkMode] = createSignal(false);
+
+  /// Stage or unstage one hunk.
+  ///
+  /// The index is positional in `file.hunks`, and Rust indexes the same array
+  /// out of the `FileDiff` we hand it — so the two cannot disagree. (They used
+  /// to: the whitespace filter dropped hunks client-side, and the dead
+  /// `GitDiffView` carried a whole remap to undo that. Moving whitespace into
+  /// the diff deleted the problem rather than the workaround.)
+  async function stageHunk(hunkIndex: number) {
+    const file = fileDiff();
+    if (!file) return;
+    const staged = props.staged ?? false;
+    await run(staged ? "Could not unstage hunk" : "Could not stage hunk", async () => {
+      await gitApi.applyHunk(props.repoPath, file, hunkIndex, staged);
+      pushToast(staged ? "Unstaged hunk" : "Staged hunk", "success", 1800);
+    });
+  }
+
+  /// Revert one hunk in the working tree. Irreversible, so it asks — and Rust
+  /// refuses outright if the file moved since this diff was rendered.
+  async function discardHunk(hunkIndex: number) {
+    const file = fileDiff();
+    if (!file) return;
+    const ok = await dialogConfirm(
+      `Discard this hunk in ${relPath()}? Only these lines revert, and this cannot be undone.`,
+      { title: "Discard hunk", kind: "warning" },
+    );
+    if (!ok) return;
+    await run("Could not discard hunk", async () => {
+      await gitApi.discardHunk(props.repoPath, file, hunkIndex);
+      pushToast("Discarded hunk", "info", 2200);
+    });
+  }
+
+  const hunkActions = (): HunkActions => ({
+    onStageHunk: (i) => void stageHunk(i),
+    stageLabel: props.staged ? "Unstage hunk" : "Stage hunk",
+    stageReverse: props.staged ?? false,
+    // Discard only makes sense against the working tree. On the staged view
+    // the working tree is not what you are looking at, so offering it there
+    // would revert something off screen.
+    onDiscardHunk: props.staged ? undefined : (i) => void discardHunk(i),
   });
 
   const sides = createMemo(() => {
@@ -61,13 +181,6 @@ export function DiffTabView(props: DiffTabViewProps) {
     return workingTreeSides(d.working, fileDiff());
   });
 
-  /// Path as git names it — relative to the repo root. The staging commands
-  /// take repo-relative paths; the tab carries an absolute one.
-  const relPath = () =>
-    props.filePath.startsWith(`${props.repoPath}/`)
-      ? props.filePath.slice(props.repoPath.length + 1)
-      : props.filePath;
-
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(true);
     try {
@@ -75,7 +188,21 @@ export function DiffTabView(props: DiffTabViewProps) {
       refetch();
       emitGitRefsChanged();
     } catch (e) {
-      pushToast(`${label}: ${e instanceof Error ? e.message : String(e)}`, "error", 6000);
+      const msg = e instanceof Error ? e.message : String(e);
+      // Rust refuses a hunk action when the file has moved since this diff was
+      // rendered — a checkout in the terminal, another editor saving. That is
+      // not an error to apologise for, it is a stale view: say so, and refresh
+      // so the next click acts on what is actually there.
+      if (msg.includes("[stale-diff]")) {
+        pushToast(
+          "This file changed since the diff was drawn — refreshed. Try again.",
+          "warning",
+          5000,
+        );
+        refetch();
+      } else {
+        pushToast(`${label}: ${msg}`, "error", 6000);
+      }
     } finally {
       setBusy(false);
     }
@@ -141,6 +268,28 @@ export function DiffTabView(props: DiffTabViewProps) {
         >
           <RotateCw class="w-3.5 h-3.5" />
         </button>
+        {/* Per-hunk staging lives behind this, because it needs a surface that
+            draws hunks as discrete blocks — Monaco's diff view has no such
+            unit. The controls existed and were rendered by nothing: their one
+            caller had no import site anywhere in the tree. */}
+        <button
+          onClick={() => setHunkMode((v) => !v)}
+          aria-label="Toggle per-hunk view"
+          aria-pressed={hunkMode()}
+          class={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border transition-colors ${
+            hunkMode()
+              ? "bg-primary/15 border-primary/40 text-primary"
+              : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+          }`}
+          title={
+            props.staged
+              ? "Show hunks, with per-hunk unstage"
+              : "Show hunks, with per-hunk stage and discard"
+          }
+        >
+          <SplitSquareVertical class="w-3 h-3" />
+          Hunks
+        </button>
         <button
           onClick={() => actions.toggleIgnoreWhitespace()}
           aria-label="Toggle ignore whitespace"
@@ -191,7 +340,35 @@ export function DiffTabView(props: DiffTabViewProps) {
         </div>
       </div>
 
+      {/* Above the body rather than inside the renderer: the claim is about the
+          file, and a row that scrolled with the hunks would be read as being
+          about whichever hunk it happened to sit beside. */}
+      <ProvenanceNote provenance={provenance()} />
+
       <div class="flex-1 min-h-0">
+        <Show when={!hunkMode()} fallback={
+          <div class="h-full overflow-auto scrollbar-thin font-mono text-[12px] leading-[1.5]">
+            <Show
+              when={fileDiff()}
+              fallback={
+                <div class="h-full flex items-center justify-center text-muted-foreground text-xs">
+                  <Show when={data.loading} fallback="No changes to show.">
+                    Loading diff…
+                  </Show>
+                </div>
+              }
+            >
+              {(f) => (
+                <DiffRenderer
+                  file={f()}
+                  mode={state.diffMode}
+                  hunkActions={hunkActions()}
+                  repoPath={props.repoPath}
+                />
+              )}
+            </Show>
+          </div>
+        }>
         <Show
           when={sides()}
           fallback={
@@ -220,6 +397,7 @@ export function DiffTabView(props: DiffTabViewProps) {
               />
             </Show>
           )}
+        </Show>
         </Show>
       </div>
     </div>

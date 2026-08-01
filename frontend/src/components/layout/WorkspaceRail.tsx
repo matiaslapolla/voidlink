@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   FolderGit2,
+  FolderOpen,
   GitBranch,
   Lock,
   Plus,
@@ -11,11 +12,13 @@ import {
 import { useAppStore } from "@/store/LayoutContext";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 import { onGitRefsChanged } from "@/commands/gitEvents";
+import { pickWorkspaceFolder } from "@/commands/openFolder";
 import { requestNewWorktree } from "@/commands/worktree";
+import { removeWorktreeWithConfirm } from "@/commands/worktreeRemove";
 import { pushToast } from "@/commands/toast";
-import { gitApi } from "@/api/git";
 import { worktreeLabel, type Workspace, type Worktree } from "@/types/workspace";
-import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
+import { LedSlot, ledLabel } from "@/components/layout/StatusLed";
+import { worktreeMark } from "@/store/activity";
 import { Splitter } from "@/components/layout/Splitter";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { PANEL_BOUNDS } from "@/store/layout";
@@ -117,9 +120,24 @@ export function WorkspaceRail() {
   /// Why the `+` might be unavailable, or null when it's fine. Never a silent
   /// no-op: the button stays visible and explains itself in its tooltip.
   function newWorktreeBlockedReason(ws: Workspace): string | null {
-    if (!ws.repoRoot) return "Select a repository for this workspace first";
+    if (!ws.repoRoot) return "Open a folder in this workspace first";
     if (!ws.isRepo) return "This folder isn't a git repository — worktrees need one";
     return null;
+  }
+
+  /// Point a workspace at a folder from its own header row, without having to
+  /// make it active first and go via the files sidebar. Selecting it afterwards
+  /// (not before) means a cancelled dialog leaves you exactly where you were,
+  /// while a completed pick puts you in front of what you just opened.
+  ///
+  /// A workspace that already has a root is re-pointed rather than refused:
+  /// `setRepoRoot` moves the main worktree, re-hydrates the list, and re-adopts
+  /// the repo name if the workspace never got a manual one.
+  async function onOpenFolder(ws: Workspace) {
+    const picked = await pickWorkspaceFolder();
+    if (!picked) return;
+    actions.setRepoRoot(ws.id, picked);
+    actions.selectWorkspace(ws.id);
   }
 
   function onNewWorktree(ws: Workspace) {
@@ -136,35 +154,21 @@ export function WorkspaceRail() {
     });
   }
 
-  /// Remove a linked worktree: git first, store second. The force fallback
-  /// mirrors the git sidebar's worktrees pane — git refuses to drop a dirty
-  /// worktree, and we ask before discarding.
+  /// Remove a linked worktree: git first, store second.
+  ///
+  /// The flow itself lives in `commands/worktreeRemove` — this version used to
+  /// offer force-remove on *any* failure (a lock or a permissions error led
+  /// straight to a button whose job is discarding changes) and never emitted a
+  /// refresh pulse, so the sidebar kept listing a worktree the rail had already
+  /// dropped.
   async function removeWorktree(ws: Workspace, wt: Worktree) {
     if (wt.isMain || !ws.repoRoot) return;
-    const label = worktreeLabel(wt);
-    const ok = await dialogConfirm(
-      `Remove worktree "${label}"? Its directory will be deleted.`,
-      { title: "Remove worktree", kind: "warning" },
-    );
-    if (!ok) return;
-    try {
-      await gitApi.removeWorktree(ws.repoRoot, wt.path, false);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const force = await dialogConfirm(
-        `${msg}\n\nForce-remove anyway (discards changes)?`,
-        { title: "Force-remove worktree", kind: "warning" },
-      );
-      if (!force) return;
-      try {
-        await gitApi.removeWorktree(ws.repoRoot, wt.path, true);
-      } catch (e2) {
-        pushToast(e2 instanceof Error ? e2.message : String(e2), "error", 6000);
-        return;
-      }
-    }
-    actions.removeWorktree(ws.id, wt.id);
-    pushToast(`Removed worktree ${label}`, "info", 2500);
+    const removed = await removeWorktreeWithConfirm({
+      repoRoot: ws.repoRoot,
+      path: wt.path,
+      label: worktreeLabel(wt),
+    });
+    if (removed) actions.removeWorktree(ws.id, wt.id);
   }
 
   function menuItems(ws: Workspace, wt: Worktree): ContextMenuItem[] {
@@ -265,6 +269,17 @@ export function WorkspaceRail() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      void onOpenFolder(ws);
+                    }}
+                    aria-label={`Open folder in ${ws.name}`}
+                    title={ws.repoRoot ? `${ws.repoRoot}\nOpen a different folder…` : "Open folder…"}
+                    class="p-0.5 rounded shrink-0 transition-colors opacity-60 group-hover:opacity-100 hover:bg-accent/60 hover:text-foreground"
+                  >
+                    <FolderOpen class="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
                       onNewWorktree(ws);
                     }}
                     aria-label={`New worktree in ${ws.name}`}
@@ -315,7 +330,16 @@ export function WorkspaceRail() {
                             e.preventDefault();
                             setMenu({ x: e.clientX, y: e.clientY, workspace: ws, worktree: wt });
                           }}
-                          title={wt.path || "No folder selected"}
+                          title={
+                            worktreeMark(wt.id)
+                              ? `${wt.path || "No folder selected"} — ${ledLabel(worktreeMark(wt.id)!)}`
+                              : wt.path || "No folder selected"
+                          }
+                          aria-label={
+                            worktreeMark(wt.id)
+                              ? `${worktreeLabel(wt)} — ${ledLabel(worktreeMark(wt.id)!)}`
+                              : worktreeLabel(wt)
+                          }
                         >
                           <Show
                             when={wt.isMain}
@@ -324,6 +348,23 @@ export function WorkspaceRail() {
                             <FolderGit2 class="w-3 h-3 shrink-0 opacity-70" />
                           </Show>
                           <span class="truncate flex-1">{worktreeLabel(wt)}</span>
+                          {/* §7.5.3 rule 1, at the level the rule was missing.
+                              A tab signalling in a worktree the user is not in
+                              had nowhere to go: the pane tree only exists for
+                              the active worktree, so its mark matched no group
+                              header and never reached the status bar either.
+                              This row is the surface that was absent.
+
+                              A `LedSlot` rather than a `<Show>` so a mark
+                              arriving never reflows the row (rule 3), and
+                              silent because the row's own `aria-label` below
+                              names the state — otherwise a screen reader hears
+                              the signal twice. */}
+                          <LedSlot
+                            signal={worktreeMark(wt.id)}
+                            silent
+                            class="mr-0.5"
+                          />
                           <Show when={wt.isDirty}>
                             <span
                               class="text-warning shrink-0"
@@ -349,6 +390,24 @@ export function WorkspaceRail() {
                               aria-label={`${wt.behind} behind`}
                             >
                               ↓{wt.behind}
+                            </span>
+                          </Show>
+                          <Show when={wt.statusUnknown}>
+                            <span
+                              class="text-muted-foreground/70 shrink-0"
+                              title="Could not read this worktree's status — it may be missing or unreachable"
+                              aria-label="status unknown"
+                            >
+                              ?
+                            </span>
+                          </Show>
+                          <Show when={wt.isPrunable}>
+                            <span
+                              class="text-destructive shrink-0 text-[10px] font-mono"
+                              title="This worktree's directory is gone — git would prune it"
+                              aria-label="missing"
+                            >
+                              missing
                             </span>
                           </Show>
                           <Show when={wt.isLocked}>

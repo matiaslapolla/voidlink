@@ -5,8 +5,9 @@ covers what the feature does, when you'd reach for it, how to use it, its
 keyboard shortcuts, and — at length — its real gotchas and limits.
 
 These are reference pages, not a tutorial. For a guided walkthrough in Spanish,
-see [`../manual-de-uso.md`](../manual-de-uso.md). For design documents behind
-individual features, see [`../specs/`](../specs).
+see [`../manual-de-uso.md`](../manual-de-uso.md). For a surface reviewed finding
+by finding, see [`../audits/`](../audits/README.md); for everything still open,
+[`../TODO.md`](../TODO.md).
 
 ## Core
 
@@ -38,10 +39,20 @@ individual features, see [`../specs/`](../specs).
 | Page | Covers |
 |---|---|
 | [AI commit and repo agent](./ai-commit-and-agent.md) | The bring-your-own-CLI bridge, prompt assembly, failure modes |
+| [Event log](./event-log.md) | The append-only record of agent turns, commits and commands; its schema, attribution, and the timeline that reads it |
+| [Mission Control](./mission-control.md) | The Lineup across every workspace, automatic check-ins, and hill charts |
+| [Agent orchestration](./agent-orchestration.md) | Annotated diffs, fan-out to N worktrees, and "when X, run agent Y" |
+| [Notifications and sound](./notifications.md) | OS banners and sound cues as a policy over the event log; the matrix, suppression, coalescing |
 | [Secret scan](./secret-scan.md) | Pre-commit credential detection, the rule set, why it fails open |
 | [Workspace snapshots](./snapshots.md) | Saving and restoring tab layouts, and what they don't capture |
-| [Brain vault browser](./brain-vault.md) | Reading a `brain-kb` vault, quick capture, the `brain` CLI |
+| [Project brain](./project-brain.md) | Per-repo notes and decisions under `.voidlink/brain`, read and captured from an overlay |
 | [Embedded browser](./browser.md) | Browser tabs as child webviews, in-place navigation, history, the compositing constraint |
+
+## Contributing
+
+| Page | Covers |
+|---|---|
+| [Testing](./testing.md) | The two vitest projects, writing render tests, what belongs where |
 
 ## Configuration
 

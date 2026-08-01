@@ -109,6 +109,34 @@ describe("editor tab pointer", () => {
     });
   });
 
+  /// A partially-staged file is two rows in the sidebar showing two different
+  /// diffs. Keying diff tabs on the path alone made the second row focus the
+  /// first row's tab, so whichever side you clicked second could not be opened
+  /// at all.
+  it("gives the staged and unstaged views of one file separate tabs", () => {
+    withStore((store, wtId) => {
+      const unstaged = store.actions.openDiffTab(wtId, "/repo/b.ts", false);
+      const staged = store.actions.openDiffTab(wtId, "/repo/b.ts", true);
+
+      expect(staged).not.toBe(unstaged);
+      expect(store.state.diffTabsByWorktree[wtId]).toHaveLength(2);
+      expect(store.state.editorActiveItemByWorktree[wtId]).toMatchObject({ id: staged });
+
+      // Still deduped *within* a side.
+      expect(store.actions.openDiffTab(wtId, "/repo/b.ts", true)).toBe(staged);
+      expect(store.actions.openDiffTab(wtId, "/repo/b.ts", false)).toBe(unstaged);
+      expect(store.state.diffTabsByWorktree[wtId]).toHaveLength(2);
+    });
+  });
+
+  it("defaults a diff tab to the unstaged side", () => {
+    withStore((store, wtId) => {
+      const id = store.actions.openDiffTab(wtId, "/repo/b.ts");
+      const tab = store.state.diffTabsByWorktree[wtId].find((t) => t.id === id);
+      expect(tab?.staged).toBe(false);
+    });
+  });
+
   it("falls back within the editor's own kinds when the active file closes", () => {
     withStore((store, wtId) => {
       const first = store.actions.openFileTab(wtId, "/repo/a.ts");
@@ -152,6 +180,83 @@ describe("editor tab pointer", () => {
       store.actions.openPreviewTab(wtId, "/repo/README.md");
       expect(store.state.editorActiveItemByWorktree[wtId]).toMatchObject({ type: "preview" });
       expect(store.state.activeItemByWorktree[wtId]).toBeNull();
+    });
+  });
+
+  /// Clicking ten rows in the commit graph used to produce ten identical
+  /// compare tabs, and clicking one row twice produced two.
+  it("reuses a compare tab that already asks the same question", () => {
+    withStore((store, wtId) => {
+      const first = store.actions.openCompareTab(wtId, { baseRef: "main", headRef: "HEAD" });
+      const again = store.actions.openCompareTab(wtId, { baseRef: "main", headRef: "HEAD" });
+
+      expect(again).toBe(first);
+      expect(store.state.compareTabsByWorktree[wtId]).toHaveLength(1);
+      expect(store.state.activeItemByWorktree[wtId]).toMatchObject({ id: first });
+    });
+  });
+
+  it("still opens a separate tab for a different pair, and for the blank picker", () => {
+    withStore((store, wtId) => {
+      const a = store.actions.openCompareTab(wtId, { baseRef: "main", headRef: "HEAD" });
+      const b = store.actions.openCompareTab(wtId, { baseRef: "main", headRef: "feature" });
+      // A blank compare tab is the "pick two refs" surface — two of those are
+      // a legitimate thing to want.
+      const blank1 = store.actions.openCompareTab(wtId);
+      const blank2 = store.actions.openCompareTab(wtId);
+
+      expect(new Set([a, b, blank1, blank2]).size).toBe(4);
+    });
+  });
+
+  /// The merge-base toggle changes what the diff *means*, so two tabs on the
+  /// same refs with different toggles are two different questions.
+  it("treats the merge-base toggle as part of the question", () => {
+    withStore((store, wtId) => {
+      const threeDot = store.actions.openCompareTab(wtId, {
+        baseRef: "main",
+        headRef: "HEAD",
+        useMergeBase: true,
+      });
+      const twoDot = store.actions.openCompareTab(wtId, {
+        baseRef: "main",
+        headRef: "HEAD",
+        useMergeBase: false,
+      });
+      expect(twoDot).not.toBe(threeDot);
+    });
+  });
+
+  /// A stash diff addresses its trees by raw oid, because a positional
+  /// `stash@{N}` ref silently retargets when the stack shifts. That makes the
+  /// refs unreadable, so the tab carries its own name — and it has to survive a
+  /// close/reopen, which is the one path that rebuilds the tab from a snapshot.
+  it("keeps a compare tab's own label across close and reopen", () => {
+    withStore((store, wtId) => {
+      const oid = "c".repeat(40);
+      const id = store.actions.openCompareTab(wtId, {
+        baseRef: `${oid}^1`,
+        headRef: oid,
+        useMergeBase: false,
+        label: "stash@{1} older work",
+      });
+      store.actions.closeCompareTab(wtId, id);
+      store.actions.reopenLastClosedTab(wtId);
+
+      const tab = store.state.compareTabsByWorktree[wtId][0];
+      expect(tab.label).toBe("stash@{1} older work");
+      expect(tab.headRef).toBe(oid);
+    });
+  });
+
+  /// The label is decoration, not identity: two tabs on the same pair of refs
+  /// are still one question however they are named.
+  it("does not let a label split the dedupe", () => {
+    withStore((store, wtId) => {
+      const refs = { baseRef: "main", headRef: "HEAD", useMergeBase: false };
+      const a = store.actions.openCompareTab(wtId, { ...refs, label: "one" });
+      const b = store.actions.openCompareTab(wtId, { ...refs, label: "two" });
+      expect(b).toBe(a);
     });
   });
 

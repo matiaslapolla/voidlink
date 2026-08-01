@@ -20,6 +20,26 @@ export interface SafeCheckoutResult {
   autoStashed: string | null;
 }
 
+/** Why a push did not land.
+ *
+ * The force-push recovery is offered for `non-fast-forward` and for nothing
+ * else. A push that failed on credentials, on the network, or because a
+ * pre-receive hook said no is not a push force would fix, and offering force
+ * there would teach the reflex the whole design exists to prevent. */
+export type PushFailure = "non-fast-forward" | "auth" | "other";
+
+export interface PushOutcome {
+  ok: boolean;
+  /** `null` exactly when `ok`. */
+  failure: PushFailure | null;
+  /** git's own words. Empty on success. */
+  message: string;
+  /** The remote and branch actually pushed to, after defaulting — what the
+   * recovery UI and its confirm must name. */
+  remote: string;
+  branch: string;
+}
+
 export interface PullResult {
   ok: boolean;
   conflicted: boolean;
@@ -51,6 +71,36 @@ export interface WorktreeInfo {
   /** The dirty flag could not be read (directory gone, status failed/timed out).
    * `isDirty: false` must not be read as "clean" when this is true. */
   statusUnknown: boolean;
+  /** Git would remove this entry on `git worktree prune` — almost always
+   * because its directory no longer exists, so it cannot be opened. */
+  isPrunable: boolean;
+  /** Why git calls it prunable, when it says. */
+  prunableReason: string | null;
+  /** A bare repository entry: no working tree, so it can never be opened,
+   * removed, or dirty. */
+  isBare: boolean;
+}
+
+/**
+ * Ahead/behind counts for one ref, and what they were measured against.
+ *
+ * Nullable on the row rather than a pair of numbers, because "nothing to
+ * compare against" and "compared, and level" are different facts that
+ * `ahead: 0, behind: 0` cannot tell apart — and a remote-tracking branch with
+ * no local counterpart would otherwise render as in sync with a branch that
+ * does not exist.
+ */
+export interface AheadBehind {
+  /** Commits this row's own ref has that `against` does not. */
+  ahead: number;
+  /** Commits `against` has that this row's own ref does not. */
+  behind: number;
+  /**
+   * The ref the counts are measured against: the upstream for a local branch,
+   * the local branch of the same short name for a remote-tracking one. Carried
+   * because `↑2 ↓0` on a remote row is ambiguous without it.
+   */
+  against: string;
 }
 
 export interface GitBranchInfo {
@@ -58,18 +108,32 @@ export interface GitBranchInfo {
   isHead: boolean;
   isRemote: boolean;
   upstream: string | null;
-  ahead: number;
-  behind: number;
+  /** The counts, when there is something to count against. See `AheadBehind`. */
+  aheadBehind: AheadBehind | null;
   /** See `GitRepoInfo.aheadBehindUnknown`. */
   aheadBehindUnknown: boolean;
   lastCommitSummary: string | null;
   lastCommitTime: number | null;
+  /**
+   * `name` survived a lossy UTF-8 conversion, so it is not the byte string git
+   * holds and no command that takes a name can find this branch. The row is
+   * listed — being invisible was the bug — but every mutation on it is off.
+   */
+  lossyName: boolean;
+  /**
+   * The ref this row is an alias for, when it is a symbolic ref under
+   * `refs/heads/` rather than a branch. Deleting it removes the alias, not the
+   * branch it names.
+   */
+  symbolicTarget: string | null;
 }
 
 export interface GitFileStatus {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted";
   staged: boolean;
+  /** See `GitBranchInfo.lossyName` — same fact, about a path. */
+  lossyPath?: boolean;
 }
 
 export interface GitCommitInfo {
@@ -83,7 +147,12 @@ export interface GitCommitInfo {
 }
 
 export interface DiffLine {
-  origin: "+" | "-" | " " | "~";
+  /**
+   * `"\\"` is `\ No newline at end of file` — libgit2 emits that annotation as
+   * a diff line like any other, and it is not one. It has no line numbers and
+   * belongs to the line above it.
+   */
+  origin: "+" | "-" | " " | "~" | "\\";
   content: string;
   oldLineno: number | null;
   newLineno: number | null;
@@ -101,11 +170,40 @@ export interface DiffHunk {
 export interface FileDiff {
   oldPath: string | null;
   newPath: string | null;
-  status: "added" | "deleted" | "modified" | "renamed" | "copied";
+  /// Mirrors the `Delta` arms `collect_diff` maps in `src-tauri/src/git/diff.rs`.
+  ///
+  /// The narrow five-arm version was a lie the shared `StatusBadge` was typed
+  /// against: it branches on `untracked`, `typechange` and `conflicted` too,
+  /// and `git_file_status` emits them.
+  status:
+    | "added"
+    | "deleted"
+    | "modified"
+    | "renamed"
+    | "copied"
+    | "untracked"
+    | "typechange"
+    | "conflicted";
   hunks: DiffHunk[];
   isBinary: boolean;
   additions: number;
   deletions: number;
+  /// Blob oid of the old side — the content this diff was computed against.
+  /// `null` for an added or untracked file.
+  ///
+  /// Round-tripped back to Rust with a hunk patch so it can refuse when the
+  /// file has moved since the diff was drawn. Never read by the UI; it exists
+  /// so hunk-level staging cannot apply a patch to content nobody looked at.
+  oldBlobOid: string | null;
+  /// Rust stopped storing this file's lines partway through, against the
+  /// budget in `collect_diff`. `additions`/`deletions` are still the true
+  /// totals — only the content stops — so a truncated file's tree row is
+  /// honest and only the pane needs to say what it is not showing.
+  ///
+  /// Optional because a `FileDiff` is also constructed on this side (hunk
+  /// staging round-trips one back to Rust), where there is nothing to
+  /// truncate.
+  truncated?: boolean;
 }
 
 export interface DiffResult {
@@ -125,6 +223,12 @@ export interface RefList {
   branches: string[];
   tags: string[];
   recentCommits: RecentCommit[];
+  /// The commit HEAD sits on when it is detached, and `null` otherwise.
+  ///
+  /// A detached HEAD is named by no listed ref, so mid-bisect or after
+  /// checking out a tag the position the user is standing on was the one thing
+  /// the picker could not offer.
+  detachedHead: RecentCommit | null;
 }
 
 export interface BlameLine {

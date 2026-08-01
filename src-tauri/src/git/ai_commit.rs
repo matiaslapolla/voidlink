@@ -33,7 +33,7 @@ pub(crate) fn git_ai_generate_commit_impl(
         );
     }
 
-    let diff = git_diff_working_impl(repo_path.clone(), true)?;
+    let diff = git_diff_working_impl(repo_path.clone(), true, false)?;
     if diff.files.is_empty() {
         return Err("No staged changes — stage some files first.".to_string());
     }

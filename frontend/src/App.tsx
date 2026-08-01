@@ -37,50 +37,52 @@ import type { OpenTabTarget, RecentFileTarget } from "@/commands/targets";
 import { ShortcutsCheatSheet } from "@/commands/ShortcutsCheatSheet";
 import { ToastViewport } from "@/commands/ToastViewport";
 import { PromptHost } from "@/commands/PromptHost";
-import { textPrompt } from "@/commands/prompt";
 import {
   closeCheatSheet,
+  closeBrain,
   closeFileFinder,
   closePalette,
   getActions,
   isCheatSheetOpen,
+  isBrainOpen,
   isFileFinderOpen,
   isPaletteOpen,
   isTabSwitcherOpen,
-  isWorktreeSwitcherOpen,
+  openBrain,
   openCheatSheet,
   openFileFinder,
   openPalette,
   openTabSwitcher,
-  openWorktreeSwitcher,
   closeTabSwitcher,
-  closeWorktreeSwitcher,
-  registerActions,
+  useActionSource,
+  useActionSourceCatalog,
   type Action,
 } from "@/commands/registry";
+import { registerGitActions } from "@/commands/gitActions";
+import { registerStackActions } from "@/commands/stackActions";
+import { registerWorkspaceActions } from "@/commands/workspaceActions";
+import { registerSnapshotActions } from "@/commands/snapshotActions";
+import { registerLayoutPresetActions } from "@/commands/layoutPresetActions";
 import { keymapBindings, useKeybindings, useModifierRelease } from "@/commands/keybindings";
 import { validateKeymap } from "@/commands/keymap";
-import {
-  TAB_SELECT_COUNT,
-  WORKSPACE_SELECT_COUNT,
-  tabSelectId,
-  workspaceSelectId,
-} from "@/commands/actionIds";
+import { TAB_SELECT_COUNT, tabSelectId } from "@/commands/actionIds";
 import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
-import { requestAiCommitDraft } from "@/commands/aiCommit";
-import { toggleAgentPanel } from "@/commands/agent";
+import { askAgent, registerAgentActions } from "@/commands/agent";
+import { agentById, resolveAgentCommand } from "@/store/settings";
+import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
-import { snapshotsFor, snapshotTabCount } from "@/commands/snapshots";
-import { newWorktreeRequest, requestNewWorktree } from "@/commands/worktree";
-import { setOverlayOpen } from "@/commands/overlay";
-import { agentPanelOpen } from "@/commands/agent";
+import { createOverlay, setOverlayOpen } from "@/commands/overlay";
+import { requestNewWorktree } from "@/commands/worktree";
 import { browserApi } from "@/api/webview";
 import { applyEditorRequest } from "@/store/editorRequests";
+import { publishRepos, setJournalRepo } from "@/store/journal";
+import { reconcileFanoutRuns } from "@/store/fanout";
+import { armTriggers, setTriggerRunner } from "@/store/triggers";
 import {
+  currentStackedView,
   isStackedMode,
   setStackedView,
-  stackedView,
   type StackedView,
 } from "@/commands/environment";
 import {
@@ -89,10 +91,10 @@ import {
   onEditorTabsRequest,
   onWindowContextRequest,
   onWorktreeWizardRequest,
+  onOpenWorktreeRequest,
   closeEditorWindow,
   closeGitWindow,
   openEditorWindow,
-  openGitWindow,
   publishEditorTabs,
   publishWindowContext,
   setStackedViewRouter,
@@ -100,15 +102,11 @@ import {
   type EditorReveal,
   type EditorTabsSnapshot,
 } from "@/api/windows";
+import { watchRepos } from "@/api/watch";
 import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
-import {
-  AUTO_GROUP_MODES,
-  removePreset,
-  renamePreset,
-  resolveGroupTabs,
-  type ActiveItem,
-} from "@/store/layout";
+import { samePath } from "@/store/layout/tabs";
+import { resolveGroupTabs, type ActiveItem } from "@/store/layout";
 import { browserTabLabel } from "@/components/browser/BrowserPane";
 
 /// The other two surfaces, loaded only if stacked mode actually renders them.
@@ -119,11 +117,7 @@ const EditorView = lazy(() =>
 );
 const GitView = lazy(() => import("@/GitApp").then((m) => ({ default: m.GitSurface })));
 
-function AppInner(props: {
-  onOpenSettings: () => void;
-  settingsOpen: boolean;
-  onOpenSnapshots: () => void;
-}) {
+function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => void }) {
   const {
     state,
     activeWorkspace,
@@ -137,6 +131,20 @@ function AppInner(props: {
     canGoForward,
     actions,
   } = useAppStore();
+
+  // ── Feature-owned palette entries ────────────────────────────────────────
+  // Each of these registers its own slice of the catalog at the point the
+  // feature already lives, instead of `App.tsx` importing from every one of
+  // them to build one giant array — see PALETTE-SRC1 in
+  // `commands/registry.ts`. Order here is not load-bearing: each call is a
+  // `useActionSource(priority, …)`, and priority is what fixes a
+  // source's place in the composed catalog.
+  registerGitActions();
+  registerStackActions();
+  registerWorkspaceActions();
+  registerSnapshotActions(props.onOpenSnapshots);
+  registerLayoutPresetActions();
+  registerAgentActions();
 
   // Hydrate the real worktree list for every repo-backed workspace once, on
   // boot. Persisted state only knows what we last saw; git is the truth, and
@@ -161,6 +169,64 @@ function AppInner(props: {
     worktreeLabel: activeWorktree()?.branch ?? activeWorktree()?.path ?? "",
   });
   createEffect(() => void publishWindowContext(satelliteContext()));
+
+  // The repository events default to when the recorder has no better idea —
+  // `store/journal.ts` explains why an ambient value is accurate here rather
+  // than a guess. Same source as the satellite context above, deliberately: a
+  // recorded event and the git window must never disagree about which repo the
+  // workbench is showing.
+  createEffect(() => setJournalRepo(activeRepoPath() || null));
+
+  // The reconnect half of fan-out outliving its window: whenever this window
+  // shows a different repository (including the first time it shows one at
+  // all — a reload lands here too), ask the supervisor what it is actually
+  // still driving for it and reconcile. See `store/fanout.ts`'s module
+  // comment and `reconcileFanoutRuns` for what this can and cannot recover.
+  createEffect(() => {
+    const repo = activeRepoPath();
+    if (repo) void reconcileFanoutRuns(repo);
+  });
+
+  // ── Triggers ────────────────────────────────────────────────────────────
+  // Armed from the workbench and from nowhere else: three windows each
+  // listening to the same broadcast would run every firing three times, which
+  // is the same argument that put the event log in Rust.
+  //
+  // The runner opens a real agent tab rather than running a turn invisibly. A
+  // process started on the user's behalf that leaves no window behind is one
+  // they cannot read, cancel, or learn from.
+  onMount(() => {
+    setTriggerRunner((firing) => {
+      const wtId = state.activeWorktreeId;
+      const agent = agentById(firing.rule.agentId);
+      const tabId = actions.openAgentTab(wtId, firing.rule.agentId, agent?.name);
+      if (!tabId) return;
+      void askAgent({
+        wtId,
+        tabId,
+        repoPath: firing.rule.repo,
+        commandTemplate: resolveAgentCommand(agent),
+        agentName: agent?.name,
+        question: firing.prompt,
+        openFiles: [],
+        activePath: null,
+        // The lineage the re-entrancy cutoff reads next time round. Without it
+        // a rule that reacts to its own work has nothing to recognise.
+        eventData: {
+          triggeredBy: firing.lineage.ruleId,
+          triggerDepth: firing.lineage.depth,
+        },
+      });
+    });
+    onCleanup(armTriggers());
+    onCleanup(() => setTriggerRunner(null));
+  });
+
+  // Publish the workspace/worktree map so Rust can stamp `workspace` onto the
+  // events it derives itself and answer cross-repo queries. From the workbench
+  // only: it is the window that owns the workspace model, and having all three
+  // publish would mean the satellites' narrower views racing to overwrite it.
+  createEffect(() => publishRepos(state.workspaces));
 
   // ── Standalone editor window ─────────────────────────────────────────────
   // The workbench owns the editor's four tab collections — it is the only
@@ -263,11 +329,52 @@ function AppInner(props: {
       }),
     );
 
+    // Same reason: "open this worktree" from the git window has no rail to
+    // select into there, so it forwards the path and the workbench does it.
+    track(
+      onOpenWorktreeRequest((req) => {
+        const ws = untrack(activeWorkspace);
+        if (!ws) return;
+        const existing = ws.worktrees.find((wt) => samePath(wt.path, req.path));
+        // Registered on demand, so a worktree created outside voidlink still
+        // opens without waiting for the next hydration pass.
+        const id = existing?.id ?? actions.addWorktree(ws.id, { path: req.path, branch: req.branch });
+        if (id) actions.selectWorktree(id);
+      }),
+    );
+
     const disposeBridge = bridgeGitRefsAcrossWindows();
     onCleanup(() => {
       disposed = true;
       for (const fn of unlisteners) fn();
       disposeBridge();
+    });
+  });
+
+  // ── Filesystem watching ──────────────────────────────────────────────────
+  // Every worktree of every workspace, re-sent whenever that set changes.
+  //
+  // Worktrees rather than just `repoRoot`: each has its own working tree that
+  // can be edited independently, and a linked worktree's refs live in a git
+  // dir outside it that Rust adds as a second watch root.
+  //
+  // Only this window does it. `watchRepos` replaces the whole watched set, so
+  // the editor or git window sending its own idea of it would unwatch
+  // everything the workbench asked for.
+  createEffect(() => {
+    const paths = Array.from(
+      new Set(
+        useAppStore()
+          .state.workspaces.flatMap((ws) => ws.worktrees.map((wt) => wt.path))
+          .filter((p) => p.length > 0),
+      ),
+    ).sort();
+    void watchRepos(paths).then((failures) => {
+      // Reported, not surfaced: a folder that is not a repository is an
+      // ordinary thing to have open, and a toast per non-repo workspace at
+      // startup would be noise. The surfaces still refresh on their own
+      // actions either way.
+      for (const failure of failures) console.warn("[watch]", failure);
     });
   });
 
@@ -300,45 +407,57 @@ function AppInner(props: {
 
   /// Which view is on screen. Always "workbench" in detached mode, so the
   /// surfaces below can read this without checking the mode themselves.
-  const currentView = (): StackedView => (isStackedMode() ? stackedView() : "workbench");
+  const currentView = currentStackedView;
 
   // A view that isn't the workbench covers it with plain DOM — which a child
   // webview would paint straight through. Same mechanism the modals use.
+  //
+  // This is the one overlay registration still living here rather than beside
+  // the state it watches (see `commands/overlay.ts`): `currentView` is a
+  // derived read of two signals owned by this component (`isStackedMode`,
+  // `stackedView`), not a boolean a module can hand out a `createOverlay` for.
+  // Every other surface — the palette, the switchers, the cheat sheet, the
+  // agent panel, the worktree wizard, settings, snapshots — registers itself
+  // at its own point of ownership; `App.tsx` no longer has to know the full
+  // list to keep it correct.
   createEffect(() => setOverlayOpen("stacked-view", currentView() !== "workbench"));
 
-  // Embedded browser tabs are child webviews that composite above the DOM, so
-  // every modal surface has to actively push them out of the way while open.
-  createEffect(() => setOverlayOpen("palette", isPaletteOpen()));
-  createEffect(() => setOverlayOpen("file-finder", isFileFinderOpen()));
-  createEffect(() => setOverlayOpen("worktree-switcher", isWorktreeSwitcherOpen()));
-  createEffect(() => setOverlayOpen("tab-switcher", isTabSwitcherOpen()));
-  createEffect(() => setOverlayOpen("worktree-wizard", !!newWorktreeRequest()));
-  createEffect(() => setOverlayOpen("agent", agentPanelOpen()));
-  createEffect(() => setOverlayOpen("settings", props.settingsOpen));
+  // ── The workbench's own palette entries ──────────────────────────────────
+  // What is left after Git, Stack, Workspace/Worktree, Snapshots, Layout
+  // presets and Agent moved to `registerActionSource` calls of their own (see
+  // PALETTE-SRC1, `commands/registry.ts`): entries with no state to close
+  // over beyond `props`, or ones that need the tab-cycling/navigation
+  // closures below (`allItems`, `activateItem`, `focusedGroupTabIds`, …),
+  // which stay here because those closures are the workbench's own, reused
+  // by `workbenchTargets`/`useModifierRelease` and not worth extracting into
+  // a module of their own.
+  //
+  // Priorities reproduce the original hand-written array's positions —
+  // several groups (App, View, Tabs) were themselves split across multiple
+  // non-adjacent spots in that array, which is why there is more than one
+  // `registerActionSource` call per group below.
+  useActionSource(10, (): Action[] => [
+    {
+      id: "palette.open",
+      label: "Show all commands",
+      group: "App",
+      // Toggling lives in the action, not the binding, so ⌘K and the palette
+      // row are the same code path. Picking this row *from* the palette is a
+      // no-op by construction: the palette closes first, so `run` reopens it.
+      run: () => (isPaletteOpen() ? closePalette() : openPalette()),
+    },
+    {
+      id: "help.shortcuts",
+      label: "Keyboard shortcuts",
+      description: "Every binding, grouped and filterable",
+      group: "App",
+      run: () => (isCheatSheetOpen() ? closeCheatSheet() : openCheatSheet()),
+    },
+  ]);
 
-
-  // ── Register the global action catalog. Re-runs when relevant state shifts
-  // so closures always reference the current active workspace.
-  createEffect(() => {
-    const wtId = state.activeWorktreeId;
+  useActionSource(20, (): Action[] => {
     const repo = activeRepoPath();
-    const list: Action[] = [
-      {
-        id: "palette.open",
-        label: "Show all commands",
-        group: "App",
-        // Toggling lives in the action, not the binding, so ⌘K and the palette
-        // row are the same code path. Picking this row *from* the palette is a
-        // no-op by construction: the palette closes first, so `run` reopens it.
-        run: () => (isPaletteOpen() ? closePalette() : openPalette()),
-      },
-      {
-        id: "help.shortcuts",
-        label: "Keyboard shortcuts",
-        description: "Every binding, grouped and filterable",
-        group: "App",
-        run: () => (isCheatSheetOpen() ? closeCheatSheet() : openCheatSheet()),
-      },
+    return [
       {
         id: "file.open",
         label: "Open file…",
@@ -349,13 +468,44 @@ function AppInner(props: {
           // The guard lives here rather than in the keybinding so pressing the
           // chord and picking the palette row behave identically.
           if (!repo) {
-            pushToast("Select a repository first", "warning");
+            pushToast("Open a folder first", "warning");
             return;
           }
           if (isFileFinderOpen()) closeFileFinder();
           else openFileFinder();
         },
       },
+    ];
+  });
+
+  useActionSource(30, (): Action[] => {
+    const wtId = state.activeWorktreeId;
+    return [
+      {
+        id: "view.timeline",
+        label: "Open the timeline",
+        description: "The event log: commits, agent turns and commands, newest first",
+        group: "View",
+        enabled: () => !!activeRepoPath(),
+        run: () => void actions.openTimelineTab(wtId),
+      },
+      {
+        id: "view.mission",
+        label: "Open Mission Control",
+        description: "Every workspace at once: what is running, what happened, and where it stands",
+        group: "View",
+        // Deliberately not gated on `repo`: the whole point is that it answers
+        // for workspaces other than the one you are standing in, and a
+        // workspace pointed at a plain folder still has a row.
+        run: () => void actions.openMissionTab(wtId),
+      },
+    ];
+  });
+
+  useActionSource(40, (): Action[] => {
+    const repo = activeRepoPath();
+    const wtId = state.activeWorktreeId;
+    return [
       {
         id: "terminal.new",
         label: "New terminal",
@@ -373,375 +523,94 @@ function AppInner(props: {
           if (!result.ok) pushToast(result.reason ?? "Nothing to repeat", "warning");
         },
       },
-      {
-        id: "git.refresh",
-        label: "Refresh git status",
-        group: "Git",
-        enabled: () => !!repo,
-        run: () => {
-          // The sidebar owns its own refetch; broadcasting via a window event
-          // keeps the action decoupled from the component tree.
-          window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
-        },
+    ];
+  });
+
+  useActionSource(60, (): Action[] => [
+    {
+      id: "editor.open-window",
+      label: "Open editor window",
+      description: "The code editor in its own window",
+      group: "App",
+      run: async () => {
+        try {
+          const created = await openEditorWindow();
+          if (!created) pushToast("Editor window brought to front", "info", 2000);
+        } catch (e) {
+          pushToast(
+            `Could not open the editor window: ${e instanceof Error ? e.message : String(e)}`,
+            "error",
+          );
+        }
       },
+    },
+  ]);
+
+  useActionSource(90, (): Action[] => [
+    {
+      id: "ui.toggle-git-sidebar",
+      label: "Toggle git sidebar",
+      group: "View",
+      run: () => actions.toggleGitSidebar(),
+    },
+    {
+      id: "ui.toggle-left-sidebar",
+      label: "Toggle left sidebar",
+      group: "View",
+      run: () => actions.toggleLeftSidebar(),
+    },
+    {
+      id: "ui.swap-sidebars",
+      label: "Swap left/right sidebars",
+      group: "View",
+      run: () => actions.toggleSidebarsSwapped(),
+    },
+    {
+      id: "ui.toggle-diff-mode",
+      label: "Toggle inline / split diff",
+      group: "View",
+      run: () => actions.setDiffMode(state.diffMode === "inline" ? "split" : "inline"),
+    },
+    {
+      id: "ui.toggle-ignore-ws",
+      label: "Toggle ignore whitespace in diffs",
+      group: "View",
+      run: () => actions.toggleIgnoreWhitespace(),
+    },
+    {
+      id: "ui.maximize-pane",
+      label: "Maximize / restore the focused pane",
+      description: "Fill the workbench with the focused pane group; press again to restore",
+      group: "View",
+      run: () => toggleMaximizedGroup(focusedGroupId()),
+    },
+    {
+      id: "ui.zen",
+      label: "Toggle zen mode",
+      description: "Hide the rail, both sidebars and the tab strips; the status bar stays",
+      group: "View",
+      run: () => toggleZen(),
+    },
+  ]);
+
+  useActionSource(100, (): Action[] => [
+    {
+      id: "app.settings",
+      label: "Open settings…",
+      group: "App",
+      run: () => props.onOpenSettings(),
+    },
+  ]);
+
+  useActionSource(140, (): Action[] => {
+    const wtId = state.activeWorktreeId;
+    return [
       {
-        id: "git.fetch",
-        label: "Fetch from origin",
-        group: "Git",
-        enabled: () => !!repo,
-        run: () => {
-          window.dispatchEvent(new CustomEvent("voidlink:git-fetch"));
-        },
-      },
-      {
-        id: "git.pull",
-        label: "Pull from origin",
-        group: "Git",
-        enabled: () => !!repo,
-        run: () => {
-          window.dispatchEvent(new CustomEvent("voidlink:git-pull"));
-        },
-      },
-      {
-        id: "git.remotes",
-        label: "Manage remotes…",
-        group: "Git",
-        enabled: () => !!repo,
-        run: () => {
-          window.dispatchEvent(new CustomEvent("voidlink:git-remotes"));
-        },
-      },
-      {
-        id: "git.undo-last-commit",
-        label: "Undo last commit (soft)",
-        group: "Git",
-        enabled: () => !!repo,
-        run: async () => {
-          if (!repo) return;
-          const { gitApi } = await import("@/api/git");
-          await gitApi.undoLastCommit(repo);
-          window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
-        },
-      },
-      {
-        id: "git.compare",
-        label: "Compare branches…",
-        group: "Git",
-        enabled: () => !!repo,
-        run: () => {
-          actions.openCompareTab(wtId);
-        },
-      },
-      {
-        id: "editor.open-window",
-        label: "Open editor window",
-        description: "The code editor in its own window",
-        group: "App",
-        run: async () => {
-          try {
-            const created = await openEditorWindow();
-            if (!created) pushToast("Editor window brought to front", "info", 2000);
-          } catch (e) {
-            pushToast(
-              `Could not open the editor window: ${e instanceof Error ? e.message : String(e)}`,
-              "error",
-            );
-          }
-        },
-      },
-      {
-        id: "git.open-window",
-        label: "Open git window",
-        description: "The full git client in its own window",
-        group: "Git",
-        run: async () => {
-          try {
-            const created = await openGitWindow();
-            if (!created) pushToast("Git window brought to front", "info", 2000);
-          } catch (e) {
-            pushToast(
-              `Could not open the git window: ${e instanceof Error ? e.message : String(e)}`,
-              "error",
-            );
-          }
-        },
-      },
-      {
-        id: "stack.branch-on-top",
-        label: "Stack: Branch on top of current",
-        description: "Create a child of the current branch and start a stack",
-        group: "Stack",
-        enabled: () => !!repo,
-        run: async () => {
-          if (!repo) return;
-          const { stackApi } = await import("@/api/stack");
-          const { gitApi } = await import("@/api/git");
-          try {
-            const info = await gitApi.repoInfo(repo);
-            const parent = info.currentBranch;
-            if (!parent) {
-              pushToast("HEAD is detached — check out a branch first", "warning");
-              return;
-            }
-            const name = await textPrompt({
-              title: "New branch",
-              label: `Create on top of ${parent}`,
-              placeholder: "feature/my-branch",
-              confirmLabel: "Create",
-            });
-            if (!name) return;
-            await stackApi.createBranch(repo, name, parent);
-            pushToast(`Created ${name} on top of ${parent}`, "success");
-            window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
-          } catch (e) {
-            pushToast(String(e), "error");
-          }
-        },
-      },
-      {
-        id: "stack.restack-all",
-        label: "Stack: Restack all",
-        description: "Replay every branch in the current stack onto its parent's current tip",
-        group: "Stack",
-        enabled: () => !!repo,
-        run: async () => {
-          if (!repo) return;
-          const { stackApi } = await import("@/api/stack");
-          try {
-            const stack = await stackApi.current(repo);
-            if (!stack) {
-              pushToast("Not on a stack", "warning");
-              return;
-            }
-            const results = await stackApi.restackAll(
-              repo,
-              stack.branches.map((b) => b.name),
-            );
-            const conflict = results.find((r) => r.outcome.kind === "conflict");
-            if (conflict && conflict.outcome.kind === "conflict") {
-              pushToast(
-                `Conflict on ${conflict.branch}: ${conflict.outcome.paths.join(", ")}`,
-                "error",
-                6000,
-              );
-            } else {
-              const replayed = results.reduce(
-                (n, r) => n + (r.outcome.kind === "restacked" ? r.outcome.commitsReplayed : 0),
-                0,
-              );
-              pushToast(`Stack restacked clean (${replayed} commits replayed)`, "success");
-            }
-            window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
-          } catch (e) {
-            pushToast(String(e), "error");
-          }
-        },
-      },
-      {
-        id: "stack.submit",
-        label: "Stack: Submit to GitHub",
-        description: "Create or update one PR per branch (requires GITHUB_TOKEN)",
-        group: "Stack",
-        enabled: () => !!repo,
-        run: async () => {
-          if (!repo) return;
-          const { stackApi } = await import("@/api/stack");
-          try {
-            const stack = await stackApi.current(repo);
-            if (!stack) {
-              pushToast("Not on a stack", "warning");
-              return;
-            }
-            const results = await stackApi.submit(
-              repo,
-              stack.branches.map((b) => b.name),
-            );
-            const failed = results.filter((r) => r.outcome.kind === "failed").length;
-            if (failed === 0) {
-              pushToast(`Submitted ${results.length} branch(es)`, "success");
-            } else {
-              pushToast(
-                `Submit finished with ${failed} failure(s) — open the stack tab for details`,
-                "warning",
-                6000,
-              );
-            }
-            window.dispatchEvent(new CustomEvent("voidlink:refresh-git"));
-          } catch (e) {
-            pushToast(String(e), "error", 6000);
-          }
-        },
-      },
-      {
-        id: "stack.open-tab",
-        label: "Stack: Open stack workspace",
-        description: "Open a tab with the full stack graph for the current branch",
-        group: "Stack",
-        enabled: () => !!repo,
-        run: async () => {
-          if (!repo) return;
-          const { stackApi } = await import("@/api/stack");
-          try {
-            const stack = await stackApi.current(repo);
-            if (!stack) {
-              pushToast("Not on a stack — use 'Branch on top' first", "warning");
-              return;
-            }
-            const top = stack.branches.at(-1)?.name;
-            if (!top) return;
-            actions.openStackTab(wtId, { trunk: stack.trunk, topBranch: top });
-          } catch (e) {
-            pushToast(String(e), "error");
-          }
-        },
-      },
-      {
-        id: "ui.toggle-git-sidebar",
-        label: "Toggle git sidebar",
+        id: "brain.open",
+        label: "Search brain…",
+        description: "Browse, read and capture entries in this project's brain",
         group: "View",
-        run: () => actions.toggleGitSidebar(),
-      },
-      {
-        id: "ui.toggle-left-sidebar",
-        label: "Toggle left sidebar",
-        group: "View",
-        run: () => actions.toggleLeftSidebar(),
-      },
-      {
-        id: "ui.swap-sidebars",
-        label: "Swap left/right sidebars",
-        group: "View",
-        run: () => actions.toggleSidebarsSwapped(),
-      },
-      {
-        id: "ui.toggle-diff-mode",
-        label: "Toggle inline / split diff",
-        group: "View",
-        run: () => actions.setDiffMode(state.diffMode === "inline" ? "split" : "inline"),
-      },
-      {
-        id: "ui.toggle-ignore-ws",
-        label: "Toggle ignore whitespace in diffs",
-        group: "View",
-        run: () => actions.toggleIgnoreWhitespace(),
-      },
-      {
-        id: "ui.maximize-pane",
-        label: "Maximize / restore the focused pane",
-        description: "Fill the workbench with the focused pane group; press again to restore",
-        group: "View",
-        run: () => toggleMaximizedGroup(focusedGroupId()),
-      },
-      {
-        id: "ui.zen",
-        label: "Toggle zen mode",
-        description: "Hide the rail, both sidebars and the tab strips; the status bar stays",
-        group: "View",
-        run: () => toggleZen(),
-      },
-      {
-        id: "app.settings",
-        label: "Open settings…",
-        group: "App",
-        run: () => props.onOpenSettings(),
-      },
-      {
-        id: "git.ai-draft-commit",
-        label: "Draft commit message with AI",
-        description: "Pipe staged diff to your configured CLI",
-        group: "Git",
-        enabled: () => !!repo,
-        run: () => {
-          if (!repo) {
-            pushToast("Open a repository first", "warning");
-            return;
-          }
-          requestAiCommitDraft();
-        },
-      },
-      {
-        id: "agent.toggle",
-        label: "Toggle repo agent",
-        description: "Ask a CLI grounded in this workspace's git state",
-        group: "AI",
-        enabled: () => !!repo,
-        run: () => {
-          if (!repo) {
-            pushToast("Open a repository first", "warning");
-            return;
-          }
-          toggleAgentPanel();
-        },
-      },
-      {
-        id: "workspace.new",
-        label: "New workspace",
-        group: "Workspace",
-        run: () => {
-          actions.addWorkspace();
-        },
-      },
-      {
-        id: "workspace.next",
-        label: "Next workspace",
-        group: "Workspace",
-        enabled: () => state.workspaces.length > 1,
-        run: () => cycleWorkspace(1),
-      },
-      {
-        id: "workspace.prev",
-        label: "Previous workspace",
-        group: "Workspace",
-        enabled: () => state.workspaces.length > 1,
-        run: () => cycleWorkspace(-1),
-      },
-      // ── Worktrees ────────────────────────────────────────────────────
-      {
-        id: "worktree.new",
-        label: "New worktree…",
-        description: "Create a linked worktree with env files and dependencies set up",
-        group: "Workspace",
-        enabled: () => !!activeWorkspace()?.isRepo,
-        run: () => {
-          const ws = activeWorkspace();
-          if (!ws?.repoRoot) {
-            pushToast("Select a repository for this workspace first", "warning");
-            return;
-          }
-          if (!ws.isRepo) {
-            pushToast("This folder isn't a git repository — worktrees need one", "warning");
-            return;
-          }
-          requestNewWorktree({
-            workspaceId: ws.id,
-            repoRoot: ws.repoRoot,
-            sourcePath: activeWorktree()?.path || ws.repoRoot,
-          });
-        },
-      },
-      {
-        id: "worktree.next",
-        label: "Next worktree",
-        description: "Switch to the next worktree in this workspace",
-        group: "Workspace",
-        enabled: () => (activeWorkspace()?.worktrees.length ?? 0) > 1,
-        run: () => cycleWorktree(1),
-      },
-      {
-        id: "worktree.prev",
-        label: "Previous worktree",
-        description: "Switch to the previous worktree in this workspace",
-        group: "Workspace",
-        enabled: () => (activeWorkspace()?.worktrees.length ?? 0) > 1,
-        run: () => cycleWorktree(-1),
-      },
-      {
-        id: "worktree.remove",
-        label: "Remove current worktree…",
-        description: "Delete the active linked worktree's directory",
-        group: "Workspace",
-        enabled: () => activeWorktree()?.isMain === false,
-        run: () => void removeActiveWorktree(),
+        run: () => openBrain(),
       },
       {
         id: "browser.new",
@@ -752,265 +621,136 @@ function AppInner(props: {
           actions.openBrowserTab(wtId, normalizeUrl("example.com"));
         },
       },
-      // ⌘1-⌘9 jump straight to a workspace. Registered so the keymap can bind
-      // them, hidden so nine near-identical rows don't drown the palette.
-      ...Array.from({ length: WORKSPACE_SELECT_COUNT }, (_, i): Action => ({
-        id: workspaceSelectId(i + 1),
-        label: `Go to workspace ${i + 1}`,
-        group: "Workspace",
-        hidden: true,
-        enabled: () => !!state.workspaces[i],
-        run: () => selectWorkspaceByIndex(i),
-      })),
-      {
-        id: "tab.close",
-        label: "Close tab",
-        description: "With no tabs open, closes the workspace itself",
-        group: "Tabs",
-        run: () => closeActiveTab(),
-      },
-      {
-        id: "tab.next",
-        label: "Next tab",
-        group: "Tabs",
-        enabled: () => allItems().length > 1,
-        run: () => cycleTab(1),
-      },
-      {
-        id: "tab.prev",
-        label: "Previous tab",
-        group: "Tabs",
-        enabled: () => allItems().length > 1,
-        run: () => cycleTab(-1),
-      },
-      {
-        id: "tab.mru-next",
-        label: "Cycle tabs by most recently used",
-        description: "Hold Ctrl and press Tab; releasing Ctrl switches to the highlighted tab",
-        group: "Tabs",
-        enabled: () => focusedGroupMru().length > 1,
-        run: () => cycleMru(1),
-      },
-      {
-        id: "tab.mru-prev",
-        label: "Cycle tabs backwards by most recently used",
-        group: "Tabs",
-        hidden: true,
-        enabled: () => focusedGroupMru().length > 1,
-        run: () => cycleMru(-1),
-      },
-      {
-        id: "tab.switch",
-        label: "Go to open tab…",
-        description: "Fuzzy search every tab open in this worktree",
-        group: "Tabs",
-        enabled: () => allItems().length > 0,
-        run: () => (isTabSwitcherOpen() ? closeTabSwitcher() : openTabSwitcher()),
-      },
-      // ⌘⌥1-⌘⌥9 jump to a tab in the focused group. Registered so the keymap
-      // can bind them, hidden so nine near-identical rows don't drown the
-      // palette — the same bargain the nine workspace slots make.
-      ...Array.from({ length: TAB_SELECT_COUNT }, (_, i): Action => ({
-        id: tabSelectId(i + 1),
-        label: `Go to tab ${i + 1}`,
-        group: "Tabs",
-        hidden: true,
-        enabled: () => focusedGroupTabIds().length > i,
-        run: () => selectTabAt(i + 1),
-      })),
-      {
-        id: "tab.select.last",
-        label: "Go to last tab",
-        group: "Tabs",
-        hidden: true,
-        enabled: () => focusedGroupTabIds().length > 0,
-        run: () => selectTabAt("last"),
-      },
-      {
-        id: "ui.navigate-back",
-        label: "Go back",
-        description: "The previous tab, pane and line you were looking at",
-        group: "View",
-        enabled: () => canGoBack(),
-        run: () => navigateHistory(-1),
-      },
-      {
-        id: "ui.navigate-forward",
-        label: "Go forward",
-        group: "View",
-        enabled: () => canGoForward(),
-        run: () => navigateHistory(1),
-      },
-      {
-        id: "workspace.switch",
-        label: "Go to worktree…",
-        description: "Every worktree across every workspace, with its dirty and ahead/behind state",
-        group: "Workspace",
-        run: () =>
-          isWorktreeSwitcherOpen() ? closeWorktreeSwitcher() : openWorktreeSwitcher(),
-      },
+    ];
+  });
+
+  useActionSource(160, (): Action[] => [
+    {
+      id: "tab.close",
+      label: "Close tab",
+      description: "With no tabs open, closes the workspace itself",
+      group: "Tabs",
+      run: () => closeActiveTab(),
+    },
+    {
+      id: "tab.next",
+      label: "Next tab",
+      group: "Tabs",
+      enabled: () => allItems().length > 1,
+      run: () => cycleTab(1),
+    },
+    {
+      id: "tab.prev",
+      label: "Previous tab",
+      group: "Tabs",
+      enabled: () => allItems().length > 1,
+      run: () => cycleTab(-1),
+    },
+    {
+      id: "tab.mru-next",
+      label: "Cycle tabs by most recently used",
+      description: "Hold Ctrl and press Tab; releasing Ctrl switches to the highlighted tab",
+      group: "Tabs",
+      enabled: () => focusedGroupMru().length > 1,
+      run: () => cycleMru(1),
+    },
+    {
+      id: "tab.mru-prev",
+      label: "Cycle tabs backwards by most recently used",
+      group: "Tabs",
+      hidden: true,
+      enabled: () => focusedGroupMru().length > 1,
+      run: () => cycleMru(-1),
+    },
+    {
+      id: "tab.switch",
+      label: "Go to open tab…",
+      description: "Fuzzy search every tab open in this worktree",
+      group: "Tabs",
+      enabled: () => allItems().length > 0,
+      run: () => (isTabSwitcherOpen() ? closeTabSwitcher() : openTabSwitcher()),
+    },
+    // ⌘⌥1-⌘⌥9 jump to a tab in the focused group. Registered so the keymap
+    // can bind them, hidden so nine near-identical rows don't drown the
+    // palette — the same bargain the nine workspace slots make.
+    ...Array.from({ length: TAB_SELECT_COUNT }, (_, i): Action => ({
+      id: tabSelectId(i + 1),
+      label: `Go to tab ${i + 1}`,
+      group: "Tabs",
+      hidden: true,
+      enabled: () => focusedGroupTabIds().length > i,
+      run: () => selectTabAt(i + 1),
+    })),
+    {
+      id: "tab.select.last",
+      label: "Go to last tab",
+      group: "Tabs",
+      hidden: true,
+      enabled: () => focusedGroupTabIds().length > 0,
+      run: () => selectTabAt("last"),
+    },
+  ]);
+
+  useActionSource(170, (): Action[] => [
+    {
+      id: "ui.navigate-back",
+      label: "Go back",
+      description: "The previous tab, pane and line you were looking at",
+      group: "View",
+      enabled: () => canGoBack(),
+      run: () => navigateHistory(-1),
+    },
+    {
+      id: "ui.navigate-forward",
+      label: "Go forward",
+      group: "View",
+      enabled: () => canGoForward(),
+      run: () => navigateHistory(1),
+    },
+  ]);
+
+  useActionSource(190, (): Action[] => {
+    const wtId = state.activeWorktreeId;
+    return [
       {
         id: "tab.reopen-last",
         label: "Reopen last closed tab",
         description: "File / diff / compare / stack — terminals can't be reopened",
         group: "Tabs",
-        enabled: () => (state.closedTabsByWorktree[state.activeWorktreeId] ?? []).length > 0,
+        enabled: () => (state.closedTabsByWorktree[wtId] ?? []).length > 0,
         run: () => void reopenLastClosed(),
       },
-      // ── Workspace snapshots ──────────────────────────────────────────
-      {
-        id: "snapshot.save",
-        label: "Snapshot: save current as…",
-        description: "Save tabs + terminals + sidebar state under a name",
-        group: "Workspace",
-        run: async () => {
-          const name = await textPrompt({
-            title: "Save snapshot",
-            label: "Name this snapshot of tabs, terminals, and sidebar state",
-            placeholder: "before-refactor",
-            confirmLabel: "Save",
-          });
-          if (!name) return;
-          actions.saveWorkspaceSnapshot(state.activeWorktreeId, name);
-          pushToast(`Snapshot "${name}" saved`, "success");
-        },
-      },
-      {
-        id: "snapshot.manage",
-        label: "Snapshot: manage saved snapshots…",
-        description: "Restore, rename or delete a saved session",
-        group: "Workspace",
-        run: () => props.onOpenSnapshots(),
-      },
-      // Dynamic entries — one restore per saved snapshot for the active
-      // worktree, re-registered on each effect run. Delete and rename live in
-      // the snapshot manager: they are destructive and need to be seen next to
-      // what they act on, which a palette row cannot show.
-      // ── Layout presets ─────────────────────────────────────────────────
-      // An *arrangement*, recalled by name: the pane tree, the tab groups,
-      // each pane's front tab and the three panel widths. Distinct from a
-      // snapshot, which is a whole session — applying a preset opens and
-      // closes nothing, it rearranges whatever is already there.
-      {
-        id: "layout.preset.save",
-        label: "Layout: save arrangement as…",
-        description: "Panes, tab groups and panel widths — no tab contents",
-        group: "Workspace",
-        run: async () => {
-          const name = await textPrompt({
-            title: "Save layout preset",
-            label: "Name this arrangement of panes, tab groups and panel widths",
-            placeholder: "review",
-            confirmLabel: "Save",
-          });
-          if (!name) return;
-          if (actions.saveLayoutPreset(state.activeWorktreeId, name)) {
-            pushToast(`Layout "${name}" saved`, "success");
-          }
-        },
-      },
-      // Three rows per preset, generated from user data. Apply is the common
-      // one; rename and delete sit beside it rather than in a manager of their
-      // own, because a preset has nothing to show next to itself the way a
-      // snapshot's tab list does.
-      ...actions.layoutPresets().flatMap<Action>((preset) => [
-        {
-          id: `layout.preset.apply.${preset.name}`,
-          label: `Layout: apply "${preset.name}"`,
-          description: "Rearrange the open tabs into this arrangement",
-          group: "Workspace",
-          run: () => {
-            if (actions.applyLayoutPreset(state.activeWorktreeId, preset.name)) {
-              pushToast(`Applied "${preset.name}"`, "success");
-            } else {
-              pushToast(`Layout "${preset.name}" not found`, "error");
-            }
-          },
-        },
-        {
-          id: `layout.preset.rename.${preset.name}`,
-          label: `Layout: rename "${preset.name}"…`,
-          group: "Workspace",
-          run: async () => {
-            const next = await textPrompt({
-              title: "Rename layout preset",
-              label: `New name for "${preset.name}"`,
-              initialValue: preset.name,
-              confirmLabel: "Rename",
-            });
-            if (!next) return;
-            const result = renamePreset(state.activeWorkspaceId, preset.name, next);
-            if (result === "ok") pushToast(`Renamed to "${next.trim()}"`, "success");
-            else if (result === "duplicate") pushToast("A layout with that name exists", "error");
-            else if (result === "empty-name") pushToast("A layout needs a name", "error");
-            else pushToast(`Layout "${preset.name}" not found`, "error");
-          },
-        },
-        {
-          id: `layout.preset.delete.${preset.name}`,
-          label: `Layout: delete "${preset.name}"`,
-          group: "Workspace",
-          run: () => {
-            removePreset(state.activeWorkspaceId, preset.name);
-            pushToast(`Deleted "${preset.name}"`, "info");
-          },
-        },
-      ]),
-      // ── Auto-grouping ──────────────────────────────────────────────────
-      // Derived tab groups. Read-only by construction: the first hand-edit of
-      // one materialises the derivation and drops the worktree back to `off`,
-      // so the rule never undoes the user.
-      ...AUTO_GROUP_MODES.map<Action>((mode) => ({
-        id: `layout.autogroup.${mode}`,
-        label:
-          mode === "off"
-            ? "Tab groups: manual"
-            : `Tab groups: group by ${mode === "kind" ? "kind" : "worktree"}`,
-        description:
-          mode === "off"
-            ? "Group tabs by hand"
-            : "Derive tab groups automatically; editing one switches back to manual",
-        group: "View",
-        enabled: () => actions.autoGroupMode(state.activeWorktreeId) !== mode,
-        run: () => actions.setAutoGroupMode(state.activeWorktreeId, mode),
-      })),
-      ...snapshotsFor(state.activeWorktreeId).map<Action>((snap) => ({
-        id: `snapshot.restore.${snap.name}`,
-        label: `Snapshot: restore "${snap.name}"`,
-        description: `${snapshotTabCount(snap)} tabs`,
-        group: "Workspace",
-        run: async () => {
-          const ok = await actions.restoreWorkspaceSnapshot(state.activeWorktreeId, snap.name);
-          if (!ok) pushToast(`Snapshot "${snap.name}" not found`, "error");
-          else pushToast(`Restored "${snap.name}"`, "success");
-        },
-      })),
     ];
-    const dispose = registerActions(list);
+  });
 
-    // Dev-time keymap audit. The unit test catches duplicate chords and ids
-    // that aren't in the declared catalog; this catches the remaining case —
-    // an id that is declared but never actually registered, which would show
-    // up at runtime as a shortcut that quietly does nothing. `untrack` because
-    // reading the registry inside the effect that writes it would loop.
-    if (import.meta.env.DEV) {
-      untrack(() => {
-        // Stacked mode registers the editor's actions in this window too, so
-        // the audit must not skip the entries the editor owns — they are ours.
-        for (const problem of validateKeymap(getActions().map((a) => a.id),
-          isStackedMode() ? {} : { window: "main" },
-        )) {
-          console.error(`[keymap] ${problem.kind}: ${problem.detail}`);
-        }
-      });
-    }
+  // Wires every `registerActionSource` call above — and every one made by
+  // the feature modules called at the top of this component — into the
+  // registry's `actions` signal. One call, after every source for this
+  // window has had the chance to register.
+  useActionSourceCatalog();
 
-    // Re-register on next change.
-    return dispose;
+  // Dev-time keymap audit. The unit test catches duplicate chords and ids
+  // that aren't in the declared catalog; this catches the remaining case —
+  // an id that is declared but never actually registered, which would show
+  // up at runtime as a shortcut that quietly does nothing. Tracks
+  // `getActions()` directly (rather than `untrack`ing it, as the single
+  // hand-written effect used to) so it re-runs whenever the composed catalog
+  // changes — now the only signal this diagnostic needs to depend on, since
+  // registration is no longer one effect it shares with catalog-building.
+  createEffect(() => {
+    const ids = getActions().map((a) => a.id);
+    if (!import.meta.env.DEV) return;
+    untrack(() => {
+      // Stacked mode registers the editor's actions in this window too, so
+      // the audit must not skip the entries the editor owns — they are ours.
+      for (const problem of validateKeymap(ids, isStackedMode() ? {} : { window: "main" })) {
+        console.error(`[keymap] ${problem.kind}: ${problem.detail}`);
+      }
+    });
   });
 
   /// Build the ordered list of tabs in the same order MainSurface renders
-  /// them (terminals → compares → stacks → graph → brain → browser). Used by
+  /// them (terminals → compares → stacks → graph → timeline → browser). Used by
   /// the Cmd+Alt+Arrow cycle shortcut so the wrap order matches what the user
   /// sees in the tab bar. Files, diffs, conflicts and previews are not here:
   /// they live in the editor window, which cycles its own.
@@ -1025,8 +765,10 @@ function AppInner(props: {
       items.push({ type: "stack", id: s.id });
     for (const h of state.historyTabsByWorktree[wtId] ?? [])
       items.push({ type: "history", id: h.id });
-    for (const b of state.brainTabsByWorktree[wtId] ?? [])
-      items.push({ type: "brain", id: b.id });
+    for (const t of state.timelineTabsByWorktree[wtId] ?? [])
+      items.push({ type: "timeline", id: t.id });
+    for (const m of state.missionTabsByWorktree[wtId] ?? [])
+      items.push({ type: "mission", id: m.id });
     for (const b of state.browserTabsByWorktree[wtId] ?? [])
       items.push({ type: "browser", id: b.id });
     return items;
@@ -1075,8 +817,21 @@ function AppInner(props: {
         open: go({ type: "history", id: h.id }),
       });
     }
-    for (const b of state.brainTabsByWorktree[wtId] ?? []) {
-      out.push({ id: b.id, label: "Brain", kind: "brain", open: go({ type: "brain", id: b.id }) });
+    for (const t of state.timelineTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: t.id,
+        label: "Timeline",
+        kind: "timeline",
+        open: go({ type: "timeline", id: t.id }),
+      });
+    }
+    for (const m of state.missionTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: m.id,
+        label: "Mission Control",
+        kind: "mission",
+        open: go({ type: "mission", id: m.id }),
+      });
     }
     for (const b of state.browserTabsByWorktree[wtId] ?? []) {
       out.push({
@@ -1210,8 +965,11 @@ function AppInner(props: {
       case "history":
         actions.selectHistoryTab(wtId, item.id);
         break;
-      case "brain":
-        actions.selectBrainTab(wtId, item.id);
+      case "timeline":
+        actions.selectTimelineTab(wtId, item.id);
+        break;
+      case "mission":
+        actions.selectMissionTab(wtId, item.id);
         break;
       case "browser":
         actions.selectBrowserTab(wtId, item.id);
@@ -1243,51 +1001,6 @@ function AppInner(props: {
     if (popped.type === "file" || popped.type === "diff") {
       await showEditorWindow();
     }
-  }
-
-  function cycleWorkspace(direction: 1 | -1) {
-    const list = state.workspaces;
-    if (list.length < 2) return;
-    const idx = list.findIndex((w) => w.id === state.activeWorkspaceId);
-    if (idx === -1) return;
-    const next = (idx + direction + list.length) % list.length;
-    actions.selectWorkspace(list[next].id);
-  }
-
-  function selectWorkspaceByIndex(i: number) {
-    const ws = state.workspaces[i];
-    if (ws) actions.selectWorkspace(ws.id);
-  }
-
-  /// Cycle within the active workspace's worktrees. Wraps, like the tab and
-  /// workspace cycles, so repeated presses stay useful with two worktrees.
-  function cycleWorktree(direction: 1 | -1) {
-    const ws = activeWorkspace();
-    if (!ws || ws.worktrees.length < 2) return;
-    const idx = ws.worktrees.findIndex((wt) => wt.id === state.activeWorktreeId);
-    if (idx === -1) return;
-    const next = (idx + direction + ws.worktrees.length) % ws.worktrees.length;
-    actions.selectWorktree(ws.worktrees[next].id);
-  }
-
-  /// Remove the active worktree from git and from the rail. Main worktrees are
-  /// the workspace itself and are never removable this way.
-  async function removeActiveWorktree() {
-    const ws = activeWorkspace();
-    const wt = activeWorktree();
-    if (!ws?.repoRoot || !wt || wt.isMain) {
-      pushToast("The main worktree can't be removed — close the workspace instead", "warning");
-      return;
-    }
-    const { gitApi } = await import("@/api/git");
-    try {
-      await gitApi.removeWorktree(ws.repoRoot, wt.path, false);
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
-      return;
-    }
-    actions.removeWorktree(ws.id, wt.id);
-    pushToast(`Removed worktree ${wt.branch ?? wt.path}`, "info", 2500);
   }
 
   function closeActiveTab() {
@@ -1347,8 +1060,11 @@ function AppInner(props: {
       case "history":
         actions.closeHistoryTab(wtId, item.id);
         break;
-      case "brain":
-        actions.closeBrainTab(wtId, item.id);
+      case "timeline":
+        actions.closeTimelineTab(wtId, item.id);
+        break;
+      case "mission":
+        actions.closeMissionTab(wtId, item.id);
         break;
       case "browser":
         actions.closeBrowserTab(wtId, item.id);
@@ -1398,6 +1114,7 @@ function AppInner(props: {
       main={
         <MainSurface
           onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
+          onOpenSettings={props.onOpenSettings}
         />
       }
       rightSidebar={isZen() ? null : state.sidebarsSwapped ? leftPane() : rightPane()}
@@ -1473,6 +1190,14 @@ function AppInner(props: {
       <TabSwitcher tabs={workbenchTargets} />
       {/* Held-modifier UI: no scrim, no transition, gone on the keyup. */}
       <TabCycleOverlay />
+      {/* The workspace's repo root, not the active worktree's path: a brain
+          belongs to the project, so every worktree of it reads and writes the
+          same entries rather than one per checkout. */}
+      <BrainOverlayHost
+        open={isBrainOpen()}
+        repoPath={activeWorkspace()?.repoRoot ?? ""}
+        onClose={closeBrain}
+      />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />
       <ToastViewport />
@@ -1509,8 +1234,13 @@ setPersistenceErrorHandler((key) =>
 
 export default function App() {
   const store = createAppStore();
-  const [settingsOpen, setSettingsOpen] = createSignal(false);
-  const [snapshotsOpen, setSnapshotsOpen] = createSignal(false);
+  // `createOverlay`, not a bare `createSignal`: both dialogs are modal
+  // surfaces the embedded browser has to hide behind (see
+  // `commands/overlay.ts`). Snapshots was never wired into the old
+  // hand-written effect list in `AppInner` — an unregistered overlay nobody
+  // had hit yet, and exactly the failure mode BR-O1 describes.
+  const settings = createOverlay("settings");
+  const snapshots = createOverlay("snapshots");
   /// The palette's "Go to setting…" query. A signal rather than a one-shot
   /// call so asking twice for the same setting still re-focuses the filter —
   /// the wrapper object makes each request a distinct value even when the text
@@ -1521,27 +1251,23 @@ export default function App() {
     const query = (e as CustomEvent<string>).detail;
     if (typeof query !== "string") return;
     setGotoSetting({ query });
-    setSettingsOpen(true);
+    settings.open();
   };
   window.addEventListener("voidlink:goto-setting", onGotoSetting);
   onCleanup(() => window.removeEventListener("voidlink:goto-setting", onGotoSetting));
 
   return (
     <AppStoreContext.Provider value={store}>
-      <AppInner
-        onOpenSettings={() => setSettingsOpen(true)}
-        settingsOpen={settingsOpen()}
-        onOpenSnapshots={() => setSnapshotsOpen(true)}
-      />
+      <AppInner onOpenSettings={settings.open} onOpenSnapshots={snapshots.open} />
       <SettingsDialog
-        open={settingsOpen()}
+        open={settings.isOpen()}
         onClose={() => {
-          setSettingsOpen(false);
+          settings.close();
           setGotoSetting(null);
         }}
         gotoSetting={gotoSetting()?.query}
       />
-      <SnapshotManager open={snapshotsOpen()} onClose={() => setSnapshotsOpen(false)} />
+      <SnapshotManager open={snapshots.isOpen()} onClose={snapshots.close} />
     </AppStoreContext.Provider>
   );
 }

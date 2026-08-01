@@ -290,6 +290,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsContext) {
             behind: info.behind,
             isLocked: info.isLocked,
             isDetached: info.isDetached,
+            statusUnknown: info.statusUnknown,
+            isPrunable: info.isPrunable,
           });
           seedWorktreeCollections(s, id);
         }

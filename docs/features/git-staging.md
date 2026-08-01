@@ -37,18 +37,33 @@ deleted).
 
 ### Hunk-level
 
-Open a file's diff, hover a hunk header, and three buttons appear:
+Open a file's diff and click **`Hunks`** in the toolbar. That swaps the Monaco
+diff for the hunk renderer, which draws each hunk as a block with its own
+controls — Monaco's diff view has no such unit, which is why this is a separate
+mode rather than a gutter action.
+
+Hover a hunk header and three buttons appear:
 
 | Button | Effect |
 |---|---|
-| `Stage hunk` | Applies just that hunk to the index. |
-| `Discard` | Reverse-applies it to the **working tree**. Confirms first. |
+| `Stage hunk` / `Unstage hunk` | Applies just that hunk to the index. The label follows which side of the index you opened: the Changes list stages, the Staged list unstages. |
+| `Discard` | Reverse-applies it to the **working tree**. Confirms first. Offered only on the unstaged side, since on the staged side the working tree is not what you are looking at. |
 | `Copy` | Copies the hunk as a fenced markdown block, headed with the path and the `@@` line. |
 
 Staging works by serialising the single hunk back into a unified patch and
 handing it to libgit2's `apply` against `ApplyLocation::Index` — the same trick
 `git add -p` uses internally. Discard builds the inverted patch and applies it
 to `ApplyLocation::WorkDir`.
+
+**Before either runs, the basis is verified.** The patch is built from the diff
+on screen, and the file can move between the render and the click — a
+`git checkout` typed into the app's own terminal, another editor saving. The
+`FileDiff` carries the old side's blob oid; Rust compares it against what is
+actually there (the index for staging and discarding, HEAD for unstaging) and
+refuses with `[stale-diff]` if it has moved, before any write. It then dry-runs
+the patch (`ApplyOptions::check(true)`) to catch a working tree that has drifted
+in a way the oid cannot see. The UI turns that refusal into "this file changed
+since the diff was drawn — refreshed, try again".
 
 ### Committing
 
@@ -116,6 +131,18 @@ a discard that did not happen.
 The archive icon opens a prompt with message `WIP` and two toggles:
 `Keep staged changes in the index` (off) and `Include untracked files` (**on**).
 
+In the Stashes section, clicking a stash's message opens its diff in a compare
+tab. The tab addresses the stash by **commit oid**, not by `stash@{N}`: a
+compare tab re-resolves its refs on every refresh, so a positional ref would
+silently start describing a different stash the moment anything pushed onto the
+stack. The tab's name (`stash@{1} WIP`) is a snapshot of what was clicked and
+*can* go stale; the diff underneath it cannot.
+
+Apply and pop are merges, so they can stop on conflicts. When they do, the
+conflicted files open in the merge editor — the same route pull, merge and
+rebase take — rather than reporting a bare error. A conflicted pop leaves the
+stash in place; drop it once you have resolved.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |
@@ -182,16 +209,14 @@ the filter box) and:
 - **The inverted patch has no add/delete file headers.** Discarding a hunk of a
   newly-added or deleted file goes through a plain modification patch rather
   than a `/dev/null` one.
-- **There is no "unstage hunk".** The backend supports a reverse apply, but no
-  UI ever passes `reverse: true`.
 - **Hunk actions exist only in the working-tree diff view.** The
   [branch compare](./branch-compare.md) pane renders the same diff component
-  without them.
-- **The diff view always shows the combined HEAD-to-worktree diff**, whether you
-  opened the file from the Staged list or the Changes list.
-- **`Ignore WS` can block a hunk action.** The remap from filtered hunk index
-  back to raw index is keyed on `(oldStart, newStart)`; if that pair can't be
-  found you get `Could not locate hunk in unfiltered diff. Disable Ignore WS and retry.`
+  without them — there is no index to stage into when comparing two refs.
+- **A stale diff is refused, not reconciled.** If the file moved under you, the
+  action is rejected and the view refreshes; nothing attempts a three-way merge.
+- **The diff view shows one side of the index at a time** — the Changes list
+  opens `git diff`, the Staged list opens `git diff --cached`, and they are
+  separate tabs for the same file.
 - **No hooks, no signing, no message validation.** libgit2 does not run git
   hooks, so `pre-commit` and `commit-msg` never fire.
 - **Bare repos are rejected** with `bare repositories not supported`.

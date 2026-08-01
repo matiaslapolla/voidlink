@@ -153,8 +153,8 @@ describe("KEYMAP integrity", () => {
       "workspace.new": { meta: true, key: "n" },
       "workspace.next": { meta: true, shift: true, key: "ArrowRight" },
       "workspace.prev": { meta: true, shift: true, key: "ArrowLeft" },
-      "tab.next": { meta: true, alt: true, key: "ArrowRight" },
-      "tab.prev": { meta: true, alt: true, key: "ArrowLeft" },
+      "ui.navigate-back": { meta: true, alt: true, key: "ArrowLeft" },
+      "ui.navigate-forward": { meta: true, alt: true, key: "ArrowRight" },
       "ui.toggle-left-sidebar": { meta: true, key: "b" },
       "ui.toggle-git-sidebar": { meta: true, key: "j" },
       "ui.swap-sidebars": { meta: true, key: "\\" },
@@ -198,14 +198,30 @@ describe("KEYMAP integrity", () => {
     );
   });
 
-  it("keeps tab.next/tab.prev as document-order navigation beside the MRU", () => {
-    // The two are deliberately different questions; neither may absorb the
-    // other's chords.
-    expect(chordId(primaryChordFor("tab.next")!)).toBe(
-      chordId({ meta: true, alt: true, key: "ArrowRight" }),
-    );
-    expect(chordId(primaryChordFor("tab.prev")!)).toBe(
+  it("leaves tab.next/tab.prev palette-only, and gives their chords to navigate-back/forward", () => {
+    // Document-order stepping was the fourth model for moving between tabs,
+    // beside MRU cycling, jump-to-N and back/forward. It is the one nobody
+    // reaches for once MRU exists, and it was holding two chord pairs.
+    //
+    // Palette-only is a supported state, not a broken one: the actions stay
+    // registered, and `primaryChordFor` returning `undefined` renders as an
+    // entry with no accelerator. If this fails because someone re-bound them,
+    // the question to answer first is which of the other three models they
+    // intend to remove.
+    expect(primaryChordFor("tab.next")).toBeUndefined();
+    expect(primaryChordFor("tab.prev")).toBeUndefined();
+
+    // Still reachable — that is the half of the decision that makes the other
+    // half safe.
+    expect(ACTION_IDS).toContain("tab.next");
+    expect(ACTION_IDS).toContain("tab.prev");
+
+    // And the arrows now describe the motion they actually perform.
+    expect(chordId(primaryChordFor("ui.navigate-back")!)).toBe(
       chordId({ meta: true, alt: true, key: "ArrowLeft" }),
+    );
+    expect(chordId(primaryChordFor("ui.navigate-forward")!)).toBe(
+      chordId({ meta: true, alt: true, key: "ArrowRight" }),
     );
   });
 

@@ -99,6 +99,96 @@ describe("the signal registry", () => {
 
 /// The load-bearing requirement of the whole wave: a user must never have to
 /// open a pane to learn something happened in it (§7.5.3 rule 1).
+/// Stacked mode collapses the three surfaces into one window, which makes a
+/// covered view the largest hiding place there is: its panes, its strips, its
+/// rail and its status bar all go at once. Every rule above escalates to one of
+/// those, so the switcher segment is the only stop left that the user can see.
+describe("escalate across stacked views", () => {
+  const base = {
+    groupTabs: groups({ A: ["a1"] }),
+    visibleGroupIds: new Set(["A"]),
+    focusedGroupId: "A",
+    zen: false,
+  };
+
+  it("marks the workbench segment while another view is in front", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ a1: ["notify"] }),
+      currentView: "editor",
+    });
+    expect(out.views.get("workbench")).toBe("notify");
+  });
+
+  it("never marks the view that is already in front", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ a1: ["notify"] }),
+      currentView: "workbench",
+    });
+    expect(out.views.size).toBe(0);
+  });
+
+  it("aggregates a view's tabs to the highest single mark", () => {
+    const out = escalate({
+      ...base,
+      groupTabs: groups({ A: ["a1", "a2"] }),
+      tabSignals: sig({ a1: ["working"], a2: ["failed"] }),
+      currentView: "git",
+    });
+    expect(out.views.get("workbench")).toBe("failed");
+  });
+
+  /// Routing is by `tabView` so that a satellite view raising a signal is a
+  /// matter of filling the map in. Today nothing does, and the default is what
+  /// every call site relies on.
+  it("routes a tab to the view that owns it, defaulting to the workbench", () => {
+    const out = escalate({
+      ...base,
+      groupTabs: groups({ A: ["a1", "e1"] }),
+      tabSignals: sig({ a1: ["notify"], e1: ["failed"] }),
+      tabView: new Map([["e1", "editor" as const]]),
+      currentView: "git",
+    });
+    expect(out.views.get("workbench")).toBe("notify");
+    expect(out.views.get("editor")).toBe("failed");
+  });
+
+  it("stays silent for a signal in the covered view's own set when that view is in front", () => {
+    const out = escalate({
+      ...base,
+      groupTabs: groups({ A: ["a1", "e1"] }),
+      tabSignals: sig({ a1: ["notify"], e1: ["failed"] }),
+      tabView: new Map([["e1", "editor" as const]]),
+      currentView: "editor",
+    });
+    expect(out.views.get("workbench")).toBe("notify");
+    expect(out.views.has("editor")).toBe(false);
+  });
+
+  /// Detached mode: three windows, each escalating to its own status bar, and
+  /// no switcher to escalate to. Passing no view has to mean "no fourth stop",
+  /// not "the workbench is covered".
+  it("does nothing when the caller passes no current view", () => {
+    const out = escalate({ ...base, tabSignals: sig({ a1: ["failed"] }) });
+    expect(out.views.size).toBe(0);
+  });
+
+  /// The covered view's own rules keep running. The user switching back should
+  /// find the header and status marks already correct, not computed on arrival.
+  it("leaves the group and status rules untouched", () => {
+    const out = escalate({
+      ...base,
+      groupTabs: groups({ A: ["a1"], B: ["b1"] }),
+      visibleGroupIds: new Set(["A", "B"]),
+      tabSignals: sig({ b1: ["failed"] }),
+      currentView: "editor",
+    });
+    expect(out.views.get("workbench")).toBe("failed");
+    expect(out.groups.get("B")).toBe("failed");
+  });
+});
+
 describe("escalate", () => {
   const base = {
     groupTabs: groups({ A: ["a1"], B: ["b1", "b2"] }),
@@ -262,5 +352,126 @@ describe("running versus working", () => {
     expect(new Set(signalsOf("t1"))).toEqual(new Set(["running", "working"]));
     noteWorking("t1", false);
     expect(signalsOf("t1")).toEqual(["running"]);
+  });
+});
+
+/// §7.5.3 rule 1 one container up.
+///
+/// The violation this closes is not "the mark went to the wrong surface" — it
+/// is that the mark went **nowhere**. `groupTabs` only ever describes the
+/// worktree on screen, because that is the only one with a pane tree, so a
+/// signal in any other worktree matched no group, fell out of every branch, and
+/// reached no surface at all. It went unnoticed because until agents ran in
+/// several worktrees at once, nothing ever signalled outside the one being
+/// looked at.
+describe("escalate across worktrees", () => {
+  const base = {
+    groupTabs: groups({ A: ["a1"] }),
+    visibleGroupIds: new Set(["A"]),
+    focusedGroupId: "A",
+    zen: false,
+    activeWorktreeId: "wt-main",
+    tabWorktree: new Map([
+      ["a1", "wt-main"],
+      ["x1", "wt-feature"],
+      ["x2", "wt-feature"],
+      ["y1", "wt-hotfix"],
+    ]),
+  };
+
+  it("marks the rail row of a worktree the user is not in", () => {
+    const out = escalate({ ...base, tabSignals: sig({ x1: ["failed"] }) });
+    expect(out.worktrees.get("wt-feature")).toBe("failed");
+  });
+
+  /// The regression guard for the actual bug: before the worktree axis existed
+  /// this signal produced an empty `groups`, a null `statusBar`, and nothing
+  /// else — three empty answers and no fourth place to look.
+  it("does not silently drop a signal that belongs to no rendered group", () => {
+    const out = escalate({ ...base, tabSignals: sig({ x1: ["failed"] }) });
+    expect(out.groups.size).toBe(0);
+    expect(out.statusBar).toBeNull();
+    expect(out.worktrees.size).toBe(1);
+  });
+
+  it("aggregates a worktree's tabs to the highest single mark", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ x1: ["finished"], x2: ["failed"] }),
+    });
+    expect(out.worktrees.get("wt-feature")).toBe("failed");
+  });
+
+  it("keeps two worktrees apart", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ x1: ["working"], y1: ["failed"] }),
+    });
+    expect(out.worktrees.get("wt-feature")).toBe("working");
+    expect(out.worktrees.get("wt-hotfix")).toBe("failed");
+  });
+
+  /// The active worktree's signals are already resolved by the tab, header and
+  /// status-bar rules. A rail dot repeating them would be a fourth surface
+  /// saying what three already say.
+  it("never marks the worktree that is on screen", () => {
+    const out = escalate({ ...base, tabSignals: sig({ a1: ["failed"] }) });
+    expect(out.worktrees.size).toBe(0);
+  });
+
+  /// A tab that closed between the snapshot and the call has no worktree. A
+  /// mark for a pane that no longer exists would escalate forever with nowhere
+  /// to send the user.
+  it("drops a signal from a tab with no known worktree", () => {
+    const out = escalate({ ...base, tabSignals: sig({ ghost: ["failed"] }) });
+    expect(out.worktrees.size).toBe(0);
+  });
+
+  it("does nothing when the caller has one worktree and passes no map", () => {
+    const out = escalate({
+      groupTabs: groups({ A: ["a1"] }),
+      visibleGroupIds: new Set(["A"]),
+      focusedGroupId: null,
+      zen: false,
+      tabSignals: sig({ a1: ["failed"] }),
+    });
+    expect(out.worktrees.size).toBe(0);
+    expect(out.worktreeStatusBar).toBeNull();
+  });
+
+  describe("the status-bar half", () => {
+    /// With the rail up, the rail is the right home — MASTER §7.6 is explicit
+    /// that a chip duplicating a visible surface is a dead affordance.
+    it("stays silent while the rail is on screen", () => {
+      const out = escalate({ ...base, tabSignals: sig({ x1: ["failed"] }) });
+      expect(out.worktrees.get("wt-feature")).toBe("failed");
+      expect(out.worktreeStatusBar).toBeNull();
+    });
+
+    /// Zen hides the rail, and then the status bar is the only surface left.
+    /// This is the case that makes the segment mandatory rather than
+    /// decorative.
+    it("carries the mark under zen, naming the worktrees", () => {
+      const out = escalate({
+        ...base,
+        zen: true,
+        tabSignals: sig({ x1: ["failed"], y1: ["working"] }),
+      });
+      expect(out.worktreeStatusBar?.signal).toBe("failed");
+      expect(new Set(out.worktreeStatusBar?.worktreeIds)).toEqual(
+        new Set(["wt-feature", "wt-hotfix"]),
+      );
+    });
+
+    /// Passed explicitly so a future focus mode that also hides the rail does
+    /// not silently strand the mark.
+    it("honours an explicit railVisible over the zen default", () => {
+      const out = escalate({
+        ...base,
+        railVisible: false,
+        tabSignals: sig({ x1: ["notify"] }),
+      });
+      expect(out.worktreeStatusBar?.signal).toBe("notify");
+    });
   });
 });

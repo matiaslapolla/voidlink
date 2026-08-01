@@ -1,7 +1,15 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { diffWordsWithSpace } from "diff";
-import { Check, Clipboard, Plus, Minus } from "lucide-solid";
+import { Check, Clipboard, MessageSquarePlus, Plus, Minus, X } from "lucide-solid";
 import type { DiffHunk, DiffLine, FileDiff } from "@/types/git";
+import { createRowIdentity } from "@/store/stableRows";
+import {
+  addReviewNote,
+  anchorNotes,
+  resolveReviewNote,
+  reviewNotesForFile,
+  type ReviewNote,
+} from "@/store/reviewNotes";
 
 export interface HunkActions {
   /// Called when the user clicks "Stage hunk" / "Unstage hunk".
@@ -27,6 +35,33 @@ interface Segment {
   changed: boolean;
 }
 
+/// The origin Rust gives `\ No newline at end of file`.
+///
+/// libgit2 emits that annotation as a diff line like any other, and both row
+/// builders below fell through to their context arm for it — so the sentence
+/// rendered as a line of the file, in the gutter, with a line number beside it,
+/// as if the author had typed it. It is a note about the line above, so it is
+/// pulled out of the row stream and rendered once per hunk as a footnote.
+const NO_NEWLINE_ORIGIN = "\\";
+
+export function hasNoNewlineMarker(lines: readonly DiffLine[]): boolean {
+  return lines.some((l) => l.origin === NO_NEWLINE_ORIGIN);
+}
+
+/// The lines that are lines. See `NO_NEWLINE_ORIGIN`.
+function codeLines(lines: DiffLine[]): DiffLine[] {
+  return lines.filter((l) => l.origin !== NO_NEWLINE_ORIGIN);
+}
+
+/// The footnote a hunk carries when one of its sides has no trailing newline.
+function NoNewlineNote() {
+  return (
+    <div class="px-3 py-0.5 text-[11px] italic text-muted-foreground/70 select-none">
+      No newline at end of file
+    </div>
+  );
+}
+
 // ─── Inline (unified) diff ───────────────────────────────────────────────────
 
 interface InlineRowData {
@@ -35,7 +70,8 @@ interface InlineRowData {
   segments?: Segment[];
 }
 
-function inlineRowsForHunk(lines: DiffLine[]): InlineRowData[] {
+export function inlineRowsForHunk(all: DiffLine[]): InlineRowData[] {
+  const lines = codeLines(all);
   const out: InlineRowData[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -83,10 +119,29 @@ function inlineRowsForHunk(lines: DiffLine[]): InlineRowData[] {
   return out;
 }
 
-function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
+/// The file's hunks, as stable objects across a refetch that did not change
+/// them.
+///
+/// `DiffTabView` refetches on every refs pulse — several a second while
+/// anything is running — and `<For>` is keyed by reference, so every hunk and
+/// therefore every row inside it was torn down and rebuilt. On a large diff
+/// that is thousands of DOM nodes per pulse, and it takes the text selection,
+/// any open review-note composer and the caret with it.
+///
+/// Stabilising the *hunks* is enough: `<For>`'s child closure receives the hunk
+/// as a plain value, so an unchanged hunk's row builder never re-runs at all.
+/// Keyed on position rather than header, because two hunks can share a header
+/// and the position is what the stage/discard actions already index by.
+function useStableHunks(file: () => FileDiff) {
+  const stabilize = createRowIdentity<DiffHunk>((h) => `${h.oldStart}:${h.newStart}`);
+  return createMemo(() => stabilize(file().hunks));
+}
+
+function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
+  const hunks = useStableHunks(() => props.file);
   return (
     <div>
-      <For each={props.file.hunks}>
+      <For each={hunks()}>
         {(hunk, i) => (
           // `min-w-max` makes the hunk wrapper size to the widest row inside
           // it. Header bar and every +/- row then stretch to that width, so
@@ -98,12 +153,16 @@ function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
               file={props.file}
               hunkIndex={i()}
               actions={props.hunkActions}
+              repoPath={props.repoPath}
             />
             <For each={inlineRowsForHunk(hunk.lines)}>
               {(row) => (
                 <InlineRow origin={row.origin} line={row.line} segments={row.segments} />
               )}
             </For>
+            <Show when={hasNoNewlineMarker(hunk.lines)}>
+              <NoNewlineNote />
+            </Show>
           </div>
         )}
       </For>
@@ -171,7 +230,8 @@ interface SplitPair {
   };
 }
 
-function pairHunkLines(lines: DiffLine[]): SplitPair[] {
+export function pairHunkLines(all: DiffLine[]): SplitPair[] {
+  const lines = codeLines(all);
   const out: SplitPair[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -223,15 +283,60 @@ function HunkHeader(props: {
   file: FileDiff;
   hunkIndex: number;
   actions?: HunkActions;
+  repoPath?: string;
 }) {
   const [copied, setCopied] = createSignal(false);
   const [running, setRunning] = createSignal(false);
+  const [composing, setComposing] = createSignal(false);
+  const [draft, setDraft] = createSignal("");
+
+  const filePath = () => props.file.newPath ?? props.file.oldPath ?? "";
+
+  /// The notes anchored to *this* hunk.
+  ///
+  /// Anchoring runs per hunk rather than once per file because the renderer has
+  /// no per-file component to hang it on — the cost is a header-string compare
+  /// per hunk, which is nothing next to the word-level diffing above.
+  const notes = createMemo<ReviewNote[]>(() => {
+    const repo = props.repoPath;
+    const path = filePath();
+    if (!repo || !path) return [];
+    const fileNotes = reviewNotesForFile(repo, path).filter((n) => !n.resolved);
+    if (fileNotes.length === 0) return [];
+    const headers = props.file.hunks.map((h) => h.header);
+    const anchored = anchorNotes(fileNotes, headers);
+    // Detached notes are shown against the first hunk, so a note whose anchor
+    // moved is still visible on the file rather than disappearing until the
+    // diff happens to line up again.
+    const own = anchored.byHunk.get(props.hunkIndex) ?? [];
+    return props.hunkIndex === 0 ? [...own, ...anchored.detached] : own;
+  });
+
+  function submitNote(e: Event) {
+    e.preventDefault();
+    const repo = props.repoPath;
+    const path = filePath();
+    if (!repo || !path) return;
+    const id = addReviewNote({
+      repo,
+      filePath: path,
+      hunkHeader: props.hunk.header,
+      body: draft(),
+    });
+    if (!id) return;
+    setDraft("");
+    setComposing(false);
+  }
 
   async function copyAsMarkdown() {
     const path = props.file.newPath ?? props.file.oldPath ?? "diff";
     const ext = path.split(".").pop() ?? "";
     const body = props.hunk.lines
       .map((l) => {
+        // The EOFNL annotation carries its own leading `\` in git's own format,
+        // so prefixing it with a space would paste a line that no longer parses
+        // as a patch.
+        if (l.origin === NO_NEWLINE_ORIGIN) return `\\ ${l.content}`;
         const prefix = l.origin === "+" ? "+" : l.origin === "-" ? "-" : " ";
         return `${prefix}${l.content}`;
       })
@@ -268,16 +373,37 @@ function HunkHeader(props: {
   }
 
   return (
-    // Sticky so the current hunk's `@@ … @@` context (file + enclosing
-    // function) stays pinned to the top of the scroll area as you read a
-    // long hunk, handing off to the next hunk's header as it scrolls in.
-    // `bg-background` makes the otherwise-translucent bar opaque so diff
-    // rows don't bleed through while it floats; z-10 keeps it above them.
+    <>
+    {/* Sticky so the current hunk's `@@ … @@` context (file + enclosing
+        function) stays pinned to the top of the scroll area as you read a
+        long hunk, handing off to the next hunk's header as it scrolls in.
+        `bg-background` makes the otherwise-translucent bar opaque so diff
+        rows don't bleed through while it floats; z-10 keeps it above them. */}
     <div class="flex group sticky top-0 z-10 bg-background">
       <div class="w-1 shrink-0 bg-primary/40" />
       <div class="flex-1 px-3 py-0.5 bg-muted/40 text-muted-foreground text-[11px] border-y border-border flex items-center gap-2">
         <span class="truncate">{props.hunk.header}</span>
+        {/* The note count sits outside the hover group: an existing comment has
+            to be discoverable without hovering the hunk that carries it, or a
+            review you left yesterday is invisible today. */}
+        <Show when={notes().length > 0}>
+          <span class="px-1 rounded bg-info/15 text-info text-[10px]">
+            {notes().length}
+          </span>
+        </Show>
         <div class="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <Show when={props.repoPath && filePath()}>
+            <button
+              onClick={() => setComposing((open) => !open)}
+              title="Comment on this hunk — the next agent turn reads it"
+              aria-label="Comment on this hunk"
+              aria-expanded={composing()}
+              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/60 hover:text-foreground transition-colors"
+            >
+              <MessageSquarePlus class="w-2.5 h-2.5" />
+              Comment
+            </button>
+          </Show>
           <Show when={props.actions?.onStageHunk}>
             <button
               onClick={() => void stage()}
@@ -321,13 +447,84 @@ function HunkHeader(props: {
         </div>
       </div>
     </div>
+
+    {/* Notes and the composer sit *below* the sticky bar, in normal flow, so a
+        long comment scrolls with its hunk instead of covering the code the
+        comment is about. */}
+    <Show when={notes().length > 0}>
+      <ul class="border-b border-border bg-info/5">
+        <For each={notes()}>
+          {(note) => (
+            <li class="flex items-start gap-2 px-3 py-1 text-[11px]">
+              <span class="flex-1 min-w-0 whitespace-pre-wrap break-words text-foreground/90">
+                {note.body}
+                <Show when={note.hunkHeader !== props.hunk.header}>
+                  {/* The note's anchor moved. Saying so beats letting a reader
+                      believe the comment is about the lines beneath it. */}
+                  <span
+                    class="ml-1 px-1 rounded bg-muted text-[10px] text-muted-foreground"
+                    title="The hunk this was written against has changed"
+                  >
+                    moved
+                  </span>
+                </Show>
+              </span>
+              <button
+                onClick={() => resolveReviewNote(props.repoPath ?? "", note.id)}
+                title="Resolve — stops sending it to the agent, keeps the note"
+                aria-label={`Resolve comment: ${note.body.split("\n")[0]}`}
+                class="shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Check class="w-2.5 h-2.5" />
+              </button>
+            </li>
+          )}
+        </For>
+      </ul>
+    </Show>
+
+    <Show when={composing()}>
+      <form class="flex items-start gap-2 px-3 py-1.5 border-b border-border bg-muted/20" onSubmit={submitNote}>
+        <textarea
+          value={draft()}
+          onInput={(e) => setDraft(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            // Enter submits, Shift+Enter is a newline: a review comment is one
+            // or two sentences, and a textarea that needs a mouse to submit is
+            // a textarea people stop using.
+            if (e.key === "Enter" && !e.shiftKey) submitNote(e);
+            if (e.key === "Escape") setComposing(false);
+          }}
+          rows="2"
+          placeholder="What should change here? The next agent turn reads this."
+          aria-label="Comment on this hunk"
+          class="flex-1 min-w-0 px-2 py-1 text-[11px] bg-background rounded border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        <button
+          type="submit"
+          class="px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/60 transition-colors"
+        >
+          Comment
+        </button>
+        <button
+          type="button"
+          onClick={() => setComposing(false)}
+          aria-label="Cancel this comment"
+          class="p-0.5 rounded text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <X class="w-2.5 h-2.5" />
+        </button>
+      </form>
+    </Show>
+    </>
   );
 }
 
-function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
+function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
+  const hunks = useStableHunks(() => props.file);
   return (
     <div>
-      <For each={props.file.hunks}>
+      <For each={hunks()}>
         {(hunk, i) => (
           <div>
             <HunkHeader
@@ -335,10 +532,14 @@ function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions }) {
               file={props.file}
               hunkIndex={i()}
               actions={props.hunkActions}
+              repoPath={props.repoPath}
             />
             <For each={pairHunkLines(hunk.lines)}>
               {(pair) => <SplitRow pair={pair} />}
             </For>
+            <Show when={hasNoNewlineMarker(hunk.lines)}>
+              <NoNewlineNote />
+            </Show>
           </div>
         )}
       </For>
@@ -427,78 +628,17 @@ function SplitCell(props: {
   );
 }
 
-// ─── Ignore-whitespace transform ─────────────────────────────────────────────
-
-/**
- * Return a copy of the file diff with whitespace-only changes stripped.
- * Mirrors `git diff -w`: paired -/+ that match after collapsing whitespace are
- * dropped (not reclassified as context). Lone blank-only additions/deletions
- * are dropped too. Recomputes per-file +/- counts.
- */
-export function applyIgnoreWhitespace(file: FileDiff): FileDiff {
-  const normalize = (s: string) => s.replace(/\s+/g, "");
-
-  const newHunks: DiffHunk[] = file.hunks.map((hunk) => {
-    const lines: DiffLine[] = [];
-    let i = 0;
-    while (i < hunk.lines.length) {
-      const l = hunk.lines[i];
-      if (l.origin === " " || l.origin === "~") {
-        lines.push(l);
-        i++;
-        continue;
-      }
-      const dels: DiffLine[] = [];
-      while (i < hunk.lines.length && hunk.lines[i].origin === "-") {
-        dels.push(hunk.lines[i]);
-        i++;
-      }
-      const adds: DiffLine[] = [];
-      while (i < hunk.lines.length && hunk.lines[i].origin === "+") {
-        adds.push(hunk.lines[i]);
-        i++;
-      }
-      const max = Math.max(dels.length, adds.length);
-      for (let k = 0; k < max; k++) {
-        const d = dels[k];
-        const a = adds[k];
-        if (d && a && normalize(d.content) === normalize(a.content)) continue;
-        if (d && !a && normalize(d.content) === "") continue;
-        if (a && !d && normalize(a.content) === "") continue;
-        if (d) lines.push(d);
-        if (a) lines.push(a);
-      }
-    }
-    return { ...hunk, lines };
-  });
-
-  const keptHunks = newHunks.filter((h) =>
-    h.lines.some((l) => l.origin === "+" || l.origin === "-"),
-  );
-
-  let totalAdd = 0;
-  let totalDel = 0;
-  for (const h of keptHunks) {
-    for (const l of h.lines) {
-      if (l.origin === "+") totalAdd++;
-      else if (l.origin === "-") totalDel++;
-    }
-  }
-
-  return {
-    ...file,
-    hunks: keptHunks,
-    additions: totalAdd,
-    deletions: totalDel,
-  };
-}
-
 // ─── Public renderer ─────────────────────────────────────────────────────────
 
 export function DiffRenderer(props: {
   file: FileDiff;
   mode: "inline" | "split";
   hunkActions?: HunkActions;
+  /// The repository this diff belongs to. Optional, and its absence is what
+  /// turns review comments off: the compare view diffs two refs and a note
+  /// written there would have nowhere to land in the working tree. A caller
+  /// that wants annotation opts in by passing the repo.
+  repoPath?: string;
 }) {
   return (
     <Show
@@ -510,11 +650,70 @@ export function DiffRenderer(props: {
       }
     >
       <Show
-        when={props.mode === "split"}
-        fallback={<InlineDiff file={props.file} hunkActions={props.hunkActions} />}
+        // `|| truncated` because the global budget can be spent before this
+        // file's first line, leaving it with real changes and no stored hunks.
+        // `NoTextChange` would then say "no line changes to show" over a file
+        // that changed by thousands.
+        when={props.file.hunks.length > 0 || props.file.truncated}
+        fallback={<NoTextChange file={props.file} />}
       >
-        <SplitDiff file={props.file} hunkActions={props.hunkActions} />
+        <Show
+          when={props.mode === "split"}
+          fallback={
+            <InlineDiff
+              file={props.file}
+              hunkActions={props.hunkActions}
+              repoPath={props.repoPath}
+            />
+          }
+        >
+          <SplitDiff file={props.file} hunkActions={props.hunkActions} repoPath={props.repoPath} />
+        </Show>
+        {/* Rust stops storing lines once a file blows the budget in
+            `collect_diff`. The header's +/− counts are still the true totals,
+            so without this the pane and the number above it disagree and the
+            diff simply looks like it ends early — the same silent-wrongness
+            shape as the blank pane `NoTextChange` exists to avoid. */}
+        <Show when={props.file.truncated}>
+          <div class="px-4 py-3 border-t border-border text-xs text-muted-foreground">
+            This file is too large to show in full. The{" "}
+            <span class="tabular-nums">
+              +{props.file.additions} −{props.file.deletions}
+            </span>{" "}
+            counts above are complete; the lines below the cut are not shown.
+          </div>
+        </Show>
       </Show>
     </Show>
+  );
+}
+
+/// A file that changed without any line changing.
+///
+/// A non-binary file with zero hunks used to render `<For each={[]}>` — an
+/// empty white pane with nothing to explain it, reachable in three ordinary
+/// ways: a mode change (`chmod +x`), a submodule pointer move, and a file whose
+/// only edit was whitespace when `ignoreWhitespace` filtered every hunk away.
+/// The row above it says the file changed, so silence here reads as the diff
+/// viewer being broken rather than as an answer.
+///
+/// §7.5.2/§7.5.4: never blank a region to say something about it.
+function NoTextChange(props: { file: FileDiff }) {
+  const reason = () => {
+    switch (props.file.status) {
+      case "typechange":
+        return "Its type changed — between a regular file, a symlink and a directory.";
+      case "renamed":
+      case "copied":
+        return "Only its path changed; the contents are identical.";
+      default:
+        return "Its mode or the commit it points at changed, but no line did.";
+    }
+  };
+  return (
+    <div class="p-4 text-xs text-muted-foreground space-y-1">
+      <p class="italic">No line changes to show.</p>
+      <p>{reason()}</p>
+    </div>
   );
 }

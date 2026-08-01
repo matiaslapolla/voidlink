@@ -161,10 +161,6 @@ Comma-separated trunk overrides for the **active repo**, stored in that repo's
 `.git/config`. See [stacked PRs](./stacked-prs.md). Without a repo open it shows
 `Select a workspace with a repo to configure its stack settings.`
 
-### Brain
-
-The vault path. See [brain vault](./brain-vault.md).
-
 ## Keyboard shortcuts
 
 | Shortcut | Action |

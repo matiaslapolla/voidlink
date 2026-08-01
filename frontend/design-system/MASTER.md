@@ -4,11 +4,52 @@ Source of truth for all UI in the VoidLink Tauri desktop app. Read this before b
 
 ## 1. Product context
 
-- **Type**: Desktop developer tool (Tauri + SolidJS webview, frameless window).
-- **Scope**: Three features — workspace tabs, terminal sidebar, git panel. No feature work outside this scope.
+- **Type**: Desktop developer tool (Tauri + SolidJS webview, frameless window). Three OS windows — workbench, editor, git — over one store.
 - **Density**: Information-dense IDE chrome. Pixel budget matters; padding and type should be tight but never below touch/readability floors.
 - **Platform**: Keyboard-first. Mouse is secondary. No touch.
 - **Audience**: Developers. They expect keyboard shortcuts, reversible actions, and JetBrains/VSCode-class polish.
+
+### Scope
+
+VoidLink is becoming an **AI Agent OS for engineers**: a workbench where agents
+are peers in the pane tree rather than a chat box bolted to the side, and where
+what everyone — human and agent — did is recorded and legible.
+
+This section used to read *"Three features — workspace tabs, terminal sidebar,
+git panel. No feature work outside this scope."* That stopped being true a while
+before it was corrected: the agent panel, the embedded browser, the brain vault
+and the event log all shipped against a document that said they were out of
+scope, which meant every one of them was designed with the rules bent rather
+than applied. **A scope statement the codebase contradicts does not restrain
+anything — it only teaches people to skip §1.**
+
+The surfaces this system governs, all of them equally:
+
+| Surface | What it is |
+|---|---|
+| Workspace, worktree, pane and tab chrome | The four containers and everything that arranges them |
+| Terminal | PTY panes and the terminal sidebar |
+| Git | Status, staging, branches, graph, compare, conflicts, worktrees, stacks |
+| Editor and diff | Monaco hosting, diff and merge views, blame, markdown preview |
+| Agent | The thread tab, the slide-over, the roster |
+| Event log | The timeline over what happened — commits, agent turns, commands |
+| Mission Control | The cross-workspace lineup, check-ins, hill charts, fan-out runs and triggers. The one surface deliberately **not** scoped to the active worktree |
+| Brain vault | The `brain-kb` reader |
+| Embedded browser | Browser tabs as child webviews |
+| Settings, palette, overlays | Configuration and the command surfaces |
+
+**The rule that replaces the old one.** Scope is not a fixed list of features —
+it is a constraint on how any new surface earns its place:
+
+1. It renders inside the island system (§6) as a peer of the surfaces above, or
+   it states in its own doc why it cannot.
+2. It obeys §7.5 liveness and §7.6 interaction states. A new surface is where
+   these are most often quietly skipped.
+3. It adds no new visual vocabulary — no new elevation, no new radius, no new
+   z-layer — without adding the token here first.
+
+A surface that cannot meet those three does not need a scope exemption; it needs
+a design.
 
 ## 2. Design principles
 
@@ -38,7 +79,7 @@ Defined in `src/index.css` (dark = `:root`, light = `:root.light`) and overridde
 
 ### The canvas, and why it is derived
 
-Direction D1 (`docs/specs/2026-07-29-ui-directions.md`) makes every panel a
+Direction D1 makes every panel a
 detached island on a canvas that sits **below** it. The load-bearing sentence
 is *"the canvas recedes, the islands do not rise"*: raising the islands would
 lighten the terminal and diff bodies and cost contrast on the two surfaces the
@@ -196,9 +237,10 @@ Four constants, and they live in exactly one place:
 
 **Only `AppShell.tsx`, `MainSurface.tsx` and the `.island` class in `index.css`
 may compose these into layout.** A panel that decides its own inset or radius
-is the regression to watch for: `docs/specs/2026-07-29-ui-directions.md` keeps
-Direction D4 as a documented fallback, and that fallback is a one-wave rework
-only for as long as the geometry stays in the shell. Everything else about D1 —
+is the regression to watch for: the held alternative (D4, "floating chrome" —
+content is the canvas and the chrome floats above it, full-bleed underneath) is
+one wave of rework only for as long as the geometry lives in the shell. Scatter
+it into every panel and there is no one wave. Everything else about D1 —
 the token ladder, the contained tabs, the polish pass — is
 direction-independent and carries over unchanged.
 
@@ -258,6 +300,7 @@ already using, so naming them changed no stacking order anywhere.
 | Token | Value | Surface |
 |---|---|---|
 | — | `z-0/10/20/30` | in-island stacking: base / raised / sticky / dropdown. Tailwind's own scale; leave as is. |
+| `--z-panel` | 50 | edge slide-overs — the agent panel. Above the workbench, below the window frame: it is chrome the user opened, not an overlay that blocks them. |
 | `--z-frame` | 60 | native window-resize strips |
 | `--z-modal` | 70 | settings, snapshot manager |
 | `--z-overlay` | 80 | palette, quick pick, cheat sheet, pickers |

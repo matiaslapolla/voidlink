@@ -110,7 +110,47 @@ fn run_git_raw(
     args: &[&str],
     timeout: Duration,
 ) -> Result<(bool, String, String), String> {
-    let mut child = Command::new("git")
+    let (ok, stdout, stderr) = run_git_raw_bytes(repo_path, args, timeout)?;
+    Ok((
+        ok,
+        String::from_utf8_lossy(&stdout).trim().to_string(),
+        stderr,
+    ))
+}
+
+/// `git <args>` with stdout left as **bytes**.
+///
+/// Every other entry point converts stdout with `from_utf8_lossy`, which is
+/// right for prose (a commit message in an unexpected encoding should still be
+/// readable) and wrong for paths: lossy conversion *keeps* an unrepresentable
+/// path, with `U+FFFD` where the bytes were, so a caller that then opens or
+/// removes it operates on a path that does not exist. Callers parsing paths out
+/// of porcelain take the bytes and decide for themselves what to do with a
+/// record they cannot represent.
+pub(crate) fn run_git_bytes(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    let (ok, stdout, stderr) = run_git_raw_bytes(repo_path, args, DEFAULT_TIMEOUT)?;
+    if !ok {
+        return Err(if stderr.is_empty() {
+            String::from_utf8_lossy(&stdout).trim().to_string()
+        } else {
+            stderr
+        });
+    }
+    Ok(stdout)
+}
+
+fn run_git_raw_bytes(
+    repo_path: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(bool, Vec<u8>, String), String> {
+    // One budget for the whole call, started before the spawn. Timing the wait
+    // separately would let a slow start and a slow run each take the full
+    // timeout, which is not what any caller means by "give up after 15s".
+    let deadline = Instant::now() + timeout;
+
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(repo_path)
         .env("LC_ALL", "C")
@@ -122,9 +162,9 @@ fn run_git_raw(
         .env("GIT_SEQUENCE_EDITOR", "true")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("failed to run git: {e}. Is git installed and on PATH?"))?;
+        .stderr(Stdio::piped());
+
+    let mut child = spawn_within(command, args, deadline)?;
 
     // Drained on their own threads: a child that fills a pipe buffer blocks
     // until someone reads it, and reading only after `wait()` would deadlock on
@@ -134,7 +174,6 @@ fn run_git_raw(
     let stdout_reader = std::thread::spawn(move || drain(&mut stdout_pipe));
     let stderr_reader = std::thread::spawn(move || drain(&mut stderr_pipe));
 
-    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -156,15 +195,60 @@ fn run_git_raw(
 
     let stdout = stdout_reader.join().unwrap_or_default();
     let stderr = stderr_reader.join().unwrap_or_default();
-    Ok((status.success(), stdout.trim().to_string(), stderr.trim().to_string()))
+    Ok((
+        status.success(),
+        stdout,
+        String::from_utf8_lossy(&stderr).trim().to_string(),
+    ))
 }
 
-fn drain<R: Read>(pipe: &mut Option<R>) -> String {
+fn drain<R: Read>(pipe: &mut Option<R>) -> Vec<u8> {
     let mut buf = Vec::new();
     if let Some(p) = pipe.as_mut() {
         let _ = p.read_to_end(&mut buf);
     }
-    String::from_utf8_lossy(&buf).to_string()
+    buf
+}
+
+/// `Command::spawn` under the same deadline as everything after it.
+///
+/// [`DEFAULT_TIMEOUT`] and the loop below it only ever covered the *wait*, so a
+/// git that never started was never given up on: `spawn` resolves `current_dir`
+/// in the kernel, and on a hung NFS/SMB mount or a stale automount that call
+/// blocks uninterruptibly. Every git surface in the app queues behind the
+/// per-repo mutex the caller is holding while it does, which is how one
+/// unreachable mount froze the entire git sidebar with a timeout that believed
+/// it had this covered.
+///
+/// A blocked spawn cannot be cancelled, so it is moved onto its own thread and
+/// abandoned. That thread is the one thing left waiting on the mount; the
+/// caller gets an error and releases the lock. If the spawn does eventually
+/// return, the send fails (we are long gone) and the thread reaps the child
+/// itself rather than leaving a zombie nobody will ever wait on.
+fn spawn_within(
+    mut command: Command,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<std::process::Child, String> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<std::process::Child, String>>(1);
+    std::thread::spawn(move || {
+        let spawned = command
+            .spawn()
+            .map_err(|e| format!("failed to run git: {e}. Is git installed and on PATH?"));
+        if let Err(std::sync::mpsc::SendError(Ok(mut orphan))) = tx.send(spawned) {
+            let _ = orphan.kill();
+            let _ = orphan.wait();
+        }
+    });
+
+    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "`git {}` could not be started before its deadline — its working directory may be on \
+             an unresponsive mount",
+            args.join(" ")
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -183,10 +267,18 @@ mod tests {
             &["-c", "protocol.ext.allow=always", "fsck"],
             Duration::from_nanos(1),
         );
-        // Either it finished inside a nanosecond (it did not) or we got the
-        // timeout message. Assert on the shape rather than on timing luck.
+        // Either it finished inside a nanosecond (it did not) or we gave up.
+        // Three shapes, because the budget now starts *before* the spawn: with
+        // a nanosecond of it, the deadline is normally already gone by the time
+        // we go looking for the child. Assert on the shape rather than on
+        // timing luck.
         if let Err(e) = out {
-            assert!(e.contains("timed out") || e.contains("failed to run git"), "got: {e}");
+            assert!(
+                e.contains("timed out")
+                    || e.contains("could not be started")
+                    || e.contains("failed to run git"),
+                "got: {e}"
+            );
         }
     }
 

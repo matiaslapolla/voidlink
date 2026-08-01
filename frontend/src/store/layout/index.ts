@@ -29,7 +29,7 @@ import {
   writeJson,
 } from "./persistence";
 import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
-import type { GitSectionKey, PanelId } from "./prefs";
+import type { DiffMode, GitSectionKey, PanelId } from "./prefs";
 import {
   findGroup,
   groupList,
@@ -97,8 +97,11 @@ import {
 } from "./navigation";
 import {
   TAB_KINDS,
+  COMPARE_TREE_WIDTH_DEFAULT,
   TAB_KIND_GROUP_LABELS,
   TAB_SPECS,
+  WORKBENCH_TAB_KINDS,
+  clampCompareTreeWidth,
   closedTabsEqual,
   deserializeClosedTab,
   deserializeTabRecord,
@@ -109,7 +112,9 @@ import {
 import type {
   ActiveItem,
   TabRestoreContext,
-  BrainTab,
+  AgentTab,
+  TimelineTab,
+  MissionTab,
   BrowserTab,
   ClosedTab,
   CompareTab,
@@ -136,7 +141,9 @@ import {
 
 export type {
   ActiveItem,
-  BrainTab,
+  AgentTab,
+  TimelineTab,
+  MissionTab,
   BrowserTab,
   ClosedTab,
   CompareTab,
@@ -151,7 +158,15 @@ export type {
   TabKind,
   TabKindSpec,
 } from "./tabs";
-export { TAB_KINDS, TAB_SPECS, parseEditorTabs, samePath, serializeEditorTabs } from "./tabs";
+export {
+  COMPARE_TREE_WIDTH_MAX,
+  COMPARE_TREE_WIDTH_MIN,
+  TAB_KINDS,
+  TAB_SPECS,
+  parseEditorTabs,
+  samePath,
+  serializeEditorTabs,
+} from "./tabs";
 export type {
   DiffMode,
   GitSectionKey,
@@ -342,11 +357,13 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       HistoryTab[]
     >,
     previewTabsByWorktree: editorTabs.previews,
-    brainTabsByWorktree: loadKindRecord("brain", worktreeIds) as Record<string, BrainTab[]>,
+    timelineTabsByWorktree: loadKindRecord("timeline", worktreeIds) as Record<string, TimelineTab[]>,
+    missionTabsByWorktree: loadKindRecord("mission", worktreeIds) as Record<string, MissionTab[]>,
     browserTabsByWorktree: loadKindRecord("browser", worktreeIds) as Record<
       string,
       BrowserTab[]
     >,
+    agentTabsByWorktree: loadKindRecord("agent", worktreeIds) as Record<string, AgentTab[]>,
     closedTabsByWorktree: loadClosedTabs(worktreeIds),
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
     activeItemByWorktree: loadActiveItems(worktreeIds),
@@ -485,7 +502,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     return path.length > 0 ? path : null;
   });
 
-  /// The ten `active*Tabs` memos, generated from the registry. Adding a kind
+  /// The eleven `active*Tabs` memos, generated from the registry. Adding a kind
   /// used to mean writing an eleventh by hand; now the spec entry is enough.
   const activeOf = <T,>(kind: TabKind) =>
     createMemo(
@@ -501,8 +518,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activeConflictTabs = activeOf<ConflictTab>("conflict");
   const activeHistoryTabs = activeOf<HistoryTab>("history");
   const activePreviewTabs = activeOf<PreviewTab>("preview");
-  const activeBrainTabs = activeOf<BrainTab>("brain");
+  const activeTimelineTabs = activeOf<TimelineTab>("timeline");
+  const activeMissionTabs = activeOf<MissionTab>("mission");
   const activeBrowserTabs = activeOf<BrowserTab>("browser");
+  const activeAgentTabs = activeOf<AgentTab>("agent");
 
   /// Every workbench tab id for the active worktree, in strip order. The pane
   /// tree stores claims by id, so this is what turns those claims into content
@@ -510,14 +529,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   ///
   /// Workbench kinds only: the editor window's four kinds live in a different
   /// window with its own pointer, and a pane group here can never show one.
-  const workbenchTabIds = createMemo(() => [
-    ...activeTerminals().map((t) => t.id),
-    ...activeCompareTabs().map((t) => t.id),
-    ...activeStackTabs().map((t) => t.id),
-    ...activeHistoryTabs().map((t) => t.id),
-    ...activeBrainTabs().map((t) => t.id),
-    ...activeBrowserTabs().map((t) => t.id),
-  ]);
+  /// Driven by the registry, so registering a kind is all it takes to make its
+  /// tabs claimable — a kind left out here has a tab strip entry and a pane
+  /// body and still never appears.
+  const workbenchTabIds = createMemo(() => worktreeTabIds(state.activeWorktreeId));
 
   /// The active worktree's split tree, defaulted rather than `undefined` so no
   /// render path has to branch on "no geometry yet".
@@ -556,24 +571,12 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   // `tabGroups.ts`; what is here is the reactive plumbing and the rule that a
   // hand-edit of a derived group materialises the derivation first.
 
-  /// The workbench kinds, in `workbenchTabIds`' order. Read off the registry
-  /// rather than spelled out, so a new workbench kind is grouped without an
-  /// edit here.
-  const WORKBENCH_KINDS: TabKind[] = [
-    "terminal",
-    "compare",
-    "stack",
-    "history",
-    "brain",
-    "browser",
-  ];
-
   /// Every workbench tab id for an *arbitrary* worktree. `workbenchTabIds` is
   /// the memoised version for the active one; actions take a worktree id, so
   /// they need this.
   function worktreeTabIds(wtId: string): string[] {
     const out: string[] = [];
-    for (const kind of WORKBENCH_KINDS) {
+    for (const kind of WORKBENCH_TAB_KINDS) {
       const list = (state[TAB_SPECS[kind].stateKey] as Record<string, { id: string }[]>)[wtId];
       if (list) for (const tab of list) out.push(tab.id);
     }
@@ -582,7 +585,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
   function tabKindMap(wtId: string): Map<string, TabKind> {
     const out = new Map<string, TabKind>();
-    for (const kind of WORKBENCH_KINDS) {
+    for (const kind of WORKBENCH_TAB_KINDS) {
       const list = (state[TAB_SPECS[kind].stateKey] as Record<string, { id: string }[]>)[wtId];
       if (list) for (const tab of list) out.set(tab.id, kind);
     }
@@ -853,8 +856,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       case "stack": return { type: "stack", id };
       case "conflict": return { type: "conflict", id };
       case "history": return { type: "history", id };
-      case "brain": return { type: "brain", id };
+      case "timeline": return { type: "timeline", id };
+      case "mission": return { type: "mission", id };
       case "browser": return { type: "browser", id };
+      case "agent": return { type: "agent", id };
       default: return null;
     }
   }
@@ -930,13 +935,20 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
 
     // ── Diff tabs ───────────────────────────────────────────────────────
-    openDiffTab(wtId: string, filePath: string) {
-      const existing = (state.diffTabsByWorktree[wtId] ?? []).find((d) => d.filePath === filePath);
+    /// `staged` is part of the key, not a flag on the tab.
+    ///
+    /// A partially-staged file has two sidebar rows and two different diffs.
+    /// Deduping on `filePath` alone made the second row select the first row's
+    /// tab, so whichever side you clicked second was simply unreachable.
+    openDiffTab(wtId: string, filePath: string, staged = false) {
+      const existing = (state.diffTabsByWorktree[wtId] ?? []).find(
+        (d) => d.filePath === filePath && d.staged === staged,
+      );
       if (existing) {
         setState("editorActiveItemByWorktree", wtId, { type: "diff", id: existing.id });
         return existing.id;
       }
-      const tab: DiffTab = { id: crypto.randomUUID(), filePath };
+      const tab: DiffTab = { id: crypto.randomUUID(), filePath, staged };
       setState(produce((s) => {
         s.diffTabsByWorktree[wtId] = [...(s.diffTabsByWorktree[wtId] ?? []), tab];
         s.editorActiveItemByWorktree[wtId] = { type: "diff", id: tab.id };
@@ -973,18 +985,52 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
 
     // ── Compare tabs ────────────────────────────────────────────────────
+    /// Open a compare tab, reusing one that already asks the same question.
+    ///
+    /// It used to create a tab unconditionally, unlike `openHistoryTab` beside
+    /// it. Clicking ten rows in the commit graph produced ten identical tabs,
+    /// and clicking the same row twice produced two — the tab strip filled with
+    /// duplicates of a view that has no per-tab state worth duplicating.
     openCompareTab(
       wtId: string,
-      opts?: { baseRef?: string; headRef?: string; useMergeBase?: boolean },
+      opts?: {
+        baseRef?: string;
+        headRef?: string;
+        useMergeBase?: boolean;
+        label?: string;
+      },
     ) {
+      const baseRef = opts?.baseRef ?? "";
+      const headRef = opts?.headRef ?? "";
+      const useMergeBase = opts?.useMergeBase ?? true;
+      // Only dedupe a tab that names both refs: a blank compare tab is the
+      // "pick two refs" surface, and the user may legitimately want two.
+      if (baseRef && headRef) {
+        const existing = (state.compareTabsByWorktree[wtId] ?? []).find(
+          (t) =>
+            t.baseRef === baseRef &&
+            t.headRef === headRef &&
+            t.useMergeBase === useMergeBase,
+        );
+        if (existing) {
+          setState(
+            produce((s) => {
+              s.activeItemByWorktree[wtId] = { type: "compare", id: existing.id };
+            }),
+          );
+          return existing.id;
+        }
+      }
       const tab: CompareTab = {
         id: crypto.randomUUID(),
-        baseRef: opts?.baseRef ?? "",
-        headRef: opts?.headRef ?? "",
-        useMergeBase: opts?.useMergeBase ?? true,
+        baseRef,
+        headRef,
+        useMergeBase,
         selectedFilePath: null,
         treeMode: "tree",
         treeFilter: "",
+        treeWidth: COMPARE_TREE_WIDTH_DEFAULT,
+        ...(opts?.label ? { label: opts.label } : {}),
       };
       setState(
         produce((s) => {
@@ -1013,6 +1059,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
             selectedFilePath: closed.selectedFilePath,
             treeMode: closed.treeMode,
             treeFilter: closed.treeFilter,
+            label: closed.label,
           });
           unpin(s, wtId, tabId);
           arr.splice(idx, 1);
@@ -1140,6 +1187,48 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         produce((s) => {
           const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
           if (tab) tab.treeFilter = filter;
+        }),
+      );
+    },
+
+    /// Per tab, where the mode and the filter already were. One shared
+    /// `localStorage` key meant dragging the divider in one comparison moved
+    /// it in every other one — and only after a reload, since nothing told the
+    /// live tabs.
+    setCompareTreeWidth(wtId: string, tabId: string, width: number) {
+      setState(
+        produce((s) => {
+          const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+          if (tab) tab.treeWidth = clampCompareTreeWidth(width);
+        }),
+      );
+    },
+
+    /// Per tab, deliberately not `setDiffMode` below. `CompareDiffPane` reads
+    /// this instead of the global `state.diffMode` the working-tree toolbar
+    /// drives — rendering only, so unlike `setCompareIgnoreWhitespace` it
+    /// touches no resource key and refetches nothing.
+    setCompareDiffMode(wtId: string, tabId: string, mode: DiffMode) {
+      setState(
+        produce((s) => {
+          const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+          if (tab) tab.diffMode = mode;
+        }),
+      );
+    },
+
+    /// Per tab, deliberately not `toggleIgnoreWhitespace` below. That global
+    /// toggle is shared with the working-tree diff toolbar; flipping it would
+    /// refetch every open compare tab at once, each re-running a full diff
+    /// behind the same per-repo git mutex (CMP-F10 is the payload budget that
+    /// exists to bound that serialization). `ignoreWhitespace` sits in
+    /// `CompareTab.tsx`'s resource key, so writing it here refetches exactly
+    /// this tab and no other.
+    setCompareIgnoreWhitespace(wtId: string, tabId: string, value: boolean) {
+      setState(
+        produce((s) => {
+          const tab = (s.compareTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+          if (tab) tab.ignoreWhitespace = value;
         }),
       );
     },
@@ -1336,6 +1425,25 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     /// Drop the group, leaving its tabs in the strip.
     dissolveTabGroup(wtId: string, groupId: string) {
       editTabGroups(wtId, (s) => dissolveTabGroup(s, groupId));
+    },
+
+    /// Every workbench tab in the window, mapped to the worktree that owns it.
+    ///
+    /// Exists for §7.5.3 rule 1 across worktrees. Every other consumer of tab
+    /// state asks about the *active* worktree, because that is the only one
+    /// rendered — but a signal raised in a worktree the user is not in has to
+    /// reach a surface, and deciding that requires knowing which worktree each
+    /// signalling tab belongs to. Nothing else in the store answers that
+    /// question, because until agents ran in several worktrees at once nothing
+    /// needed to.
+    tabWorktreeMap(): Map<string, string> {
+      const out = new Map<string, string>();
+      for (const ws of state.workspaces) {
+        for (const wt of ws.worktrees) {
+          for (const id of worktreeTabIds(wt.id)) out.set(id, wt.id);
+        }
+      }
+      return out;
     },
 
     /// The groups one pane group's strip should render, derivation applied.
@@ -1593,13 +1701,14 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           actions.openFileTab(wtId, popped.path);
           break;
         case "diff":
-          actions.openDiffTab(wtId, popped.filePath);
+          actions.openDiffTab(wtId, popped.filePath, popped.staged ?? false);
           break;
         case "compare": {
           const id = actions.openCompareTab(wtId, {
             baseRef: popped.baseRef,
             headRef: popped.headRef,
             useMergeBase: popped.useMergeBase,
+            label: popped.label,
           });
           setState(produce((s) => {
             const tab = s.compareTabsByWorktree[wtId]?.find((t) => t.id === id);
@@ -1627,14 +1736,23 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         case "history":
           actions.openHistoryTab(wtId);
           break;
-        case "brain":
-          actions.openBrainTab(wtId);
+        case "timeline":
+          actions.openTimelineTab(wtId);
+          break;
+        case "mission":
+          actions.openMissionTab(wtId);
           break;
         case "browser": {
           const id = actions.openBrowserTab(wtId, popped.url);
           if (popped.title) actions.setBrowserTitle(wtId, id, popped.title);
           break;
         }
+        case "agent":
+          // The thread's transcript is keyed by the tab id that just went away,
+          // so what comes back is a fresh thread with the same agent — the same
+          // trade a reopened terminal makes with its scrollback.
+          actions.openAgentTab(wtId, popped.agentId, popped.title);
+          break;
       }
       return popped;
     },
@@ -1750,33 +1868,33 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       setState("activeItemByWorktree", wtId, { type: "history", id: tabId });
     },
 
-    // ── Brain (second-brain vault browser) tab ──────────────────────────
-    /// Open the Brain tab for the workspace, focusing the existing one if
-    /// present. It reads from settings.brain.vaultPath, not per-tab state,
-    /// so a single tab per workspace is all we ever need.
-    openBrainTab(wtId: string) {
-      const existing = (state.brainTabsByWorktree[wtId] ?? [])[0];
+    // ── Timeline (event log) tab ────────────────────────────────────────
+    /// Open the Timeline tab for the workspace, focusing the existing one if
+    /// present. A singleton for the same reason the commit graph is: it holds no per-tab
+    /// state, so a second one would be an identical view of identical data.
+    openTimelineTab(wtId: string) {
+      const existing = (state.timelineTabsByWorktree[wtId] ?? [])[0];
       if (existing) {
-        setState("activeItemByWorktree", wtId, { type: "brain", id: existing.id });
+        setState("activeItemByWorktree", wtId, { type: "timeline", id: existing.id });
         return existing.id;
       }
-      const tab: BrainTab = { id: crypto.randomUUID() };
+      const tab: TimelineTab = { id: crypto.randomUUID() };
       setState(produce((s) => {
-        s.brainTabsByWorktree[wtId] = [...(s.brainTabsByWorktree[wtId] ?? []), tab];
-        s.activeItemByWorktree[wtId] = { type: "brain", id: tab.id };
+        s.timelineTabsByWorktree[wtId] = [...(s.timelineTabsByWorktree[wtId] ?? []), tab];
+        s.activeItemByWorktree[wtId] = { type: "timeline", id: tab.id };
       }));
       return tab.id;
     },
 
-    closeBrainTab(wtId: string, tabId: string) {
+    closeTimelineTab(wtId: string, tabId: string) {
       setState(produce((s) => {
-        const arr = s.brainTabsByWorktree[wtId] ?? [];
+        const arr = s.timelineTabsByWorktree[wtId] ?? [];
         const idx = arr.findIndex((t) => t.id === tabId);
         if (idx === -1) return;
-        recordClose(s, wtId, "brain", arr[idx]);
+        recordClose(s, wtId, "timeline", arr[idx]);
         arr.splice(idx, 1);
         const active = s.activeItemByWorktree[wtId];
-        if (active?.type === "brain" && active.id === tabId) {
+        if (active?.type === "timeline" && active.id === tabId) {
           const terms = s.terminalsByWorktree[wtId] ?? [];
           s.activeItemByWorktree[wtId] = terms[0]
             ? { type: "terminal", id: terms[0].id }
@@ -1785,8 +1903,48 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       }));
     },
 
-    selectBrainTab(wtId: string, tabId: string) {
-      setState("activeItemByWorktree", wtId, { type: "brain", id: tabId });
+    selectTimelineTab(wtId: string, tabId: string) {
+      setState("activeItemByWorktree", wtId, { type: "timeline", id: tabId });
+    },
+
+    // ── Mission Control tab ─────────────────────────────────────────────
+    /// Open Mission Control, focusing the existing one if present. A singleton
+    /// like Timeline — and more emphatically so, because what it
+    /// shows is not scoped to this worktree at all: two of them would be two
+    /// identical views of every workspace.
+    openMissionTab(wtId: string) {
+      const existing = (state.missionTabsByWorktree[wtId] ?? [])[0];
+      if (existing) {
+        setState("activeItemByWorktree", wtId, { type: "mission", id: existing.id });
+        return existing.id;
+      }
+      const tab: MissionTab = { id: crypto.randomUUID() };
+      setState(produce((s) => {
+        s.missionTabsByWorktree[wtId] = [...(s.missionTabsByWorktree[wtId] ?? []), tab];
+        s.activeItemByWorktree[wtId] = { type: "mission", id: tab.id };
+      }));
+      return tab.id;
+    },
+
+    closeMissionTab(wtId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.missionTabsByWorktree[wtId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        recordClose(s, wtId, "mission", arr[idx]);
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorktree[wtId];
+        if (active?.type === "mission" && active.id === tabId) {
+          const terms = s.terminalsByWorktree[wtId] ?? [];
+          s.activeItemByWorktree[wtId] = terms[0]
+            ? { type: "terminal", id: terms[0].id }
+            : null;
+        }
+      }));
+    },
+
+    selectMissionTab(wtId: string, tabId: string) {
+      setState("activeItemByWorktree", wtId, { type: "mission", id: tabId });
     },
 
     // ── Browser tabs (embedded child webview) ───────────────────────────
@@ -1837,12 +1995,63 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       }));
     },
 
+    /// Remember a tab's page scale. The webview is what actually zooms; this
+    /// only keeps it across a reload, and stores `undefined` for 1 so an
+    /// unzoomed tab serializes to the same narrow blob it always did.
+    setBrowserZoom(wtId: string, tabId: string, zoom: number) {
+      setState(produce((s) => {
+        const tab = (s.browserTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+        if (tab) tab.zoom = zoom === 1 ? undefined : zoom;
+      }));
+    },
+
     /// Record the title the page reported for itself. Drives the tab label.
     setBrowserTitle(wtId: string, tabId: string, title: string) {
       setState(produce((s) => {
         const tab = (s.browserTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
         if (tab) tab.title = title.trim() || undefined;
       }));
+    },
+
+    // ── Agent tabs (AI threads) ─────────────────────────────────────────
+    /// Open a new agent thread in the active pane group. Like a browser tab and
+    /// unlike the singleton kinds, this never dedupes: two threads on the same
+    /// roster entry are two conversations, and that is the normal case.
+    ///
+    /// `title` is the agent's display name snapshotted here, because the store
+    /// cannot reach settings and the tab label has to say something.
+    openAgentTab(wtId: string, agentId: string, title?: string) {
+      const tab: AgentTab = { id: crypto.randomUUID(), agentId, title };
+      setState(produce((s) => {
+        s.agentTabsByWorktree[wtId] = [...(s.agentTabsByWorktree[wtId] ?? []), tab];
+        s.activeItemByWorktree[wtId] = { type: "agent", id: tab.id };
+      }));
+      return tab.id;
+    },
+
+    closeAgentTab(wtId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.agentTabsByWorktree[wtId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        recordClose(s, wtId, "agent", arr[idx]);
+        unpin(s, wtId, tabId);
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorktree[wtId];
+        if (active?.type === "agent" && active.id === tabId) {
+          const nextAgent = arr[arr.length - 1];
+          const terms = s.terminalsByWorktree[wtId] ?? [];
+          s.activeItemByWorktree[wtId] = nextAgent
+            ? { type: "agent", id: nextAgent.id }
+            : terms[0]
+              ? { type: "terminal", id: terms[0].id }
+              : null;
+        }
+      }));
+    },
+
+    selectAgentTab(wtId: string, tabId: string) {
+      setState("activeItemByWorktree", wtId, { type: "agent", id: tabId });
     },
 
     // ── Preview tabs (markdown preview) ─────────────────────────────────
@@ -1921,15 +2130,18 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const previews = state.previewTabsByWorktree[wtId] ?? [];
       const browsers = state.browserTabsByWorktree[wtId] ?? [];
       const histories = state.historyTabsByWorktree[wtId] ?? [];
-      const brains = state.brainTabsByWorktree[wtId] ?? [];
+      const timelines = state.timelineTabsByWorktree[wtId] ?? [];
+      const missions = state.missionTabsByWorktree[wtId] ?? [];
+      const agents = state.agentTabsByWorktree[wtId] ?? [];
 
       /// tab id → content key, for every open tab. Built once and used three
       /// times: for the active pointer, for the pins, and for rewriting the
       /// pane tree's claims.
       ///
-      /// Terminals and browser tabs are keyed by *index* because neither has a
-      /// stable identity of its own — two shells in the same directory, or two
-      /// tabs on the same URL, are a normal thing to have open.
+      /// Terminals, browser tabs and agent threads are keyed by *index* because
+      /// none has a stable identity of its own — two shells in the same
+      /// directory, two tabs on the same URL, or two threads with the same agent
+      /// are all a normal thing to have open.
       const keyByTabId = new Map<string, string>();
       for (const f of files) keyByTabId.set(f.id, `file:${f.path}`);
       terminals.forEach((t, i) => keyByTabId.set(t.id, `terminal:${i}`));
@@ -1940,7 +2152,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       for (const p of previews) keyByTabId.set(p.id, `preview:${p.filePath}`);
       browsers.forEach((b, i) => keyByTabId.set(b.id, `browser:${i}`));
       for (const h of histories) keyByTabId.set(h.id, "history:");
-      for (const b of brains) keyByTabId.set(b.id, "brain:");
+      agents.forEach((a, i) => keyByTabId.set(a.id, `agent:${i}`));
 
       // A snapshot spans both windows, so it records whichever pointer is set.
       // The workbench's wins when both are: it is the window you were looking
@@ -1980,7 +2192,12 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           previews: previews.map((p) => p.filePath),
           browsers: browsers.map((b) => ({ url: b.url, title: b.title })),
           history: histories.length > 0,
-          brain: brains.length > 0,
+          timeline: timelines.length > 0,
+          mission: missions.length > 0,
+          // The tab, not the conversation: a snapshot is a named arrangement of
+          // panes, and restoring one into a transcript from another day would be
+          // a stranger outcome than an empty thread on the right agent.
+          agents: agents.map((a) => ({ agentId: a.agentId, title: a.title })),
         },
         panes,
         active: activeKey,
@@ -2044,7 +2261,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           idByKey.set(`file:${path}`, tab.id);
         }
         for (const filePath of snap.tabs.diffs) {
-          const tab: DiffTab = { id: crypto.randomUUID(), filePath };
+          // Snapshots record diffs as bare paths, so which side of the index
+          // was open is not in the format. Unstaged is the restore: it is the
+          // view every snapshot written before `staged` existed was showing,
+          // and widening the snapshot schema is a migration this does not need.
+          const tab: DiffTab = { id: crypto.randomUUID(), filePath, staged: false };
           s.diffTabsByWorktree[wtId].push(tab);
           idByKey.set(`diff:${filePath}`, tab.id);
         }
@@ -2067,6 +2288,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
             selectedFilePath: c.selectedFilePath,
             treeMode: c.treeMode,
             treeFilter: c.treeFilter,
+            treeWidth: COMPARE_TREE_WIDTH_DEFAULT,
           };
           s.compareTabsByWorktree[wtId].push(tab);
           idByKey.set(`compare:${c.baseRef}..${c.headRef}`, tab.id);
@@ -2090,11 +2312,25 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           s.historyTabsByWorktree[wtId].push(tab);
           idByKey.set("history:", tab.id);
         }
-        if (snap.tabs.brain) {
-          const tab: BrainTab = { id: crypto.randomUUID() };
-          s.brainTabsByWorktree[wtId].push(tab);
-          idByKey.set("brain:", tab.id);
+        if (snap.tabs.timeline) {
+          const tab: TimelineTab = { id: crypto.randomUUID() };
+          s.timelineTabsByWorktree[wtId].push(tab);
+          idByKey.set("timeline:", tab.id);
         }
+        if (snap.tabs.mission) {
+          const tab: MissionTab = { id: crypto.randomUUID() };
+          s.missionTabsByWorktree[wtId].push(tab);
+          idByKey.set("mission:", tab.id);
+        }
+        snap.tabs.agents.forEach((a, i) => {
+          const tab: AgentTab = {
+            id: crypto.randomUUID(),
+            agentId: a.agentId,
+            title: a.title,
+          };
+          s.agentTabsByWorktree[wtId].push(tab);
+          idByKey.set(`agent:${i}`, tab.id);
+        });
       }));
 
       // Terminals come last because the spawn is async. We don't await
@@ -2273,8 +2509,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     activeConflictTabs,
     activeHistoryTabs,
     activePreviewTabs,
-    activeBrainTabs,
+    activeTimelineTabs,
+    activeMissionTabs,
     activeBrowserTabs,
+    activeAgentTabs,
     activeItem,
     editorActiveItem,
     workbenchTabIds,

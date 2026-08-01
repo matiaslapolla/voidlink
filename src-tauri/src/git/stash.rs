@@ -1,9 +1,8 @@
 use git2::StashFlags;
 use serde::{Deserialize, Serialize};
 
-use super::compare::git_diff_refs_impl;
+use super::cmd::{has_unmerged_paths, OpResult};
 use super::repo::open_repo;
-use super::DiffResult;
 
 /// One entry from the stash stack. `index` is the position (0 = most recent,
 /// the `stash@{0}` git addresses by). `message` is the auto- or user-supplied
@@ -95,30 +94,73 @@ fn short(oid: &str) -> String {
     oid.chars().take(7).collect()
 }
 
+/// Classify the outcome of an apply or a pop.
+///
+/// Applying a stash is a merge, and a merge can stop on conflicts. libgit2
+/// reports that as an error like any other, so the pane showed a red toast with
+/// a raw porcelain message and no route anywhere — while the working tree was
+/// sitting there with conflict markers in it and the index holding unmerged
+/// entries. Every other operation that can halt this way (pull, merge, rebase,
+/// cherry-pick) already returns [`OpResult`] and the UI routes `conflicted` to
+/// the merge editor; there was no reason for stash to be the exception.
+///
+/// The index is asked rather than the return code trusted, for the same reason
+/// [`super::cmd::run_git_op`] asks it — and here there is a second reason: a
+/// conflicting `stash_apply` returns **`Ok`**. libgit2 writes the conflict
+/// markers, leaves the unmerged entries in the index and reports success, so a
+/// caller looking only at the `Result` says "Applied stash" over a working tree
+/// full of `<<<<<<<`. Only the index knows.
+fn classify_stash_result(repo_path: &str, outcome: Result<(), String>) -> Result<OpResult, String> {
+    let conflicted = has_unmerged_paths(repo_path);
+    match outcome {
+        Ok(()) if !conflicted => Ok(OpResult {
+            ok: true,
+            conflicted: false,
+            message: String::new(),
+        }),
+        Ok(()) => Ok(OpResult {
+            ok: false,
+            conflicted: true,
+            message: "the stash applied with conflicts".to_string(),
+        }),
+        Err(message) if conflicted => Ok(OpResult {
+            ok: false,
+            conflicted: true,
+            message,
+        }),
+        Err(message) => Err(message),
+    }
+}
+
 pub(crate) fn git_stash_apply_impl(
     repo_path: String,
     index: usize,
     oid: String,
-) -> Result<(), String> {
+) -> Result<OpResult, String> {
     let mut repo = open_repo(&repo_path)?;
     verify_stash_oid(&mut repo, index, &oid)?;
-    super::locking::retry_on_lock(&repo_path, || {
+    let outcome = super::locking::retry_on_lock(&repo_path, || {
         repo.stash_apply(index, None)
             .map_err(|e| e.message().to_string())
-    })
+    });
+    classify_stash_result(&repo_path, outcome)
 }
 
 pub(crate) fn git_stash_pop_impl(
     repo_path: String,
     index: usize,
     oid: String,
-) -> Result<(), String> {
+) -> Result<OpResult, String> {
     let mut repo = open_repo(&repo_path)?;
     verify_stash_oid(&mut repo, index, &oid)?;
-    super::locking::retry_on_lock(&repo_path, || {
+    let outcome = super::locking::retry_on_lock(&repo_path, || {
         repo.stash_pop(index, None)
             .map_err(|e| e.message().to_string())
-    })
+    });
+    // A pop that stops on conflicts leaves the stash in place — libgit2 drops
+    // it only after the apply half succeeds — so the entry the user sees after
+    // a conflicted pop is genuinely still there, not a stale row.
+    classify_stash_result(&repo_path, outcome)
 }
 
 pub(crate) fn git_stash_drop_impl(
@@ -128,15 +170,14 @@ pub(crate) fn git_stash_drop_impl(
 ) -> Result<(), String> {
     let mut repo = open_repo(&repo_path)?;
     verify_stash_oid(&mut repo, index, &oid)?;
-    repo.stash_drop(index).map_err(|e| e.message().to_string())
-}
-
-/// Diff a stash against the commit it was created from — reuses the ref-diff
-/// machinery via the `stash@{N}` revision syntax.
-pub(crate) fn git_stash_show_impl(repo_path: String, index: usize) -> Result<DiffResult, String> {
-    let head = format!("stash@{{{index}}}");
-    let base = format!("stash@{{{index}}}^1");
-    git_diff_refs_impl(repo_path, base, head, false)
+    // Dropping rewrites `refs/stash` and its reflog, so it contends for
+    // `.git/refs/stash.lock` exactly like apply and pop contend for the index —
+    // an external `git stash` running at the same moment made this the one
+    // stash mutation that failed with libgit2's "File exists" instead of
+    // waiting the lock out. It was the odd one out for no stated reason.
+    super::locking::retry_on_lock(&repo_path, || {
+        repo.stash_drop(index).map_err(|e| e.message().to_string())
+    })
 }
 
 #[cfg(test)]
@@ -173,6 +214,61 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "first change\n"
+        );
+    }
+
+    /// Applying a stash onto a working tree that changed the same lines is a
+    /// merge that halts. It must come back as `conflicted` — the flag the UI
+    /// routes to the merge editor — rather than as a raw error the pane can
+    /// only put in a red toast, while the working tree sits there conflicted.
+    #[test]
+    fn a_conflicting_apply_is_reported_as_conflicted_not_as_a_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(tmp.path());
+        write_file(tmp.path(), "a.txt", "base\n");
+        commit_all(&repo, "base");
+        let path = tmp.path().to_string_lossy().to_string();
+
+        write_file(tmp.path(), "a.txt", "stashed\n");
+        git_stash_save_impl(path.clone(), Some("wip".into()), false, false).unwrap();
+        let entry = git_stash_list_impl(path.clone()).unwrap()[0].clone();
+
+        // The same line, changed differently and committed, so the stash cannot
+        // apply cleanly.
+        write_file(tmp.path(), "a.txt", "diverged\n");
+        commit_all(&repo, "diverged");
+
+        let res = git_stash_apply_impl(path.clone(), entry.index, entry.oid.clone())
+            .expect("a conflict is an outcome to route, not an error to throw");
+        assert!(!res.ok);
+        assert!(
+            res.conflicted,
+            "the pane needs this flag to open the merge editor — got {res:?}",
+        );
+
+        // And the stash survives, so the row the user sees is real.
+        assert_eq!(git_stash_list_impl(path).unwrap().len(), 1);
+    }
+
+    /// A clean apply still reports `ok`, so the conflict plumbing above did not
+    /// turn every success into a failure.
+    #[test]
+    fn a_clean_apply_reports_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(tmp.path());
+        write_file(tmp.path(), "a.txt", "base\n");
+        commit_all(&repo, "base");
+        let path = tmp.path().to_string_lossy().to_string();
+
+        write_file(tmp.path(), "a.txt", "stashed\n");
+        git_stash_save_impl(path.clone(), Some("wip".into()), false, false).unwrap();
+        let entry = git_stash_list_impl(path.clone()).unwrap()[0].clone();
+
+        let res = git_stash_apply_impl(path, entry.index, entry.oid).unwrap();
+        assert!(res.ok && !res.conflicted, "got {res:?}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "stashed\n"
         );
     }
 

@@ -119,5 +119,22 @@ order, unsorted.
   file finder and cheat sheet `z-80`, secret-scan dialog `z-90`, toasts `z-100`,
   prompt host `z-110`, context menus `z-9999`. Context menus render above
   everything, including toasts.
-- **Toasts have no keyboard handling** — no Escape, no focus. They are also
-  uncapped and undeduplicated, so a loop can fill the screen.
+- **Toasts have no keyboard handling** — no Escape, no focus.
+- **Toasts have an interruption budget.** A toast may declare a `source`, and
+  two from the same source and kind collapse into one carrying a count (`×4`);
+  the newest message and action win, and the dismissal window is refreshed so a
+  burst does not vanish mid-way on the first push's deadline. `source` is a
+  *cause* (`run:<id>`), not a category — the number has to mean "how many times
+  did this one operation shout".
+
+  A toast with no `source` never coalesces. Coalescing is a claim that two
+  messages are the same news, and only the call site can make it.
+
+  Independently, at most **four** toasts are on screen; past that the least
+  severe and oldest is evicted, so a burst of successes can never push a failure
+  off the stack — exactly what a fan-out produces when four legs pass and the
+  fifth is the one that matters. The toast just raised is never the one evicted:
+  a notice that appears and is instantly removed is indistinguishable from one
+  that was never raised.
+
+  Both rules are pure functions with unit tests in `commands/toast.ts`.

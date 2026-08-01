@@ -79,6 +79,7 @@ export const ACTION_IDS = [
   "view.toggle-blame",
   // AI
   "agent.toggle",
+  "agent.newTab",
   // Workspace
   "workspace.new",
   "workspace.next",

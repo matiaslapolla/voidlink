@@ -1,16 +1,28 @@
 import {
   For,
   Show,
+  createEffect,
   createMemo,
   createResource,
   createSignal,
   onCleanup,
   onMount,
+  untrack,
 } from "solid-js";
-import { GitCommitHorizontal, Loader2, RefreshCw, GitBranch, Cloud } from "lucide-solid";
+import {
+  AlertTriangle,
+  GitCommitHorizontal,
+  Loader2,
+  RefreshCw,
+  GitBranch,
+  Cloud,
+  Tag,
+} from "lucide-solid";
 import { gitApi } from "@/api/git";
+import { onGitRefsChanged } from "@/commands/gitEvents";
 import type { GraphCommit } from "@/types/history";
-import { computeLanes } from "./lanes";
+import { createVirtualizer } from "@tanstack/solid-virtual";
+import { computeLanes, gutterRange, type GraphRow } from "./lanes";
 
 /// Fixed row geometry. Kept dense per MASTER.md — one commit reads as a
 /// single tight line with its dot aligned to the row's vertical centre.
@@ -31,8 +43,17 @@ const LANE_TOKENS = [
 ];
 const laneColor = (i: number) => LANE_TOKENS[((i % LANE_TOKENS.length) + LANE_TOKENS.length) % LANE_TOKENS.length];
 
-function relTime(unixSec: number): string {
-  const diff = Date.now() / 1000 - unixSec;
+/// `now` is passed in rather than read from `Date.now()` so the label is a
+/// function of a signal and re-renders. Read at render time it was captured
+/// once: a graph left open for an hour still said "just now" about everything.
+export function relTime(unixSec: number, nowMs: number): string {
+  const diff = nowMs / 1000 - unixSec;
+  // A commit from the future is a real thing — a skewed clock on a colleague's
+  // machine, or a rebase that stamped ahead — and calling it "just now" hid it.
+  if (diff < -60) {
+    const ahead = Math.round(-diff / 60);
+    return ahead < 60 ? `in ${ahead}m` : `in ${Math.round(ahead / 60)}h`;
+  }
   if (diff < 60) return "just now";
   const m = Math.floor(diff / 60);
   if (m < 60) return `${m}m ago`;
@@ -40,18 +61,32 @@ function relTime(unixSec: number): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   if (d < 30) return `${d}d ago`;
-  const mo = Math.floor(d / 30);
+  // Calendar-accurate enough for a relative label: 30-day months and 360-day
+  // years drifted five days a year, so "11mo ago" could outlive the anniversary.
+  const mo = Math.floor(d / 30.44);
   if (mo < 12) return `${mo}mo ago`;
-  return `${Math.floor(mo / 12)}y ago`;
+  return `${Math.floor(d / 365.25)}y ago`;
 }
 
 export function CommitGraph(props: {
   repoPath: string;
   /// Opening a commit is wired to the existing commit-diff path (a compare
   /// tab of `<oid>^..<oid>`). Left optional so the graph is reusable.
-  onOpenCommit?: (oid: string) => void;
+  /// `parentOids` comes along because the caller needs it to pick a diff base:
+  /// a root commit has no `<oid>^` to resolve, and passing only the oid left
+  /// every caller to guess.
+  onOpenCommit?: (oid: string, parentOids: string[]) => void;
 }) {
   const [limit, setLimit] = createSignal(200);
+
+  /// A coarse clock so "3m ago" becomes "4m ago" without a refetch. One
+  /// interval for the whole list; the labels are minute-resolution, so a
+  /// 30-second tick is already finer than anything it can show.
+  const [now, setNow] = createSignal(Date.now());
+  onMount(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    onCleanup(() => clearInterval(id));
+  });
 
   const [commits, { refetch }] = createResource(
     () => ({ repo: props.repoPath, limit: limit() }),
@@ -59,24 +94,185 @@ export function CommitGraph(props: {
   );
 
   // Re-fetch on the same global pulse the rest of the git UI listens to
-  // (checkout / commit / fetch all broadcast it).
-  onMount(() => {
-    const handler = () => void refetch();
-    window.addEventListener("voidlink:refresh-git", handler);
-    onCleanup(() => window.removeEventListener("voidlink:refresh-git", handler));
+  // (checkout / commit / fetch all broadcast it), through the shared helper
+  // rather than a raw listener — the helper coalesces bursts and carries the
+  // `remote` flag that stops cross-window pulses ping-ponging.
+  onMount(() => onCleanup(onGitRefsChanged(() => void refetch())));
+
+  /// The rows, or `undefined` — never a throw.
+  ///
+  /// A Solid resource *rethrows* the fetcher's rejection from `commits()` (and
+  /// from `commits.latest`) once it settles. `layout` below reads it inside a
+  /// memo, so a repository that moved out from under us, or a single corrupt
+  /// ref, threw from inside a reactive computation with no `ErrorBoundary`
+  /// above this component anywhere in the tree — and took the whole window to a
+  /// white rectangle. The irony is that the "Failed to load commit graph"
+  /// branch at the bottom of this file was correct all along and simply
+  /// unreachable: the throw happened before anything could render it.
+  ///
+  /// `commits.error` and `commits.state` are plain signal reads and never
+  /// throw. Going through this accessor keeps every read on that safe path.
+  const settled = () => (commits.state === "errored" ? undefined : commits());
+
+  const layout = createMemo(() => computeLanes(settled() ?? []));
+  /// Uncapped, a history with thirty concurrent lanes produced ~500px of
+  /// gutter and squeezed the summary — the thing you actually read — down to
+  /// nothing. Beyond this the lanes overlap, which is worse for the graph and
+  /// much better for the list.
+  const MAX_GUTTER = 180;
+  const gutterWidth = createMemo(() =>
+    Math.min(MAX_GUTTER, PAD_L + layout().maxCols * COL_W + PAD_R),
+  );
+  /// Room for the truncation stubs below the last row.
+  const svgHeight = createMemo(() => (settled()?.length ?? 0) * ROW_H + ROW_H / 2);
+  const x = (col: number) => PAD_L + col * COL_W + COL_W / 2;
+
+  // ── Windowing (GRAPH-P4) ─────────────────────────────────────────────────
+  //
+  // "Load more" adds 200 commits at a time and a real repository has tens of
+  // thousands. Every row was three DOM subtrees — an edge group, a dot group
+  // and the row itself — so the graph was the one surface in this app whose
+  // cost grew without bound while you used it.
+  //
+  // Windowing the **rows** is the obvious half. Windowing the **SVG** is the
+  // half that actually matters: the gutter drew a `<path>` per lane segment and
+  // two `<circle>`s per commit for the whole history, so a virtualized row list
+  // over an un-virtualized gutter would have moved the cost rather than removed
+  // it.
+  //
+  // The SVG keeps its full height and its absolute coordinates — `y` is a pure
+  // function of the row index — so nothing has to be translated and the
+  // scrollbar stays honest. Only *which* elements exist changes.
+
+  let scrollRef: HTMLDivElement | undefined;
+
+  /// Below this the list is shorter than a tall viewport and windowing costs
+  /// more than it saves. Matches `VirtualFileList`'s reasoning, with a larger
+  /// number because these rows are taller.
+  const VIRTUALIZE_ABOVE = 60;
+
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    get count() {
+      return layout().rows.length;
+    },
+    getScrollElement: () => scrollRef ?? null,
+    estimateSize: () => ROW_H,
+    overscan: 12,
   });
 
-  const layout = createMemo(() => computeLanes(commits() ?? []));
-  const gutterWidth = createMemo(() => PAD_L + layout().maxCols * COL_W + PAD_R);
-  const svgHeight = createMemo(() => (commits()?.length ?? 0) * ROW_H);
-  const x = (col: number) => PAD_L + col * COL_W + COL_W / 2;
+  const virtualized = createMemo(() => layout().rows.length > VIRTUALIZE_ABOVE);
+
+  /// The index range the gutter has to draw, inclusive.
+  ///
+  /// One row wider than the visible window on each side, because a segment is
+  /// drawn *from* row `i` *to* row `i+1`: without the extra row the edge
+  /// entering the top of the viewport and the one leaving the bottom would both
+  /// be missing, and the graph would look severed at both ends.
+  const drawRange = createMemo<[number, number]>(() => {
+    const rows = layout().rows.length;
+    if (!virtualized()) return [0, rows - 1];
+    const items = virtualizer.getVirtualItems();
+    if (items.length === 0) return gutterRange(rows, 0, VIRTUALIZE_ABOVE);
+    return gutterRange(rows, items[0].index, items[items.length - 1].index);
+  });
+
+  /// The rows the gutter draws, each carrying its true index — the y
+  /// coordinates are absolute, so a sliced array must not renumber itself.
+  const drawnRows = createMemo(() => {
+    const [first, last] = drawRange();
+    return layout().rows.slice(first, last + 1).map((row, i) => ({ row, index: first + i }));
+  });
 
   const [selected, setSelected] = createSignal<string | null>(null);
 
+  /// Drop a selection whose commit is gone.
+  ///
+  /// After an amend, rebase or reset the selected oid no longer exists in the
+  /// list. Nothing highlighted, but the signal still held it — so the state was
+  /// silently dead, and "which commit am I looking at" had no answer the UI
+  /// agreed with.
+  createEffect(() => {
+    const rows = settled();
+    const current = untrack(selected);
+    if (!rows || !current) return;
+    if (!rows.some((c) => c.oid === current)) setSelected(null);
+  });
+
   function openCommit(c: GraphCommit) {
     setSelected(c.oid);
-    props.onOpenCommit?.(c.oid);
+    props.onOpenCommit?.(c.oid, c.parentOids);
   }
+
+
+  /// One commit row.
+  ///
+  /// A function rather than a component so both the windowed and unwindowed
+  /// branches above render the identical subtree — the alternative is two
+  /// copies of forty lines of JSX that drift the first time one is edited.
+  const commitRow = (row: GraphRow) => {
+    const c = row.commit;
+    const isSel = () => selected() === c.oid;
+    return (
+      <div
+      role="option"
+      tabindex={0}
+      aria-selected={isSel()}
+      onClick={() => openCommit(c)}
+      // A div with an onClick was unreachable without a
+      // mouse: no role, no tab stop, no key handler.
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openCommit(c);
+        }
+      }}
+      class={`group flex items-center gap-2 pr-4 cursor-pointer border-l-2 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+        isSel()
+          ? "bg-accent/50 border-primary"
+          : "border-transparent hover:bg-accent/30"
+      }`}
+      style={{ height: `${ROW_H}px` }}
+      title={`${c.shortOid} · ${c.summary}`}
+    >
+      <span class="font-mono text-[11px] text-muted-foreground tabular-nums shrink-0 w-[52px]">
+        {c.shortOid}
+      </span>
+      {/* Ref decoration chips. */}
+      <Show when={c.refs.length > 0}>
+        <span class="flex items-center gap-1 shrink-0">
+          <For each={c.refs}>
+            {(ref) => (
+              <RefChip
+                name={ref.name}
+                kind={ref.kind}
+                // Only the chip naming the ref HEAD is on.
+                // Passing `c.isHead` to every chip painted
+                // `main`, `origin/main` and `v2.0`
+                // identically on the HEAD commit, erasing
+                // the distinction exactly where the user
+                // most needs it.
+                isHead={ref.isHead}
+              />
+            )}
+          </For>
+        </span>
+      </Show>
+      <span
+        class={`flex-1 min-w-0 truncate text-[13px] ${
+          isSel() ? "text-foreground" : "text-foreground/90"
+        }`}
+      >
+        {c.summary || <span class="text-muted-foreground italic">(no message)</span>}
+      </span>
+      <span class="shrink-0 text-[11px] text-muted-foreground truncate max-w-[140px] hidden sm:inline">
+        {c.authorName}
+      </span>
+      <span class="shrink-0 text-[11px] text-muted-foreground tabular-nums w-[64px] text-right">
+        {relTime(c.commitTime, now())}
+      </span>
+      </div>
+    );
+  };
 
   return (
     <div class="flex flex-col h-full bg-background text-foreground">
@@ -84,19 +280,43 @@ export function CommitGraph(props: {
       <div class="shrink-0 flex items-center gap-2 px-4 h-9 border-b border-border">
         <GitCommitHorizontal class="w-4 h-4 text-primary shrink-0" />
         <span class="text-[13px] font-medium">Commit graph</span>
-        <Show when={commits()}>
-          <span class="text-[11px] text-muted-foreground tabular-nums">
-            {commits()!.length} commit{commits()!.length === 1 ? "" : "s"}
-          </span>
+        {/* "of N" is genuinely not available — the total would cost a second
+            full walk of every ref — but "200 commits" read as a statement about
+            the *repository*, and in a repository with ten thousand of them that
+            is simply false. "The first 200" says the same number and makes it a
+            statement about the window, which is the part that was missing.
+            Gated on the same "is the list exactly `limit` long?" test that
+            decides whether Load more shows, so the two can never disagree. */}
+        <Show when={settled()}>
+          {(rows) => (
+            <span
+              class="text-[11px] text-muted-foreground tabular-nums"
+              title={
+                rows().length === limit()
+                  ? "The newest commits across every branch. Load more to walk further back."
+                  : "Every commit in this repository."
+              }
+            >
+              <Show when={rows().length === limit()}>the first </Show>
+              {rows().length} commit{rows().length === 1 ? "" : "s"}
+              <Show when={layout().truncatedLanes.length > 0}>
+                <span class="ml-1 opacity-70">(more history below)</span>
+              </Show>
+            </span>
+          )}
         </Show>
         <div class="ml-auto flex items-center gap-1">
-          <Show when={commits()?.length === limit()}>
+          {/* Stays mounted while the larger page loads. Gated on the count
+              alone, it vanished the instant the refetch started and came back
+              when it finished, flickering on every click. */}
+          <Show when={settled()?.length === limit() || (commits.loading && !!settled())}>
             <button
               onClick={() => setLimit((l) => l + 200)}
-              class="text-[11px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+              disabled={commits.loading}
+              class="text-[11px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-50 disabled:cursor-default"
               title="Load more history"
             >
-              Load more
+              {commits.loading ? "Loading…" : "Load more"}
             </button>
           </Show>
           <button
@@ -111,9 +331,16 @@ export function CommitGraph(props: {
       </div>
 
       {/* Body */}
-      <div class="flex-1 overflow-auto scrollbar-thin">
+      <div ref={(el) => (scrollRef = el)} class="flex-1 overflow-auto scrollbar-thin">
+        {/* `commits.loading` is true for *every* refetch, not just the first
+            load — Solid sets the state to "refreshing" and `loading` reports
+            it. Gating the whole graph on it meant that clicking "Load more",
+            or any `voidlink:refresh-git` pulse from anywhere in the app,
+            unmounted the rows, collapsed the container's height, and clamped
+            the scroll position to 0. Scrolled to row 380, you were returned to
+            the top. Only blank it when there is genuinely nothing to show. */}
         <Show
-          when={!commits.loading}
+          when={!commits.loading || settled()}
           fallback={
             <div class="flex items-center justify-center gap-2 py-10 text-muted-foreground text-[12px]">
               <Loader2 class="w-4 h-4 animate-spin" />
@@ -122,12 +349,40 @@ export function CommitGraph(props: {
           }
         >
           <Show
-            when={(commits()?.length ?? 0) > 0}
+            when={(settled()?.length ?? 0) > 0}
             fallback={
-              <div class="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
-                <GitCommitHorizontal class="w-6 h-6 opacity-60" />
-                <p class="text-[12px]">No commits to graph yet.</p>
-              </div>
+              // Not the empty state when the fetch failed: an unreadable
+              // repository and a repository with no commits are different
+              // facts, and until the guard above made this branch reachable at
+              // all they would have rendered as the same sentence with a red
+              // line under it.
+              <Show
+                when={!commits.error}
+                fallback={
+                  <div class="flex flex-col items-center justify-center gap-2 py-16 px-6 text-center">
+                    <AlertTriangle class="w-6 h-6 text-destructive opacity-80" />
+                    <p class="text-[12px] text-destructive">
+                      Failed to load commit graph
+                    </p>
+                    <p class="text-[11px] font-mono text-muted-foreground break-words">
+                      {commits.error instanceof Error
+                        ? commits.error.message
+                        : String(commits.error)}
+                    </p>
+                    <button
+                      onClick={() => void refetch()}
+                      class="mt-1 text-[11px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+                    >
+                      Try again
+                    </button>
+                  </div>
+                }
+              >
+                <div class="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
+                  <GitCommitHorizontal class="w-6 h-6 opacity-60" />
+                  <p class="text-[12px]">No commits to graph yet.</p>
+                </div>
+              </Show>
             }
           >
             <div class="relative" style={{ "min-width": "100%" }}>
@@ -139,12 +394,12 @@ export function CommitGraph(props: {
                 style={{ overflow: "visible" }}
               >
                 {/* Edges first so dots paint on top. */}
-                <For each={layout().rows}>
-                  {(row, i) => (
+                <For each={drawnRows()}>
+                  {({ row, index }) => (
                     <For each={row.segments}>
                       {(seg) => {
-                        const y1 = i() * ROW_H + ROW_H / 2;
-                        const y2 = (i() + 1) * ROW_H + ROW_H / 2;
+                        const y1 = index * ROW_H + ROW_H / 2;
+                        const y2 = (index + 1) * ROW_H + ROW_H / 2;
                         const xt = x(seg.top);
                         const xb = x(seg.bottom);
                         // Straight verticals stay crisp; shifts use a smooth
@@ -166,10 +421,29 @@ export function CommitGraph(props: {
                     </For>
                   )}
                 </For>
+                {/* Lanes that continue into history we did not fetch. Faded
+                    to the bottom edge, so a cut-off window looks cut off
+                    rather than looking like the history ended. */}
+                <For each={layout().truncatedLanes}>
+                  {(lane) => {
+                    const rows = layout().rows.length;
+                    const y1 = (rows - 1) * ROW_H + ROW_H / 2;
+                    return (
+                      <path
+                        d={`M ${x(lane)} ${y1} L ${x(lane)} ${y1 + ROW_H / 2}`}
+                        fill="none"
+                        stroke={laneColor(lane)}
+                        stroke-width="1.5"
+                        stroke-opacity="0.25"
+                        stroke-dasharray="2 2"
+                      />
+                    );
+                  }}
+                </For>
                 {/* Dots. */}
-                <For each={layout().rows}>
-                  {(row, i) => {
-                    const cy = i() * ROW_H + ROW_H / 2;
+                <For each={drawnRows()}>
+                  {({ row, index }) => {
+                    const cy = index * ROW_H + ROW_H / 2;
                     const cx = x(row.col);
                     return (
                       <>
@@ -198,83 +472,68 @@ export function CommitGraph(props: {
                 </For>
               </svg>
 
-              {/* Rows: dense one-liners offset past the gutter. */}
-              <div style={{ "padding-left": `${gutterWidth()}px` }}>
-                <For each={layout().rows}>
-                  {(row) => {
-                    const c = row.commit;
-                    const isSel = () => selected() === c.oid;
-                    return (
-                      <div
-                        onClick={() => openCommit(c)}
-                        class={`group flex items-center gap-2 pr-4 cursor-pointer border-l-2 transition-colors ${
-                          isSel()
-                            ? "bg-accent/50 border-primary"
-                            : "border-transparent hover:bg-accent/30"
-                        }`}
-                        style={{ height: `${ROW_H}px` }}
-                        title={`${c.shortOid} · ${c.summary}`}
-                      >
-                        <span class="font-mono text-[11px] text-muted-foreground tabular-nums shrink-0 w-[52px]">
-                          {c.shortOid}
-                        </span>
-                        {/* Ref decoration chips. */}
-                        <Show when={c.refs.length > 0}>
-                          <span class="flex items-center gap-1 shrink-0">
-                            <For each={c.refs}>
-                              {(ref) => <RefChip name={ref} isHead={c.isHead} />}
-                            </For>
-                          </span>
-                        </Show>
-                        <span
-                          class={`flex-1 min-w-0 truncate text-[13px] ${
-                            isSel() ? "text-foreground" : "text-foreground/90"
-                          }`}
+              {/* Rows: dense one-liners offset past the gutter.
+                  Two branches over one `commitRow`, so the windowed and
+                  unwindowed paths cannot drift: a row that renders differently
+                  above and below the threshold is a bug nobody would look for. */}
+              <div role="listbox" aria-label="Commits" style={{ "padding-left": `${gutterWidth()}px` }}>
+                <Show
+                  when={virtualized()}
+                  fallback={<For each={layout().rows}>{(row) => commitRow(row)}</For>}
+                >
+                  <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+                    <For each={virtualizer.getVirtualItems()}>
+                      {(item) => (
+                        <div
+                          class="absolute top-0 left-0 w-full"
+                          style={{ transform: `translateY(${item.start}px)` }}
                         >
-                          {c.summary || <span class="text-muted-foreground italic">(no message)</span>}
-                        </span>
-                        <span class="shrink-0 text-[11px] text-muted-foreground truncate max-w-[140px] hidden sm:inline">
-                          {c.authorName}
-                        </span>
-                        <span class="shrink-0 text-[11px] text-muted-foreground tabular-nums w-[64px] text-right">
-                          {relTime(c.authorTime)}
-                        </span>
-                      </div>
-                    );
-                  }}
-                </For>
+                          {commitRow(layout().rows[item.index])}
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
               </div>
             </div>
           </Show>
-        </Show>
-        <Show when={commits.error}>
-          <div class="px-4 py-3 text-[12px] text-destructive">
-            Failed to load commit graph: {String(commits.error)}
-          </div>
         </Show>
       </div>
     </div>
   );
 }
 
-/// A ref decoration chip. We only get a name from the backend (not a type),
-/// so remote-tracking names ("origin/…") are inferred from the slash and
-/// styled muted; local/tag names read as branch-ish. See GAPS in the module
-/// docs — precise branch-vs-tag typing would need a richer backend payload.
-function RefChip(props: { name: string; isHead: boolean }) {
-  const isRemote = () => props.name.includes("/");
+/// A ref decoration chip.
+///
+/// The kind now comes from the backend. It used to be guessed with
+/// `name.includes("/")`, which made every local `feature/x` a remote and left
+/// tags looking exactly like branches — the two things a decoration chip
+/// exists to tell apart.
+function RefChip(props: {
+  name: string;
+  kind: "branch" | "remote" | "tag" | "detached";
+  isHead: boolean;
+}) {
+  const tone = () => {
+    if (props.isHead) return "bg-primary/15 text-primary border-primary/30";
+    if (props.kind === "remote") return "bg-muted/60 text-muted-foreground border-border";
+    if (props.kind === "tag") return "bg-warning/10 text-warning border-warning/30";
+    return "bg-accent/40 text-accent-foreground border-border";
+  };
   return (
     <span
-      class={`inline-flex items-center gap-0.5 px-1.5 h-[16px] rounded-full text-[10px] font-medium leading-none border ${
-        props.isHead
-          ? "bg-primary/15 text-primary border-primary/30"
-          : isRemote()
-            ? "bg-muted/60 text-muted-foreground border-border"
-            : "bg-accent/40 text-accent-foreground border-border"
-      }`}
-      title={props.name}
+      class={`inline-flex items-center gap-0.5 px-1.5 h-[16px] rounded-full text-[10px] font-medium leading-none border ${tone()}`}
+      title={
+        props.kind === "detached"
+          ? "HEAD is detached at this commit"
+          : `${props.kind === "tag" ? "tag" : props.kind === "remote" ? "remote branch" : "branch"} ${props.name}`
+      }
     >
-      <Show when={isRemote()} fallback={<GitBranch class="w-2.5 h-2.5 shrink-0" />}>
+      <Show when={props.kind === "remote"} fallback={
+        <Show when={props.kind === "tag"} fallback={<GitBranch class="w-2.5 h-2.5 shrink-0" />}>
+          <Tag class="w-2.5 h-2.5 shrink-0" />
+        </Show>
+      }>
         <Cloud class="w-2.5 h-2.5 shrink-0" />
       </Show>
       <span class="max-w-[120px] truncate">{props.name}</span>

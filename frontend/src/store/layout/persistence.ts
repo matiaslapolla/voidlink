@@ -54,10 +54,19 @@ export const STORAGE_KEYS = {
   /// what survives a reload is the cwd and the label, and boot spawns a fresh
   /// PTY under the same tab id (see `TAB_SPECS.terminal.restore`).
   terminalTabs: "voidlink-terminal-tabs",
-  /// The two repo-wide singleton kinds. One id each, per worktree — tiny, but
-  /// without them a reload silently closes the commit graph you left open.
+  /// The repo-wide singleton kind. One id per worktree — tiny, but without it a
+  /// reload silently closes the commit graph you left open.
   historyTabs: "voidlink-history-tabs",
-  brainTabs: "voidlink-brain-tabs",
+  /// `Record<worktreeId, TimelineTab[]>` — the event-log timeline, the second
+  /// singleton kind. Only the tab's existence is stored: its filters are view
+  /// state, and the events themselves are Rust's (`src-tauri/src/journal/`),
+  /// which is the whole reason this key is one id and not a cache.
+  timelineTabs: "voidlink-timeline-tabs",
+  /// `Record<worktreeId, MissionTab[]>` — Mission Control. One id per worktree,
+  /// like the three singletons above, and for the same reason: what the surface
+  /// shows lives in Rust, so the only thing worth persisting is that the tab was
+  /// open.
+  missionTabs: "voidlink-mission-tabs",
   /// `Record<worktreeId, ActiveItem | null>` — the *workbench's* front tab.
   /// The editor window's pointer rides inside `voidlink-editor-tabs`; this one
   /// had no key at all until session restore needed it.
@@ -68,6 +77,62 @@ export const STORAGE_KEYS = {
   /// `commands/snapshots.ts` *through this module* — it is layout state, and
   /// the no-other-module-touches-localStorage rule has no exceptions.
   snapshots: "voidlink-snapshots",
+  /// `Record<worktreeId, AgentTab[]>` — the agent *threads that are open*, as
+  /// tabs. Separate from the transcripts below because the two have different
+  /// write rhythms: the tab list changes when somebody opens or closes a thread,
+  /// the transcript changes on every streamed token. Sharing one key would
+  /// rewrite the whole conversation history every time a tab moved.
+  agentTabs: "voidlink-agent-tabs",
+  /// `Record<worktreeId, Record<tabId, AgentMessage[]>>` — the conversations
+  /// themselves. Read and written by `commands/agent.ts` *through this module*,
+  /// the arrangement `snapshots` and `layoutPresets` already have: the
+  /// no-module-outside-this-one-touches-localStorage rule has no exceptions.
+  ///
+  /// Keyed by *tab* id, not by agent id — two threads with the same agent are two
+  /// conversations, and that is the normal case. One reserved constant tab id
+  /// holds the slide-over's thread, which has no tab of its own but wants the
+  /// same durability.
+  ///
+  /// This is a tab's contents and deliberately not an event log: what is stored
+  /// is the transcript as the panel would re-render it, so a boot is one read and
+  /// not a replay. Nothing here is authoritative about what an agent *did* — a
+  /// reset clearing it costs the scrollback, which is the same trade every other
+  /// tab kind makes.
+  agentThreads: "voidlink-agent-threads",
+  /// `Record<workspaceId, HillScope[]>` — hill-chart scopes, keyed by
+  /// *workspace* rather than by worktree like almost everything else here.
+  ///
+  /// That break from the pattern is the model, not an oversight: a scope
+  /// routinely spans a main checkout and a worktree, and keying it by worktree
+  /// would show one piece of work as two dots that disagree with each other.
+  ///
+  /// The positions live here; the *history* of them lives in Rust's event log
+  /// as `hill.position.moved`. This key is the current state, and losing it
+  /// costs the dots but not the record of how they got there.
+  hills: "voidlink-hills",
+  /// `Record<repoPath, ReviewNote[]>` — comments left on diff hunks, which the
+  /// next agent turn reads as instructions.
+  ///
+  /// Keyed by repository path rather than by worktree id, unlike the tab
+  /// collections: a note is about the *code*, and the same note is equally true
+  /// whichever worktree you happen to have the file open in.
+  reviewNotes: "voidlink-review-notes",
+  /// `Record<repoPath, FanoutRun[]>` — one prompt sent to N agents in N
+  /// worktrees, and what each of them produced.
+  ///
+  /// A working set, not an archive: the durable record of a run is its events
+  /// in Rust's log, and this blob is trimmed to the most recent runs. Keyed by
+  /// repository for the same reason review notes are — a run is about the code.
+  fanoutRuns: "voidlink-fanout-runs",
+  /// `Record<repoPath, TriggerRule[]>` — "when X, run agent Y".
+  triggers: "voidlink-triggers",
+  /// The trigger kill switch, as `"true"`/`"false"`.
+  ///
+  /// A separate key from the rules on purpose: turning everything off has to be
+  /// a one-byte write that cannot fail because the rules blob is large or
+  /// malformed. Something that starts processes on the user's behalf needs an
+  /// off switch with no failure modes of its own.
+  triggersArmed: "voidlink-triggers-armed",
 } as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
@@ -268,6 +333,7 @@ if (typeof window !== "undefined") {
 export function layoutKeyValueStore(): {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 } | null {
   const store = storage();
   if (!store) return null;
@@ -285,6 +351,15 @@ export function layoutKeyValueStore(): {
       } catch {
         // Migration writes are best-effort for the same reason ordinary writes
         // are: the in-memory state is correct either way.
+      }
+    },
+    // Retiring a cut feature's key (see `migrate.ts`'s v2 → v3). Best-effort
+    // like the write above: a key that survives is dead weight, not a bug.
+    removeItem: (key) => {
+      try {
+        store.removeItem(key);
+      } catch {
+        /* empty */
       }
     },
   };
