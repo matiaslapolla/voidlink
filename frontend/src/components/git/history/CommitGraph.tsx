@@ -280,13 +280,25 @@ export function CommitGraph(props: {
       <div class="shrink-0 flex items-center gap-2 px-4 h-9 border-b border-border">
         <GitCommitHorizontal class="w-4 h-4 text-primary shrink-0" />
         <span class="text-[13px] font-medium">Commit graph</span>
+        {/* "of N" is genuinely not available — the total would cost a second
+            full walk of every ref — but "200 commits" read as a statement about
+            the *repository*, and in a repository with ten thousand of them that
+            is simply false. "The first 200" says the same number and makes it a
+            statement about the window, which is the part that was missing.
+            Gated on the same "is the list exactly `limit` long?" test that
+            decides whether Load more shows, so the two can never disagree. */}
         <Show when={settled()}>
           {(rows) => (
-            <span class="text-[11px] text-muted-foreground tabular-nums">
+            <span
+              class="text-[11px] text-muted-foreground tabular-nums"
+              title={
+                rows().length === limit()
+                  ? "The newest commits across every branch. Load more to walk further back."
+                  : "Every commit in this repository."
+              }
+            >
+              <Show when={rows().length === limit()}>the first </Show>
               {rows().length} commit{rows().length === 1 ? "" : "s"}
-              {/* "of N" is not available — counting the total would mean a
-                  second full walk — but saying the window is partial costs
-                  nothing and is the part that matters. */}
               <Show when={layout().truncatedLanes.length > 0}>
                 <span class="ml-1 opacity-70">(more history below)</span>
               </Show>

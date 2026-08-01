@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { diffWordsWithSpace } from "diff";
 import { Check, Clipboard, MessageSquarePlus, Plus, Minus, X } from "lucide-solid";
 import type { DiffHunk, DiffLine, FileDiff } from "@/types/git";
+import { createRowIdentity } from "@/store/stableRows";
 import {
   addReviewNote,
   anchorNotes,
@@ -118,10 +119,29 @@ export function inlineRowsForHunk(all: DiffLine[]): InlineRowData[] {
   return out;
 }
 
+/// The file's hunks, as stable objects across a refetch that did not change
+/// them.
+///
+/// `DiffTabView` refetches on every refs pulse — several a second while
+/// anything is running — and `<For>` is keyed by reference, so every hunk and
+/// therefore every row inside it was torn down and rebuilt. On a large diff
+/// that is thousands of DOM nodes per pulse, and it takes the text selection,
+/// any open review-note composer and the caret with it.
+///
+/// Stabilising the *hunks* is enough: `<For>`'s child closure receives the hunk
+/// as a plain value, so an unchanged hunk's row builder never re-runs at all.
+/// Keyed on position rather than header, because two hunks can share a header
+/// and the position is what the stage/discard actions already index by.
+function useStableHunks(file: () => FileDiff) {
+  const stabilize = createRowIdentity<DiffHunk>((h) => `${h.oldStart}:${h.newStart}`);
+  return createMemo(() => stabilize(file().hunks));
+}
+
 function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
+  const hunks = useStableHunks(() => props.file);
   return (
     <div>
-      <For each={props.file.hunks}>
+      <For each={hunks()}>
         {(hunk, i) => (
           // `min-w-max` makes the hunk wrapper size to the widest row inside
           // it. Header bar and every +/- row then stretch to that width, so
@@ -501,9 +521,10 @@ function HunkHeader(props: {
 }
 
 function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
+  const hunks = useStableHunks(() => props.file);
   return (
     <div>
-      <For each={props.file.hunks}>
+      <For each={hunks()}>
         {(hunk, i) => (
           <div>
             <HunkHeader
