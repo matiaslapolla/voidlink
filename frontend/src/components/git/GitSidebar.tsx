@@ -1497,8 +1497,20 @@ export function ChangesPane(props: {
             <button
               onClick={() => void discardAllChanges()}
               disabled={busy()}
-              title="Discard changes in the working tree"
-              aria-label="Discard changes in the working tree"
+              // The control names its own scope, because the scope moved: with
+              // a filter typed it discards the matches, and a button that says
+              // "in the working tree" while acting on four of forty files is
+              // the kind of mismatch you only notice afterwards.
+              title={
+                filter().trim()
+                  ? "Discard changes in the files matching the filter"
+                  : "Discard changes in the working tree"
+              }
+              aria-label={
+                filter().trim()
+                  ? "Discard changes in the files matching the filter"
+                  : "Discard changes in the working tree"
+              }
               class="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Trash2 class="w-3 h-3" />
