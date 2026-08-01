@@ -83,6 +83,7 @@ import { createOverlay, setOverlayOpen } from "@/commands/overlay";
 import { browserApi } from "@/api/webview";
 import { applyEditorRequest } from "@/store/editorRequests";
 import { publishRepos, setJournalRepo } from "@/store/journal";
+import { reconcileFanoutRuns } from "@/store/fanout";
 import { armTriggers, setTriggerRunner } from "@/store/triggers";
 import {
   currentStackedView,
@@ -189,6 +190,16 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // recorded event and the git window must never disagree about which repo the
   // workbench is showing.
   createEffect(() => setJournalRepo(activeRepoPath() || null));
+
+  // The reconnect half of fan-out outliving its window: whenever this window
+  // shows a different repository (including the first time it shows one at
+  // all — a reload lands here too), ask the supervisor what it is actually
+  // still driving for it and reconcile. See `store/fanout.ts`'s module
+  // comment and `reconcileFanoutRuns` for what this can and cannot recover.
+  createEffect(() => {
+    const repo = activeRepoPath();
+    if (repo) void reconcileFanoutRuns(repo);
+  });
 
   // ── Triggers ────────────────────────────────────────────────────────────
   // Armed from the workbench and from nowhere else: three windows each

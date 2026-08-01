@@ -44,6 +44,7 @@ function run(legs: RunLeg[]): FanoutRun {
     createdAt: 0,
     legs,
     adoptedLegId: null,
+    baseRef: null,
   };
 }
 

@@ -103,7 +103,12 @@ use worktree_setup::{
 /// Shared git state. Today that is exactly one thing: the per-repository locks
 /// that make two commands fired from one click queue instead of interleaving
 /// inside libgit2's read-modify-write of the index or a ref. See `locking.rs`.
-#[derive(Default)]
+///
+/// `Clone` because `fanout::run_leg` needs an owned handle it can move into a
+/// `'static` background task spawned outside any single command invocation —
+/// `RepoLocks` is itself `Clone` over a `DashMap`, so this is one cheap
+/// reference-count bump, not a copy of the locks themselves.
+#[derive(Default, Clone)]
 pub struct GitState {
     locks: locking::RepoLocks,
 }

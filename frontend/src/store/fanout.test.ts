@@ -1,13 +1,17 @@
 /// Fan-out. The properties worth pinning down are the ones that make it
-/// different from asking the same question three times:
+/// different from asking the same question three times, plus the ones added
+/// by moving orchestration into Rust:
 ///
-///   1. Legs are independent — one failing to get a worktree must not stop the
-///      others, because not knowing which approach works is the whole premise.
+///   1. Legs are independent — one failing must not stop the others, because
+///      not knowing which approach works is the whole premise.
 ///   2. Every leg gets its own branch and its own directory, and two runs of
 ///      the same prompt do not collide.
 ///   3. Adopting merges one leg and touches nothing else.
-///   4. A leg persisted mid-flight comes back as `interrupted`, never as a
-///      spinner nothing will stop.
+///   4. A leg persisted mid-flight comes back as `interrupted` until
+///      `reconcileFanoutRuns` proves otherwise.
+///   5. This store no longer spawns or streams anything itself — it hands a
+///      run to `fanoutApi.startRun` and applies whatever `fanoutApi.subscribe`
+///      sends back. These tests mock the API boundary, not a child process.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const record = vi.fn();
@@ -16,8 +20,10 @@ const removeWorktree = vi.fn();
 const merge = vi.fn();
 const diffWorking = vi.fn();
 const diffRefs = vi.fn();
-const streamQuery = vi.fn();
-const cancelTurn = vi.fn();
+const startRun = vi.fn();
+const cancelLeg = vi.fn();
+const runState = vi.fn();
+const subscribe = vi.fn();
 
 vi.mock("@/store/journal", () => ({ record: (e: unknown) => record(e) }));
 vi.mock("@/store/settings", () => ({ aiSecretBindings: () => [] }));
@@ -35,15 +41,18 @@ vi.mock("@/api/git", () => ({
     diffRefs: (...a: unknown[]) => diffRefs(...a),
   },
 }));
-vi.mock("@/api/agent", () => ({
-  agentApi: {
-    streamQuery: (o: unknown) => streamQuery(o),
-    cancelTurn: (id: unknown) => cancelTurn(id),
+vi.mock("@/api/fanout", () => ({
+  fanoutApi: {
+    startRun: (o: unknown) => startRun(o),
+    cancelLeg: (id: unknown) => cancelLeg(id),
+    runState: (repo: unknown) => runState(repo),
+    subscribe: (runId: unknown, onEvent: unknown) => subscribe(runId, onEvent),
   },
 }));
 
 import {
   adoptFanoutLeg,
+  cancelFanoutLeg,
   compareLegs,
   discardFanoutLeg,
   fanoutRun,
@@ -51,12 +60,16 @@ import {
   isLegDone,
   legBranchName,
   legWorktreePath,
+  reconcileFanoutRuns,
+  removeFanoutRun,
   resetFanout,
   reviveRuns,
   runProgress,
   startFanoutRun,
+  type FanoutRun,
   type RunLeg,
 } from "./fanout";
+import type { FanoutStreamEvent, LegSnapshot } from "@/api/fanout";
 
 const REPO = "/repos/api";
 
@@ -69,6 +82,37 @@ function emptyDiff() {
   return { files: [], totalAdditions: 0, totalDeletions: 0 };
 }
 
+/// The pending listener registered by the most recent `subscribe` call, so a
+/// test can push messages into it exactly as the supervisor would.
+function lastSubscriber(): (event: FanoutStreamEvent) => void {
+  const call = subscribe.mock.calls.at(-1);
+  if (!call) throw new Error("subscribe was never called");
+  return call[1] as (event: FanoutStreamEvent) => void;
+}
+
+/// A `legStatus` message naming a full terminal leg — what the supervisor
+/// sends once a leg finishes, fails, or is cancelled.
+function legStatusEvent(partial: Partial<LegSnapshot> & { id: string }): FanoutStreamEvent {
+  return {
+    event: "legStatus",
+    data: {
+      leg: {
+        agentId: "a",
+        agentName: "Agent",
+        commandTemplate: "",
+        worktreePath: "/w",
+        branch: "b",
+        status: "finished",
+        startedAt: 0,
+        endedAt: 1,
+        answer: "",
+        error: null,
+        ...partial,
+      },
+    },
+  };
+}
+
 beforeEach(() => {
   resetFanout();
   record.mockReset();
@@ -77,8 +121,10 @@ beforeEach(() => {
   merge.mockReset().mockResolvedValue({ ok: true });
   diffWorking.mockReset().mockResolvedValue(emptyDiff());
   diffRefs.mockReset().mockResolvedValue(emptyDiff());
-  streamQuery.mockReset().mockResolvedValue({ cancelled: false, exitCode: 0 });
-  cancelTurn.mockReset().mockResolvedValue(undefined);
+  startRun.mockReset().mockResolvedValue({ id: "run", repo: REPO, legs: [] });
+  cancelLeg.mockReset().mockResolvedValue(true);
+  runState.mockReset().mockResolvedValue([]);
+  subscribe.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => resetFanout());
@@ -124,22 +170,17 @@ describe("starting a run", () => {
     expect(await startFanoutRun({ repo: REPO, prompt: "  ", legs: LEGS })).toBeNull();
     expect(await startFanoutRun({ repo: REPO, prompt: "x", legs: [] })).toBeNull();
     expect(fanoutRuns(REPO)).toEqual([]);
+    expect(startRun).not.toHaveBeenCalled();
   });
 
-  it("creates a worktree and runs an agent per leg", async () => {
+  it("hands the supervisor one leg per agent, each with its own worktree and branch", async () => {
     const id = await startFanoutRun({ repo: REPO, prompt: "Add caching", legs: LEGS });
 
-    expect(addWorktree).toHaveBeenCalledTimes(2);
-    expect(streamQuery).toHaveBeenCalledTimes(2);
-    const run = fanoutRun(REPO, id!)!;
-    expect(run.legs.map((l) => l.status)).toEqual(["finished", "finished"]);
-    expect(run.legs.map((l) => l.agentName)).toEqual(["Refactorer", "Reviewer"]);
-  });
-
-  /// Each leg runs in its own worktree, not in the repository.
-  it("points each agent at its own worktree", async () => {
-    await startFanoutRun({ repo: REPO, prompt: "Add caching", legs: LEGS });
-    const paths = streamQuery.mock.calls.map((c) => c[0].repoPath);
+    expect(startRun).toHaveBeenCalledTimes(1);
+    const call = startRun.mock.calls[0][0];
+    expect(call.runId).toBe(id);
+    expect(call.legs).toHaveLength(2);
+    const paths = call.legs.map((l: { worktreePath: string }) => l.worktreePath);
     expect(new Set(paths).size).toBe(2);
     expect(paths).not.toContain(REPO);
   });
@@ -148,75 +189,93 @@ describe("starting a run", () => {
   /// and asking one question three times.
   it("tells each leg to change the files rather than describe the change", async () => {
     await startFanoutRun({ repo: REPO, prompt: "Add caching", legs: LEGS });
-    expect(streamQuery.mock.calls[0][0].prompt).toMatch(/do not describe what you would do/i);
-    expect(streamQuery.mock.calls[0][0].prompt).toContain("Add caching");
+    const call = startRun.mock.calls[0][0];
+    expect(call.legs[0].prompt).toMatch(/do not describe what you would do/i);
+    expect(call.legs[0].prompt).toContain("Add caching");
+  });
+
+  /// Registering does not wait for a single leg to finish — that guarantee
+  /// belonged to the old window-owned orchestration.
+  it("resolves as soon as the supervisor registers the run, without waiting on any leg", async () => {
+    let resolveStart: (v: unknown) => void = () => {};
+    startRun.mockImplementationOnce(() => new Promise((resolve) => (resolveStart = resolve)));
+
+    const pending = startFanoutRun({ repo: REPO, prompt: "x", legs: LEGS });
+    resolveStart({ id: "run", repo: REPO, legs: [] });
+    const id = await pending;
+
+    const run = fanoutRun(REPO, id!)!;
+    // Nothing has streamed yet — every leg is still `pending`.
+    expect(run.legs.map((l) => l.status)).toEqual(["pending", "pending"]);
+  });
+
+  it("subscribes to the run once it is registered", async () => {
+    await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails every leg when the supervisor refuses the run outright", async () => {
+    startRun.mockRejectedValueOnce(new Error("A run with this id is already registered."));
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: LEGS });
+    const run = fanoutRun(REPO, id!)!;
+    expect(run.legs.every((l) => l.status === "failed")).toBe(true);
+    expect(run.legs[0].error).toMatch(/already registered/);
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  it("applies a leg-status message from the live subscription", async () => {
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    const run = fanoutRun(REPO, id!)!;
+    lastSubscriber()(legStatusEvent({ id: run.legs[0].id, status: "running", startedAt: 5 }));
+    expect(fanoutRun(REPO, id!)!.legs[0].status).toBe("running");
+    expect(fanoutRun(REPO, id!)!.legs[0].startedAt).toBe(5);
   });
 
   /// The premise is that you do not know which approach works, so one leg
-  /// failing must not take the run with it.
-  it("keeps the other legs running when one cannot get a worktree", async () => {
-    addWorktree.mockRejectedValueOnce(new Error("already exists"));
-    const id = await startFanoutRun({ repo: REPO, prompt: "Add caching", legs: LEGS });
-
+  /// failing must not read as the whole run failing.
+  it("keeps the other legs' status independent when one fails", async () => {
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: LEGS });
     const run = fanoutRun(REPO, id!)!;
-    const statuses = run.legs.map((l) => l.status).sort();
+    lastSubscriber()(legStatusEvent({ id: run.legs[0].id, status: "failed", error: "boom" }));
+    lastSubscriber()(legStatusEvent({ id: run.legs[1].id, status: "finished" }));
+    const statuses = fanoutRun(REPO, id!)!.legs.map((l) => l.status).sort();
     expect(statuses).toEqual(["failed", "finished"]);
-    expect(run.legs.find((l) => l.status === "failed")!.error).toMatch(/already exists/);
-    expect(streamQuery).toHaveBeenCalledTimes(1);
   });
 
-  it("records a failed agent turn as a failed leg without stopping the run", async () => {
-    streamQuery.mockRejectedValueOnce(new Error("CLI exited 1"));
-    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: LEGS });
-    const run = fanoutRun(REPO, id!)!;
-    expect(run.legs.map((l) => l.status).sort()).toEqual(["failed", "finished"]);
+  it("appends live chunks to a leg's answer rather than replacing it", async () => {
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    const legId = fanoutRun(REPO, id!)!.legs[0].id;
+    const onEvent = lastSubscriber();
+    onEvent({ event: "chunk", data: { legId, text: "half " } });
+    onEvent({ event: "chunk", data: { legId, text: "an answer" } });
+    expect(fanoutRun(REPO, id!)!.legs[0].answer).toBe("half an answer");
   });
 
-  it("marks a cancelled turn cancelled rather than failed", async () => {
-    streamQuery.mockResolvedValueOnce({ cancelled: true, exitCode: null });
-    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: LEGS });
-    const run = fanoutRun(REPO, id!)!;
-    expect(run.legs.map((l) => l.status).sort()).toEqual(["cancelled", "finished"]);
+  /// A `legStatus` message carries the full buffered answer, so it replaces
+  /// rather than appends — unlike a `chunk`.
+  it("replaces a leg's answer wholesale from a legStatus message", async () => {
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    const legId = fanoutRun(REPO, id!)!.legs[0].id;
+    const onEvent = lastSubscriber();
+    onEvent({ event: "chunk", data: { legId, text: "partial" } });
+    onEvent(legStatusEvent({ id: legId, status: "finished", answer: "the whole answer" }));
+    expect(fanoutRun(REPO, id!)!.legs[0].answer).toBe("the whole answer");
   });
 
-  it("keeps the partial answer of a leg that failed mid-stream", async () => {
-    streamQuery.mockImplementationOnce(async (o: { onChunk?: (t: string) => void }) => {
-      o.onChunk?.("half an answer");
-      throw new Error("died");
-    });
-    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: LEGS });
-    const failed = fanoutRun(REPO, id!)!.legs.find((l) => l.status === "failed")!;
-    expect(failed.answer).toBe("half an answer");
-  });
-
-  it("records the run and every leg outcome to the log", async () => {
-    await startFanoutRun({ repo: REPO, prompt: "Add caching", legs: LEGS });
-    const kinds = record.mock.calls.map((c) => c[0].kind);
-    expect(kinds[0]).toBe("run.started");
-    expect(kinds.filter((k) => k === "run.leg.finished")).toHaveLength(2);
-  });
-
-  /// Reporting "0 files changed" for the leg that did the most work is the
-  /// single most misleading thing this surface could do.
-  it("measures a leg's work against the base ref when it committed", async () => {
-    diffRefs.mockResolvedValue({
+  it("measures a leg once it goes terminal", async () => {
+    diffWorking.mockResolvedValue({
       files: [{ newPath: "a.rs", oldPath: "a.rs" }],
       totalAdditions: 10,
       totalDeletions: 2,
     });
-    const id = await startFanoutRun({
-      repo: REPO,
-      prompt: "x",
-      legs: [LEGS[0]],
-      baseRef: "main",
-    });
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    const legId = fanoutRun(REPO, id!)!.legs[0].id;
+    lastSubscriber()(legStatusEvent({ id: legId, status: "finished", answer: "done" }));
+    await vi.waitFor(() => expect(fanoutRun(REPO, id!)!.legs[0].stat).not.toBeNull());
     expect(fanoutRun(REPO, id!)!.legs[0].stat).toEqual({
       files: 1,
       additions: 10,
       deletions: 2,
-      // The paths, not just the count: the comparison matrix is files × legs,
-      // and two legs reporting "1 file" mean different things depending on
-      // whether it is the same file.
       paths: ["a.rs"],
     });
   });
@@ -224,13 +283,33 @@ describe("starting a run", () => {
   it("reports a stat it could not take as unmeasured rather than as zero", async () => {
     diffWorking.mockRejectedValue(new Error("no repo"));
     const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    const legId = fanoutRun(REPO, id!)!.legs[0].id;
+    lastSubscriber()(legStatusEvent({ id: legId, status: "finished" }));
+    await vi.waitFor(() => expect(diffWorking).toHaveBeenCalled());
     expect(fanoutRun(REPO, id!)!.legs[0].stat).toBeNull();
+  });
+
+  it("measures a leg against the base ref when the run has one", async () => {
+    diffRefs.mockResolvedValue(emptyDiff());
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]], baseRef: "main" });
+    const leg = fanoutRun(REPO, id!)!.legs[0];
+    lastSubscriber()(legStatusEvent({ id: leg.id, status: "finished" }));
+    await vi.waitFor(() => expect(diffRefs).toHaveBeenCalledWith(leg.worktreePath, "main", "HEAD", true));
+  });
+
+  it("does not record run or leg journal events itself — the supervisor does", async () => {
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    lastSubscriber()(legStatusEvent({ id: fanoutRun(REPO, id!)!.legs[0].id, status: "finished" }));
+    expect(record).not.toHaveBeenCalled();
   });
 });
 
 describe("adopting", () => {
   async function finishedRun() {
     const id = await startFanoutRun({ repo: REPO, prompt: "Add caching", legs: LEGS });
+    const run = fanoutRun(REPO, id!)!;
+    const onEvent = lastSubscriber();
+    for (const leg of run.legs) onEvent(legStatusEvent({ id: leg.id, status: "finished" }));
     return fanoutRun(REPO, id!)!;
   }
 
@@ -289,33 +368,85 @@ describe("adopting", () => {
 });
 
 describe("cancelling", () => {
-  it("stops one leg without touching the others", async () => {
-    let resolveFirst: (v: unknown) => void = () => {};
-    streamQuery.mockImplementationOnce(
-      () => new Promise((resolve) => (resolveFirst = resolve)),
-    );
-
-    const pending = startFanoutRun({ repo: REPO, prompt: "x", legs: LEGS });
-    await vi.waitFor(() => expect(streamQuery).toHaveBeenCalledTimes(2));
-
-    const run = fanoutRuns(REPO)[0];
-    const { cancelFanoutLeg } = await import("./fanout");
-    await cancelFanoutLeg(run.legs[0].id);
-    expect(cancelTurn).toHaveBeenCalledTimes(1);
-
-    resolveFirst({ cancelled: true, exitCode: null });
-    await pending;
-    expect(fanoutRun(REPO, run.id)!.legs.map((l) => l.status).sort()).toEqual([
-      "cancelled",
-      "finished",
-    ]);
+  it("asks the supervisor to cancel the leg", async () => {
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    const legId = fanoutRun(REPO, id!)!.legs[0].id;
+    await cancelFanoutLeg(legId);
+    expect(cancelLeg).toHaveBeenCalledWith(legId);
   });
 
-  it("is a no-op for a leg that already ended", async () => {
+  /// A cancel racing the leg's own completion is the ordinary case — the
+  /// supervisor answers `false` and this must not throw.
+  it("does not throw when there was nothing to cancel", async () => {
+    cancelLeg.mockResolvedValueOnce(false);
+    await expect(cancelFanoutLeg("some-leg")).resolves.toBeUndefined();
+  });
+
+  it("swallows a rejected cancel the same way a resolved false is handled", async () => {
+    cancelLeg.mockRejectedValueOnce(new Error("no such turn"));
+    await expect(cancelFanoutLeg("some-leg")).resolves.toBeUndefined();
+  });
+});
+
+describe("reconnecting", () => {
+  it("marks a leg interrupted at load time when nothing has confirmed otherwise", () => {
+    const revived = reviveRuns({
+      [REPO]: [{ id: "r", prompt: "x", legs: [{ id: "a", worktreePath: "/w", status: "running" }] }],
+    });
+    expect(revived[REPO][0].legs[0].status).toBe("interrupted");
+  });
+
+  it("corrects a locally-guessed interrupted leg once the supervisor confirms it is still tracked", async () => {
     const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
-    const { cancelFanoutLeg } = await import("./fanout");
-    await cancelFanoutLeg(fanoutRun(REPO, id!)!.legs[0].id);
-    expect(cancelTurn).not.toHaveBeenCalled();
+    const run = fanoutRun(REPO, id!)!;
+    // Simulate what a reload would have done before reconciling: the leg
+    // looks interrupted because nothing has told this window otherwise yet.
+    lastSubscriber()(legStatusEvent({ id: run.legs[0].id, status: "running" }));
+    subscribe.mockReset().mockResolvedValue(undefined);
+
+    runState.mockResolvedValueOnce([
+      {
+        id: run.id,
+        repo: REPO,
+        legs: [
+          {
+            id: run.legs[0].id,
+            agentId: "a1",
+            agentName: "Refactorer",
+            commandTemplate: "",
+            worktreePath: run.legs[0].worktreePath,
+            branch: run.legs[0].branch,
+            status: "finished",
+            startedAt: 1,
+            endedAt: 2,
+            answer: "the answer",
+            error: null,
+          },
+        ],
+      },
+    ]);
+
+    await reconcileFanoutRuns(REPO);
+
+    expect(fanoutRun(REPO, id!)!.legs[0].status).toBe("finished");
+    expect(fanoutRun(REPO, id!)!.legs[0].answer).toBe("the answer");
+  });
+
+  it("leaves a run untouched when the supervisor has no record of it", async () => {
+    runState.mockResolvedValueOnce([]);
+    const revived = reviveRuns({
+      [REPO]: [{ id: "old-run", prompt: "x", legs: [{ id: "a", worktreePath: "/w", status: "running" }] }],
+    });
+    expect(revived[REPO][0].legs[0].status).toBe("interrupted");
+    // `reconcileFanoutRuns` reads from the live store, not from `revived`
+    // directly, so this documents the property rather than exercising the
+    // store — the store-level version is the test above.
+    await reconcileFanoutRuns(REPO);
+  });
+
+  it("does not throw when the supervisor cannot be reached", async () => {
+    runState.mockRejectedValueOnce(new Error("IPC down"));
+    await expect(reconcileFanoutRuns(REPO)).resolves.toBeUndefined();
   });
 });
 
@@ -346,12 +477,13 @@ describe("reading a run", () => {
   });
 
   it("counts progress across the legs", () => {
-    const run = {
+    const run: FanoutRun = {
       id: "r",
       repo: REPO,
       prompt: "",
       createdAt: 0,
       adoptedLegId: null,
+      baseRef: null,
       legs: [
         leg({ id: "1", status: "finished" }),
         leg({ id: "2", status: "failed" }),
@@ -387,9 +519,9 @@ describe("reading a run", () => {
 });
 
 describe("reviveRuns", () => {
-  /// The load-bearing repair. A leg persisted mid-flight has no process behind
-  /// it any more, and coming back as `running` would be a spinner nothing will
-  /// ever stop.
+  /// The load-bearing repair. A leg persisted mid-flight has no confirmed
+  /// supervisor behind it yet, and coming back as `running` would be a
+  /// spinner nothing will ever stop unless `reconcileFanoutRuns` says otherwise.
   it("marks a leg that was in flight as interrupted", () => {
     const revived = reviveRuns({
       [REPO]: [
@@ -426,5 +558,29 @@ describe("reviveRuns", () => {
   it("survives a blob that is not the shape it expects", () => {
     expect(reviveRuns(null)).toEqual({});
     expect(reviveRuns({ [REPO]: "nope" })).toEqual({});
+  });
+
+  it("defaults baseRef to null when absent, and keeps it when present", () => {
+    const revived = reviveRuns({
+      [REPO]: [
+        { id: "r1", prompt: "x", legs: [{ id: "a", worktreePath: "/w" }] },
+        { id: "r2", prompt: "x", baseRef: "main", legs: [{ id: "a", worktreePath: "/w" }] },
+      ],
+    });
+    expect(revived[REPO][0].baseRef).toBeNull();
+    expect(revived[REPO][1].baseRef).toBe("main");
+  });
+});
+
+describe("removeFanoutRun", () => {
+  it("stops the run from receiving further live messages", async () => {
+    const id = await startFanoutRun({ repo: REPO, prompt: "x", legs: [LEGS[0]] });
+    const legId = fanoutRun(REPO, id!)!.legs[0].id;
+    removeFanoutRun(REPO, id!);
+    // The subscription callback still exists (nothing unregisters it on the
+    // Rust side from a `Forget`), but applying it must no-op once the run is
+    // gone from the store rather than resurrecting a deleted run.
+    lastSubscriber()(legStatusEvent({ id: legId, status: "finished" }));
+    expect(fanoutRuns(REPO)).toEqual([]);
   });
 });

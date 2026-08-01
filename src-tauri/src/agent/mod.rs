@@ -59,7 +59,14 @@ const KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
 /// that into the answer body would corrupt the very thing the user is reading.
 /// The frontend renders the answer from `chunk` and keeps `stderr` for the
 /// details disclosure.
-#[derive(Clone, serde::Serialize)]
+///
+/// `Deserialize` is for `fanout::run_leg`: it builds its own buffering
+/// `Channel<AgentStreamEvent>` in-process (rather than one wired to a
+/// webview's IPC transport) and its callback receives the same
+/// `InvokeResponseBody` JSON any channel callback does, which it has to parse
+/// back into this type to know whether a chunk arrived. Nothing in this
+/// module deserialises its own events; the derive exists for that caller.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",

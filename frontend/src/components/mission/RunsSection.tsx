@@ -29,10 +29,11 @@ import { RunMatrix } from "./RunMatrix";
 ///
 /// ## What this surface is careful about
 ///
-/// **It never claims a leg is running when it is not.** A leg whose window
-/// closed comes back `interrupted`, and says so in those words — see
-/// `store/fanout.ts` for why fan-out does not survive a window close and what
-/// it would take for it to.
+/// **It never claims a leg is running when it is not.** A run now outlives the
+/// window that started it — see `store/fanout.ts` and
+/// `src-tauri/src/fanout/mod.rs` — but a leg the supervisor has no record of
+/// at all (an old run, or an app restart) still comes back `interrupted`, and
+/// says so in those words, rather than guessing it is still going.
 ///
 /// **It does not pick a winner.** Legs are ordered largest-change-first, which
 /// is a reading order and not a ranking; nothing here scores an answer. Adopting
@@ -175,8 +176,10 @@ const STATUS_WORDS: Record<RunLeg["status"], string> = {
   finished: "finished",
   failed: "failed",
   cancelled: "stopped",
-  // In those words, deliberately: nobody chose it and nothing went wrong.
-  interrupted: "interrupted when the window closed",
+  // In those words, deliberately: nobody chose it and nothing went wrong —
+  // the supervisor has no record of this leg to ask about, whether because
+  // this app instance never started it or because it has since restarted.
+  interrupted: "interrupted — no longer tracked",
 };
 
 function RunCard(props: { run: FanoutRun; onInspect?: (leg: RunLeg) => void }) {
