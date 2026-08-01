@@ -43,9 +43,8 @@ behaviour nobody chose.
 | 1 | **Should the address bar reach a search engine at all — and if so, which, chosen by whom?** | Unparseable input is classified and refused with a toast; nothing is sent to Rust. The classification is right under either answer, which is why it shipped. A git workbench sending keystrokes to a search engine is a product posture, not a default. (BR-N3) |
 | 2 | **What may a browser tab navigate to: any scheme, http/https only, or http/https plus an explicit opt-in for `file://`?** | Deliberately *not* built. A global scheme allowlist, per-tab origin confinement, and a prompt are three different objects, and the wrong one is harder to remove than to write. Two facts for whoever answers, recorded at the hook site: the policy point sees subframes, so it is stronger than an address-bar filter; and returning `false` cancels *silently*, so a blocking policy needs its own way to say so or it reads as the app having frozen. (BR-S3) |
 | 3 | **Should an ordinary agent turn write an `agent.turn.*` record?** | The docs have described one for a while; nothing has ever emitted it, so the notification defaults, the check-in model and the trigger rules all read a kind that is never written. Recording the interval would also make a finished agent-panel turn attributable on the diff. It would immediately start firing the default `agent.turn.finished` banner, which is a change to what the app *does*, not to what it records. |
-| 4 | **Where does a destructive push live, and how is it confirmed?** | libgit2 has no lease primitive, so `--force-with-lease` means fetch → compare `refs/remotes/<r>/<b>` → force, with a real race window. The audit rates the current state "safe by construction" precisely because the button does not exist. (BR-F7) |
-| 5 | **What does a remote branch's ahead/behind count against?** | Checked rather than assumed: listing remote branches changes nothing, because `git_list_branches_impl` hands every remote-tracking branch `(None, 0, 0, false)` and both chips gate on `> 0`. The flip was made, verified inert, and reverted. (CMP-F22) |
-| 6 | **Do compare tabs get their own diff-mode and whitespace controls?** | Per-tab state exists for width, mode and filter; `diffMode` and `ignoreWhitespace` are the two that have no control anywhere in the compare surface — they live in the working-tree diff toolbar. Per-tab state with no per-tab control is state the user cannot reach. |
+| 4 | **What does a remote branch's ahead/behind count against?** | Checked rather than assumed: listing remote branches changes nothing, because `git_list_branches_impl` hands every remote-tracking branch `(None, 0, 0, false)` and both chips gate on `> 0`. The flip was made, verified inert, and reverted. (CMP-F22) |
+| 5 | **Do compare tabs get their own diff-mode and whitespace controls?** | Per-tab state exists for width, mode and filter; `diffMode` and `ignoreWhitespace` are the two that have no control anywhere in the compare surface — they live in the working-tree diff toolbar. Per-tab state with no per-tab control is state the user cannot reach. |
 
 ---
 
@@ -148,6 +147,23 @@ Recorded compactly; the detail is in the feature docs and the audits.
 | **Fan-out durability** | A Rust supervisor owns the legs; a run's lifetime is the app's, not the webview's. Unattended output is buffered and replayed rather than dropped. |
 | **Run provenance** | File-level on the working tree, commit-level on a commit, nothing on a branch range — the granularity the evidence actually supports. |
 | **Palette action sources** | Features contribute their own actions; 462 lines left `App.tsx`. Behaviour preservation proven id-for-id against the pre-refactor list. |
+| **BR-F7, force-push** | Landed after the eleven, once the decision below was made. Force is reachable from a non-fast-forward rejection and from nowhere else; `git_push` now reports a failure *class* so the offer can be withheld from auth, transport and hook failures. |
+
+**The decision behind BR-F7, recorded.** *Where does a destructive push live,
+and how is it confirmed?* — **force-push is reachable only as a recovery action
+after the remote rejects an ordinary push as non-fast-forward.** Never a button
+beside Push, never an overflow item, never a context menu. "Fetch and rebase" is
+the first and default offer; force is the second and reads as the lesser path;
+and force is disabled until a fetch fresh enough to hold a lease has landed.
+"Fresh enough" resolved to **two minutes** — a bound on the user's memory of the
+fetch, not on the remote, which is covered instead by a re-check immediately
+before the push.
+
+The audit's caveat survives intact and is written into the code, the feature doc
+and the confirm: libgit2 has no `--force-with-lease` primitive, so the check is
+client-side and **the race window is real**. It is one fetch round trip plus the
+push connection, and anything landing on the remote inside it is overwritten
+unseen. Nothing in the UI says "safe".
 
 **One live caveat carried forward.** BR-F1's fix — `browser_focus_host`, which
 gives the host webview the keyboard back — is still confidence *reading*, not

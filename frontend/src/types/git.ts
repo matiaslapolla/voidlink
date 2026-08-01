@@ -20,6 +20,26 @@ export interface SafeCheckoutResult {
   autoStashed: string | null;
 }
 
+/** Why a push did not land.
+ *
+ * The force-push recovery is offered for `non-fast-forward` and for nothing
+ * else. A push that failed on credentials, on the network, or because a
+ * pre-receive hook said no is not a push force would fix, and offering force
+ * there would teach the reflex the whole design exists to prevent. */
+export type PushFailure = "non-fast-forward" | "auth" | "other";
+
+export interface PushOutcome {
+  ok: boolean;
+  /** `null` exactly when `ok`. */
+  failure: PushFailure | null;
+  /** git's own words. Empty on success. */
+  message: string;
+  /** The remote and branch actually pushed to, after defaulting — what the
+   * recovery UI and its confirm must name. */
+  remote: string;
+  branch: string;
+}
+
 export interface PullResult {
   ok: boolean;
   conflicted: boolean;

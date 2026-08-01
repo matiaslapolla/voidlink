@@ -58,7 +58,70 @@ upstream.
 - **Pull** always runs `git pull --ff-only`. Merge and rebase modes exist in the
   API and the backend but no UI path reaches them.
 - **Push** always pushes `refs/heads/<current>:refs/heads/<current>` to
-  `origin`.
+  `origin`. It reports *how* it failed, not only that it did — see below.
+
+### When a push is rejected
+
+`git_push` answers a `PushOutcome`, and its `failure` field is one of
+`non-fast-forward`, `auth` or `other`. Everything about the force-push surface
+hangs off that classification:
+
+- `non-fast-forward` comes from libgit2's own `NotFastForward` error code (it
+  checks fast-forwardability against the advertised remote head and refuses
+  before uploading a pack), or from a server rejection whose reason contains
+  `non-fast-forward` / `fetch first` once separators are stripped.
+- Everything else — a missing remote, a transport error, a pre-receive hook, a
+  ref lock, an exhausted credential callback — is `auth` or `other`.
+
+Only `non-fast-forward` shows the recovery panel under the commit box:
+
+```
+✗ origin rejected the push — origin/feat has commits your branch does not.
+
+  [ Fetch and rebase ]   [ Force push (with lease) ]
+```
+
+**Fetch and rebase is the first offer** — `git pull --rebase`, with the usual
+conflict routing into conflict tabs. **Force is the second**, and it is disabled
+until a lease is held.
+
+### Force-push, and what "with lease" means here
+
+Force-push exists in exactly one place: that panel. It is not beside Push, not
+in an overflow, not on a context menu. The rejection is what proves the branches
+diverged, so the button only exists in the moment it is the answer.
+
+On mounting, the panel fetches the rejecting remote and reads
+`refs/remotes/<remote>/<branch>`. That oid is the **lease**. Force stays disabled
+until it lands, and it goes disabled again **two minutes later**
+(`LEASE_TTL_MS`), with a `Fetch again` link. The expiry is not about the remote —
+the remote can move a millisecond after the fetch, and only the re-check below
+covers that. It is about the lease still describing something the user actually
+looked at.
+
+The confirm names the remote, the branch, how many commits stop being reachable
+(`behind`, after the fetch), and the oid being overwritten.
+
+`git_push_force_with_lease` then re-checks before pushing: it fetches that one
+branch with pruning, compares the result against the lease, and **refuses** if
+the remote moved, if the branch is gone, or if no lease was supplied. A refusal
+is the feature working — it names both oids and re-takes the lease so you can
+see what changed.
+
+**The race window is real and is not closed.** libgit2 has no
+`--force-with-lease` primitive: native git puts the expected old oid in the
+ref-update line so the *server* does the compare-and-swap, and libgit2's push API
+gives no way to set that field. So the comparison happens client-side, and
+anything that lands on the remote between the re-check's ref advertisement and
+receive-pack applying our update is overwritten unseen. That is one fetch round
+trip plus the push connection — a fraction of a second, not zero. Nothing in the
+UI says "safe" about it.
+
+(The advertisement is read via a fetch rather than `Remote::list()` on the push
+connection, which would be one round trip tighter: `list()` in git2 0.19 builds
+a slice from the null pointer libgit2 returns when a remote advertises no refs,
+which aborts the process under debug assertions. A safety check that can crash
+is not a safety check.)
 
 ### Remotes
 
@@ -80,14 +143,19 @@ destructive-ish network operation; leaving it click-only is intentional.
 ## Authentication
 
 Push and fetch go through libgit2 and share one credential callback that tries,
-each **once**:
+each **once**, in the order git itself would:
 
-1. `ssh_key_from_agent` with the username from the URL, defaulting to `git`.
-2. `userpass_plaintext("x-access-token", $GITHUB_TOKEN)`.
+1. `Cred::credential_helper` against the default config cascade — `osxkeychain`,
+   `gh auth`, `git-credential-manager`, whatever `credential.helper` names.
+2. `ssh_key_from_agent` with the username from the URL, defaulting to `git`.
+3. `userpass_plaintext("x-access-token", $GITHUB_TOKEN)`.
 
-Then it hard-fails with
-`git auth failed: set GITHUB_TOKEN or configure SSH agent`. Each method is tried
-at most once so a failure surfaces a clear error instead of looping.
+Then it hard-fails with `auth::AUTH_EXHAUSTED_MESSAGE`. Each method is tried at
+most once so a failure surfaces a clear error instead of looping. That message
+is a constant rather than a literal because `push.rs` classifies a failure as
+`auth` by it: libgit2 reports an error raised *inside* a callback with a generic
+code, so the string is the only discriminator — and it only works as one while
+exactly one place writes it.
 
 **`git pull` and tag push do not use this path.** They shell out to the system
 `git` and rely on your configured credential helper. So pull can succeed while
@@ -102,9 +170,10 @@ push fails, or the reverse.
 - **Checkout errors are not toasts.** They render as red text under the branch
   filter box.
 - **Push errors render under the commit box**, not as a toast.
-- **Push cannot force.** No `--force`, no `--force-with-lease` — a diverged
-  branch just errors. It *can* set upstream (only when absent; it never
-  clobbers an existing one).
+- **Force-push is unreachable except from a rejection.** There is no plain
+  `--force` anywhere, and the leased force is only offered under a
+  `non-fast-forward` failure. Push *can* set upstream (only when absent; it
+  never clobbers an existing one).
 - **`origin` is hard-coded** for the repo header's remote URL, for push, and for
   tag push. **Fetch is not**: with no remote named it fetches every configured
   remote, and prunes.

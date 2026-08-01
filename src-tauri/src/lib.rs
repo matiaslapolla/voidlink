@@ -1296,6 +1296,8 @@ pub fn run() {
             git::git_commit,
             git::git_config_identity,
             git::git_push,
+            git::git_remote_tracking_oid,
+            git::git_push_force_with_lease,
             git::git_diff_working,
             git::git_diff_refs,
             git::git_list_refs,

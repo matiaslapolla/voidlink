@@ -1,5 +1,16 @@
 use git2::{Config, Cred, CredentialType, RemoteCallbacks};
 
+/// The message the credential callback fails with once every source is spent.
+///
+/// A constant rather than a literal because `push.rs` classifies push failures
+/// by it: libgit2 reports an error raised *inside* a callback with a generic
+/// code, so the only thing that distinguishes "we ran out of credentials" from
+/// "the server hung up" is this string — and a string only works as a
+/// discriminator while exactly one place writes it.
+pub(crate) const AUTH_EXHAUSTED_MESSAGE: &str =
+    "git auth failed: configure a credential helper (`git config --global credential.helper`), \
+     add your key to the SSH agent, or set GITHUB_TOKEN";
+
 /// Credentials for every git2-native network operation (fetch, push).
 ///
 /// There used to be two divergent auth paths: git2 for fetch/push, which tried
@@ -43,10 +54,7 @@ pub(crate) fn default_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
         if allowed_types.contains(CredentialType::DEFAULT) {
             return Cred::default();
         }
-        Err(git2::Error::from_str(
-            "git auth failed: configure a credential helper (`git config --global credential.helper`), \
-             add your key to the SSH agent, or set GITHUB_TOKEN",
-        ))
+        Err(git2::Error::from_str(AUTH_EXHAUSTED_MESSAGE))
     });
     callbacks
 }
