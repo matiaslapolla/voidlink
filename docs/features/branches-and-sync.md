@@ -37,6 +37,44 @@ Checking out also bumps the branch in a per-repo MRU list
 (`voidlink-branch-mru` in `localStorage`, capped at 50), which is what orders
 the branch list and the compare-tab ref picker.
 
+### The ahead/behind chip on a branch row
+
+A row carries `↑n ↓n` when there is something to count against. **What it counts
+against depends on the kind of row**, and the row's tooltip always spells it out
+in full — `origin/feat is 2 ahead of and 0 behind local feat`.
+
+- **A local branch** is counted against its **upstream**, as it always has been.
+  A zero side is hidden: `main` in sync draws nothing, because most local rows
+  most of the time have nothing to report and `↑0 ↓0` on all of them is noise.
+- **A remote-tracking branch** is counted against the **local branch of the same
+  name** — `origin/feat` against `feat`. The question it answers is "have I
+  pulled what is up there, and have I pushed what is down here": the local row's
+  question from the other side, so the *remote* row is the subject. `↑` is what
+  the remote has that you do not (pull it); `↓` is what you have that the remote
+  does not (push it). Both sides are always shown, zero included, because on a
+  remote row "you have pulled everything" is precisely the answer you opened the
+  Remote disclosure to get.
+- **A remote-tracking branch with no local branch of that name shows no chip at
+  all** — not a zero, not a dash. There is nothing to compare it to, and `↑0 ↓0`
+  there would claim to be in sync with a branch that does not exist.
+
+The name match handles slashes: `origin/feature/x` is compared to local
+`feature/x`, not to a local `x`. The remote prefix is stripped by matching the
+repository's configured remotes, so a remote whose own name contains a slash
+works too.
+
+Under the hood this is `AheadBehind { ahead, behind, against }`, and it is
+**nullable on the row** — that is what keeps "nothing to compare against" and
+"compared, and level" apart. It is also cheap in the right way: the walk is only
+run for a remote branch that *has* a local counterpart, and identical tips
+short-circuit without a walk. On a repository with 500 remote branches, the cost
+scales with how many branches **you** have checked out, not with how many your
+colleagues have pushed.
+
+A branch whose upstream is configured but unresolvable still shows `?`
+(`aheadBehindUnknown`) — a walk that could not complete must never be drawn as
+`0/0`.
+
 ### Creating, renaming, deleting
 
 - The branch-plus icon prompts `Branch name (created at HEAD, no switch)`.

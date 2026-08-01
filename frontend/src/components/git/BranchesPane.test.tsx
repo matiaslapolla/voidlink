@@ -29,8 +29,7 @@ function branch(over: Partial<GitBranchInfo> = {}): GitBranchInfo {
     isHead: false,
     isRemote: false,
     upstream: null,
-    ahead: 0,
-    behind: 0,
+    aheadBehind: null,
     aheadBehindUnknown: false,
     lastCommitSummary: null,
     lastCommitTime: null,
@@ -131,6 +130,113 @@ describe("what a row says", () => {
     const del = await screen.findByRole("button", { name: /^Delete caf/ });
     expect(del).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Rename caf/ })).toBeDisabled();
+  });
+});
+
+describe("a remote row's ahead/behind", () => {
+  /// Every remote row is behind the disclosure — open it and hand back the
+  /// screen.
+  async function showRemotes(count: number) {
+    await userEvent.click(await screen.findByRole("button", { name: new RegExp(`Remote \\(${count}\\)`) }));
+  }
+
+  /// CMP-F22. The counts exist now; the row has to say what they are against,
+  /// because `↑2 ↓0` on `origin/feat` is otherwise ambiguous — the remote's own
+  /// upstream? the default branch? — and the answer is not guessable from the
+  /// row.
+  it("names the local branch it counted against", async () => {
+    mockTauri({
+      git_list_branches: [
+        branch({
+          name: "origin/feat",
+          isRemote: true,
+          aheadBehind: { ahead: 2, behind: 0, against: "feat" },
+        }),
+      ],
+    });
+    mount();
+    await showRemotes(1);
+    expect(
+      await screen.findByTitle("origin/feat is 2 ahead of and 0 behind local feat"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("↑2")).toBeInTheDocument();
+    // Both sides, even the zero: "you have pushed everything" is half of what
+    // the row is being asked.
+    expect(screen.getByText("↓0")).toBeInTheDocument();
+  });
+
+  /// A remote branch level with its local counterpart is a *measured* zero, and
+  /// the chip has to render it — it is the answer someone opens this disclosure
+  /// to get.
+  it("renders a real ↑0 ↓0 for a remote level with its local branch", async () => {
+    mockTauri({
+      git_list_branches: [
+        branch({
+          name: "origin/main",
+          isRemote: true,
+          aheadBehind: { ahead: 0, behind: 0, against: "main" },
+        }),
+      ],
+    });
+    mount();
+    await showRemotes(1);
+    expect(await screen.findByText("↑0")).toBeInTheDocument();
+    expect(screen.getByText("↓0")).toBeInTheDocument();
+  });
+
+  /// The other half of the decision: no local branch of that name means there
+  /// is nothing to compare against, and `↑0 ↓0` there would claim to be in sync
+  /// with a branch that does not exist.
+  it("shows no chip at all for a remote with no local counterpart", async () => {
+    mockTauri({
+      git_list_branches: [
+        branch({ name: "origin/spike", isRemote: true, aheadBehind: null }),
+      ],
+    });
+    mount();
+    await showRemotes(1);
+    await screen.findByText("origin/spike");
+    expect(screen.queryByText("↑0")).not.toBeInTheDocument();
+    expect(screen.queryByText("↓0")).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/ahead of and/)).not.toBeInTheDocument();
+  });
+
+  /// A local branch in sync has always drawn nothing, and the null/zero split
+  /// must not turn every quiet local row into `↑0 ↓0`.
+  it("still hides a zero on a local row", async () => {
+    mockTauri({
+      git_list_branches: [
+        branch({
+          name: "main",
+          upstream: "origin/main",
+          aheadBehind: { ahead: 0, behind: 0, against: "origin/main" },
+        }),
+      ],
+    });
+    mount();
+    await screen.findByText("main");
+    expect(screen.queryByText("↑0")).not.toBeInTheDocument();
+    expect(screen.queryByText("↓0")).not.toBeInTheDocument();
+  });
+
+  /// ...but a local row that *has* something to report now says what it is
+  /// reporting against, which it never used to.
+  it("names the upstream on a local row that is ahead", async () => {
+    mockTauri({
+      git_list_branches: [
+        branch({
+          name: "main",
+          upstream: "origin/main",
+          aheadBehind: { ahead: 3, behind: 0, against: "origin/main" },
+        }),
+      ],
+    });
+    mount();
+    expect(
+      await screen.findByTitle("main is 3 ahead of and 0 behind origin/main"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("↑3")).toBeInTheDocument();
+    expect(screen.queryByText("↓0")).not.toBeInTheDocument();
   });
 });
 

@@ -33,14 +33,13 @@ severity, confidence and reasoning attached than as a line in a list:
 
 ## Answered, being built
 
-Every question this section used to hold was answered on 2026-08-01. Two are
+Every question this section used to hold was answered on 2026-08-01. One is
 still in flight; the rest are in [Shipped](#shipped-2026-08-01) or, where the
 answer was "no", in [Decided](#decided--do-not-relitigate).
 
 | The question | The answer, and what is being built |
 |---|---|
 | **Where does a destructive push live, and how is it confirmed?** | **Only as a recovery action after the remote rejects a push as non-fast-forward** — never beside Push, never in a menu, never in a context menu. "Fetch and rebase" is the first offer; force is the second and reads as the lesser path, and it stays disabled until a fetch is fresh enough to hold a lease. libgit2 has no lease primitive, so the lease is fetch → compare → push and **the race window is real and cannot be closed with this dependency** — it can only be made small, commented, and never described as "safe" in the UI. (BR-F7) |
-| **What does a remote branch's ahead/behind count against?** | **The local branch of the same name.** `origin/feat` against local `feat` — the same question the chip already answers for a local row, from the other side. A remote branch with no local counterpart shows **no chip**, not a zero: the type has to make "no claim" distinct from "0 ahead, 0 behind". Watch the cost — this is a graph walk per remote row on a list that recomputes every git pulse. (CMP-F22) |
 
 ---
 
@@ -145,6 +144,23 @@ Recorded compactly; the detail is in the feature docs and the audits.
 | **Palette action sources** | Features contribute their own actions; 462 lines left `App.tsx`. Behaviour preservation proven id-for-id against the pre-refactor list. |
 | **The browser's URL policy** (BR-S3, answering the old decision row 2) | **The decision: `http`, `https`, and `file://` — but `file://` only for what the tab can render (HTML, plain text, PDF). Everything else refused, `data:` included.** Enforced at `on_navigation`, which is the only point every *frame* passes through, so a page embedding a `file://` iframe is stopped and not merely a user typing one. A directory is refused, both spellings, and the two answers agreeing is why the rule never stats anything. Because `false` cancels silently, every refusal emits `voidlink://browser-blocked`, coalesced onto one toast per tab so ten blocked frames read as one line and a count. `about:`/`blob:` are allowed as page-internal — refusing them would break working sites rather than stop anything. The address bar runs the same rule in TS so it refuses before it sends; both halves carry the same case table in their tests. |
 | **Compare tabs' own diff-mode and whitespace controls** | Row 6's decision: per-tab controls, not a shared global toggle, because `ignoreWhitespace` sits in the diff resource's key — a global flip would refetch every open compare tab at once behind the same per-repo git mutex CMP-F10 bounds. The premise the decision assumed — that per-tab state already existed — did not hold: `CompareTab` had no `diffMode`/`ignoreWhitespace` fields at all, and the tab was silently reading the *global* prefs the working-tree toolbar owns, meaning every open compare tab already refetched together on that toolbar's toggle. Both fields are now genuinely per-tab, optional and `undefined` at default so an untouched tab's persisted blob does not grow. |
+| **CMP-F22, a remote row's ahead/behind** | The one item that left "blocked on a decision" by getting the decision. What was decided, and what it cost to encode, is recorded below. |
+
+**The decision CMP-F22 was waiting on, recorded.** *A remote-tracking branch is
+compared to the local branch of the same name* — `origin/feat` against `feat`.
+It answers the local row's question from the other side ("have I pulled what is
+up there, have I pushed what is down here"), so the remote row is the subject of
+its own counts: `↑` is what the remote has that you do not. **A remote branch
+with no local counterpart shows no chip at all** — not a zero, not a dash. That
+required fixing the type rather than the render: `ahead`/`behind` became one
+nullable `AheadBehind { ahead, behind, against }`, because two `u32`s cannot
+tell "nothing to compare against" from "compared, and level", and the second is
+a real `↑0 ↓0` that must render. `against` rides along because a bare `↑2 ↓0` on
+a remote row is ambiguous to anyone who has not read this paragraph; the row's
+tooltip spells the comparison out. The walk only runs for a remote branch that
+has a local counterpart, and identical tips short-circuit — measured at 500
+remote branches, the cost tracks how many branches *you* checked out, not how
+many were pushed. See [branches and sync](./features/branches-and-sync.md).
 
 **One live caveat carried forward.** BR-F1's fix — `browser_focus_host`, which
 gives the host webview the keyboard back — is still confidence *reading*, not

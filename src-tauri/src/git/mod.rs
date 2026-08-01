@@ -156,6 +156,31 @@ pub struct GitRepoInfo {
     pub has_conflicts: bool,
 }
 
+/// Ahead/behind counts for one ref, and what they were measured against.
+///
+/// Optional on the row rather than a pair of integers, because "nothing to
+/// compare against" and "compared, and level" are different facts that
+/// `ahead: 0, behind: 0` cannot tell apart. A remote-tracking branch with no
+/// local counterpart is the first; a remote-tracking branch sitting on the same
+/// commit as its local counterpart is the second. Flattened into two `u32`s
+/// they render identically, and the first would then assert an in-sync state
+/// nobody ever measured — the same class of lie `ahead_behind_unknown` was
+/// added to prevent for a walk that could not complete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AheadBehind {
+    /// Commits this row's own ref has that `against` does not.
+    pub ahead: u32,
+    /// Commits `against` has that this row's own ref does not.
+    pub behind: u32,
+    /// The ref the counts are measured against: the upstream for a local
+    /// branch, the local branch of the same short name for a remote-tracking
+    /// one. Carried on the row because `↑2 ↓0` on a remote-tracking branch is
+    /// ambiguous without it — the reader has no way to know the other side is
+    /// their own local branch rather than some upstream of the remote's.
+    pub against: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitBranchInfo {
@@ -163,8 +188,8 @@ pub struct GitBranchInfo {
     pub is_head: bool,
     pub is_remote: bool,
     pub upstream: Option<String>,
-    pub ahead: u32,
-    pub behind: u32,
+    /// The counts, when there is something to count against. See `AheadBehind`.
+    pub ahead_behind: Option<AheadBehind>,
     /// See `GitRepoInfo::ahead_behind_unknown`.
     pub ahead_behind_unknown: bool,
     pub last_commit_summary: Option<String>,

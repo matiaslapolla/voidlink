@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use git2::BranchType;
 
 use super::repo::open_repo;
-use super::{GitBranchInfo};
+use super::{AheadBehind, GitBranchInfo};
 
 /// The upstream this branch's config still names, when the ref it names is
 /// gone.
@@ -24,12 +26,147 @@ fn configured_upstream(repo: &git2::Repository, name: &str) -> Option<String> {
     }
 }
 
+/// Every local branch's tip, keyed by branch name.
+///
+/// Built once per listing, and only when remote rows are being listed at all,
+/// because the alternative is a `find_branch` per remote row: a repository with
+/// 500 remote-tracking branches would then do 500 ref lookups on every git
+/// pulse to discover that a dozen of them have a local counterpart. This walks
+/// `refs/heads/` — which is bounded by the number of branches *you* made, not
+/// by the number your colleagues pushed — and every remote row after it is a
+/// hash lookup.
+fn local_tips(repo: &git2::Repository) -> HashMap<String, git2::Oid> {
+    let mut tips = HashMap::new();
+    let Ok(iter) = repo.branches(Some(BranchType::Local)) else {
+        return tips;
+    };
+    for (branch, _) in iter.flatten() {
+        // A name that is not valid UTF-8 cannot be matched against a remote
+        // row's name anyway, and a symbolic ref has no tip of its own worth
+        // counting against — `target()` returning None drops both.
+        if let (Ok(Some(name)), Some(oid)) = (branch.name(), branch.get().target()) {
+            tips.insert(name.to_string(), oid);
+        }
+    }
+    tips
+}
+
+/// The branch name inside a remote-tracking ref's short name: `origin/feat` is
+/// the branch `feat` on the remote `origin`.
+///
+/// Matched against the repository's configured remotes, longest prefix first,
+/// rather than cut at a slash. Two things go wrong otherwise, and they pull in
+/// opposite directions: taking the *last* segment turns `origin/feature/x` into
+/// `x` and would compare a remote branch against an unrelated local one, while
+/// cutting at the *first* slash breaks a remote whose own name contains one
+/// (`git remote add fork/mirror …` is legal, and produces
+/// `refs/remotes/fork/mirror/feat`).
+///
+/// The first-slash cut survives as a fallback for a ref under `refs/remotes/`
+/// whose remote is no longer in config — a pruned remote leaves those behind,
+/// and guessing the usual layout is better than refusing to compare at all.
+fn remote_branch_short_name(remotes: &[String], name: &str) -> Option<String> {
+    let mut best: Option<&str> = None;
+    for remote in remotes {
+        let Some(rest) = name
+            .strip_prefix(remote.as_str())
+            .and_then(|s| s.strip_prefix('/'))
+        else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        // The longest matching remote leaves the shortest remainder.
+        if best.is_none_or(|b| rest.len() < b.len()) {
+            best = Some(rest);
+        }
+    }
+    if let Some(rest) = best {
+        return Some(rest.to_string());
+    }
+    match name.split_once('/') {
+        Some((remote, rest)) if !remote.is_empty() && !rest.is_empty() => Some(rest.to_string()),
+        _ => None,
+    }
+}
+
+/// What a remote-tracking branch's ahead/behind is measured against: the local
+/// branch of the same short name, per the 2026-08-01 decision on CMP-F22.
+///
+/// The question it answers is "have I pulled what is up there, and have I
+/// pushed what is down here" — the local row's question from the other side, so
+/// the counts are stated with the *remote* row as the subject: `ahead` is what
+/// `origin/feat` has that local `feat` does not.
+///
+/// `None` when there is no local branch of that name. That is the common case
+/// on any repository with more remote branches than you have checked out, and
+/// it is also the case that must not be drawn as `↑0 ↓0`: the row would then
+/// claim to be in sync with a branch that does not exist.
+fn remote_ahead_behind(
+    repo: &git2::Repository,
+    tips: &HashMap<String, git2::Oid>,
+    remotes: &[String],
+    name: &str,
+    remote_tip: Option<git2::Oid>,
+) -> (Option<AheadBehind>, bool) {
+    let Some(short) = remote_branch_short_name(remotes, name) else {
+        return (None, false);
+    };
+    let (Some(&local_tip), Some(remote_tip)) = (tips.get(&short), remote_tip) else {
+        return (None, false);
+    };
+    // Identical tips are a real, renderable `↑0 ↓0`, and the one case where the
+    // answer is known without a walk. Worth the branch: a fetched repository
+    // where nothing has moved has every counterpart pair on the same commit,
+    // and this turns that pulse's cost from a merge-base search per row into a
+    // pointer comparison.
+    if local_tip == remote_tip {
+        return (
+            Some(AheadBehind {
+                ahead: 0,
+                behind: 0,
+                against: short,
+            }),
+            false,
+        );
+    }
+    match repo.graph_ahead_behind(remote_tip, local_tip) {
+        Ok((ahead, behind)) => (
+            Some(AheadBehind {
+                ahead: ahead as u32,
+                behind: behind as u32,
+                against: short,
+            }),
+            false,
+        ),
+        // See repo.rs: a walk that cannot complete (shallow clone, missing
+        // objects) must not be reported as 0/0 "in sync".
+        Err(e) => {
+            log::warn!("ahead/behind for {name} unavailable: {e}");
+            (None, true)
+        }
+    }
+}
+
 pub(crate) fn git_list_branches_impl(
     repo_path: String,
     include_remote: bool,
 ) -> Result<Vec<GitBranchInfo>, String> {
     let repo = open_repo(&repo_path)?;
     let mut branches = Vec::new();
+
+    // Both are only used to compare a remote row against its local counterpart,
+    // so neither is paid for by the workbench's default local-only listing.
+    let (tips, remotes) = if include_remote {
+        let names = repo
+            .remotes()
+            .map(|rs| rs.iter().flatten().map(|s| s.to_string()).collect())
+            .unwrap_or_else(|_| Vec::new());
+        (local_tips(&repo), names)
+    } else {
+        (HashMap::new(), Vec::new())
+    };
 
     let branch_types = if include_remote {
         vec![BranchType::Local, BranchType::Remote]
@@ -77,24 +214,33 @@ pub(crate) fn git_list_branches_impl(
             }
             let is_head = branch.is_head();
 
-            let (upstream, ahead, behind, ahead_behind_unknown) = if !is_remote {
+            let (upstream, ahead_behind, ahead_behind_unknown) = if !is_remote {
                 if let Ok(up) = branch.upstream() {
                     let up_name = up.name().ok().flatten().map(|s| s.to_string());
                     let local_oid = branch.get().target();
                     let up_oid = up.get().target();
                     // See repo.rs: a walk that cannot complete (shallow clone,
                     // missing objects) must not be reported as 0/0 "in sync".
-                    let (a, b, unknown) = match (local_oid, up_oid) {
-                        (Some(l), Some(u)) => match repo.graph_ahead_behind(l, u) {
-                            Ok((a, b)) => (a, b, false),
-                            Err(e) => {
-                                log::warn!("ahead/behind for {name} unavailable: {e}");
-                                (0, 0, true)
+                    let (counts, unknown) = match (local_oid, up_oid, up_name.as_deref()) {
+                        (Some(l), Some(u), Some(against)) => {
+                            match repo.graph_ahead_behind(l, u) {
+                                Ok((a, b)) => (
+                                    Some(AheadBehind {
+                                        ahead: a as u32,
+                                        behind: b as u32,
+                                        against: against.to_string(),
+                                    }),
+                                    false,
+                                ),
+                                Err(e) => {
+                                    log::warn!("ahead/behind for {name} unavailable: {e}");
+                                    (None, true)
+                                }
                             }
-                        },
-                        _ => (0, 0, false),
+                        }
+                        _ => (None, false),
                     };
-                    (up_name, a as u32, b as u32, unknown)
+                    (up_name, counts, unknown)
                 } else {
                     // `branch.upstream()` fails both for a branch that never
                     // tracked anything and for one whose remote-tracking ref
@@ -108,10 +254,14 @@ pub(crate) fn git_list_branches_impl(
                     // `aheadBehindUnknown` exists to say.
                     let configured = configured_upstream(&repo, &name);
                     let unknown = configured.is_some();
-                    (configured, 0, 0, unknown)
+                    (configured, None, unknown)
                 }
             } else {
-                (None, 0, 0, false)
+                // A remote-tracking branch has no upstream of its own; what it
+                // is counted against is the local branch of the same name.
+                let (counts, unknown) =
+                    remote_ahead_behind(&repo, &tips, &remotes, &name, branch.get().target());
+                (None, counts, unknown)
             };
 
             let (last_commit_summary, last_commit_time) =
@@ -142,8 +292,7 @@ pub(crate) fn git_list_branches_impl(
                 is_head,
                 is_remote,
                 upstream,
-                ahead,
-                behind,
+                ahead_behind,
                 ahead_behind_unknown,
                 last_commit_summary,
                 last_commit_time,
@@ -166,8 +315,7 @@ pub(crate) fn git_list_branches_impl(
                     is_head: true,
                     is_remote: false,
                     upstream: None,
-                    ahead: 0,
-                    behind: 0,
+                    ahead_behind: None,
                     ahead_behind_unknown: false,
                     last_commit_summary: None,
                     last_commit_time: None,
@@ -479,6 +627,194 @@ mod tests {
         );
     }
     use crate::git::testfix::{commit_all, init_repo, write_file};
+
+    // ─── CMP-F22: a remote row's ahead/behind ────────────────────────────
+    //
+    // The decision these cover: a remote-tracking branch is compared to the
+    // LOCAL branch of the same short name, and a remote branch with no local
+    // counterpart makes no claim at all rather than claiming `↑0 ↓0`.
+
+    /// A commit on top of `parent`, reusing its tree and touching no ref. The
+    /// ahead/behind walk counts commits, not contents, so a repeated tree is
+    /// exactly as good as a real edit and much cheaper to set up.
+    fn child_of(repo: &git2::Repository, parent: git2::Oid, message: &str) -> git2::Oid {
+        let parent_commit = repo.find_commit(parent).unwrap();
+        let tree = parent_commit.tree().unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(None, &sig, &sig, message, &tree, &[&parent_commit])
+            .unwrap()
+    }
+
+    /// A repository with a remote configured and one commit, whose oid is
+    /// returned: the base every ahead/behind case below diverges from.
+    fn repo_with_remote(root: &std::path::Path) -> (git2::Repository, git2::Oid) {
+        let repo = init_repo(root);
+        write_file(root, "a.txt", "one\n");
+        let base = commit_all(&repo, "base");
+        repo.remote("origin", "https://example.invalid/x.git").unwrap();
+        (repo, base)
+    }
+
+    fn set_ref(repo: &git2::Repository, name: &str, oid: git2::Oid) {
+        repo.reference(name, oid, true, "test fixture").unwrap();
+    }
+
+    /// The row for `origin/<name>` from a full listing.
+    fn remote_row(root: &std::path::Path, name: &str) -> GitBranchInfo {
+        let list = git_list_branches_impl(root.to_string_lossy().into_owned(), true).unwrap();
+        list.into_iter()
+            .find(|b| b.is_remote && b.name == name)
+            .unwrap_or_else(|| panic!("{name} must be listed"))
+    }
+
+    /// The remote has commits the local branch does not — the "you have not
+    /// pulled" half of the question the chip answers.
+    #[test]
+    fn a_remote_ahead_of_its_local_counterpart_counts_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (repo, base) = repo_with_remote(root);
+        let tip = child_of(&repo, child_of(&repo, base, "one"), "two");
+        repo.branch("feat", &repo.find_commit(base).unwrap(), false).unwrap();
+        set_ref(&repo, "refs/remotes/origin/feat", tip);
+
+        let counts = remote_row(root, "origin/feat").ahead_behind.expect("a local feat exists");
+        assert_eq!((counts.ahead, counts.behind), (2, 0));
+        assert_eq!(counts.against, "feat", "the row must name what it compared to");
+    }
+
+    /// The local branch has commits the remote does not — "you have not pushed".
+    #[test]
+    fn a_remote_behind_its_local_counterpart_counts_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (repo, base) = repo_with_remote(root);
+        let local_tip = child_of(&repo, base, "unpushed");
+        repo.branch("feat", &repo.find_commit(local_tip).unwrap(), false).unwrap();
+        set_ref(&repo, "refs/remotes/origin/feat", base);
+
+        let counts = remote_row(root, "origin/feat").ahead_behind.unwrap();
+        assert_eq!((counts.ahead, counts.behind), (0, 1));
+    }
+
+    /// Both sides moved. The two counts are independent, and a diverged pair is
+    /// the state where reading one without the other is most misleading.
+    #[test]
+    fn a_diverged_remote_counts_both_ways() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (repo, base) = repo_with_remote(root);
+        let theirs = child_of(&repo, child_of(&repo, base, "theirs 1"), "theirs 2");
+        let ours = child_of(&repo, base, "ours");
+        repo.branch("feat", &repo.find_commit(ours).unwrap(), false).unwrap();
+        set_ref(&repo, "refs/remotes/origin/feat", theirs);
+
+        let counts = remote_row(root, "origin/feat").ahead_behind.unwrap();
+        assert_eq!((counts.ahead, counts.behind), (2, 1));
+    }
+
+    /// The case the `Option` exists for, from the other side: level with its
+    /// local counterpart is a *measured* zero, and it must survive as one so the
+    /// row can say "you are in sync" rather than saying nothing.
+    #[test]
+    fn a_remote_level_with_its_local_counterpart_still_makes_a_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (repo, base) = repo_with_remote(root);
+        repo.branch("feat", &repo.find_commit(base).unwrap(), false).unwrap();
+        set_ref(&repo, "refs/remotes/origin/feat", base);
+
+        let counts = remote_row(root, "origin/feat")
+            .ahead_behind
+            .expect("identical tips are a real 0/0, not an absent comparison");
+        assert_eq!((counts.ahead, counts.behind), (0, 0));
+        assert_eq!(counts.against, "feat");
+    }
+
+    /// No local branch of that name: there is nothing to compare against, and
+    /// `↑0 ↓0` here would claim to be in sync with a branch that does not exist.
+    #[test]
+    fn a_remote_with_no_local_counterpart_makes_no_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (repo, base) = repo_with_remote(root);
+        set_ref(&repo, "refs/remotes/origin/spike", base);
+
+        let row = remote_row(root, "origin/spike");
+        assert!(row.ahead_behind.is_none(), "no local spike, so no claim");
+        assert!(
+            !row.ahead_behind_unknown,
+            "nothing failed to compute — there was simply nothing to compute",
+        );
+    }
+
+    /// A branch name that itself contains slashes. Cutting the ref at the last
+    /// slash would compare `origin/feature/x` against a local branch called
+    /// `x` — a different branch, silently.
+    #[test]
+    fn a_slashed_branch_name_matches_its_local_counterpart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (repo, base) = repo_with_remote(root);
+        let tip = child_of(&repo, base, "theirs");
+        repo.branch("feature/x", &repo.find_commit(base).unwrap(), false).unwrap();
+        // The branch the naive last-segment split would have picked instead,
+        // parked somewhere the counts would visibly differ.
+        repo.branch("x", &repo.find_commit(tip).unwrap(), false).unwrap();
+        set_ref(&repo, "refs/remotes/origin/feature/x", tip);
+
+        let counts = remote_row(root, "origin/feature/x").ahead_behind.unwrap();
+        assert_eq!(counts.against, "feature/x");
+        assert_eq!((counts.ahead, counts.behind), (1, 0));
+    }
+
+    /// The name split, on its own. A remote whose *own* name contains a slash is
+    /// legal, and cutting at the first slash gets it wrong in the direction the
+    /// last-segment split gets right — which is why neither is used alone.
+    #[test]
+    fn the_remote_prefix_is_matched_not_guessed() {
+        let remotes = vec!["origin".to_string(), "fork/mirror".to_string()];
+        assert_eq!(
+            remote_branch_short_name(&remotes, "origin/feat").as_deref(),
+            Some("feat")
+        );
+        assert_eq!(
+            remote_branch_short_name(&remotes, "origin/feature/x").as_deref(),
+            Some("feature/x")
+        );
+        assert_eq!(
+            remote_branch_short_name(&remotes, "fork/mirror/feature/x").as_deref(),
+            Some("feature/x")
+        );
+        // A remote that is no longer in config still leaves refs behind: the
+        // usual layout is a better guess than refusing to compare.
+        assert_eq!(
+            remote_branch_short_name(&remotes, "pruned/feat").as_deref(),
+            Some("feat")
+        );
+        // Nothing to strip.
+        assert_eq!(remote_branch_short_name(&remotes, "origin").as_deref(), None);
+        assert_eq!(remote_branch_short_name(&remotes, "origin/").as_deref(), None);
+    }
+
+    /// A local row's counts must keep naming their upstream, which is what makes
+    /// the two kinds of row readable side by side.
+    #[test]
+    fn a_local_rows_counts_name_its_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (repo, base) = repo_with_remote(root);
+        let head = repo.head().unwrap().shorthand().unwrap().to_string();
+        set_ref(&repo, &format!("refs/remotes/origin/{head}"), base);
+        let mut branch = repo.find_branch(&head, BranchType::Local).unwrap();
+        branch.set_upstream(Some(&format!("origin/{head}"))).unwrap();
+
+        let list = git_list_branches_impl(root.to_string_lossy().into_owned(), true).unwrap();
+        let row = list.iter().find(|b| !b.is_remote && b.name == head).unwrap();
+        let counts = row.ahead_behind.as_ref().expect("an upstream that resolves");
+        assert_eq!(counts.against, format!("origin/{head}"));
+        assert_eq!((counts.ahead, counts.behind), (0, 0));
+    }
 
     /// `is_own_counterpart` must recognise the branch itself and the branch
     /// pushed to a remote — and nothing else.
