@@ -8,13 +8,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
-import { mockTauri } from "@/test/tauri";
+import { lastInvokeArgs, mockTauri, tauriCalls } from "@/test/tauri";
 import { isOverlayOpen } from "@/commands/overlay";
 import { stubLayout } from "@/test/layout";
 
 import { BrainOverlay, BrainOverlayHost } from "./BrainOverlay";
 
-const VAULT = "/vault";
+const REPO = "/repo";
 
 const ENTRIES = [
   {
@@ -44,7 +44,7 @@ beforeEach(() => {
       ...ENTRIES.find((e) => e.path === args.relPath),
       body: "The body of the entry.",
     }),
-    brain_save_entry: "notes/2026-03-03-new.md",
+    brain_save_entry: ".voidlink/brain/notes/2026-03-03-new.md",
   });
 });
 
@@ -52,7 +52,7 @@ const onClose = vi.fn(() => {});
 
 function mount() {
   onClose.mockClear();
-  return render(() => <BrainOverlay vaultPath={VAULT} onClose={onClose} />);
+  return render(() => <BrainOverlay repoPath={REPO} onClose={onClose} />);
 }
 
 /// The entry list is virtualized, and a virtualizer told the viewport is 0px
@@ -139,16 +139,50 @@ describe("the overlay registration", () => {
   });
 
   it("registers nothing while the host is closed", () => {
-    render(() => <BrainOverlayHost open={false} vaultPath={VAULT} onClose={onClose} />);
+    render(() => <BrainOverlayHost open={false} repoPath={REPO} onClose={onClose} />);
     expect(isOverlayOpen()).toBe(false);
   });
 });
 
-/// Without a vault path there is nothing to list, and the fix is in Settings —
-/// §7.6 wants the empty state to say so rather than render an empty pane.
-describe("no vault configured", () => {
-  it("names the setting that fixes it", () => {
-    render(() => <BrainOverlay vaultPath="" onClose={onClose} />);
-    expect(screen.getByText(/settings → brain/i)).toBeInTheDocument();
+/// A brain is scoped to a repository, so a workspace that is only a folder has
+/// nothing to list. §7.6 wants the empty state to name the fix rather than
+/// render an empty pane — and the fix is now "open a repo", not "set a path".
+describe("no repository open", () => {
+  it("says what would fix it", () => {
+    render(() => <BrainOverlay repoPath="" onClose={onClose} />);
+    expect(screen.getByText(/open a repository/i)).toBeInTheDocument();
+  });
+});
+
+/// Capture writes into the repository you are working in, so the argument that
+/// decides *where* is the one worth pinning down. The absent `message` is the
+/// other half: this used to commit what it wrote, and a project brain that
+/// commits lands on the branch you are mid-change on.
+describe("what capture sends across the boundary", () => {
+  it("scopes the write to the open repo, and asks for no commit", async () => {
+    const user = userEvent.setup();
+    mount();
+    await screen.findByText("Pricing for the beta");
+
+    await user.click(screen.getByRole("button", { name: /quick note/i }));
+    await user.type(screen.getByPlaceholderText("Title"), "A new thought");
+    await user.type(screen.getByPlaceholderText(/labels, comma-separated/i), "perf");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(tauriCalls("brain_save_entry")).toHaveLength(1));
+    const args = lastInvokeArgs("brain_save_entry")!;
+    expect(args.repoRoot).toBe(REPO);
+    expect(args.relPath).toMatch(/^notes\/\d{4}-\d{2}-\d{2}-a-new-thought\.md$/);
+    expect(args).not.toHaveProperty("message");
+  });
+
+  it("lists and reads against the same repo root", async () => {
+    const user = userEvent.setup();
+    mount();
+    expect(lastInvokeArgs("brain_list_entries")!.repoRoot).toBe(REPO);
+
+    await user.click(await screen.findByText("Pricing for the beta"));
+    await waitFor(() => expect(tauriCalls("brain_read_entry")).toHaveLength(1));
+    expect(lastInvokeArgs("brain_read_entry")!.repoRoot).toBe(REPO);
   });
 });

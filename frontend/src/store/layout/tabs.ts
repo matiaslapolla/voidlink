@@ -91,6 +91,11 @@ export interface BrowserTab {
   id: string;
   url: string;
   title?: string;
+  /// Page scale, applied to the webview itself. Per tab rather than global: a
+  /// dashboard that needs 150% and a docs page that does not are the normal
+  /// pair, and `undefined` means 1 so nothing persisted before zoom existed
+  /// comes back scaled.
+  zoom?: number;
 }
 
 /// An AI agent thread. A peer of a diff or a terminal rather than a slide-over,
@@ -395,6 +400,13 @@ function deserializeBrowser(raw: unknown): BrowserTab | null {
     // Absent in state persisted before titles were tracked; the tab label
     // falls back to the host until the page reports one.
     title: typeof raw.title === "string" ? raw.title : undefined,
+    // Finite and positive or nothing: a persisted `null`, `0` or `NaN` would
+    // reach `set_zoom` and render the page at a size nobody can read their way
+    // out of. Rust clamps too — this stops the bad value being remembered.
+    zoom:
+      typeof raw.zoom === "number" && Number.isFinite(raw.zoom) && raw.zoom > 0
+        ? raw.zoom
+        : undefined,
   };
 }
 
@@ -564,7 +576,11 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     kind: "browser",
     stateKey: "browserTabsByWorktree",
     storage: { key: STORAGE_KEYS.browserTabs },
-    serialize: (t) => (t.title === undefined ? { id: t.id, url: t.url } : { ...t }),
+    // The narrow form is for the common tab — no title yet, never zoomed — so
+    // the stored blob stays small. Both optional fields have to be checked, or
+    // a zoomed tab whose page never reported a title loses its scale on reload.
+    serialize: (t) =>
+      t.title === undefined && t.zoom === undefined ? { id: t.id, url: t.url } : { ...t },
     deserialize: (raw) => deserializeBrowser(raw),
     restore: async (raw) => deserializeBrowser(raw),
     // Two tabs on the same site is a normal thing to want, and each owns its
@@ -787,12 +803,19 @@ export function deserializeClosedTab(raw: unknown): ClosedTab | null {
 }
 
 /// The four kinds the editor window renders. The workbench renders the other
-/// seven, and each window has its own active-item pointer.
+/// eight, and each window has its own active-item pointer.
 export const EDITOR_TAB_KINDS: TabKind[] = ["file", "diff", "conflict", "preview"];
 
 export function isEditorKind(kind: string): boolean {
   return EDITOR_TAB_KINDS.includes(kind as TabKind);
 }
+
+/// The kinds the workbench renders, in registry order — the complement of
+/// `EDITOR_TAB_KINDS`, derived rather than spelled out so a new kind lands in
+/// the pane tree by being registered. Mission Control spent its first release
+/// missing from a hand-written copy of this list, which made its tab
+/// unclaimable by any pane group and so invisible: opening it did nothing.
+export const WORKBENCH_TAB_KINDS: TabKind[] = TAB_KINDS.filter((k) => !isEditorKind(k));
 
 // ── The editor window's shared blob ───────────────────────────────────────
 

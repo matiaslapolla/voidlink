@@ -251,13 +251,6 @@ export interface AiSettings {
   customKeys: AiKeyBinding[];
 }
 
-/// The local path to the brain-kb vault (a git-cloned second-brain content
-/// repo). Independent of the `brain` CLI's own `~/.config/brain/config.json`
-/// vaultPath — the two must be pointed at the same directory by hand.
-export interface BrainSettings {
-  vaultPath: string;
-}
-
 /// Commit identity overrides, keyed by repository root.
 ///
 /// Per-repo rather than global because the whole point is having a different
@@ -282,7 +275,6 @@ export interface AppSettings {
   terminal: TerminalSettings;
   editor: EditorSettings;
   ai: AiSettings;
-  brain: BrainSettings;
   git: GitSettings;
 }
 
@@ -345,9 +337,6 @@ const DEFAULTS: AppSettings = {
     // no caller anywhere has to handle an empty roster.
     agents: [{ id: DEFAULT_AGENT_ID, name: "Repo agent", commandTemplate: "" }],
     customKeys: [],
-  },
-  brain: {
-    vaultPath: "",
   },
   git: {
     identityByRepo: {},
@@ -425,7 +414,6 @@ export function parseSettings(raw: string | null): AppSettings {
       // has to absorb a payload saved before it existed. See
       // `parseAgentRoster`.
       ai: parseAiSettings(parsed.ai),
-      brain: mergeDefaults(DEFAULTS.brain, parsed.brain),
       git: mergeDefaults(DEFAULTS.git, parsed.git),
     };
   } catch {
@@ -520,9 +508,6 @@ export function useSettings() {
     /// `secretsApi.delete` — this only forgets the mapping.
     removeAiKey(id: string) {
       setSettings("ai", "customKeys", (keys) => keys.filter((k) => k.id !== id));
-    },
-    updateBrain(patch: Partial<BrainSettings>) {
-      setSettings("brain", patch);
     },
     reset() {
       setSettings(JSON.parse(JSON.stringify(DEFAULTS)));

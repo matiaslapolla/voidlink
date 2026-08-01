@@ -99,6 +99,96 @@ describe("the signal registry", () => {
 
 /// The load-bearing requirement of the whole wave: a user must never have to
 /// open a pane to learn something happened in it (§7.5.3 rule 1).
+/// Stacked mode collapses the three surfaces into one window, which makes a
+/// covered view the largest hiding place there is: its panes, its strips, its
+/// rail and its status bar all go at once. Every rule above escalates to one of
+/// those, so the switcher segment is the only stop left that the user can see.
+describe("escalate across stacked views", () => {
+  const base = {
+    groupTabs: groups({ A: ["a1"] }),
+    visibleGroupIds: new Set(["A"]),
+    focusedGroupId: "A",
+    zen: false,
+  };
+
+  it("marks the workbench segment while another view is in front", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ a1: ["notify"] }),
+      currentView: "editor",
+    });
+    expect(out.views.get("workbench")).toBe("notify");
+  });
+
+  it("never marks the view that is already in front", () => {
+    const out = escalate({
+      ...base,
+      tabSignals: sig({ a1: ["notify"] }),
+      currentView: "workbench",
+    });
+    expect(out.views.size).toBe(0);
+  });
+
+  it("aggregates a view's tabs to the highest single mark", () => {
+    const out = escalate({
+      ...base,
+      groupTabs: groups({ A: ["a1", "a2"] }),
+      tabSignals: sig({ a1: ["working"], a2: ["failed"] }),
+      currentView: "git",
+    });
+    expect(out.views.get("workbench")).toBe("failed");
+  });
+
+  /// Routing is by `tabView` so that a satellite view raising a signal is a
+  /// matter of filling the map in. Today nothing does, and the default is what
+  /// every call site relies on.
+  it("routes a tab to the view that owns it, defaulting to the workbench", () => {
+    const out = escalate({
+      ...base,
+      groupTabs: groups({ A: ["a1", "e1"] }),
+      tabSignals: sig({ a1: ["notify"], e1: ["failed"] }),
+      tabView: new Map([["e1", "editor" as const]]),
+      currentView: "git",
+    });
+    expect(out.views.get("workbench")).toBe("notify");
+    expect(out.views.get("editor")).toBe("failed");
+  });
+
+  it("stays silent for a signal in the covered view's own set when that view is in front", () => {
+    const out = escalate({
+      ...base,
+      groupTabs: groups({ A: ["a1", "e1"] }),
+      tabSignals: sig({ a1: ["notify"], e1: ["failed"] }),
+      tabView: new Map([["e1", "editor" as const]]),
+      currentView: "editor",
+    });
+    expect(out.views.get("workbench")).toBe("notify");
+    expect(out.views.has("editor")).toBe(false);
+  });
+
+  /// Detached mode: three windows, each escalating to its own status bar, and
+  /// no switcher to escalate to. Passing no view has to mean "no fourth stop",
+  /// not "the workbench is covered".
+  it("does nothing when the caller passes no current view", () => {
+    const out = escalate({ ...base, tabSignals: sig({ a1: ["failed"] }) });
+    expect(out.views.size).toBe(0);
+  });
+
+  /// The covered view's own rules keep running. The user switching back should
+  /// find the header and status marks already correct, not computed on arrival.
+  it("leaves the group and status rules untouched", () => {
+    const out = escalate({
+      ...base,
+      groupTabs: groups({ A: ["a1"], B: ["b1"] }),
+      visibleGroupIds: new Set(["A", "B"]),
+      tabSignals: sig({ b1: ["failed"] }),
+      currentView: "editor",
+    });
+    expect(out.views.get("workbench")).toBe("failed");
+    expect(out.groups.get("B")).toBe("failed");
+  });
+});
+
 describe("escalate", () => {
   const base = {
     groupTabs: groups({ A: ["a1"], B: ["b1", "b2"] }),

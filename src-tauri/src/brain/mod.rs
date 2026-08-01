@@ -1,13 +1,18 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
-use crate::git::repo::open_repo;
+/// Where a project's brain lives, relative to its repository root. `.voidlink/`
+/// is already this app's per-repo scratch directory (see
+/// `git::worktree_setup`), which is normally gitignored — so a project brain is
+/// yours and stable across branches rather than something that appears and
+/// vanishes as you check out.
+const BRAIN_DIR: [&str; 2] = [".voidlink", "brain"];
 
-/// Type → content-repo folder name, mirroring @brain/core's TYPE_FOLDER. Kept
-/// in sync by hand since this module only reads/writes the vault, it doesn't
-/// own the contract — @brain/core (in the `brain` repo / voidlink/cli) is the
-/// source of truth for the write path.
+/// Type → folder name. The same six types the `brain` CLI uses, so an entry
+/// written here reads the same as one in a personal vault — but this module
+/// shares no code and no config with that CLI. A project brain is entirely
+/// app-owned: nothing else reads or writes it.
 const TYPE_FOLDERS: &[(&str, &str)] = &[
     ("decision", "decisions"),
     ("shipped", "shipped"),
@@ -27,7 +32,7 @@ pub struct BrainEntry {
     pub ticket: Option<String>,
     pub labels: Vec<String>,
     pub created: Option<String>,
-    /// Vault-relative path, e.g. "notes/2026-07-19-foo.md".
+    /// Brain-relative path, e.g. "notes/2026-07-19-foo.md".
     pub path: String,
 }
 
@@ -40,8 +45,8 @@ pub struct BrainEntryDetail {
 }
 
 /// Split a markdown file's leading `---`-fenced frontmatter block from its
-/// body. The frontmatter shape here is fixed and flat (see @brain/core's
-/// buildFrontmatter), so a hand-rolled split is enough — no YAML parser.
+/// body. The frontmatter shape here is fixed and flat, so a hand-rolled split
+/// is enough — no YAML parser.
 fn split_frontmatter(raw: &str) -> (Option<&str>, &str) {
     if !raw.starts_with("---") {
         return (None, raw);
@@ -115,7 +120,7 @@ fn entry_type_for_folder(folder: &str) -> &'static str {
         .unwrap_or("note")
 }
 
-/// Reject a vault-relative path that isn't actually confined to the vault —
+/// Reject a brain-relative path that isn't actually confined to the brain —
 /// absolute, or containing a `..` component. `rel_path` is currently always
 /// either server-generated (from `brain_list_entries`) or a `slug()`'d id,
 /// but these commands are a Tauri IPC boundary, so validate defensively
@@ -128,15 +133,26 @@ fn reject_unsafe_rel_path(rel_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `<repo_root>/.voidlink/brain`. Not required to exist: a repo with no entries
+/// yet is the common case, and the directory is created by the first write.
+fn brain_root(repo_root: &str) -> PathBuf {
+    let mut p = PathBuf::from(repo_root);
+    for segment in BRAIN_DIR {
+        p.push(segment);
+    }
+    p
+}
+
 /// List every entry across the known type folders, metadata only (no body —
 /// list views don't need it, and skipping the read keeps this cheap even as
-/// the vault grows).
+/// the brain grows).
+///
+/// An absent brain directory is an empty list, not an error: every repo starts
+/// without one and gets it on first capture, so "no entries yet" is the
+/// ordinary state rather than a misconfiguration to report.
 #[tauri::command]
-pub fn brain_list_entries(vault_path: String) -> Result<Vec<BrainEntry>, String> {
-    let root = Path::new(&vault_path);
-    if !root.is_dir() {
-        return Err(format!("Not a directory: {}", vault_path));
-    }
+pub fn brain_list_entries(repo_root: String) -> Result<Vec<BrainEntry>, String> {
+    let root = brain_root(&repo_root);
 
     let mut out = Vec::new();
     for (entry_type, folder) in TYPE_FOLDERS {
@@ -174,9 +190,9 @@ pub fn brain_list_entries(vault_path: String) -> Result<Vec<BrainEntry>, String>
 
 /// Read one entry's full frontmatter + body.
 #[tauri::command]
-pub fn brain_read_entry(vault_path: String, rel_path: String) -> Result<BrainEntryDetail, String> {
+pub fn brain_read_entry(repo_root: String, rel_path: String) -> Result<BrainEntryDetail, String> {
     reject_unsafe_rel_path(&rel_path)?;
-    let full_path = Path::new(&vault_path).join(&rel_path);
+    let full_path = brain_root(&repo_root).join(&rel_path);
     let raw = fs::read_to_string(&full_path).map_err(|e| e.to_string())?;
     let (fm, body) = split_frontmatter(&raw);
     let fm = fm.ok_or_else(|| format!("No frontmatter found in {}", rel_path))?;
@@ -192,67 +208,32 @@ pub fn brain_read_entry(vault_path: String, rel_path: String) -> Result<BrainEnt
     Ok(BrainEntryDetail { meta, body: body.to_string() })
 }
 
-/// Write a file into the vault and commit it in one step — write + stage +
-/// commit fused into a single call, composing the same building blocks the
-/// git module uses separately (open_repo, index.add_path, write_tree,
-/// commit). Used for quick-capture and in-app edits; the full typed-entry
-/// pipeline (id generation, idempotency, frontmatter building) stays in the
-/// CLI, which owns the @brain/core contract.
+/// Write one entry into the project's brain, creating its type folder on the
+/// way. Returns the path written, repo-relative, for the caller to report.
+///
+/// **The write is the whole operation — nothing is staged or committed.** When
+/// this wrote into a dedicated content repo, fusing write + stage + commit was
+/// right: that repo existed for the entries and had no other work in flight.
+/// A project brain lives inside the repo you are *working* in, where a commit
+/// made behind your back lands on your branch, in the middle of your change,
+/// alongside whatever you had staged. So the file is written and left in the
+/// working tree, where `.voidlink/` is normally gitignored and it stays out of
+/// your history entirely.
 #[tauri::command]
 pub fn brain_save_entry(
-    vault_path: String,
+    repo_root: String,
     rel_path: String,
     content: String,
-    message: String,
 ) -> Result<String, String> {
     reject_unsafe_rel_path(&rel_path)?;
-    let repo = open_repo(&vault_path)?;
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| "bare repositories not supported".to_string())?
-        .to_path_buf();
 
-    // vault_path must be the repo root, not a subdirectory of it — otherwise
-    // writing under vault_path (below, matching brain_list_entries /
-    // brain_read_entry) and staging rel_path against the repo root (via
-    // index.add_path, which is workdir-relative) would silently target two
-    // different files. Compare canonicalized paths, not raw strings — one
-    // side comes from the OS-provided vault_path, the other from libgit2's
-    // workdir(), and on macOS these disagree on symlinked prefixes like
-    // /tmp → /private/tmp even when they're the same directory.
-    let canonical_vault = fs::canonicalize(&vault_path).map_err(|e| e.to_string())?;
-    let canonical_workdir = fs::canonicalize(&workdir).map_err(|e| e.to_string())?;
-    if canonical_vault != canonical_workdir {
-        return Err(format!(
-            "Vault path {} is not the root of its git repository ({}) — point Settings \u{2192} Brain at the repo root",
-            vault_path,
-            workdir.display()
-        ));
-    }
-
-    let full_path = Path::new(&vault_path).join(&rel_path);
+    let full_path = brain_root(&repo_root).join(&rel_path);
     if let Some(parent) = full_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&full_path, content.as_bytes()).map_err(|e| e.to_string())?;
 
-    let mut index = repo.index().map_err(|e| e.message().to_string())?;
-    index
-        .add_path(Path::new(&rel_path))
-        .map_err(|e| e.message().to_string())?;
-    index.write().map_err(|e| e.message().to_string())?;
-
-    let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
-    let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
-    let sig = repo.signature().map_err(|e| e.message().to_string())?;
-    let parent_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    let parents: Vec<&git2::Commit> = parent_commit.iter().collect();
-
-    let oid = repo
-        .commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents)
-        .map_err(|e| e.message().to_string())?;
-
-    Ok(oid.to_string())
+    Ok(format!("{}/{}/{}", BRAIN_DIR[0], BRAIN_DIR[1], rel_path))
 }
 
 #[cfg(test)]
@@ -343,51 +324,76 @@ mod tests {
     }
 
     #[test]
-    fn save_entry_writes_commits_and_is_read_back_by_list_and_read() {
+    fn save_entry_writes_under_dot_voidlink_and_is_read_back_by_list_and_read() {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
-        let vault_path = tmp.path().to_string_lossy().to_string();
+        let repo_root = tmp.path().to_string_lossy().to_string();
 
         let content = "---\nid: 2026-07-19-round-trip\ntype: note\ntitle: \"round trip\"\nlabels: [test]\ncreated: \"2026-07-19T00:00:00.000-03:00\"\nlinks:\n  - \"[[labels/test]]\"\n---\nbody text\n";
-        let oid = brain_save_entry(
-            vault_path.clone(),
+        let written = brain_save_entry(
+            repo_root.clone(),
             "notes/2026-07-19-round-trip.md".to_string(),
             content.to_string(),
-            "register: note 2026-07-19-round-trip".to_string(),
         )
         .expect("save should succeed");
-        assert_eq!(oid.len(), 40, "expected a full git oid, got {oid}");
+        assert_eq!(written, ".voidlink/brain/notes/2026-07-19-round-trip.md");
 
-        // The commit landed and touched exactly the written file.
-        let repo = git2::Repository::open(&vault_path).unwrap();
-        let commit = repo.find_commit(git2::Oid::from_str(&oid).unwrap()).unwrap();
-        assert_eq!(commit.message(), Some("register: note 2026-07-19-round-trip"));
+        // The path is the point: an entry written to the repo root instead of
+        // under `.voidlink/` would land in the user's tracked tree.
+        assert!(tmp
+            .path()
+            .join(".voidlink/brain/notes/2026-07-19-round-trip.md")
+            .is_file());
 
-        // list/read see what save wrote — the base-directory divergence this
-        // guards against would otherwise write under repo.workdir() while
-        // list/read look under vault_path (identical here, but the read-back
-        // is what actually proves it, not just that the two happen to match).
-        let listed = brain_list_entries(vault_path.clone()).expect("list should succeed");
+        let listed = brain_list_entries(repo_root.clone()).expect("list should succeed");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "2026-07-19-round-trip");
         assert_eq!(listed[0].path, "notes/2026-07-19-round-trip.md");
 
-        let detail = brain_read_entry(vault_path, "notes/2026-07-19-round-trip.md".to_string())
+        let detail = brain_read_entry(repo_root, "notes/2026-07-19-round-trip.md".to_string())
             .expect("read should succeed");
         assert_eq!(detail.body, "body text\n");
+    }
+
+    /// The behaviour change that made a project brain safe to put inside a
+    /// working repo: capture leaves history alone. A commit here would land on
+    /// whatever branch the user was mid-change on.
+    #[test]
+    fn save_entry_neither_commits_nor_stages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(tmp.path());
+        let repo_root = tmp.path().to_string_lossy().to_string();
+
+        brain_save_entry(
+            repo_root,
+            "notes/2026-07-19-quiet.md".to_string(),
+            "---\ntitle: quiet\n---\nbody\n".to_string(),
+        )
+        .expect("save should succeed");
+
+        assert!(repo.head().is_err(), "no commit should have been created");
+        assert_eq!(repo.index().unwrap().len(), 0, "nothing should be staged");
+    }
+
+    /// Every repo starts without a brain, so an absent directory is the
+    /// ordinary state and has to read as "no entries", not as an error.
+    #[test]
+    fn list_entries_returns_empty_for_a_repo_with_no_brain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let listed = brain_list_entries(tmp.path().to_string_lossy().to_string())
+            .expect("an absent brain is not an error");
+        assert!(listed.is_empty());
     }
 
     #[test]
     fn save_entry_rejects_path_traversal() {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
-        let vault_path = tmp.path().to_string_lossy().to_string();
 
         let result = brain_save_entry(
-            vault_path,
+            tmp.path().to_string_lossy().to_string(),
             "../../etc/passwd".to_string(),
             "malicious".to_string(),
-            "msg".to_string(),
         );
         assert!(result.is_err());
     }

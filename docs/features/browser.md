@@ -23,9 +23,26 @@ the code — without the alt-tab, and without a second app's worth of chrome.
    webview for the top of the paint stack.
 2. Type in the address bar and press Enter. Bare hosts get `https://`;
    `localhost` and `127.0.0.1` get `http://` (dev servers don't do TLS).
-3. Back / Forward / Reload sit left of the address bar, the devtools wrench
-   sits right of it.
-4. Close with the X on the tab, or middle-click the tab.
+3. Back / Forward / Reload sit left of the address bar; zoom and the devtools
+   wrench sit right of it. Reload becomes a spinner while a page is loading.
+4. Zoom steps through a fixed ladder, per tab, and is remembered across a
+   reload. The percentage appears between the two buttons only when it isn't
+   100%, and clicking it resets.
+5. The wrench toggles the inspector rather than only opening it.
+6. Close with the X on the tab, or middle-click the tab.
+
+### Clicking the address bar after using the page
+
+This works, and it takes a Rust command to make it work — worth knowing because
+it is the feature's sharpest edge. A child webview is a sibling *native* view,
+so once you click a page it holds the OS keyboard focus and every keystroke goes
+there. Clicking anywhere in the address strip asks Rust to hand focus back
+(`browser_focus_host`) before the click takes effect.
+
+**There is no keyboard route back.** A shortcut can't rescue the address bar,
+because while the page holds focus the app never receives the keystroke that
+would trigger it. The pointer is the only channel, and that is why there is no
+`Mod+L`.
 
 The tab label is the page's own title once it reports one, falling back to the
 host until then.
@@ -58,13 +75,20 @@ to break across patch releases.
 | `browser_open` | `Window::add_child` a webview at a rect, register it in the store |
 | `browser_navigate` | `Webview::navigate` — in place, session preserved |
 | `browser_reload` / `browser_back` / `browser_forward` | Reload, or step the history cursor |
-| `browser_set_rect` / `browser_show` / `browser_hide` | Keep the rectangle glued to the DOM anchor |
+| `browser_show` / `browser_hide` | Position and reveal, or get out of the way |
+| `browser_focus_host` | Hand the OS keyboard focus back to the app's own webview |
+| `browser_set_zoom` | Scale the page, clamped to 0.25–5 |
 | `browser_close` / `browser_close_orphans` | Teardown, and crash recovery on boot |
-| `browser_open_devtools` | Platform inspector for the page |
+| `browser_toggle_devtools` | Platform inspector for the page, answering its own state |
 
-Two events flow back, both carrying the tab id because every tab hears every
+Three events flow back, all carrying the tab id because every tab hears every
 tab's events:
 
+- `voidlink://browser-navigating` — `{ tabId, url }`, emitted when a page
+  *starts* going somewhere. Without it the address bar named the page being left
+  for the whole of every load, and nothing on screen said a load was happening.
+  No traversal flags: the history hasn't folded the load in yet, and provisional
+  flags would flicker the buttons against a stack that hasn't moved.
 - `voidlink://browser-navigated` — `{ tabId, url, canGoBack, canGoForward }`,
   emitted when a page load finishes. The traversal flags ride along so the
   frontend never keeps a second copy of the history to derive them from.
@@ -113,10 +137,22 @@ for, which is what cleans up after a crash.
 ## What it doesn't do
 
 - **No bookmarks, home page, or start page.** The address bar is the interface.
-- **No downloads, find-in-page, print, or zoom.**
+- **No downloads or print.**
+- **No find-in-page**, and this is the one item here the engine genuinely cannot
+  do: `wry` exposes no find, and the alternative is evaluating script inside the
+  page — which this feature refuses on purpose (see *Security*).
+- **No search fallback.** Input that isn't an address becomes `https://<what you
+  typed>` and fails to parse; it doesn't go to a search engine.
 - **No per-tab profiles or incognito.** Tabs share the app's cookie jar.
-- **No persisted history.** The back/forward stack is in memory and dies with
-  the tab; only the current URL and title are persisted.
+- **No persisted history.** The back/forward stack is in memory, capped at 200
+  entries, and dies with the tab; only the current URL, title and zoom are
+  persisted.
+- **No load-failure state.** A DNS or TLS failure happens inside the page, after
+  the navigate command has already returned, so the spinner keeps going and the
+  old page stays on screen.
+- **Back is a page stack, not a route stack.** A single-page app navigating via
+  `pushState` fires no page load, so Back steps to the last full load rather
+  than the previous SPA route.
 - **No scroll position across worktree switches** — see Lifecycle above.
 - **No command palette entry or keybinding.** The `+` tab menu is the only way
   to open one.
@@ -141,3 +177,8 @@ for, which is what cleans up after a crash.
 | `frontend/src/components/browser/url.ts` | `normalizeUrl`, `browserTabLabel` |
 | `frontend/src/store/layout.ts` | `BrowserTab`, the tab actions, persistence |
 | `frontend/src/commands/overlay.ts` | The open-modal count the pane hides on |
+
+The 2026-07-31 audit —
+[`docs/audits/2026-07-31-embedded-browser.md`](../audits/2026-07-31-embedded-browser.md)
+— covers what shipped, the nine findings that were deliberately left open, and
+the seams for wiring this into the workbench.

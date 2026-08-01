@@ -56,6 +56,7 @@ import {
   isWindowFocused,
   publishHiddenActivity,
   publishHiddenWorktreeActivity,
+  publishViewActivity,
   publishWorktreeActivity,
   setVisibleTabs,
   signalsOf,
@@ -63,6 +64,7 @@ import {
   tabSignals,
   trackWindowFocus,
 } from "@/store/activity";
+import { currentStackedView } from "@/commands/environment";
 import { notifyApi } from "@/api/notify";
 import { notifyTerminal } from "@/commands/terminalNotify";
 import { watchTerminal } from "@/store/terminalWatch";
@@ -347,15 +349,33 @@ export function MainSurface(props: MainSurfaceProps) {
   // is made here and published outward: group headers get theirs through the
   // strip's reserved slot, the status bar through `publishHiddenActivity`.
 
+  /// Whether the workbench is the surface in front of the user.
+  ///
+  /// In stacked mode the editor and the git client are *views* of this window,
+  /// and a view that is not in front is `visibility: hidden` over a workbench
+  /// that stays mounted and keeps running. So "this pane is on screen" and
+  /// "the user can see this pane" stop being the same question, and every
+  /// answer below has to ask the second one. Always true in detached mode,
+  /// where the satellites are windows and hide nothing.
+  const workbenchInFront = () => currentStackedView() === "workbench";
+
   /// Which tabs the user can actually see. Feeding this back into the activity
   /// store is what stops a command you watched finish from leaving a badge,
   /// and what clears `bell` / `finished` when a tab comes to the front. Under
   /// zen the panes are still on screen — zen hides chrome, not content — so
   /// the front tab of a visible group still counts as seen.
+  ///
+  /// A covered workbench sees *nothing*. Without that clause a terminal that
+  /// finished while the user was reading a diff in the editor view counted as
+  /// watched, `noteFinished` returned early, and the event raised no mark at
+  /// all — the one case §7.5.3 rule 1 exists for, in the arrangement that
+  /// makes it easiest to miss.
   createEffect(() => {
     const seen: string[] = [];
-    for (const [groupId, tabId] of frontTabIds()) {
-      if (tabId && visibleGroups().has(groupId)) seen.push(tabId);
+    if (workbenchInFront()) {
+      for (const [groupId, tabId] of frontTabIds()) {
+        if (tabId && visibleGroups().has(groupId)) seen.push(tabId);
+      }
     }
     setVisibleTabs(seen);
 
@@ -447,6 +467,10 @@ export function MainSurface(props: MainSurfaceProps) {
       zen: isZen(),
       tabWorktree: owner,
       activeWorktreeId: state.activeWorktreeId,
+      // No `tabView`: every tab in this window's escalation input is a
+      // workbench tab, which is what the default already assumes. The editor
+      // view's tabs escalate inside `EditorView`, over its own strip.
+      currentView: currentStackedView(),
     });
   });
 
@@ -458,10 +482,12 @@ export function MainSurface(props: MainSurfaceProps) {
   createEffect(() => publishHiddenActivity(escalation().statusBar));
   createEffect(() => publishWorktreeActivity(escalation().worktrees));
   createEffect(() => publishHiddenWorktreeActivity(escalation().worktreeStatusBar));
+  createEffect(() => publishViewActivity(escalation().views));
   onCleanup(() => {
     publishHiddenActivity(null);
     publishWorktreeActivity(new Map());
     publishHiddenWorktreeActivity(null);
+    publishViewActivity(new Map());
   });
 
   // ── Group geometry ───────────────────────────────────────────────────────
@@ -1182,6 +1208,7 @@ export function MainSurface(props: MainSurfaceProps) {
               groupVisible={tabGroupVisible(tab.id)}
               onUrlChange={(url) => actions.setBrowserUrl(state.activeWorktreeId, tab.id, url)}
               onTitleChange={(title) => actions.setBrowserTitle(state.activeWorktreeId, tab.id, title)}
+              onZoomChange={(zoom) => actions.setBrowserZoom(state.activeWorktreeId, tab.id, zoom)}
             />
           </div>
         )}

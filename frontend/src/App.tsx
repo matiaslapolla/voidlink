@@ -74,7 +74,7 @@ import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { requestAiCommitDraft } from "@/commands/aiCommit";
 import { askAgent, toggleAgentPanel } from "@/commands/agent";
-import { agentById, defaultAgentId, resolveAgentCommand, useSettings } from "@/store/settings";
+import { agentById, defaultAgentId, resolveAgentCommand } from "@/store/settings";
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { snapshotsFor, snapshotTabCount } from "@/commands/snapshots";
@@ -86,9 +86,9 @@ import { applyEditorRequest } from "@/store/editorRequests";
 import { publishRepos, setJournalRepo } from "@/store/journal";
 import { armTriggers, setTriggerRunner } from "@/store/triggers";
 import {
+  currentStackedView,
   isStackedMode,
   setStackedView,
-  stackedView,
   type StackedView,
 } from "@/commands/environment";
 import {
@@ -393,7 +393,6 @@ function AppInner(props: {
   // the whole app — the title bar, the git sidebar's file rows, the file tree,
   // the palette and the terminal deep-links included.
   const store = useAppStore();
-  const { settings } = useSettings();
   createEffect(() => {
     if (!isStackedMode()) {
       setStackedViewRouter(null);
@@ -416,7 +415,7 @@ function AppInner(props: {
 
   /// Which view is on screen. Always "workbench" in detached mode, so the
   /// surfaces below can read this without checking the mode themselves.
-  const currentView = (): StackedView => (isStackedMode() ? stackedView() : "workbench");
+  const currentView = currentStackedView;
 
   // A view that isn't the workbench covers it with plain DOM — which a child
   // webview would paint straight through. Same mechanism the modals use.
@@ -889,7 +888,7 @@ function AppInner(props: {
       {
         id: "brain.open",
         label: "Search brain…",
-        description: "Browse, read and capture entries in your second-brain vault",
+        description: "Browse, read and capture entries in this project's brain",
         group: "View",
         run: () => openBrain(),
       },
@@ -1649,9 +1648,12 @@ function AppInner(props: {
       <TabSwitcher tabs={workbenchTargets} />
       {/* Held-modifier UI: no scrim, no transition, gone on the keyup. */}
       <TabCycleOverlay />
+      {/* The workspace's repo root, not the active worktree's path: a brain
+          belongs to the project, so every worktree of it reads and writes the
+          same entries rather than one per checkout. */}
       <BrainOverlayHost
         open={isBrainOpen()}
-        vaultPath={settings.brain.vaultPath}
+        repoPath={activeWorkspace()?.repoRoot ?? ""}
         onClose={closeBrain}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />

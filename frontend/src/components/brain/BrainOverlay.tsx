@@ -1,4 +1,4 @@
-/// The second-brain vault, as a palette-invoked overlay.
+/// The project brain, as a palette-invoked overlay.
 ///
 /// Cut C2 of the 2026-07-29 audit: `brain` was one of ten tab kinds, and the
 /// argument for cutting it is that a tab-strip slot is for something that
@@ -13,6 +13,10 @@
 /// capabilities under the name of a move. This is the same `BrainSurface`,
 /// unchanged, in a large overlay panel instead of a tab.
 ///
+/// What it browses changed later: a personal `brain-kb` vault at a configured
+/// path became `<repoRoot>/.voidlink/brain`, one brain per project, so the
+/// overlay follows whichever repo is open instead of a setting.
+///
 /// **No animation.** Opened and closed by a chord like every other overlay —
 /// MASTER.md §7.1 puts a keyboard-initiated transition at 0ms, and §11 names
 /// animating one as an anti-pattern. The scrim and panel match `QuickPick`'s so
@@ -23,7 +27,7 @@ import { X } from "lucide-solid";
 import { BrainSurface } from "@/components/brain/BrainSurface";
 import { setOverlayOpen } from "@/commands/overlay";
 
-export function BrainOverlay(props: { vaultPath: string; onClose: () => void }) {
+export function BrainOverlay(props: { repoPath: string; onClose: () => void }) {
   /// Embedded browser tabs composite above the DOM, so an overlay that does not
   /// register here is invisible whenever one is on screen. Cleaned up on
   /// dispose, not just on close, so unmounting mid-open cannot leave the
@@ -71,7 +75,7 @@ export function BrainOverlay(props: { vaultPath: string; onClose: () => void }) 
             </div>
           </div>
           <div class="flex-1 min-h-0">
-            <BrainSurface vaultPath={props.vaultPath} />
+            <BrainSurface repoPath={props.repoPath} />
           </div>
         </div>
       </div>
@@ -80,15 +84,15 @@ export function BrainOverlay(props: { vaultPath: string; onClose: () => void }) 
 }
 
 /// Convenience wrapper for the one call site in `App.tsx`, so the open/close
-/// signal and the vault path stay together.
+/// signal and the repo path stay together.
 export function BrainOverlayHost(props: {
   open: boolean;
-  vaultPath: string;
+  repoPath: string;
   onClose: () => void;
 }) {
   return (
     <Show when={props.open}>
-      <BrainOverlay vaultPath={props.vaultPath} onClose={props.onClose} />
+      <BrainOverlay repoPath={props.repoPath} onClose={props.onClose} />
     </Show>
   );
 }

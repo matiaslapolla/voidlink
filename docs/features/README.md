@@ -44,7 +44,7 @@ individual features, see [`../specs/`](../specs).
 | [Notifications and sound](./notifications.md) | OS banners and sound cues as a policy over the event log; the matrix, suppression, coalescing |
 | [Secret scan](./secret-scan.md) | Pre-commit credential detection, the rule set, why it fails open |
 | [Workspace snapshots](./snapshots.md) | Saving and restoring tab layouts, and what they don't capture |
-| [Brain vault browser](./brain-vault.md) | Reading a `brain-kb` vault as an overlay, quick capture, the `brain` CLI |
+| [Project brain](./project-brain.md) | Per-repo notes and decisions under `.voidlink/brain`, read and captured from an overlay |
 | [Embedded browser](./browser.md) | Browser tabs as child webviews, in-place navigation, history, the compositing constraint |
 
 ## Contributing

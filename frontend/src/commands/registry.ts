@@ -146,7 +146,7 @@ export function closeCheatSheet() {
   setCheatSheetOpen(false);
 }
 
-/// The second-brain vault, as an overlay rather than a tab.
+/// The project brain, as an overlay rather than a tab.
 ///
 /// It was a tab kind until the 2026-07-29 audit's cut C2: a vault viewer
 /// reports no state, and the tab strip is for things that do. Held here beside

@@ -29,6 +29,14 @@ export function isStackedMode(): boolean {
   return useSettings().settings.ui.environmentMode === "stacked";
 }
 
+/// Which view is on screen. Always `workbench` in detached mode, where the
+/// other two are windows rather than views — so a caller can ask "is the
+/// workbench what the user is looking at?" without first asking which mode it
+/// is in. Reactive on both the mode and the view.
+export function currentStackedView(): StackedView {
+  return isStackedMode() ? stackedView() : "workbench";
+}
+
 /// The view a given satellite surface belongs to, for the switcher's labels.
 export const STACKED_VIEWS: { id: StackedView; label: string }[] = [
   { id: "workbench", label: "Workbench" },

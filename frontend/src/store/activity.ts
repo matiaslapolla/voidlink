@@ -25,6 +25,7 @@
 import { createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { highestSignal, type ActivitySignal } from "@/components/layout/StatusLed";
+import type { StackedView } from "@/commands/environment";
 
 /// Which signals each tab is currently carrying. A tab with none is absent
 /// from the record rather than present with an empty array, so `Object.keys`
@@ -255,6 +256,20 @@ export interface EscalationInput {
   /// hides it today; passed explicitly so a future focus mode that also hides
   /// it does not silently strand the mark.
   railVisible?: boolean;
+  /// The stacked view on screen, or `undefined` in detached mode — where the
+  /// three surfaces are separate windows, each with its own escalation, and
+  /// there is no switcher to escalate *to*.
+  ///
+  /// Stacked mode is a fourth hiding place, and the largest one: the view that
+  /// is not in front hides its panes, its strips, its rail **and** its status
+  /// bar, so every stop the rules above can reach is covered at once.
+  currentView?: StackedView;
+  /// Tab id → the view that renders it. Absent entries default to `workbench`,
+  /// which is where every tab that can raise a signal lives today — terminals,
+  /// agent runs, compares and stacks. A map rather than an assumption so that
+  /// the day a satellite view raises one, routing it is a matter of filling
+  /// this in rather than rewriting the rule.
+  tabView?: ReadonlyMap<string, StackedView>;
 }
 
 export interface Escalation {
@@ -273,6 +288,11 @@ export interface Escalation {
   /// already resolved by the three rules above, and a rail dot repeating them
   /// would be a fourth surface saying what three already say.
   worktrees: Map<string, ActivitySignal>;
+  /// Stacked view → the aggregate mark for its segment in the view switcher.
+  /// Only views that are **not** in front appear: the one on screen has its
+  /// signals resolved by every rule above, and a segment repeating them would
+  /// be one more surface saying what four already say.
+  views: Map<StackedView, ActivitySignal>;
   /// The mark for a status-bar segment naming the worktrees involved, or
   /// `null`.
   ///
@@ -302,11 +322,34 @@ export interface Escalation {
 /// screen either.
 export function escalate(input: EscalationInput): Escalation {
   const groups = new Map<string, ActivitySignal>();
+  const views = new Map<StackedView, ActivitySignal>();
   const tabGroups = new Map<string, ActivitySignal>();
   const offScreen: ActivitySignal[] = [];
   const offScreenTabs: string[] = [];
 
-  // ── The worktree axis, first ──────────────────────────────────────────
+  // ── The view axis, first ──────────────────────────────────────────────
+  // Before everything else, because a view that is not in front hides all four
+  // surfaces the rules below escalate to at once. Those rules still run — the
+  // covered view keeps a coherent set of marks for the moment it comes back —
+  // but none of what they decide is on screen while it is covered, so the
+  // switcher segment is the only stop that can be seen.
+  if (input.currentView) {
+    const viewLive = new Map<StackedView, ActivitySignal[]>();
+    for (const [tabId, live] of input.tabSignals) {
+      if (!live.length) continue;
+      const view = input.tabView?.get(tabId) ?? "workbench";
+      if (view === input.currentView) continue;
+      const bucket = viewLive.get(view);
+      if (bucket) bucket.push(...live);
+      else viewLive.set(view, [...live]);
+    }
+    for (const [view, live] of viewLive) {
+      const mark = highestSignal(live);
+      if (mark) views.set(view, mark);
+    }
+  }
+
+  // ── The worktree axis ─────────────────────────────────────────────────
   // Before the pane rules, because a tab in another worktree has no pane group
   // at all and would otherwise fall through every branch below and reach
   // nothing. Grouping by worktree here also means the pane pass never has to
@@ -380,6 +423,7 @@ export function escalate(input: EscalationInput): Escalation {
     groups,
     tabGroups,
     statusBar: statusMark ? { signal: statusMark, tabIds: offScreenTabs } : null,
+    views,
     worktrees,
     worktreeStatusBar: worktreeMark
       ? { signal: worktreeMark, worktreeIds: [...worktrees.keys()] }
@@ -435,6 +479,36 @@ export function publishWorktreeActivity(
 /// The mark for one worktree's rail row, or `undefined` when it is quiet.
 export function worktreeMark(worktreeId: string): ActivitySignal | undefined {
   return worktreeMarks().get(worktreeId);
+}
+
+/// Per-view marks, published by `MainSurface` and read by `ViewSwitcher`.
+///
+/// Same reasoning as `worktreeActivity`: the switcher lives in the title bar
+/// and the pane geometry `escalate` needs lives three levels down, with no
+/// shared ancestor that knows both.
+///
+/// Only ever non-empty in stacked mode. In detached mode the satellites are
+/// windows, each escalating to its own status bar, and there is no switcher.
+const [viewMarks, setViewMarks] = createSignal<ReadonlyMap<StackedView, ActivitySignal>>(
+  new Map(),
+  {
+    equals: (a, b) =>
+      a.size === b.size && [...a].every(([id, mark]) => b.get(id) === mark),
+  },
+);
+
+export const viewActivity = viewMarks;
+
+export function publishViewActivity(
+  value: ReadonlyMap<StackedView, ActivitySignal>,
+): void {
+  setViewMarks(value);
+}
+
+/// The mark for one segment of the view switcher, or `undefined` when that
+/// view has nothing to report.
+export function viewMark(view: StackedView): ActivitySignal | undefined {
+  return viewMarks().get(view);
 }
 
 /// The status-bar half: set only while the rail is hidden. See

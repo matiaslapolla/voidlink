@@ -40,6 +40,7 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, 
 const LABEL_PREFIX: &str = "voidlink-browser-";
 
 const NAVIGATED_EVENT: &str = "voidlink://browser-navigated";
+const NAVIGATING_EVENT: &str = "voidlink://browser-navigating";
 const TITLE_EVENT: &str = "voidlink://browser-title";
 
 fn label_for(tab_id: &str) -> String {
@@ -57,6 +58,16 @@ pub(crate) struct History {
     cursor: usize,
 }
 
+/// How many entries one tab's back stack keeps.
+///
+/// The stack was unbounded, which is a slow leak rather than a bug: a tab left
+/// on a page that redirects on a timer grows it forever, and every entry is an
+/// owned `String`. Dropping the *oldest* entries is the only truncation that
+/// costs nothing a user would notice — the far end of a long history is the
+/// part nobody walks back to, and the alternative (refusing to record) would
+/// break Back for the pages they actually are on.
+const MAX_HISTORY: usize = 200;
+
 impl History {
     /// Record a page the user arrived at by navigating *forward* — typing an
     /// address, clicking a link, following a redirect.
@@ -72,6 +83,16 @@ impl History {
         }
         self.entries.push(url.to_string());
         self.cursor = self.entries.len() - 1;
+
+        // Trim from the front, and move the cursor by exactly what was dropped
+        // — a cursor left pointing at its old index would silently address a
+        // different page, which is the one way this could corrupt rather than
+        // merely forget.
+        if self.entries.len() > MAX_HISTORY {
+            let overflow = self.entries.len() - MAX_HISTORY;
+            self.entries.drain(..overflow);
+            self.cursor -= overflow;
+        }
     }
 
     fn back(&mut self) -> Option<String> {
@@ -158,6 +179,21 @@ struct NavigatedPayload {
     can_go_forward: bool,
 }
 
+/// Emitted when a tab *starts* going somewhere, which the settled event cannot
+/// tell you: `on_page_load` only fires at the end, so between clicking a link
+/// and the page arriving the frontend had no idea anything was happening and
+/// the address bar still showed the page being left.
+///
+/// Carries no traversal flags. They are only meaningful once the history has
+/// folded the load in, and sending a provisional pair would make the buttons
+/// flicker against a stack that has not moved yet.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NavigatingPayload {
+    tab_id: String,
+    url: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TitlePayload {
@@ -195,11 +231,26 @@ pub async fn browser_open<R: Runtime>(
     let load_tab = tab_id.clone();
     let title_app = app.clone();
     let title_tab = tab_id.clone();
+    let nav_app = app.clone();
+    let nav_tab = tab_id.clone();
 
     let builder = WebviewBuilder::<R>::new(&label, WebviewUrl::External(parsed))
         // The child renders untrusted remote pages: no drag-drop hijacking of
         // the host window, and no Tauri IPC surface (it holds no capability).
         .disable_drag_drop_handler()
+        // Fires when the page *asks* to go somewhere. Returning true always:
+        // this is an announcement, not a policy. A URL allowlist would belong
+        // here and deliberately is not one — see the audit.
+        .on_navigation(move |url| {
+            let _ = nav_app.emit(
+                NAVIGATING_EVENT,
+                NavigatingPayload {
+                    tab_id: nav_tab.clone(),
+                    url: url.to_string(),
+                },
+            );
+            true
+        })
         .on_page_load(move |_webview: tauri::Webview<R>, payload: PageLoadPayload<'_>| {
             if !matches!(payload.event(), PageLoadEvent::Finished) {
                 return;
@@ -357,19 +408,53 @@ fn traverse<R: Runtime>(
     result
 }
 
+/// Give keyboard focus back to the app's own webview.
+///
+/// **This is the whole fix for the dead address bar**, and it is a fix that
+/// cannot be replaced by anything on the frontend. A child webview is a sibling
+/// native view, so once the user clicks into a page it holds the OS keyboard
+/// focus and every keystroke goes to the page — including the ones aimed at the
+/// address bar. The host webview cannot take focus back by itself: it never
+/// receives the keys, so no keybinding of ours can fire, and
+/// `HTMLElement.focus()` moves focus only *within* a webview that already has
+/// it. Somebody outside both has to say which one is active, and on this
+/// boundary that somebody is Rust.
+///
+/// Focuses by elimination rather than by the `main` label: the git window hosts
+/// its own webview under a different label, and a command that hard-coded
+/// `main` would silently focus the wrong window's UI.
 #[tauri::command]
-pub async fn browser_set_rect<R: Runtime>(
+pub async fn browser_focus_host<R: Runtime>(window: tauri::Window<R>) -> Result<(), String> {
+    let host = window
+        .webviews()
+        .into_iter()
+        .find(|w| !w.label().starts_with(LABEL_PREFIX))
+        .ok_or("this window has no app webview")?;
+    host.set_focus().map_err(|e| e.to_string())
+}
+
+/// Scale the page. Tauri applies this to the webview itself, so it survives
+/// navigation within the tab and needs no script in the page.
+#[tauri::command]
+pub async fn browser_set_zoom<R: Runtime>(
     tab_id: String,
-    rect: Rect,
+    factor: f64,
     app: AppHandle<R>,
     store: tauri::State<'_, BrowserStore>,
 ) -> Result<(), String> {
     let label = label_of(&store, &tab_id)?;
     let webview = app.get_webview(&label).ok_or("browser tab not found")?;
-    webview
-        .set_position(rect.position())
-        .map_err(|e| e.to_string())?;
-    webview.set_size(rect.size()).map_err(|e| e.to_string())
+    webview.set_zoom(clamp_zoom(factor)).map_err(|e| e.to_string())
+}
+
+/// Zoom bounds. Below a quarter the page is unreadable and above five the
+/// scrollbars are the only thing on screen — both are states a user reaches by
+/// holding a button down and then cannot read their way out of.
+fn clamp_zoom(factor: f64) -> f64 {
+    if factor.is_nan() {
+        return 1.0;
+    }
+    factor.clamp(0.25, 5.0)
 }
 
 /// Position and reveal in one call.
@@ -432,21 +517,32 @@ pub async fn browser_close<R: Runtime>(
     Ok(())
 }
 
-/// Open the platform inspector against the page.
+/// Toggle the platform inspector against the page, answering whether it is now
+/// open.
 ///
 /// Available in every build on purpose — an embedded browser you cannot
 /// inspect is only half a dev tool — which is why `devtools` is a feature on
 /// the `tauri` dependency rather than relying on `debug_assertions`.
+///
+/// A toggle rather than an open: the inspector is a window the app put on the
+/// user's screen, and the button that produced it is the obvious place to reach
+/// for to make it go away. `open_devtools` on an already-open inspector does
+/// nothing, so the old command's button was dead half the time it was pressed.
 #[tauri::command]
-pub async fn browser_open_devtools<R: Runtime>(
+pub async fn browser_toggle_devtools<R: Runtime>(
     tab_id: String,
     app: AppHandle<R>,
     store: tauri::State<'_, BrowserStore>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let label = label_of(&store, &tab_id)?;
     let webview = app.get_webview(&label).ok_or("browser tab not found")?;
-    webview.open_devtools();
-    Ok(())
+    if webview.is_devtools_open() {
+        webview.close_devtools();
+        Ok(false)
+    } else {
+        webview.open_devtools();
+        Ok(true)
+    }
 }
 
 /// Close browser webviews the store has no entry for.
@@ -553,6 +649,51 @@ mod tests {
         h.push("https://a.test/");
         assert!(h.can_go_forward());
         assert_eq!(h.current(), Some("https://a.test/"));
+    }
+
+    /// A page that redirects on a timer would otherwise grow the stack for as
+    /// long as the tab is open.
+    #[test]
+    fn the_stack_is_capped_and_drops_the_oldest() {
+        let mut h = History::default();
+        for i in 0..MAX_HISTORY + 50 {
+            h.push(&format!("https://{i}.test/"));
+        }
+        assert_eq!(h.entries.len(), MAX_HISTORY);
+        assert_eq!(h.entries[0], "https://50.test/");
+        assert_eq!(h.current(), Some("https://249.test/"));
+    }
+
+    /// The cursor is an index into a vector that just lost entries from its
+    /// front. Moving it by anything other than the number dropped would leave
+    /// Back addressing a different page than the one it names.
+    #[test]
+    fn capping_keeps_the_cursor_on_the_same_page() {
+        let mut h = History::default();
+        for i in 0..MAX_HISTORY {
+            h.push(&format!("https://{i}.test/"));
+        }
+        h.back();
+        h.back();
+        let before = h.current().map(str::to_string);
+        h.forward();
+        h.forward();
+        h.push("https://overflow.test/");
+        assert_eq!(h.entries.len(), MAX_HISTORY);
+        assert_eq!(h.current(), Some("https://overflow.test/"));
+        h.back();
+        h.back();
+        h.back();
+        assert_eq!(h.current().map(str::to_string), before);
+    }
+
+    #[test]
+    fn zoom_is_clamped_and_survives_nonsense() {
+        assert_eq!(clamp_zoom(1.0), 1.0);
+        assert_eq!(clamp_zoom(0.0), 0.25);
+        assert_eq!(clamp_zoom(-3.0), 0.25);
+        assert_eq!(clamp_zoom(99.0), 5.0);
+        assert_eq!(clamp_zoom(f64::NAN), 1.0);
     }
 
     #[test]

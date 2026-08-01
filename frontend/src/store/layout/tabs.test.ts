@@ -9,8 +9,11 @@
 /// session restore turns those on and the serializers have to already be right.
 import { describe, expect, it } from "vitest";
 import {
+  EDITOR_TAB_KINDS,
   TAB_KINDS,
   TAB_SPECS,
+  WORKBENCH_TAB_KINDS,
+  isEditorKind,
   closedTabsEqual,
   deserializeClosedTab,
   deserializeTabRecord,
@@ -63,6 +66,17 @@ describe("tab registry", () => {
   it("declares a spec for every kind, and no orphans", () => {
     expect(TAB_KINDS.slice().sort()).toEqual(Object.keys(TAB_SPECS).sort());
     for (const kind of TAB_KINDS) expect(TAB_SPECS[kind].kind).toBe(kind);
+  });
+
+  /// A kind that is in neither list is rendered by neither window. Mission
+  /// Control was exactly that for a release: registered, given a strip entry
+  /// and a pane body, and absent from the workbench list the pane tree claims
+  /// ids from — so opening it did nothing at all.
+  it("assigns every kind to exactly one window", () => {
+    expect([...EDITOR_TAB_KINDS, ...WORKBENCH_TAB_KINDS].slice().sort()).toEqual(
+      TAB_KINDS.slice().sort(),
+    );
+    for (const kind of WORKBENCH_TAB_KINDS) expect(isEditorKind(kind)).toBe(false);
   });
 
   it("round-trips every kind through serialize → JSON → deserialize", () => {

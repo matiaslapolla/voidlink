@@ -192,7 +192,7 @@ its storage key, serializer, closed-tab shape, equality function, label and
 
 `brain` was an eleventh kind until cut C2 of the
 [workbench audit](../specs/2026-07-29-workbench-100x.md). It is now a
-palette-invoked overlay — see [brain vault](./brain-vault.md) for why a surface
+palette-invoked overlay — see [project brain](./project-brain.md) for why a surface
 that reports no state does not earn a strip slot.
 
 The workbench and the standalone editor window show different kinds out of
@@ -266,6 +266,10 @@ Escalation, in order:
 5. A signal on a tab belonging to a **different worktree** shows on that
    worktree's row in the rail. Under zen, where the rail is hidden, it moves to
    a status-bar segment naming the worktrees instead.
+6. In **stacked mode**, a signal belonging to a view that is not the one in
+   front shows on that view's segment of the title-bar switcher
+   (`Workbench | Editor | Git`). Detached mode has no step 6: the satellites
+   are windows, each with its own status bar to escalate to.
 
 The steps compose rather than replace each other: a failure on a tab inside a
 collapsed group inside a maximized-away pane still reaches the status bar,
@@ -285,7 +289,21 @@ signalled outside the one being looked at; fan-out ended that.
 
 The active worktree never gets a rail mark. Its signals are already resolved by
 steps 1–4, and a dot repeating them would be a fifth surface saying what four
-already say.
+already say. The view in front never gets a segment mark, for the same reason.
+
+**Step 6 exists because a covered view hides every earlier stop at once.** A
+stacked view that is not in front is `visibility: hidden` over a workbench that
+stays mounted and keeps running — so its panes, its strips, its rail *and* its
+status bar are all covered, and steps 1–5 have nowhere left to land. Worse, the
+workbench went on reporting its front tabs as *seen*: a command that finished
+while you were reading a diff in the editor view counted as watched, and raised
+no mark at all. A covered workbench now sees nothing, which is what turns that
+event back into a signal for step 6 to carry.
+
+Today only the workbench raises signals — terminals, agent runs, compares and
+stacks all live there — so it is the only segment that lights up in practice.
+The routing is per tab, so an editor or git signal would land on its own
+segment the day something raises one.
 
 `failed` never clears on focus alone — glancing at a pane is not the same as
 having read the error in it. `bell` and `finished` do clear when the tab comes

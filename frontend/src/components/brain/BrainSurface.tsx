@@ -44,18 +44,20 @@ function fuzzyScore(text: string, query: string): number {
 }
 
 interface BrainSurfaceProps {
-  vaultPath: string;
+  /// The repository root of the open project. Its brain lives under
+  /// `.voidlink/brain`; empty means no repo is open, which is the one state
+  /// this surface cannot do anything useful in.
+  repoPath: string;
 }
 
-/// Notion-like browse/search view over the local brain-kb vault: a filtered,
+/// Notion-like browse/search view over the open project's brain: a filtered,
 /// virtualized entry list on the left and a rendered detail pane on the
-/// right, plus a quick "note" capture form (the one type simple enough to
-/// author from the UI without the CLI's project/ticket validation).
+/// right, plus a quick "note" capture form.
 export function BrainSurface(props: BrainSurfaceProps) {
   const [entries, { refetch }] = createResource(
-    () => props.vaultPath,
-    async (vaultPath): Promise<BrainEntry[]> =>
-      vaultPath ? await brainApi.listEntries(vaultPath) : [],
+    () => props.repoPath,
+    async (repoPath): Promise<BrainEntry[]> =>
+      repoPath ? await brainApi.listEntries(repoPath) : [],
   );
 
   const [query, setQuery] = createSignal("");
@@ -91,17 +93,17 @@ export function BrainSurface(props: BrainSurfaceProps) {
   });
 
   const [detail] = createResource(
-    () => (selectedPath() ? { vaultPath: props.vaultPath, relPath: selectedPath()! } : null),
+    () => (selectedPath() ? { repoPath: props.repoPath, relPath: selectedPath()! } : null),
     async (args): Promise<BrainEntryDetail | null> =>
-      args ? await brainApi.readEntry(args.vaultPath, args.relPath) : null,
+      args ? await brainApi.readEntry(args.repoPath, args.relPath) : null,
   );
 
   return (
     <Show
-      when={props.vaultPath}
+      when={props.repoPath}
       fallback={
         <div class="h-full flex items-center justify-center text-sm text-muted-foreground">
-          Set a vault path in Settings → Brain to browse your second brain.
+          Open a repository to browse its brain.
         </div>
       }
     >
@@ -144,7 +146,13 @@ export function BrainSurface(props: BrainSurfaceProps) {
             >
               <Show
                 when={filtered().length > 0}
-                fallback={<div class="p-3 text-xs text-muted-foreground">No entries.</div>}
+                fallback={
+                  <div class="p-3 text-xs text-muted-foreground">
+                    {query().trim() || typeFilter()
+                      ? "No matching entries."
+                      : "No entries yet — capture one with Quick note."}
+                  </div>
+                }
               >
                 <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
                   <For each={virtualizer.getVirtualItems()}>
@@ -194,7 +202,7 @@ export function BrainSurface(props: BrainSurfaceProps) {
             when={!composing()}
             fallback={
               <QuickNoteForm
-                vaultPath={props.vaultPath}
+                repoPath={props.repoPath}
                 existing={entries() ?? []}
                 onDone={() => {
                   setComposing(false);
@@ -260,11 +268,10 @@ function FilterChip(props: { active: boolean; onClick: () => void; children: JSX
 
 // ─── Quick note capture ──────────────────────────────────────────────────────
 //
-// Mirrors @brain/core's slug/makeId/buildFrontmatter for the `note` type only
-// (title + body + labels, no project/ticket to validate). Kept in sync by
-// hand — this is a deliberately narrow client-side copy, not the contract's
-// source of truth; the CLI (which owns @brain/core) remains the only path for
-// the other five entry types.
+// The one write path. It creates a `note` — the type that needs no project or
+// ticket to make sense, since the project is already implied by which repo's
+// brain you are writing into. The other five folders are read if something
+// puts entries there, but nothing in the app authors them yet.
 
 function slug(s: string): string {
   return s
@@ -312,7 +319,7 @@ function buildNoteMarkdown(
 }
 
 function QuickNoteForm(props: {
-  vaultPath: string;
+  repoPath: string;
   existing: BrainEntry[];
   onDone: () => void;
   onCancel: () => void;
@@ -338,7 +345,7 @@ function QuickNoteForm(props: {
       const baseId = `${createdISO.slice(0, 10)}-${slug(t)}`;
       const id = resolveNoteId(baseId, props.existing);
       const content = buildNoteMarkdown(t, body(), labels, id, createdISO);
-      await brainApi.saveEntry(props.vaultPath, `notes/${id}.md`, content, `register: note ${id}`);
+      await brainApi.saveEntry(props.repoPath, `notes/${id}.md`, content);
       pushToast(`Saved ${id}`, "success");
       props.onDone();
     } catch (e) {

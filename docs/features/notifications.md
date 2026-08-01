@@ -60,7 +60,11 @@ how you get an event suppressed in one place and shown in the other.
 
 "On screen" and "being looked at" are different: a window you have alt-tabbed
 away from suppresses nothing, which is the case the whole escalation model
-exists for.
+exists for. In stacked mode a *covered view* is the same case one level down —
+the workbench stays mounted under the editor or git view, so it is on screen in
+every sense the DOM knows about and in none the user does. It reports nothing
+visible while it is covered, which is what lets a banner through for a command
+that finished behind another view.
 
 ### 3. Coalesce
 

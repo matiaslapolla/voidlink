@@ -99,6 +99,7 @@ import {
   TAB_KINDS,
   TAB_KIND_GROUP_LABELS,
   TAB_SPECS,
+  WORKBENCH_TAB_KINDS,
   closedTabsEqual,
   deserializeClosedTab,
   deserializeTabRecord,
@@ -518,15 +519,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   ///
   /// Workbench kinds only: the editor window's four kinds live in a different
   /// window with its own pointer, and a pane group here can never show one.
-  const workbenchTabIds = createMemo(() => [
-    ...activeTerminals().map((t) => t.id),
-    ...activeCompareTabs().map((t) => t.id),
-    ...activeStackTabs().map((t) => t.id),
-    ...activeHistoryTabs().map((t) => t.id),
-    ...activeTimelineTabs().map((t) => t.id),
-    ...activeBrowserTabs().map((t) => t.id),
-    ...activeAgentTabs().map((t) => t.id),
-  ]);
+  /// Driven by the registry, so registering a kind is all it takes to make its
+  /// tabs claimable — a kind left out here has a tab strip entry and a pane
+  /// body and still never appears.
+  const workbenchTabIds = createMemo(() => worktreeTabIds(state.activeWorktreeId));
 
   /// The active worktree's split tree, defaulted rather than `undefined` so no
   /// render path has to branch on "no geometry yet".
@@ -565,24 +561,12 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   // `tabGroups.ts`; what is here is the reactive plumbing and the rule that a
   // hand-edit of a derived group materialises the derivation first.
 
-  /// The workbench kinds, in `workbenchTabIds`' order. Read off the registry
-  /// rather than spelled out, so a new workbench kind is grouped without an
-  /// edit here.
-  const WORKBENCH_KINDS: TabKind[] = [
-    "terminal",
-    "compare",
-    "stack",
-    "history",
-    "browser",
-    "agent",
-  ];
-
   /// Every workbench tab id for an *arbitrary* worktree. `workbenchTabIds` is
   /// the memoised version for the active one; actions take a worktree id, so
   /// they need this.
   function worktreeTabIds(wtId: string): string[] {
     const out: string[] = [];
-    for (const kind of WORKBENCH_KINDS) {
+    for (const kind of WORKBENCH_TAB_KINDS) {
       const list = (state[TAB_SPECS[kind].stateKey] as Record<string, { id: string }[]>)[wtId];
       if (list) for (const tab of list) out.push(tab.id);
     }
@@ -591,7 +575,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
   function tabKindMap(wtId: string): Map<string, TabKind> {
     const out = new Map<string, TabKind>();
-    for (const kind of WORKBENCH_KINDS) {
+    for (const kind of WORKBENCH_TAB_KINDS) {
       const list = (state[TAB_SPECS[kind].stateKey] as Record<string, { id: string }[]>)[wtId];
       if (list) for (const tab of list) out.set(tab.id, kind);
     }
@@ -1947,6 +1931,16 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       setState(produce((s) => {
         const tab = (s.browserTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
         if (tab) tab.url = url;
+      }));
+    },
+
+    /// Remember a tab's page scale. The webview is what actually zooms; this
+    /// only keeps it across a reload, and stores `undefined` for 1 so an
+    /// unzoomed tab serializes to the same narrow blob it always did.
+    setBrowserZoom(wtId: string, tabId: string, zoom: number) {
+      setState(produce((s) => {
+        const tab = (s.browserTabsByWorktree[wtId] ?? []).find((t) => t.id === tabId);
+        if (tab) tab.zoom = zoom === 1 ? undefined : zoom;
       }));
     },
 
