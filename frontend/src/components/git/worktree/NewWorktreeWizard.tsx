@@ -8,6 +8,7 @@ import { pushToast } from "@/commands/toast";
 import { emitGitRefsChanged } from "@/commands/gitEvents";
 import {
   WORKTREE_DIR,
+  classifyWorktreeBranch,
   clearNewWorktreeRequest,
   defaultWorktreePath,
   newWorktreeRequest,
@@ -55,6 +56,17 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
   const [plan] = createResource<WorktreeSetupPlan>(() =>
     gitApi.worktreeSetupPlan(props.request.repoRoot, props.request.sourcePath),
   );
+
+  /// Remotes included. Listing locals only is what made a remote-only branch
+  /// read as new — see `classifyWorktreeBranch`. Fetched once when the wizard
+  /// opens so step 1 can say what the name will do *before* the user commits
+  /// to it, rather than the classification happening invisibly on Create.
+  const [allBranches] = createResource(() =>
+    gitApi.listBranches(props.request.repoRoot, true),
+  );
+
+  const branchKind = () =>
+    classifyWorktreeBranch(branch(), allBranches() ?? []);
 
   // Seed the answers from the repo's saved defaults the moment the plan lands,
   // so a repeat worktree in the same repo really is one confirm click.
@@ -168,8 +180,13 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
 
     let created;
     try {
-      const existing = await gitApi.listBranches(props.request.repoRoot, false);
-      const isNew = !existing.some((b) => b.name === branchName);
+      // Re-listed rather than reusing the resource: the wizard can sit open for
+      // minutes, and a fetch or a colleague's push in that window changes the
+      // answer. `newBranch` is false for both `local` and `remote` — for
+      // `remote`, git's own DWIM turns `worktree add <path> <branch>` into a
+      // tracking branch, which is the whole point.
+      const existing = await gitApi.listBranches(props.request.repoRoot, true);
+      const isNew = classifyWorktreeBranch(branchName, existing).kind === "new";
       created = await gitApi.addWorktree(props.request.repoRoot, destPath, branchName, isNew);
     } catch (e) {
       setBusy(false);
@@ -344,6 +361,26 @@ function WizardBody(props: { request: NewWorktreeRequest }) {
                       }}
                       class="w-full rounded border border-border bg-muted/40 px-2 py-1.5 font-mono text-[12px] focus:outline-none focus:ring-1 focus:ring-ring"
                     />
+                    {/* What the name resolves to, said where the name is
+                        typed. The classification decides whether a branch is
+                        created or checked out, and it used to happen silently
+                        on Create. */}
+                    <Show when={branch().trim() && !allBranches.loading}>
+                      <p class="text-[11px] text-muted-foreground mt-1">
+                        <Show when={branchKind().kind === "local"}>
+                          Checks out the existing branch{" "}
+                          <span class="font-mono">{branch().trim()}</span>.
+                        </Show>
+                        <Show when={branchKind().kind === "remote"}>
+                          Creates <span class="font-mono">{branch().trim()}</span> tracking{" "}
+                          <span class="font-mono">{branchKind().trackingRef}</span>.
+                        </Show>
+                        <Show when={branchKind().kind === "new"}>
+                          Creates a new branch{" "}
+                          <span class="font-mono">{branch().trim()}</span> from the current HEAD.
+                        </Show>
+                      </p>
+                    </Show>
                     <label class="block text-[11px] text-muted-foreground mt-3 mb-1">
                       Directory
                     </label>

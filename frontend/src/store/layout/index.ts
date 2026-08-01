@@ -993,7 +993,12 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     /// duplicates of a view that has no per-tab state worth duplicating.
     openCompareTab(
       wtId: string,
-      opts?: { baseRef?: string; headRef?: string; useMergeBase?: boolean },
+      opts?: {
+        baseRef?: string;
+        headRef?: string;
+        useMergeBase?: boolean;
+        label?: string;
+      },
     ) {
       const baseRef = opts?.baseRef ?? "";
       const headRef = opts?.headRef ?? "";
@@ -1025,6 +1030,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         treeMode: "tree",
         treeFilter: "",
         treeWidth: COMPARE_TREE_WIDTH_DEFAULT,
+        ...(opts?.label ? { label: opts.label } : {}),
       };
       setState(
         produce((s) => {
@@ -1053,6 +1059,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
             selectedFilePath: closed.selectedFilePath,
             treeMode: closed.treeMode,
             treeFilter: closed.treeFilter,
+            label: closed.label,
           });
           unpin(s, wtId, tabId);
           arr.splice(idx, 1);
@@ -1672,6 +1679,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
             baseRef: popped.baseRef,
             headRef: popped.headRef,
             useMergeBase: popped.useMergeBase,
+            label: popped.label,
           });
           setState(produce((s) => {
             const tab = s.compareTabsByWorktree[wtId]?.find((t) => t.id === id);

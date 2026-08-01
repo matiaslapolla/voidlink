@@ -213,6 +213,42 @@ mod tests {
         );
     }
 
+    /// The stash pane now addresses a stash by its **commit oid** rather than
+    /// by `stash@{N}`, because a positional ref silently retargets when the
+    /// stack shifts under an open diff. The widening above keys on the shape of
+    /// the commit, not on the spelling of the ref, so it has to survive the
+    /// change — otherwise fixing the retarget would have quietly re-broken the
+    /// untracked half.
+    #[test]
+    fn a_stash_addressed_by_oid_still_includes_its_untracked_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = Repository::init(dir.path()).unwrap();
+        write(&dir.path().join("tracked.txt"), "one\n");
+        commit_all(&repo, "init");
+
+        write(&dir.path().join("tracked.txt"), "two\n");
+        write(&dir.path().join("brand-new.txt"), "never committed\n");
+
+        let sig = Signature::now("Test", "test@example.com").unwrap();
+        let oid = repo
+            .stash_save2(&sig, None, Some(git2::StashFlags::INCLUDE_UNTRACKED))
+            .unwrap()
+            .to_string();
+
+        let out = git_diff_refs_impl(
+            dir.path().to_string_lossy().to_string(),
+            format!("{oid}^1"),
+            oid,
+            false,
+            false,
+        )
+        .unwrap();
+
+        let paths: Vec<_> = out.files.iter().filter_map(|f| f.new_path.as_deref()).collect();
+        assert!(paths.contains(&"tracked.txt"), "got {paths:?}");
+        assert!(paths.contains(&"brand-new.txt"), "got {paths:?}");
+    }
+
     /// The widening above must not leak into ordinary comparisons: two refs
     /// that merely happen to be commits still get plain two-tree semantics.
     #[test]

@@ -2423,12 +2423,35 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
   /// auto-stash on branch switch, `git stash` in the app's terminal) shifts every
   /// index. Rust refuses when the oid at that position is not the one we saw, so
   /// a stale list errors instead of dropping someone else's work.
+  /// Applying a stash is a merge, so it can stop on conflicts — and when it
+  /// did, this pane showed libgit2's raw message in a red toast and left the
+  /// user in a conflicted working tree with nothing to click. Pull, merge and
+  /// rebase all route `conflicted` into the merge editor; stash now does the
+  /// same, through the same shape.
   async function apply(entry: StashEntry, pop: boolean) {
+    const label = pop ? "Pop" : "Apply";
     await run(async () => {
       try {
-        if (pop) await gitApi.stashPop(props.repoPath, entry.index, entry.oid);
-        else await gitApi.stashApply(props.repoPath, entry.index, entry.oid);
-        pushToast(pop ? "Popped stash" : "Applied stash", "success", 2500);
+        const res = pop
+          ? await gitApi.stashPop(props.repoPath, entry.index, entry.oid)
+          : await gitApi.stashApply(props.repoPath, entry.index, entry.oid);
+        if (res.conflicted) {
+          const conflicts = await gitApi.listConflicts(props.repoPath);
+          await Promise.all(
+            conflicts.map((c) => openMerge(actions, props.worktreeId, `${props.repoPath}/${c}`)),
+          );
+          pushToast(
+            pop
+              ? "Pop stopped on conflicts — the stash is still there. Resolve them, then drop it."
+              : "Apply stopped on conflicts — resolve them, then continue.",
+            "warning",
+            7000,
+          );
+        } else if (res.ok) {
+          pushToast(pop ? "Popped stash" : "Applied stash", "success", 2500);
+        } else {
+          pushToast(res.message || `${label} failed`, "error", 6000);
+        }
       } catch (e) {
         pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
       } finally {
@@ -2437,13 +2460,23 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
     });
   }
 
+  /// Confirm inside the gate, not before it.
+  ///
+  /// The confirm used to be awaited outside `run()`, so `busy()` stayed false
+  /// for as long as the dialog was up and every apply/pop/drop button in the
+  /// pane stayed live underneath it. That matters more here than anywhere else
+  /// in the sidebar: every one of those buttons *shifts the stack*, so the
+  /// answer the user is about to give is about a stash that may have moved by
+  /// the time they give it. `verify_stash_oid` catches the result and errors
+  /// rather than dropping the wrong stash, but the honest fix is not to let the
+  /// window open. Tauri's native modal made this hard to hit, not impossible.
   async function drop(entry: StashEntry) {
-    const ok = await dialogConfirm(`Drop stash "${entry.message}"? This cannot be undone.`, {
-      title: "Drop stash",
-      kind: "warning",
-    });
-    if (!ok) return;
     await run(async () => {
+      const ok = await dialogConfirm(`Drop stash "${entry.message}"? This cannot be undone.`, {
+        title: "Drop stash",
+        kind: "warning",
+      });
+      if (!ok) return;
       try {
         await gitApi.stashDrop(props.repoPath, entry.index, entry.oid);
         pushToast("Dropped stash", "info", 2500);
@@ -2455,11 +2488,23 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
     });
   }
 
-  function showDiff(index: number) {
+  /// Open the stash's diff addressed by **oid**, not by position.
+  ///
+  /// Reading is the one stash action that had no oid guard, and it was the one
+  /// that needed it most: a compare tab stores its two refs and re-resolves
+  /// them on every pulse, so `stash@{1}^1..stash@{1}` was not a snapshot of a
+  /// stash — it was a live pointer at whatever sits at position 1 now. Stash
+  /// something new, or drop the one below it, and an open diff silently starts
+  /// describing a different stash, with no way to notice and no way for it to
+  /// correct itself. A commit oid is the stash's only stable identity, so we
+  /// use it; the tab keeps the position and message as its *label*, which is a
+  /// snapshot of what was clicked and is allowed to go stale.
+  function showDiff(entry: StashEntry) {
     actions.openCompareTab(props.worktreeId, {
-      baseRef: `stash@{${index}}^1`,
-      headRef: `stash@{${index}}`,
+      baseRef: `${entry.oid}^1`,
+      headRef: entry.oid,
       useMergeBase: false,
+      label: `stash@{${entry.index}} ${entry.message}`,
     });
   }
 
@@ -2474,7 +2519,7 @@ export function StashesPane(props: { repoPath: string; worktreeId: string }) {
             <div class="group flex items-center gap-2 rounded-md px-2 density-row text-[13px] text-muted-foreground hover:bg-accent/30">
               <Archive class="w-3 h-3 shrink-0 opacity-70" />
               <button
-                onClick={() => showDiff(s.index)}
+                onClick={() => showDiff(s)}
                 class="truncate flex-1 text-left hover:text-foreground"
                 title={`Show diff for ${s.message}`}
               >

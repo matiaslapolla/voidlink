@@ -151,6 +151,13 @@ export interface CompareTab {
   /// next door that was showing three root-level files — and the change only
   /// appeared there after a reload, since nothing told the other tab.
   treeWidth: number;
+  /// What to call this comparison when the refs themselves are not worth
+  /// reading. A stash diff addresses its two trees by raw commit oid — the only
+  /// identity a stash has that survives the stack shifting under it — and
+  /// `4f2a1c9^1..4f2a1c9` in the tab strip tells the user nothing about which
+  /// stash they opened. Optional, so tabs persisted before it existed still
+  /// deserialize and fall back to the derived label.
+  label?: string;
 }
 
 /// Persistent identifier for a stack tab. We don't cache the chain itself —
@@ -202,6 +209,7 @@ export type ClosedTab =
       selectedFilePath: string | null;
       treeMode: CompareTreeMode;
       treeFilter: string;
+      label?: string;
     }
   | { type: "stack"; trunk: string; topBranch: string }
   | { type: "conflict"; filePath: string }

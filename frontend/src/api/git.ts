@@ -145,20 +145,16 @@ export const gitApi = {
   /// Stash button, an auto-stash on branch switch, a `git stash` typed into the
   /// app's own terminal — shifts every entry down, so a remembered position
   /// silently addresses someone else's work. Drop is irreversible.
-  stashApply(repoPath: string, index: number, oid: string): Promise<void> {
-    return invoke<void>("git_stash_apply", { repoPath, index, oid });
+  stashApply(repoPath: string, index: number, oid: string): Promise<OpResult> {
+    return invoke<OpResult>("git_stash_apply", { repoPath, index, oid });
   },
 
-  stashPop(repoPath: string, index: number, oid: string): Promise<void> {
-    return invoke<void>("git_stash_pop", { repoPath, index, oid });
+  stashPop(repoPath: string, index: number, oid: string): Promise<OpResult> {
+    return invoke<OpResult>("git_stash_pop", { repoPath, index, oid });
   },
 
   stashDrop(repoPath: string, index: number, oid: string): Promise<void> {
     return invoke<void>("git_stash_drop", { repoPath, index, oid });
-  },
-
-  stashShow(repoPath: string, index: number): Promise<DiffResult> {
-    return invoke<DiffResult>("git_stash_show", { repoPath, index });
   },
 
   listRemotes(repoPath: string): Promise<RemoteInfo[]> {

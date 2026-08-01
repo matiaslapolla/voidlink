@@ -310,11 +310,37 @@ pub(crate) fn suggested_post_create(dep_dirs: &[DepDirCandidate]) -> String {
 
 // ─── Apply ───────────────────────────────────────────────────────────────────
 
+/// Refuse a relative path that would not stay inside the root it is joined to.
+///
+/// Every `rel` reaching the apply step comes from a plan this backend built
+/// itself, so there is no live exploit here — but the values round-trip through
+/// the wizard and back across the Tauri IPC boundary, and `Path::join` is
+/// perfectly happy to answer `dest.join("../../../.ssh/id_rsa")`. Setup copies
+/// in *both* directions, so an unchecked `..` reads a file from outside the
+/// source worktree and writes it outside the destination. The invariant is
+/// free to assert and expensive to be wrong about, so assert it.
+fn reject_escaping_rel_path(rel: &str) -> Result<(), String> {
+    let p = Path::new(rel);
+    if rel.is_empty()
+        || p.is_absolute()
+        || p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "refusing to set up '{rel}': it is not a path inside the worktree"
+        ));
+    }
+    Ok(())
+}
+
 /// Copy one file from `source` to `dest`, creating parent directories. Returns
 /// the step record rather than a bare Result so the caller can report partial
 /// success without inventing labels.
 pub(crate) fn copy_env_file(source_root: &Path, dest_root: &Path, rel: &str) -> SetupStep {
     let label = format!("copy {rel}");
+    if let Err(e) = reject_escaping_rel_path(rel) {
+        return SetupStep { label, ok: false, error: Some(e) };
+    }
     let from = source_root.join(rel);
     let to = dest_root.join(rel);
     if !from.is_file() {
@@ -344,10 +370,13 @@ pub(crate) fn apply_dep_dir(
     action: DepAction,
 ) -> (SetupStep, Option<String>) {
     let dir = candidate.dir.as_str();
+    let step = |ok: bool, label: String, error: Option<String>| SetupStep { label, ok, error };
+
+    if let Err(e) = reject_escaping_rel_path(dir) {
+        return (step(false, format!("set up {dir}"), Some(e)), None);
+    }
     let from = source_root.join(dir);
     let to = dest_root.join(dir);
-
-    let step = |ok: bool, label: String, error: Option<String>| SetupStep { label, ok, error };
 
     match action {
         DepAction::Skip => (step(true, format!("skip {dir}"), None), None),
@@ -776,6 +805,53 @@ mod tests {
 
         assert_eq!(report.failures(), 1);
         assert!(report.steps[0].error.as_deref().unwrap().contains("already exists"));
+    }
+
+    /// `Path::join` is happy to answer `dest.join("../../../.ssh/id_rsa")`, and
+    /// setup copies in both directions — so an unchecked `..` reads from
+    /// outside the source worktree and writes outside the destination. The
+    /// values are backend-generated today; this is the assertion that keeps
+    /// that from being load-bearing.
+    #[test]
+    fn a_relative_path_that_escapes_the_worktree_is_refused() {
+        let (_g, source, dest) = source_and_dest();
+        write(&source, "secret.txt", "not yours");
+
+        for rel in ["../secret.txt", "a/../../secret.txt", "/etc/passwd", ""] {
+            let report = apply_setup(&source, &dest, &[rel.to_string()], &BTreeMap::new()).unwrap();
+            assert_eq!(report.failures(), 1, "{rel} should have been refused");
+            assert!(
+                report.steps[0]
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("not a path inside the worktree"),
+                "{rel}: {:?}",
+                report.steps[0].error,
+            );
+        }
+        assert!(
+            !dest.parent().unwrap().join("secret.txt").exists(),
+            "nothing may be written outside the destination worktree",
+        );
+    }
+
+    /// The same guard, on the dependency-directory half — it joins an
+    /// attacker-shaped string too, and its `Symlink` action would have linked
+    /// a directory from outside the source into the new worktree.
+    #[test]
+    fn a_dependency_directory_that_escapes_the_worktree_is_refused() {
+        let (_g, source, dest) = source_and_dest();
+        let mut actions = BTreeMap::new();
+        actions.insert("../../.ssh".to_string(), DepAction::Symlink);
+        let report = apply_setup(&source, &dest, &[], &actions).unwrap();
+
+        assert_eq!(report.failures(), 1);
+        assert!(report.steps[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("not a path inside the worktree"));
     }
 
     #[test]
