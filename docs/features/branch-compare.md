@@ -24,8 +24,13 @@ which just open a compare tab with the refs pre-filled.
    - a file tree context menu's `Compare with <default branch>`
    - the sidebar's ahead/behind pill, a stash label, or a commit row
 2. Pick a **Base** and a **Head** ref. Each picker searches branches, tags, and
-   the 50 most recent commits; typing something it doesn't recognise and
-   pressing Enter uses it as a raw revision expression.
+   the 50 most recent commits — seeded from local branches, remote-tracking
+   branches, tags and HEAD, so a commit that just arrived on `origin/main` is
+   findable without making a local branch for it. When HEAD is detached, it is
+   offered as `HEAD` with the commit it is sitting on. The picker opens with the
+   current ref in the box, selected, so it can be edited rather than retyped;
+   typing something it doesn't recognise and pressing Enter uses it as a raw
+   revision expression.
 3. Click a file in the tree to see its diff.
 
 ### Toolbar
@@ -53,8 +58,10 @@ which just open a compare tab with the refs pre-filled.
 | `Mod+Shift+D` | Toggle inline / split diff |
 | `Mod+W` | Close the compare tab |
 
-Inside a ref picker: `↓` opens and moves down, `↑` moves up without opening,
-`Enter` commits the highlight or the raw text, `Esc` closes and clears.
+Inside a ref picker: `↓` opens and moves down, `↑` moves back up and out of the
+list, `Enter` commits the highlight or — with nothing highlighted — the raw
+text, `Esc` closes and clears without reaching the tab behind it. A freshly
+opened picker highlights nothing, so the first `↓` lands on the first item.
 
 **The changed-file tree has no keyboard handling at all.** The design doc
 specified arrow navigation, `Enter` to open, `/` to focus search, and Tab
@@ -75,13 +82,14 @@ The tree pane width (default 320, clamped 220–600) persists too, but **globall
 - **Unrelated histories silently degrade.** With merge-base on, if
   `merge_base()` fails the code falls back to the base commit's own tree — you
   get a two-dot diff with no indication that the toggle didn't apply.
-- **Errors are routed to a picker by regex.** The backend prefixes messages with
-  `base:` or `head:`, and the UI decides which picker to highlight by testing
-  `/\bbase\b/i` and `/\bhead\b/i` against the message. A ref literally named
-  `base` or `head` mis-highlights.
-- **No caps on diff size.** The entire tree diff, including every line, is
-  materialised and sent over IPC. A huge diff is unbounded, and it holds the
-  per-repo lock while it runs.
+- **Errors are routed to a picker by prefix.** The backend answers `base:`,
+  `head:` or `repo:` at the *front* of the message and the UI anchors on that,
+  so a ref named `origin/base-fix` in the head field highlights only the head
+  field, and a repository that will not open highlights neither.
+- **Very large files are capped.** A file past 20,000 stored lines, or a diff
+  past 200,000 across all files, stops carrying line content and says so in the
+  pane. The `+`/`−` counts keep counting past the cap, so the tree rows and the
+  footer still report the real size of the change.
 - **Renames and copies *are* detected** (`find_similar`), and a typechange is
   one delta rather than an add/delete pair sharing a path.
 - **A stash compare includes its untracked files.** `stash@{N}^1..stash@{N}`
@@ -94,14 +102,22 @@ The tree pane width (default 320, clamped 220–600) persists too, but **globall
   change survives it and renders an explanation rather than a blank pane.
 - **The diff mode and ignore-whitespace settings are global**, not per compare
   tab. Ignore-whitespace is part of the resource key, so toggling it refetches.
+  Neither has a control inside the compare surface, which is why they are not
+  per-tab: the state would have nothing to change it. The **tree width** *is*
+  per tab, since the divider is right there.
 - **Compare tabs dedupe** on (base, head, merge-base). Ten clicks in the commit
   graph reuse one tab; a blank picker tab is exempt.
 - **Folder expand/collapse survives a refetch**, because the state is keyed on
-  folder path rather than living in rows that are rebuilt on every pulse.
+  the node rather than living in rows that are rebuilt on every pulse. Folder
+  keys carry a trailing slash, so a commit that turns `swap` into `swap/` leaves
+  two rows that can be collapsed and selected independently.
 - **Compact folder chains are one non-splittable row.** A chain like `a/b/c` is
-  collapsed into a single row you cannot expand segment by segment. Only
-  folders with exactly one folder child collapse — a folder with one file child
-  does not.
+  collapsed into a single row you cannot expand segment by segment. The rule is
+  that a folder with exactly one *folder* child merges into it, so
+  `src/main/Foo.java` is one folder row `src/main/` and one file row. What does
+  not happen is a folder swallowing the file underneath it — the file is what
+  gets clicked. `a/b` and `a/c` also stay three rows, because `a` has two
+  children and merging there would lose the fact that they are siblings.
 - **Auto-select picks the first file in backend order**, which is not the sorted
   tree order.
 - **Binary files render `Binary file — no diff preview.`**
