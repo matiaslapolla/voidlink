@@ -41,7 +41,7 @@ for git events is the filesystem watcher rather than the UI.
 | `git.head.moved` | watcher | `agent` or `system` |
 | `git.branch.switched` | watcher | `agent` or `system` |
 | `git.operation.started` / `.ended` | watcher | `agent` or `system` |
-| `agent.turn.finished` / `.cancelled` / `.failed` | `commands/agent.ts` | `agent` |
+| `agent.turn.finished` / `.cancelled` / `.failed` | **nothing — not emitted yet** | `agent` |
 | `terminal.command.finished` / `.failed` | `store/terminalWatch.ts` | `user` |
 | `review.note.added` / `.resolved` / `.reopened` | `store/reviewNotes.ts` | `user` |
 | `hill.scope.added` / `.finished` / `.reopened` / `.removed` | `store/hills.ts` | `user` |
@@ -50,6 +50,12 @@ for git events is the filesystem watcher rather than the UI.
 | `run.leg.finished` / `.failed` / `.cancelled` / `.discarded` | `store/fanout.ts` | `agent` |
 | `trigger.fired` | `store/triggers.ts` | `system` |
 | `trigger.armed` / `.disarmed` / `.rule.enabled` / `.rule.disabled` | `store/triggers.ts` | `user` |
+
+The `agent.turn.*` row is the one entry above that names a kind nothing writes.
+The notification defaults, the check-in model and the trigger rules all already
+read it; the emitter was never built. Until it is, the log's record of a turn is
+whatever the watcher attributed to it, and provenance over a finished turn is
+limited to what got committed.
 
 The list grows; readers do not have to. `kind` is an open string and `summary`
 is mandatory precisely so a build that has never heard of `run.leg.discarded`
@@ -104,6 +110,40 @@ That credit is a heuristic over overlapping time, never an observation, and the
 record says so: `data.attribution === "inferred"`, which the timeline renders as
 an `inferred` chip. A reader that cannot tell a guess from a fact will
 eventually act on one as the other.
+
+### Provenance on a diff
+
+The same credit is readable where you actually look at changed code. A quiet
+line above the diff body says who probably wrote it, in
+`components/git/shared/provenance.ts` and `ProvenanceNote.tsx`:
+
+- **A working-tree diff** (the editor window's diff tab) gets a **file-level**
+  claim. The file's last-write time fell inside an agent's turn window in that
+  checkout.
+- **A commit's own diff** (opened from the graph or the history list, so the
+  compare tab's head is a full oid) gets a **commit-level** claim, read straight
+  across from the `git.commit` event the log already recorded. Only events Rust
+  already marked inferred qualify; a commit left as `system` is never promoted.
+- **A branch-vs-branch compare** gets nothing. The range spans many commits and
+  there is no evidence saying which one a given hunk came from.
+
+There is deliberately **no hunk-level claim**, and `Provenance["scope"]` has no
+member that could express one. Attribution here is a heuristic over overlapping
+time; a hunk-level answer would need per-line evidence nothing in the system
+collects, and rendering a guess at that resolution is worse than rendering
+nothing, because precision reads as confidence.
+
+The note carries the hedge in its *visible* text — "Probably Refactorer — this
+whole file, not these lines", plus the same `inferred` marker the timeline uses.
+Not behind a tooltip: most readers never hover, and none of them hover on a
+screenshot pasted into a review.
+
+Two things it will not say. A file whose mtime matches no window renders nothing
+at all, rather than an "unknown" strip above every diff in a repository no agent
+has touched. And a **finished ordinary agent turn** leaves no durable window —
+turns are recorded on their end and no `agent.turn.*` record is currently
+written — so its files are un-attributable once it is over, unless the work was
+committed and picked up by the commit path.
 
 `git.commit` is distinguished from `git.head.moved` by whether the new commit
 lists the old one as a parent. A reset, an amend, a rebase or a force-move is
