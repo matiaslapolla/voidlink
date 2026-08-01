@@ -310,6 +310,12 @@ export function TooltipLayer() {
 export type TooltipDirective = typeof tooltip;
 
 declare module "solid-js" {
+  // Solid's `use:` directives are typed by augmenting `JSX.Directives`, and
+  // `JSX` is a namespace in Solid's own declarations — so a namespace is the
+  // only shape that can reach it. `no-namespace` is otherwise the right rule;
+  // this is the one place the framework leaves no alternative, and without the
+  // augmentation `use:tooltip` is a type error at every call site.
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace JSX {
     interface Directives {
       tooltip: string | undefined;
