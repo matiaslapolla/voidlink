@@ -5,8 +5,9 @@ covers what the feature does, when you'd reach for it, how to use it, its
 keyboard shortcuts, and — at length — its real gotchas and limits.
 
 These are reference pages, not a tutorial. For a guided walkthrough in Spanish,
-see [`../manual-de-uso.md`](../manual-de-uso.md). For design documents behind
-individual features, see [`../specs/`](../specs).
+see [`../manual-de-uso.md`](../manual-de-uso.md). For a surface reviewed finding
+by finding, see [`../audits/`](../audits/README.md); for everything still open,
+[`../TODO.md`](../TODO.md).
 
 ## Core
 

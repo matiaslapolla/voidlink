@@ -1,7 +1,7 @@
 import type { JSX } from "solid-js";
 
 /// The workbench shell, and the **only** place D1's island geometry is
-/// composed (see `docs/specs/2026-07-29-ui-directions.md`).
+/// composed (see `frontend/design-system/MASTER.md` §4).
 ///
 /// Direction D1, "Recessed Canvas": the rail, both sidebars, the main surface
 /// and the status bar are detached panels floating on a canvas that sits

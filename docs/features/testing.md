@@ -139,9 +139,8 @@ lists (commit graph, diff renderer, file tree), tab-strip overflow, the
 splitter, sticky headers, the MRU overlay, xterm, Monaco — cannot be proven
 here. Mocking the measurement to make the test pass is testing the mock. Those
 want a real browser (Vitest browser mode, Playwright provider), which is a
-separate project and a separate cost; see
-[`../specs/2026-07-31-next-tracks-plan.md`](../specs/2026-07-31-next-tracks-plan.md)
-§A1.
+separate project and a separate cost. It is the top of
+[`../TODO.md`](../TODO.md), with the config that was confirmed to work.
 
 The rule, so it does not get re-litigated per test:
 

@@ -79,7 +79,7 @@ Defined in `src/index.css` (dark = `:root`, light = `:root.light`) and overridde
 
 ### The canvas, and why it is derived
 
-Direction D1 (`docs/specs/2026-07-29-ui-directions.md`) makes every panel a
+Direction D1 makes every panel a
 detached island on a canvas that sits **below** it. The load-bearing sentence
 is *"the canvas recedes, the islands do not rise"*: raising the islands would
 lighten the terminal and diff bodies and cost contrast on the two surfaces the
@@ -237,9 +237,10 @@ Four constants, and they live in exactly one place:
 
 **Only `AppShell.tsx`, `MainSurface.tsx` and the `.island` class in `index.css`
 may compose these into layout.** A panel that decides its own inset or radius
-is the regression to watch for: `docs/specs/2026-07-29-ui-directions.md` keeps
-Direction D4 as a documented fallback, and that fallback is a one-wave rework
-only for as long as the geometry stays in the shell. Everything else about D1 —
+is the regression to watch for: the held alternative (D4, "floating chrome" —
+content is the canvas and the chrome floats above it, full-bleed underneath) is
+one wave of rework only for as long as the geometry lives in the shell. Scatter
+it into every panel and there is no one wave. Everything else about D1 —
 the token ladder, the contained tabs, the polish pass — is
 direction-independent and carries over unchanged.
 

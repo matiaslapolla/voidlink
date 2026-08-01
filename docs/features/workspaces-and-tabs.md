@@ -190,8 +190,8 @@ its storage key, serializer, closed-tab shape, equality function, label and
 | `conflict` | editor | yes | — |
 | `preview` | editor | yes | yes |
 
-`brain` was an eleventh kind until cut C2 of the
-[workbench audit](../specs/2026-07-29-workbench-100x.md). It is now a
+`brain` was an eleventh kind until cut C2 of the 2026-07-29 workbench audit. It
+is now a
 palette-invoked overlay — see [project brain](./project-brain.md) for why a surface
 that reports no state does not earn a strip slot.
 

@@ -49,8 +49,7 @@ disappear because you switched to the worktree you wrote it for.
 
 ### Why it stopped being a tab
 
-It was one of ten tab kinds until cut C2 of the
-[2026-07-29 workbench audit](../specs/2026-07-29-workbench-100x.md). The
+It was one of ten tab kinds until cut C2 of the 2026-07-29 workbench audit. The
 argument: a tab-strip slot is for something that *reports state*. A terminal
 goes busy, a compare goes dirty, an agent run fails — an entry does none of
 that, so it held a slot and a persistence key while saying nothing, and every

@@ -1,4 +1,4 @@
-//! Stacked-PR primitive. See `docs/specs/2026-05-17-stacked-prs-design.md`.
+//! Stacked-PR primitive. See `docs/features/stacked-prs.md`.
 //!
 //! A *stack* is an ordered chain of branches rooted at a trunk (e.g. `main`).
 //! Each non-trunk branch carries a `branch.<name>.parent` entry in
