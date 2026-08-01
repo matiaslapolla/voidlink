@@ -72,12 +72,26 @@ export interface GitBranchInfo {
   aheadBehindUnknown: boolean;
   lastCommitSummary: string | null;
   lastCommitTime: number | null;
+  /**
+   * `name` survived a lossy UTF-8 conversion, so it is not the byte string git
+   * holds and no command that takes a name can find this branch. The row is
+   * listed — being invisible was the bug — but every mutation on it is off.
+   */
+  lossyName: boolean;
+  /**
+   * The ref this row is an alias for, when it is a symbolic ref under
+   * `refs/heads/` rather than a branch. Deleting it removes the alias, not the
+   * branch it names.
+   */
+  symbolicTarget: string | null;
 }
 
 export interface GitFileStatus {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted";
   staged: boolean;
+  /** See `GitBranchInfo.lossyName` — same fact, about a path. */
+  lossyPath?: boolean;
 }
 
 export interface GitCommitInfo {
@@ -91,7 +105,12 @@ export interface GitCommitInfo {
 }
 
 export interface DiffLine {
-  origin: "+" | "-" | " " | "~";
+  /**
+   * `"\\"` is `\ No newline at end of file` — libgit2 emits that annotation as
+   * a diff line like any other, and it is not one. It has no line numbers and
+   * belongs to the line above it.
+   */
+  origin: "+" | "-" | " " | "~" | "\\";
   content: string;
   oldLineno: number | null;
   newLineno: number | null;

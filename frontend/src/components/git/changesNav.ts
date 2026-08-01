@@ -18,6 +18,9 @@ export interface ChangeEntry {
   path: string;
   status: string;
   staged: boolean;
+  /// The path is a lossy UTF-8 decode of what git holds, so nothing that takes
+  /// a path can act on this row. See `GitFileStatus.lossyPath`.
+  lossyPath?: boolean;
 }
 
 /// Which of the three lists a row belongs to. The section is what decides

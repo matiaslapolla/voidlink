@@ -30,7 +30,7 @@ import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTa
 import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { CommitGraph } from "@/components/git/history/CommitGraph";
 import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
-import { commitDiffBase } from "@/commands/commitDiff";
+import { commitDiffBase, resolveCommitDiffBase } from "@/commands/commitDiff";
 import { TimelineSurface } from "@/components/timeline/TimelineSurface";
 import { MissionSurface } from "@/components/mission/MissionSurface";
 import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
@@ -1089,11 +1089,18 @@ export function MainSurface(props: MainSurfaceProps) {
                 props.onOpenFile(full, line, column);
               }}
               onOpenSha={(sha) => {
-                if (!repoRoot()) return;
-                actions.openCompareTab(state.activeWorktreeId, {
-                  baseRef: `${sha}^`,
-                  headRef: sha,
-                  useMergeBase: false,
+                const root = repoRoot();
+                if (!root) return;
+                // Asked rather than assumed. `` `${sha}^` `` does not resolve
+                // for a root commit, so the first commit in a repository —
+                // clicked out of `git log` output like any other — opened a
+                // compare tab onto an error.
+                void resolveCommitDiffBase(root, sha).then((baseRef) => {
+                  actions.openCompareTab(state.activeWorktreeId, {
+                    baseRef,
+                    headRef: sha,
+                    useMergeBase: false,
+                  });
                 });
               }}
               branchNames={branchNames}

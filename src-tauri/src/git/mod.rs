@@ -164,6 +164,24 @@ pub struct GitBranchInfo {
     pub ahead_behind_unknown: bool,
     pub last_commit_summary: Option<String>,
     pub last_commit_time: Option<i64>,
+    /// `name` went through a lossy UTF-8 conversion, so it is not the byte
+    /// string git holds.
+    ///
+    /// Such a branch used to be dropped from the list silently — it simply did
+    /// not exist as far as the UI was concerned. Listing it is better, but only
+    /// if every action that takes a name is refused: two different invalid
+    /// names can flatten to the same replacement character, and a delete or a
+    /// rename that hit the wrong one of those is exactly the kind of loss the
+    /// silence was hiding.
+    pub lossy_name: bool,
+    /// The ref this one is an alias for, when it is a symbolic ref under
+    /// `refs/heads/` rather than a branch.
+    ///
+    /// `git symbolic-ref refs/heads/stable refs/heads/v2` makes one, and it
+    /// rendered as an ordinary branch: deleting it removed the alias while the
+    /// user believed they had deleted the branch it named, with nothing on the
+    /// row to suggest otherwise.
+    pub symbolic_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +190,15 @@ pub struct GitFileStatus {
     pub path: String,
     pub status: String,
     pub staged: bool,
+    /// `path` went through a lossy UTF-8 conversion, so it is not the byte
+    /// string git holds and no command that takes a path can act on it.
+    ///
+    /// Such a file used to be dropped from the changes list entirely, which is
+    /// the worst of the three options: the user commits believing the list, and
+    /// the file is left behind with nothing having said it existed. Listed and
+    /// marked unactionable is at least true.
+    #[serde(default)]
+    pub lossy_path: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,10 +522,17 @@ pub async fn git_discard_file(
 pub async fn git_discard_all(
     repo_path: String,
     include_untracked: Option<bool>,
+    // `paths`: repo-relative paths to limit the discard to, when the changes
+    // list is filtered. Absent means every changed path, as before.
+    paths: Option<Vec<String>>,
     state: tauri::State<'_, GitState>,
 ) -> Result<(), String> {
     let inc = include_untracked.unwrap_or(false);
-    blocking_git!(state, repo_path, git_discard_all_impl(repo_path, inc))
+    blocking_git!(
+        state,
+        repo_path,
+        git_discard_all_impl(repo_path, inc, paths)
+    )
 }
 
 #[tauri::command]

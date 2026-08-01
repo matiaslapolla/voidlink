@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { diffWordsWithSpace } from "diff";
 import { Check, Clipboard, MessageSquarePlus, Plus, Minus, X } from "lucide-solid";
 import type { DiffHunk, DiffLine, FileDiff } from "@/types/git";
+import { createRowIdentity } from "@/store/stableRows";
 import {
   addReviewNote,
   anchorNotes,
@@ -34,6 +35,33 @@ interface Segment {
   changed: boolean;
 }
 
+/// The origin Rust gives `\ No newline at end of file`.
+///
+/// libgit2 emits that annotation as a diff line like any other, and both row
+/// builders below fell through to their context arm for it — so the sentence
+/// rendered as a line of the file, in the gutter, with a line number beside it,
+/// as if the author had typed it. It is a note about the line above, so it is
+/// pulled out of the row stream and rendered once per hunk as a footnote.
+const NO_NEWLINE_ORIGIN = "\\";
+
+export function hasNoNewlineMarker(lines: readonly DiffLine[]): boolean {
+  return lines.some((l) => l.origin === NO_NEWLINE_ORIGIN);
+}
+
+/// The lines that are lines. See `NO_NEWLINE_ORIGIN`.
+function codeLines(lines: DiffLine[]): DiffLine[] {
+  return lines.filter((l) => l.origin !== NO_NEWLINE_ORIGIN);
+}
+
+/// The footnote a hunk carries when one of its sides has no trailing newline.
+function NoNewlineNote() {
+  return (
+    <div class="px-3 py-0.5 text-[11px] italic text-muted-foreground/70 select-none">
+      No newline at end of file
+    </div>
+  );
+}
+
 // ─── Inline (unified) diff ───────────────────────────────────────────────────
 
 interface InlineRowData {
@@ -42,7 +70,8 @@ interface InlineRowData {
   segments?: Segment[];
 }
 
-function inlineRowsForHunk(lines: DiffLine[]): InlineRowData[] {
+export function inlineRowsForHunk(all: DiffLine[]): InlineRowData[] {
+  const lines = codeLines(all);
   const out: InlineRowData[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -90,10 +119,29 @@ function inlineRowsForHunk(lines: DiffLine[]): InlineRowData[] {
   return out;
 }
 
+/// The file's hunks, as stable objects across a refetch that did not change
+/// them.
+///
+/// `DiffTabView` refetches on every refs pulse — several a second while
+/// anything is running — and `<For>` is keyed by reference, so every hunk and
+/// therefore every row inside it was torn down and rebuilt. On a large diff
+/// that is thousands of DOM nodes per pulse, and it takes the text selection,
+/// any open review-note composer and the caret with it.
+///
+/// Stabilising the *hunks* is enough: `<For>`'s child closure receives the hunk
+/// as a plain value, so an unchanged hunk's row builder never re-runs at all.
+/// Keyed on position rather than header, because two hunks can share a header
+/// and the position is what the stage/discard actions already index by.
+function useStableHunks(file: () => FileDiff) {
+  const stabilize = createRowIdentity<DiffHunk>((h) => `${h.oldStart}:${h.newStart}`);
+  return createMemo(() => stabilize(file().hunks));
+}
+
 function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
+  const hunks = useStableHunks(() => props.file);
   return (
     <div>
-      <For each={props.file.hunks}>
+      <For each={hunks()}>
         {(hunk, i) => (
           // `min-w-max` makes the hunk wrapper size to the widest row inside
           // it. Header bar and every +/- row then stretch to that width, so
@@ -112,6 +160,9 @@ function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath
                 <InlineRow origin={row.origin} line={row.line} segments={row.segments} />
               )}
             </For>
+            <Show when={hasNoNewlineMarker(hunk.lines)}>
+              <NoNewlineNote />
+            </Show>
           </div>
         )}
       </For>
@@ -179,7 +230,8 @@ interface SplitPair {
   };
 }
 
-function pairHunkLines(lines: DiffLine[]): SplitPair[] {
+export function pairHunkLines(all: DiffLine[]): SplitPair[] {
+  const lines = codeLines(all);
   const out: SplitPair[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -281,6 +333,10 @@ function HunkHeader(props: {
     const ext = path.split(".").pop() ?? "";
     const body = props.hunk.lines
       .map((l) => {
+        // The EOFNL annotation carries its own leading `\` in git's own format,
+        // so prefixing it with a space would paste a line that no longer parses
+        // as a patch.
+        if (l.origin === NO_NEWLINE_ORIGIN) return `\\ ${l.content}`;
         const prefix = l.origin === "+" ? "+" : l.origin === "-" ? "-" : " ";
         return `${prefix}${l.content}`;
       })
@@ -465,9 +521,10 @@ function HunkHeader(props: {
 }
 
 function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
+  const hunks = useStableHunks(() => props.file);
   return (
     <div>
-      <For each={props.file.hunks}>
+      <For each={hunks()}>
         {(hunk, i) => (
           <div>
             <HunkHeader
@@ -480,6 +537,9 @@ function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?
             <For each={pairHunkLines(hunk.lines)}>
               {(pair) => <SplitRow pair={pair} />}
             </For>
+            <Show when={hasNoNewlineMarker(hunk.lines)}>
+              <NoNewlineNote />
+            </Show>
           </div>
         )}
       </For>
