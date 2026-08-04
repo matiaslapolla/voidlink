@@ -24,7 +24,7 @@
 /// rather than clearing on focus (§7.5.3, the `failed` row).
 
 import { createSignal } from "solid-js";
-import type { ActivitySignal } from "@/components/layout/StatusLed";
+import type { ActivitySignal } from "@/components/layout/activitySignal";
 
 export type LspState = "absent" | "starting" | "ready" | "degraded" | "crashed";
 

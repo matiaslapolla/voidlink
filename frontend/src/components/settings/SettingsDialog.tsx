@@ -55,6 +55,7 @@ import {
 } from "@/store/settingsSearch";
 import { withLanguageOverride, withoutLanguageOverride } from "@/store/settingsJson";
 import { NotificationsPane } from "@/components/settings/NotificationsPane";
+import { ExperimentalPane } from "@/components/settings/ExperimentalPane";
 // `void tooltip` keeps the import: Solid erases a `use:` directive whose symbol
 // it cannot see referenced as a value.
 import { tooltip } from "@/components/ui/Tooltip";
@@ -98,6 +99,7 @@ type Tab =
   | "ai"
   | "git"
   | "stack"
+  | "experimental"
   | "help";
 
 export function SettingsDialog(props: SettingsDialogProps) {
@@ -209,6 +211,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             </TabButton>
             <TabButton active={tab() === "git"} onClick={() => setTab("git")}>Git</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
+            <TabButton active={tab() === "experimental"} onClick={() => setTab("experimental")}>Experimental</TabButton>
             <TabButton active={tab() === "help"} onClick={() => setTab("help")}>Help</TabButton>
           </div>
 
@@ -222,6 +225,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <Show when={tab() === "ai"}><AiPane /></Show>
             <Show when={tab() === "git"}><GitPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>
+            <Show when={tab() === "experimental"}><ExperimentalPane /></Show>
             <Show when={tab() === "help"}><HelpPane /></Show>
           </div>
 

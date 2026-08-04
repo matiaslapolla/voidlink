@@ -1432,6 +1432,11 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
   /// TUI, so it is the label's business (below) and not the LED's.
   const working = () => watch()?.working() ?? false;
   const processName = () => watch()?.processName() ?? null;
+  /// Whether the foreground process is a recognised agent CLI, and whether it
+  /// has gone quiet on the user. Both come off the same shared poll — the strip
+  /// adds no second `processInfo` loop for them.
+  const agent = () => watch()?.agent() ?? false;
+  const waiting = () => watch()?.waiting() ?? false;
 
   /// While a foreground command runs, the tab wears its name. The static label
   /// ("Terminal 2") stays in the tooltip and comes back when the process exits.
@@ -1488,7 +1493,12 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
       </span>
       <TabTrailing
         tab={props.tab}
-        signal={terminalSignal({ working: working(), focused: props.active })}
+        signal={terminalSignal({
+          working: working(),
+          agent: agent(),
+          waiting: waiting(),
+          focused: props.active,
+        })}
         closable
         closeLabel={`Kill ${props.session.label}`}
         onClose={props.onClose}

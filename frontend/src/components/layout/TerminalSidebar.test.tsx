@@ -1,32 +1,39 @@
-/// The left sidebar collapsing to its icon rail, mounted.
+/// The left sidebar, mounted. Two concerns landed here from two branches and
+/// they are kept apart deliberately, because they want different stores.
 ///
-/// The behaviour this file exists for is the one a reader cannot check by
-/// reading `TerminalSidebar.tsx`: that collapsing gives the *width* back and
-/// that expanding returns the panel to the width the user dragged to rather
-/// than to `PANEL_BOUNDS.sidebar.default`. Both are properties of the store and
-/// the component together — the rail's width is applied at render and never
-/// written to `panels.sidebar`, which is only true if nothing on the collapse
-/// path touches it.
+/// **Collapsing to the icon rail** needs a real `createAppStore({ persist: false })`:
+/// the behaviour a reader cannot check by reading `TerminalSidebar.tsx` is that
+/// collapsing gives the *width* back and that expanding returns the panel to the
+/// width the user dragged to rather than to `PANEL_BOUNDS.sidebar.default`. Both
+/// are properties of the store and the component together — the rail's width is
+/// applied at render and never written to `panels.sidebar`, which is only true if
+/// nothing on the collapse path touches it. A fake of that surface would be a
+/// second store to keep in step.
+///
+/// **The experimental Agent Dashboard entry** wants the opposite: a fake store and
+/// `files={false}`, to keep the explorer's own Tauri traffic out of a test about
+/// one disclosure header. The property worth mounting for is that *behind the flag*
+/// means the entry is not in the document, not that it is in the document with
+/// `display: none` — only mounting tells those apart, and they are the same
+/// screenshot.
 ///
 /// **Width is read off the inline style, not off layout.** jsdom has no layout
-/// engine (see `vitest.config.ts`), so `getBoundingClientRect` is zeroes and
-/// there is no measurable "content region" to watch grow. The inline width is
-/// the input to that growth: `AppShell` gives the sidebar `flex-shrink-0` and
-/// the main column `flex-1`, so a smaller sidebar is a larger workbench by
-/// construction. A test that wanted the pixels themselves would belong in the
-/// browser project.
-///
-/// One provider, and a real `createAppStore({ persist: false })` rather than a
-/// fake: the component reads `state.panels`, `state.sidebarSections` and four
-/// actions, and a fake of that surface would be a second store to keep in step.
-import { describe, expect, it } from "vitest";
+/// engine (see `vitest.config.ts`), so `getBoundingClientRect` is zeroes and there
+/// is no measurable "content region" to watch grow. The inline width is the input
+/// to that growth: `AppShell` gives the sidebar `flex-shrink-0` and the main column
+/// `flex-1`, so a smaller sidebar is a larger workbench by construction. A test
+/// that wanted the pixels themselves would belong in the browser project.
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { AppStoreContext } from "@/store/LayoutContext";
-import { createAppStore, PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH } from "@/store/layout";
+import { useSettings } from "@/store/settings";
+import { createAppStore, PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH, type AppStore } from "@/store/layout";
 
 import { TerminalSidebar } from "./TerminalSidebar";
 
+/// The real store. Used by the collapse tests, which are about store and
+/// component agreeing.
 function mount() {
   const store = createAppStore({ persist: false });
   const { container } = render(() => (
@@ -39,13 +46,56 @@ function mount() {
   return { store, aside };
 }
 
+function fakeStore(): AppStore {
+  return {
+    state: {
+      panels: { sidebar: 256 },
+      sidebarSections: { files: true, terminals: true, agents: true },
+      activeWorktreeId: "wt1",
+      terminalsByWorktree: {},
+      workspaces: [],
+      activeWorkspaceId: "ws1",
+    },
+    activeWorkspace: () => ({ id: "ws1", name: "api", worktrees: [] }),
+    activeRepoPath: () => "/repos/api",
+    activeTerminals: () => [],
+    activeItem: () => null,
+    actions: {
+      toggleSidebarSection: vi.fn(),
+      selectTerminal: vi.fn(),
+      selectWorktree: vi.fn(),
+      removeTerminal: vi.fn(),
+      spawnTerminal: vi.fn(),
+      setRepoRoot: vi.fn(),
+      openCompareTab: vi.fn(),
+      setPanelWidth: vi.fn(),
+    },
+  } as unknown as AppStore;
+}
+
+/// The fake store, with the explorer off. Used by the flag-gating tests.
+function mountGated() {
+  return render(() => (
+    <AppStoreContext.Provider value={fakeStore()}>
+      <TerminalSidebar files={false} />
+    </AppStoreContext.Provider>
+  ));
+}
+
 /// The panel's rendered width in px. `style.width` rather than a class, because
 /// this is the one dimension the component computes rather than declares.
-const widthOf = (el: Element) =>
-  Number.parseInt((el as HTMLElement).style.width, 10);
+const widthOf = (el: Element) => Number.parseInt((el as HTMLElement).style.width, 10);
 
 const filesToggle = () => screen.getByRole("button", { name: "Files" });
 const railButton = () => screen.getByRole("button", { name: "Show the file explorer" });
+const entry = () => screen.queryByRole("button", { name: /agent dashboard/i });
+
+/// Module-level, so the experimental flags are off before *every* test here —
+/// including the collapse ones, which must not start passing or failing because
+/// a dashboard test ran first.
+beforeEach(() => {
+  useSettings().updateExperimental({ agentDashboard: false, showIdleAgents: false });
+});
 
 describe("collapsing the file explorer", () => {
   it("starts expanded, at the persisted width", () => {
@@ -125,5 +175,33 @@ describe("collapsing the file explorer", () => {
     railButton().focus();
     await user.keyboard("{Enter}");
     expect(filesToggle()).toHaveAttribute("aria-expanded", "true");
+  });
+});
+
+describe("the Agent Dashboard sidebar entry", () => {
+  /// Absent, not hidden. If this ever starts passing because the element is
+  /// present-but-invisible, the flag has stopped gating the poll as well —
+  /// `useAgentSessions` is what subscribes `processInfo` to terminals outside
+  /// the active worktree, and it runs the moment the component mounts.
+  it("is absent with the flag off", () => {
+    mountGated();
+    expect(entry()).toBeNull();
+    // The section it sits under is unaffected, so this is not asserting an
+    // empty render.
+    expect(screen.getByRole("button", { name: /^terminals$/i })).toBeInTheDocument();
+  });
+
+  it("is present with the flag on", () => {
+    useSettings().updateExperimental({ agentDashboard: true });
+    mountGated();
+    expect(entry()).toBeInTheDocument();
+  });
+
+  /// The nested flag does not gate the entry — only the Idle column. A user who
+  /// turned the dashboard on and idle agents off still has a dashboard.
+  it("is present with the dashboard on and idle agents off", () => {
+    useSettings().updateExperimental({ agentDashboard: true, showIdleAgents: false });
+    mountGated();
+    expect(entry()).toBeInTheDocument();
   });
 });

@@ -74,6 +74,7 @@ import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { askAgent, registerAgentActions } from "@/commands/agent";
 import { agentById, resolveAgentCommand, useSettings } from "@/store/settings";
+import { AgentBoardBroadcast } from "@/components/agent/AgentBoardBroadcast";
 import { FilesPanel } from "@/components/files/FilesPanel";
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { BoardOverlayHost } from "@/components/board/BoardOverlay";
@@ -1197,6 +1198,15 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   /// must not remount it — the terminals hanging off it own live PTYs that do
   /// not come back.
   const workbench = (
+    <>
+    {/* The agent board's one writer. Outside `AppShell` because it renders
+        nothing and must survive zen, which passes `null` for every panel —
+        a broadcaster that stops when a sidebar is hidden is the per-strip
+        poll `terminalWatch.ts` was written to replace. Behind the flag
+        fully: with it off this never mounts, so nothing polls. */}
+    <Show when={settings.experimental.agentDashboard}>
+      <AgentBoardBroadcast />
+    </Show>
     <AppShell
       fill
       // The window's title bar is drawn above the view container in both modes,
@@ -1216,6 +1226,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       rightSidebar={isZen() ? null : state.sidebarsSwapped ? leftPane() : rightPane()}
       statusBar={<StatusBar />}
     />
+    </>
   );
 
   /// One stacked view. Hidden with `visibility`, not `display`, and never
