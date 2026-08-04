@@ -177,7 +177,7 @@ export type {
   SidebarTab,
   UiPrefs,
 } from "./prefs";
-export { GIT_SECTION_KEYS, PANEL_BOUNDS } from "./prefs";
+export { GIT_SECTION_KEYS, PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH } from "./prefs";
 export type { PaneGroup, PaneNode, SplitOrientation } from "./panes";
 export type {
   AutoGroupMode,

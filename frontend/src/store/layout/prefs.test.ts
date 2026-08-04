@@ -7,6 +7,7 @@ import {
   DEFAULT_PREFS,
   GIT_SECTION_KEYS,
   PANEL_BOUNDS,
+  SIDEBAR_RAIL_WIDTH,
   clampPanelWidth,
   parseGitSectionOrder,
   parsePrefs,
@@ -61,6 +62,76 @@ describe("prefs parsing", () => {
 
   it("falls back wholesale on a null blob", () => {
     expect(parsePrefs(null)).toEqual(DEFAULT_PREFS);
+  });
+
+  /// The fallback used to be `{ ...DEFAULT_PREFS }`, which shares every nested
+  /// object with the module-level constant. `createStore` mutates what it is
+  /// handed, so on a first run — no persisted blob, the one case that spread
+  /// was for — resizing a panel rewrote the default panel widths for the
+  /// lifetime of the process.
+  it("hands out its own nested objects, not the defaults themselves", () => {
+    const a = parsePrefs(null);
+    const b = parsePrefs(null);
+    expect(a.sidebarSections).not.toBe(DEFAULT_PREFS.sidebarSections);
+    expect(a.panels).not.toBe(DEFAULT_PREFS.panels);
+    expect(a.gitSections).not.toBe(DEFAULT_PREFS.gitSections);
+    expect(a.gitSectionOrder).not.toBe(DEFAULT_PREFS.gitSectionOrder);
+    expect(a.sidebarSections).not.toBe(b.sidebarSections);
+
+    a.sidebarSections.files = false;
+    a.panels.sidebar = 999;
+    expect(DEFAULT_PREFS.sidebarSections.files).toBe(true);
+    expect(DEFAULT_PREFS.panels.sidebar).toBe(PANEL_BOUNDS.sidebar.default);
+    expect(parsePrefs(null).sidebarSections.files).toBe(true);
+  });
+});
+
+/// Collapsing the file explorer is worth nothing if the width does not come
+/// back. The rail is a render-time width and is never written to `panels`, so
+/// what has to survive the revive path is a *pair*: the collapsed flag, and the
+/// width the user last dragged to underneath it. A build that stored the rail's
+/// 32px in `panels.sidebar` would look identical until the user expanded again
+/// and found the default — which is why both halves are asserted together.
+describe("file explorer collapse", () => {
+  it("ships expanded", () => {
+    expect(DEFAULT_PREFS.sidebarSections.files).toBe(true);
+  });
+
+  it("keeps the collapsed flag and the pre-collapse width together", () => {
+    const prefs = parsePrefs({
+      sidebarSections: { files: false, terminals: true },
+      panels: { rail: 212, sidebar: 320, gitSidebar: 320 },
+    });
+    expect(prefs.sidebarSections.files).toBe(false);
+    // Not the default (256) and not the rail width — the width the user left.
+    expect(prefs.panels.sidebar).toBe(320);
+    expect(prefs.panels.sidebar).not.toBe(PANEL_BOUNDS.sidebar.default);
+  });
+
+  it("gives a blob written before either key existed sensible defaults", () => {
+    const prefs = parsePrefs({ diffMode: "split" });
+    expect(prefs.sidebarSections).toEqual(DEFAULT_PREFS.sidebarSections);
+    expect(prefs.panels.sidebar).toBe(PANEL_BOUNDS.sidebar.default);
+  });
+
+  it("revives a half-written sections blob one key at a time", () => {
+    // A build that only knew about `files` still leaves `terminals` correct.
+    expect(parsePrefs({ sidebarSections: { files: false } } as never).sidebarSections).toEqual({
+      files: false,
+      terminals: DEFAULT_PREFS.sidebarSections.terminals,
+    });
+  });
+
+  it("keeps the rail narrower than any width the panel can be dragged to", () => {
+    // Otherwise collapsing would *cost* the user width, which is the one thing
+    // the gesture must never do.
+    expect(SIDEBAR_RAIL_WIDTH).toBeLessThan(PANEL_BOUNDS.sidebar.min);
+  });
+
+  it("refuses to store the rail width as a panel width", () => {
+    // The clamp is what makes "never written to `panels`" enforceable rather
+    // than a convention: a build that tried would get the minimum back.
+    expect(clampPanelWidth("sidebar", SIDEBAR_RAIL_WIDTH)).toBe(PANEL_BOUNDS.sidebar.min);
   });
 });
 

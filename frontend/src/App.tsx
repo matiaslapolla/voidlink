@@ -1133,7 +1133,19 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
           the two can never disagree about how wide the column is. */}
       <div class="flex flex-col min-h-0 bg-sidebar">
         <Show when={!state.leftSidebarCollapsed}>
-          <div class="flex-1 min-h-0 flex flex-col border-b border-border/60 w-full">
+          {/* `flex-1` only while the explorer is open. The column's *width*
+              belongs to the git panel here, so what a collapse gives back is
+              vertical space — and a wrapper that stayed `flex-1` around a
+              collapsed `FilesPanel` would hold half the column open for a
+              header row, which is the disclosure-that-buys-you-nothing this
+              feature exists to remove. */}
+          <div
+            class="min-h-0 flex flex-col border-b border-border/60 w-full"
+            classList={{
+              "flex-1": state.sidebarSections.files,
+              "shrink-0": !state.sidebarSections.files,
+            }}
+          >
             <FilesPanel onOpenFile={(path) => void openInEditorWindow(path)} />
           </div>
         </Show>
