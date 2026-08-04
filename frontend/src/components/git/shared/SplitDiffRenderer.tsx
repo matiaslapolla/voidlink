@@ -676,7 +676,12 @@ export function DiffRenderer(props: {
   /// written there would have nowhere to land in the working tree. A caller
   /// that wants annotation opts in by passing the repo.
   repoPath?: string;
+  /// Print the old/new line-number gutters. Defaults to on: a diff without
+  /// them is the cheaper render, not the better one, and every caller with a
+  /// preference to read passes `state.diffLineNumbers`.
+  lineNumbers?: boolean;
 }) {
+  const lineNumbers = () => props.lineNumbers ?? true;
   return (
     <Show
       when={!props.file.isBinary}

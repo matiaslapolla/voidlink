@@ -303,7 +303,11 @@ describe("the line-number gutters", () => {
       const code = screen.getByText(`oneold${i}`).getBoundingClientRect();
       const num = left[i].getBoundingClientRect();
       expect(num.right).toBeLessThanOrEqual(code.left + 1);
-      expect(Math.abs(num.top - code.top)).toBeLessThan(2);
+      // Vertical centres, not tops: the gutter is `text-micro` against the
+      // code's `text-body`, so two boxes on the same line legitimately have
+      // different heights and therefore different top edges.
+      const mid = (r: DOMRect) => r.top + r.height / 2;
+      expect(Math.abs(mid(num) - mid(code))).toBeLessThan(3);
       expect(num.width).toBeGreaterThan(8);
     }
   });
