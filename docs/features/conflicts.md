@@ -30,21 +30,34 @@ any. It has two buttons:
 For a merge with no conflicts, the text `Commit to finish.` appears where
 Continue would be.
 
-### The conflict tab
+### The merge editor
 
-Each conflicted file opens as its own tab showing:
+Each conflicted file opens as its own tab in the editor window, laid out the way
+VS Code's merge editor is:
 
-- A header with the file name, full path, and an `n unresolved` counter.
-- One card per conflict block: `Conflict i / n · lines a–b`, side-by-side
-  `Ours (<label>)` and `Theirs (<label>)` panes, and a
-  `Common ancestor (base)` pane when diff3 markers are present.
-- Three buttons per block: `Accept ours`, `Accept theirs`, `Accept both`.
-- A collapsed `Raw file (advanced — edit conflict markers manually)` textarea.
-- A reset button, `Reset to working-tree version`.
+- **Ours | Base | Theirs** across the top. When git recorded a common ancestor,
+  the two incoming sides are Monaco diff editors *against Base* — which is what
+  makes "what did each side actually change" readable at a glance. Without an
+  ancestor they degrade to plain read-only panes and say so.
+- **Result** underneath, editable: accepting a side is a shortcut for typing,
+  not a replacement for it.
+- A header with the file name, full path, an `n of m resolved` counter,
+  prev/next conflict navigation, `Accept ours` / `Accept theirs` /
+  `Accept both` acting on the current conflict, and `Reset to the working-tree
+  version`.
+- **A per-conflict list beside the Result**: one card per block —
+  `Conflict i of n · lines a–b`, `Ours (<label>)`, `Theirs (<label>)`, and
+  `Common ancestor` when diff3 markers are present — each with its own
+  `Ours` / `Theirs` / `Both` buttons. The header's three buttons act on
+  whichever conflict the cursor is parked on, which is fine for a file with two
+  conflicts and unusable for one with eleven: the buttons belong next to the
+  lines they rewrite. Clicking a card moves the cursor to it, so the two never
+  disagree about what "current" means.
 
-Once every block is resolved, the cards are replaced by
-`All conflict markers resolved. Review the file and stage.` over a full-file
-textarea.
+Both paths land in the same `acceptBlock`, so `Accept both` cannot mean two
+different things depending on which control you reached for. Parsing and
+splicing come from `components/editor/conflictMarkers.ts`, shared so the two
+surfaces can never drift on what a half-resolved file means.
 
 `Mark resolved & stage` writes the buffer to disk and adds the path to the
 index — staging a previously-conflicted path is what clears the conflict, so

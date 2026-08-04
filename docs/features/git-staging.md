@@ -65,6 +65,94 @@ the patch (`ApplyOptions::check(true)`) to catch a working tree that has drifted
 in a way the oid cannot see. The UI turns that refusal into "this file changed
 since the diff was drawn — refreshed, try again".
 
+### Line-level
+
+Inside the hunk view, click any added or removed line to pick it; shift-click
+another to take the run between them. Picked lines get a ring rather than a new
+background — the red/green already means something. The hunk's own buttons then
+retitle themselves (`Stage 3 lines`, `Discard 1 line`) and act on the selection
+instead of the hunk; a count chip beside the header clears it. With nothing
+picked, they mean the whole hunk exactly as before.
+
+Selection is per hunk. A selection spanning two hunks would have to become two
+patches, and the second failing after the first landed is a half-applied action
+with no undo.
+
+**Nothing rewrites the file.** The patch is built by
+`components/git/shared/linePatch.ts` and handed to the same `git_apply_hunk` /
+`git_discard_hunk` the whole-hunk path uses, basis guard included. The idea:
+
+> A patch is not the lines you picked. It is the whole hunk with the lines you
+> did not pick *neutralised* — and which side gets neutralised depends on the
+> direction.
+
+Staging applies to the index, whose content is the hunk's **old** side, so every
+deletion stays (picked as a deletion, unpicked as context) and unpicked
+additions are dropped. Unstaging and discarding are un-applied against the
+**new** side, so it is the additions that all stay and the unpicked deletions
+that go. Getting that backwards yields a patch that still parses and applies at
+an offset, which is how staging silently writes the wrong content — so both
+directions are unit-tested here and round-tripped against a real repository in
+`src-tauri/src/git/apply_hunk.rs`.
+
+Three things are refused rather than approximated: an empty selection (it never
+falls back to the whole hunk), a selection of only context lines, and any hunk
+carrying `\ No newline at end of file` — that marker is a claim about the line
+above it, and neutralising that line moves the claim to a line it was never
+about. The buttons say so on hover.
+
+### Reviewing everything at once
+
+The `Layers` button in the Changes header (or **Review all changes** in the
+command palette) opens a tab holding every staged, unstaged and untracked change
+in one scroll, sectioned, one collapsible row per file.
+
+A file that is staged *and* modified appears **once**, filed under Staged,
+carrying both diffs — labelled `staged + unstaged`, with each half headed
+separately once expanded. The header counts how many files are in that state,
+because "committing takes less than what you are looking at" is otherwise
+invisible.
+
+Untracked files get their own section and a sentence saying that git has no
+previous version to compare against, so all N lines are shown as added — without
+it, a new 400-line file is indistinguishable from a 400-line rewrite.
+
+Files are collapsed by default and the row list is windowed, so a worktree with
+hundreds of changed files costs hundreds of header rows and not one hunk until
+something is opened. `Expand all` exists and says in its tooltip why it is not
+the default.
+
+### Line numbers
+
+The `Lines` toggle in the diff toolbar turns the old/new line-number gutters on
+and off, for both sides at once — a split view numbered on one side reads as a
+rendering bug. It is a global preference beside the diff mode (`prefs.ts`), not
+per worktree: it is a statement about how you read diffs.
+
+### Images
+
+A changed `.png` / `.jpg` / `.jpeg` / `.gif` / `.webp` / `.svg` opens as a
+picture rather than as `Binary file — no diff preview`, with three modes:
+
+| Mode | What it is for |
+|---|---|
+| Side by side | Both images whole. "Same asset, new size." |
+| Swipe | One over the other, revealed by a divider you drag. A retouch too small to see across a gap. |
+| Onion skin | The two cross-faded at a ratio you drag. Alignment — a logo nudged two pixels reads instantly as a double image at 50%. |
+
+Swipe and onion are pointer-driven and one-to-one with the drag, with no
+transition on the property being dragged; arrow keys steer both. Mode is per
+view, not persisted: which question you are asking changes per image.
+
+Detection needs the **name and the bytes to agree**. A `.png` that is an LFS
+pointer, a `touch`ed placeholder or an HTML error page falls back to the binary
+placeholder rather than to a broken-image glyph. SVG is both a picture and text,
+so it gets both views and an `Image`/`Text` toggle, defaulting to the picture.
+
+Bytes come from `git_binary_sides`, which reads the old side out of the object
+database by the oid the `FileDiff` already carries and the new side from the
+working file or the index entry, base64-encoded.
+
 ### Committing
 
 1. Type into the commit box.
