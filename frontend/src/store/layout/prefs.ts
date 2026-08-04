@@ -37,6 +37,18 @@ export const GIT_SECTION_KEYS: GitSectionKey[] = [
   "openedDiffs",
 ];
 
+/// The left sidebar's two disclosures.
+///
+/// `files` is the file explorer's expanded/collapsed state and it is global on
+/// purpose (see this file's header): collapsing the explorer in one worktree
+/// and having it spring back on the next switch is the behaviour nobody wants.
+///
+/// It means slightly different things in the explorer's two homes, because the
+/// axis it reclaims differs. In the left sidebar it collapses the *panel* to a
+/// `SIDEBAR_RAIL_WIDTH` icon rail, so the width goes back to the workbench; in
+/// the right column (vertical tabs) the column's width belongs to the git
+/// panel, so it reclaims the vertical space instead. One flag either way — two
+/// would be two things to keep in step for one user intent.
 export interface SidebarSections {
   files: boolean;
   terminals: boolean;
@@ -63,6 +75,23 @@ export const PANEL_BOUNDS: Record<PanelId, { min: number; max: number; default: 
   sidebar: { min: 180, max: 520, default: 256 },
   gitSidebar: { min: 220, max: 600, default: 320 },
 };
+
+/// Width of a sidebar that has been collapsed to its icon rail, in px.
+///
+/// Beside `PANEL_BOUNDS` rather than in it, because it is not a *bound*: a rail
+/// has no min, no max and nothing to drag. It is the one width the panel takes
+/// while the user has asked for the space back, and it matches the git
+/// sidebar's collapsed rail (`GitSidebarCollapsed`, `w-8`) so the shell has one
+/// rail idiom rather than two.
+///
+/// Deliberately **not** written into `panels.sidebar` on collapse. That field
+/// keeps holding the width the user last dragged to, which is what makes
+/// expanding restore *their* width instead of the default — the pre-collapse
+/// width is persisted because it was never overwritten, not because a second
+/// key shadows it. A collapsed panel has no splitter to change it either (the
+/// handle is rendered disabled, §7.6), so the value cannot drift while it is
+/// out of view.
+export const SIDEBAR_RAIL_WIDTH = 32;
 
 export interface UiPrefs {
   panels: PanelWidths;
@@ -132,8 +161,18 @@ export function parseGitSectionOrder(raw: unknown): GitSectionKey[] {
 /// Field-by-field so a blob written by an older (or newer) build cannot
 /// introduce a value the UI has no branch for — `diffMode: "sidebyside"` would
 /// render nothing at all.
+///
+/// A missing blob takes the same path rather than a `{ ...DEFAULT_PREFS }`
+/// shortcut, because that spread was *shallow*: `panels`, `gitSections` and
+/// `sidebarSections` came back as the very objects hanging off the module-level
+/// `DEFAULT_PREFS`, and `createStore` mutates what it is given. A first run —
+/// exactly the case the shortcut existed for — therefore wrote every panel
+/// resize and every section toggle straight into the defaults, so "the default
+/// layout" became whatever the last store to touch it had done. One window
+/// hides it; two stores in one process (the render tests, and stacked mode's
+/// second store) do not.
 export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
-  if (!parsed || typeof parsed !== "object") return { ...DEFAULT_PREFS };
+  if (!parsed || typeof parsed !== "object") parsed = {};
   const d = DEFAULT_PREFS;
   return {
     panels: parsePanelWidths(parsed.panels),

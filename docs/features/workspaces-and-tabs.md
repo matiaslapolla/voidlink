@@ -462,8 +462,20 @@ Everything is `localStorage`, written through one debounced path in
 | Pane geometry, tab groups, MRU order, navigation history | per worktree |
 | Closed-tab history | per worktree |
 | Sidebar collapse/widths, diff mode, git section order and collapse | global |
+| File explorer collapsed to its icon rail | global (`sidebarSections.files`) |
+| The **editor window's** file tree collapse | window-local, not persisted |
 | Snapshots | per workspace ([snapshots](./snapshots.md)) |
 | Layout presets | per workspace |
+
+The last two rows are one feature with two answers on purpose. Collapsing the
+explorer in the workbench is a preference — it survives a reload and a worktree
+switch, because collapsing it in one worktree and having it spring back in the
+next is the behaviour this table exists to prevent. The popped-out editor
+window's tree is a plain signal in `EditorApp.tsx`: that window is a consumer of
+workbench state over a one-directional broadcast, so sharing the flag would cost
+a new request kind and a round trip per click to make two windows on one screen
+agree about how much of each the user wants to see. Collapsing one is not a
+statement about the other.
 
 Writes go to a temp key and are then committed, and a corrupt or
 partially-written blob degrades **that one key** to defaults with a toast —

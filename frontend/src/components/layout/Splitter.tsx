@@ -81,6 +81,15 @@ export interface SplitterProps {
   /// A splitter whose pane is collapsed has nothing to resize. Pass the reason
   /// so the `title` can state it (§7.6 forbids a silent disabled control).
   disabledReason?: string;
+  /// Fires `true` when a pointer drag starts and `false` when it ends.
+  ///
+  /// For hosts that animate their own width. A collapse animates because it
+  /// carries information — where the panel went — but the same transition on a
+  /// pane the user is *holding* would make it trail the pointer, which §7.3.10
+  /// forbids. The host suppresses its transition for the duration rather than
+  /// guessing from the value, because a width change tells you nothing about
+  /// which gesture produced it.
+  onDragStateChange?: (dragging: boolean) => void;
   /// The handle sits in the canvas gap *between* two islands rather than
   /// inside one of them (Direction D1). Shifts the 8px strip outward by half
   /// the gap so it straddles the seam the user actually sees, and centres the
@@ -108,6 +117,13 @@ export function Splitter(props: SplitterProps) {
   /// the window) grow it as the pointer moves back.
   const sign = () => (props.side === "end" ? 1 : -1);
 
+  /// One place the drag flag is written, so the host can never be told the drag
+  /// started and not that it ended.
+  function setDrag(value: boolean) {
+    setDragging(value);
+    props.onDragStateChange?.(value);
+  }
+
   function onPointerDown(e: PointerEvent) {
     if (disabled() || e.button !== 0) return;
     e.preventDefault();
@@ -117,7 +133,7 @@ export function Splitter(props: SplitterProps) {
     // where the pointer went down, not against the handle's centre.
     const origin = axis() === "x" ? e.clientX : e.clientY;
     const startValue = props.value;
-    setDragging(true);
+    setDrag(true);
     // Hold the resize cursor for the whole drag, not just while the pointer
     // happens to be over the 8px strip.
     const priorCursor = document.body.style.cursor;
@@ -131,7 +147,7 @@ export function Splitter(props: SplitterProps) {
       props.onResize(clamp(startValue + sign() * (now - origin)));
     };
     const onUp = () => {
-      setDragging(false);
+      setDrag(false);
       document.body.style.cursor = priorCursor;
       document.body.style.userSelect = priorSelect;
       handle.removeEventListener("pointermove", onMove);
