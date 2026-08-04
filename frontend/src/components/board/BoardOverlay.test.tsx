@@ -60,12 +60,12 @@ function installBoard(cards: StoredCard[], columns = ["Todo", "Doing", "Done"]) 
   disk = cards;
   mockTauri({
     board_list_cards: () => ({ columns, cards: disk.map(asWire) }),
-    board_read_card: (args) => {
+    board_read_card: (args: Record<string, unknown>) => {
       const card = disk.find((c) => c.id === args.cardId);
       if (!card) throw new Error(`no such card: ${String(args.cardId)}`);
       return { ...asWire(card), body: card.body };
     },
-    board_save_card: (args) => {
+    board_save_card: (args: Record<string, unknown>) => {
       const id = String(args.cardId);
       const content = String(args.content);
       const existing = disk.find((c) => c.id === id);
@@ -184,7 +184,7 @@ describe("dragging a card between columns", () => {
     const card = await screen.findByLabelText("Wire the watcher");
 
     mockTauri({
-      board_read_card: (args) => {
+      board_read_card: (args: Record<string, unknown>) => {
         const stored = disk.find((c) => c.id === args.cardId)!;
         const asRead = { ...asWire(stored), body: stored.body };
         stored.title = "Retitled elsewhere";
