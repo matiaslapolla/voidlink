@@ -29,6 +29,7 @@ import {
 /// a fixture that omits `title` would not prove the browser tab round-trips.
 const FIXTURES: { [K in TabKind]: TabTypes[K] } = {
   file: { id: "f1", path: "/repo/src/main.ts" },
+  combined: { id: "cd1" },
   terminal: { id: "t1", ptyId: "pty-9", label: "Terminal 2", cwd: "/repo" },
   // `staged: true` deliberately: the deserializer defaults the field to
   // `false`, so a `false` fixture would round-trip even if `serialize` dropped
