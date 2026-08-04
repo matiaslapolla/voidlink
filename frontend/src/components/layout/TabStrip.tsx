@@ -70,6 +70,7 @@ export type TabKind =
   | "history"
   | "preview"
   | "timeline"
+  | "combined"
   | "mission"
   | "browser"
   | "agent";
@@ -1633,6 +1634,7 @@ const KIND_LABELS: Record<TabKind, string> = {
   history: "Commit graph",
   preview: "Previews",
   timeline: "Timeline",
+  combined: "All changes",
   mission: "Mission Control",
   browser: "Browser",
   agent: "Agents",

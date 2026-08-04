@@ -113,6 +113,7 @@ import type {
   ActiveItem,
   TabRestoreContext,
   AgentTab,
+  CombinedDiffTab,
   TimelineTab,
   MissionTab,
   BrowserTab,
@@ -142,6 +143,7 @@ import {
 export type {
   ActiveItem,
   AgentTab,
+  CombinedDiffTab,
   TimelineTab,
   MissionTab,
   BrowserTab,
@@ -355,6 +357,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     >,
     previewTabsByWorktree: editorTabs.previews,
     timelineTabsByWorktree: loadKindRecord("timeline", worktreeIds) as Record<string, TimelineTab[]>,
+    combinedTabsByWorktree: loadKindRecord("combined", worktreeIds) as Record<
+      string,
+      CombinedDiffTab[]
+    >,
     missionTabsByWorktree: loadKindRecord("mission", worktreeIds) as Record<string, MissionTab[]>,
     browserTabsByWorktree: loadKindRecord("browser", worktreeIds) as Record<
       string,
@@ -384,6 +390,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     leftSidebarCollapsed: prefs.leftSidebarCollapsed,
     sidebarsSwapped: prefs.sidebarsSwapped,
     diffMode: prefs.diffMode,
+    diffLineNumbers: prefs.diffLineNumbers,
     gitTab: prefs.gitTab,
     ignoreWhitespace: prefs.ignoreWhitespace,
     sidebarTab: prefs.sidebarTab,
@@ -473,6 +480,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       leftSidebarCollapsed: state.leftSidebarCollapsed,
       sidebarsSwapped: state.sidebarsSwapped,
       diffMode: state.diffMode,
+      diffLineNumbers: state.diffLineNumbers,
       gitTab: state.gitTab,
       ignoreWhitespace: state.ignoreWhitespace,
       sidebarTab: state.sidebarTab,
@@ -516,6 +524,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activeHistoryTabs = activeOf<HistoryTab>("history");
   const activePreviewTabs = activeOf<PreviewTab>("preview");
   const activeTimelineTabs = activeOf<TimelineTab>("timeline");
+  const activeCombinedTabs = activeOf<CombinedDiffTab>("combined");
   const activeMissionTabs = activeOf<MissionTab>("mission");
   const activeBrowserTabs = activeOf<BrowserTab>("browser");
   const activeAgentTabs = activeOf<AgentTab>("agent");
@@ -854,6 +863,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       case "conflict": return { type: "conflict", id };
       case "history": return { type: "history", id };
       case "timeline": return { type: "timeline", id };
+      case "combined": return { type: "combined", id };
       case "mission": return { type: "mission", id };
       case "browser": return { type: "browser", id };
       case "agent": return { type: "agent", id };
@@ -1245,6 +1255,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
     setDiffMode(mode: AppStoreState["diffMode"]) {
       setState("diffMode", mode);
+    },
+    /// Line numbers on both diff gutters. A preference about reading, not about
+    /// this file — so it lives beside `diffMode` rather than in a tab.
+    toggleDiffLineNumbers() {
+      setState("diffLineNumbers", (v) => !v);
     },
     toggleIgnoreWhitespace() {
       setState("ignoreWhitespace", (v) => !v);
@@ -1735,6 +1750,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         case "history":
           actions.openHistoryTab(wtId);
           break;
+        case "combined":
+          actions.openCombinedTab(wtId);
+          break;
         case "timeline":
           actions.openTimelineTab(wtId);
           break;
@@ -1865,6 +1883,45 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
     selectHistoryTab(wtId: string, tabId: string) {
       setState("activeItemByWorktree", wtId, { type: "history", id: tabId });
+    },
+
+    // ── Combined-diff tab ───────────────────────────────────────────────
+    /// Open the worktree's one "all changes" tab, focusing the existing one
+    /// if it is already open. Repo-wide, so a second one would show the same
+    /// thing twice.
+    openCombinedTab(wtId: string) {
+      const existing = (state.combinedTabsByWorktree[wtId] ?? [])[0];
+      if (existing) {
+        setState("activeItemByWorktree", wtId, { type: "combined", id: existing.id });
+        return existing.id;
+      }
+      const tab: CombinedDiffTab = { id: crypto.randomUUID() };
+      setState(produce((s) => {
+        s.combinedTabsByWorktree[wtId] = [...(s.combinedTabsByWorktree[wtId] ?? []), tab];
+        s.activeItemByWorktree[wtId] = { type: "combined", id: tab.id };
+      }));
+      return tab.id;
+    },
+
+    closeCombinedTab(wtId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.combinedTabsByWorktree[wtId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        recordClose(s, wtId, "combined", arr[idx]);
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorktree[wtId];
+        if (active?.type === "combined" && active.id === tabId) {
+          const terms = s.terminalsByWorktree[wtId] ?? [];
+          s.activeItemByWorktree[wtId] = terms[0]
+            ? { type: "terminal", id: terms[0].id }
+            : null;
+        }
+      }));
+    },
+
+    selectCombinedTab(wtId: string, tabId: string) {
+      setState("activeItemByWorktree", wtId, { type: "combined", id: tabId });
     },
 
     // ── Timeline (event log) tab ────────────────────────────────────────
@@ -2150,6 +2207,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       for (const c of conflicts) keyByTabId.set(c.id, `conflict:${c.filePath}`);
       for (const p of previews) keyByTabId.set(p.id, `preview:${p.filePath}`);
       browsers.forEach((b, i) => keyByTabId.set(b.id, `browser:${i}`));
+      for (const c of state.combinedTabsByWorktree[wtId] ?? []) keyByTabId.set(c.id, "combined:");
       for (const h of histories) keyByTabId.set(h.id, "history:");
       agents.forEach((a, i) => keyByTabId.set(a.id, `agent:${i}`));
 
@@ -2192,6 +2250,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           browsers: browsers.map((b) => ({ url: b.url, title: b.title })),
           history: histories.length > 0,
           timeline: timelines.length > 0,
+          combined: (state.combinedTabsByWorktree[wtId] ?? []).length > 0,
           mission: missions.length > 0,
           // The tab, not the conversation: a snapshot is a named arrangement of
           // panes, and restoring one into a transcript from another day would be
@@ -2310,6 +2369,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           const tab: HistoryTab = { id: crypto.randomUUID() };
           s.historyTabsByWorktree[wtId].push(tab);
           idByKey.set("history:", tab.id);
+        }
+        if (snap.tabs.combined) {
+          const tab: CombinedDiffTab = { id: crypto.randomUUID() };
+          s.combinedTabsByWorktree[wtId].push(tab);
+          idByKey.set("combined:", tab.id);
         }
         if (snap.tabs.timeline) {
           const tab: TimelineTab = { id: crypto.randomUUID() };
@@ -2509,6 +2573,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     activeHistoryTabs,
     activePreviewTabs,
     activeTimelineTabs,
+    activeCombinedTabs,
     activeMissionTabs,
     activeBrowserTabs,
     activeAgentTabs,

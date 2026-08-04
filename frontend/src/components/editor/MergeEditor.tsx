@@ -31,7 +31,11 @@ import {
 import { gitApi } from "@/api/git";
 import { pushToast } from "@/commands/toast";
 import { emitGitRefsChanged } from "@/commands/gitEvents";
-import { applyResolution, parseConflicts } from "./conflictMarkers";
+import { applyResolution, parseConflicts, type ConflictBlock } from "./conflictMarkers";
+import {
+  ConflictBlockList,
+  type ConflictChoice,
+} from "@/components/git/conflict/ConflictBlockList";
 import { MonacoDiffPane, MonacoPane } from "./MonacoPanes";
 
 interface MergeEditorProps {
@@ -76,10 +80,21 @@ export function MergeEditor(props: MergeEditorProps) {
   const resolved = () => Math.max(0, total() - blocks().length);
   const current = () => blocks()[Math.min(cursor(), blocks().length - 1)] ?? null;
 
-  function accept(choice: "ours" | "theirs" | "both") {
+  function accept(choice: ConflictChoice) {
     const block = current();
+    if (!block) return;
+    acceptBlock(block, choice);
+  }
+
+  /// Resolve one named block, wherever it is in the file.
+  ///
+  /// The header's buttons go through `accept` and act on the cursor; the list
+  /// beside the result calls this directly with the block the user clicked
+  /// next to. Both end here, so "accept both" cannot mean two different things
+  /// depending on which control you reached for.
+  function acceptBlock(block: ConflictBlock, choice: ConflictChoice) {
     const cur = buffer();
-    if (!block || cur === null) return;
+    if (cur === null) return;
     setBuffer(applyResolution(cur, block, choice));
     // Stay on the same index: the blocks after this one shift down by one, so
     // the same index is now the *next* unresolved conflict.
@@ -275,12 +290,27 @@ export function MergeEditor(props: MergeEditorProps) {
                 )}
               </Show>
             </div>
-            <div class="flex-1 min-h-0">
-              <MonacoPane
-                text={buffer() ?? ""}
-                path={props.filePath}
-                onChange={(text) => setBuffer(text)}
-              />
+            <div class="flex-1 min-h-0 flex">
+              <div class="flex-1 min-w-0 min-h-0">
+                <MonacoPane
+                  text={buffer() ?? ""}
+                  path={props.filePath}
+                  onChange={(text) => setBuffer(text)}
+                />
+              </div>
+              {/* Per-conflict controls, next to the lines they rewrite. The
+                  header's three buttons act on the cursor, which is fine for a
+                  file with two conflicts and unusable for one with eleven. */}
+              <Show when={blocks().length > 0}>
+                <div class="w-[320px] shrink-0 border-l border-border overflow-y-auto scrollbar-thin">
+                  <ConflictBlockList
+                    blocks={blocks()}
+                    activeIndex={Math.min(cursor(), blocks().length - 1)}
+                    onFocusBlock={(i) => setCursor(i)}
+                    onAccept={acceptBlock}
+                  />
+                </div>
+              </Show>
             </div>
           </div>
         </div>

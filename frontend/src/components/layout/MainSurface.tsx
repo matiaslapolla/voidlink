@@ -22,6 +22,7 @@ import {
   Brain,
   Columns3 as BoardIcon,
   History as TimelineIcon,
+  Layers as CombinedIcon,
   Radar as MissionIcon,
   Globe,
   Bot,
@@ -30,6 +31,7 @@ import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTab";
 import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { CommitGraph } from "@/components/git/history/CommitGraph";
+import { CombinedDiffView } from "@/components/git/shared/CombinedDiffView";
 import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { commitDiffBase, resolveCommitDiffBase } from "@/commands/commitDiff";
 import { TimelineSurface } from "@/components/timeline/TimelineSurface";
@@ -134,6 +136,7 @@ export function MainSurface(props: MainSurfaceProps) {
     activeStackTabs,
     activeHistoryTabs,
     activeTimelineTabs,
+    activeCombinedTabs,
     activeMissionTabs,
     activeBrowserTabs,
     activeAgentTabs,
@@ -229,6 +232,18 @@ export function MainSurface(props: MainSurfaceProps) {
         label: "timeline",
         icon: <TimelineIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: "Timeline",
+        activity: tabMark(tab.id),
+        pinnable: false,
+        draggable: false,
+      });
+    }
+    for (const tab of activeCombinedTabs()) {
+      out.push({
+        kind: "combined",
+        id: tab.id,
+        label: "all changes",
+        icon: <CombinedIcon class="w-3.5 h-3.5 shrink-0 text-info opacity-90" />,
+        title: "All changes",
         activity: tabMark(tab.id),
         pinnable: false,
         draggable: false,
@@ -653,6 +668,7 @@ export function MainSurface(props: MainSurfaceProps) {
       case "stack": actions.selectStackTab(wtId, tab.id); break;
       case "history": actions.selectHistoryTab(wtId, tab.id); break;
       case "timeline": actions.selectTimelineTab(wtId, tab.id); break;
+      case "combined": actions.selectCombinedTab(wtId, tab.id); break;
       case "mission": actions.selectMissionTab(wtId, tab.id); break;
       case "browser": actions.selectBrowserTab(wtId, tab.id); break;
       case "agent": actions.selectAgentTab(wtId, tab.id); break;
@@ -670,6 +686,7 @@ export function MainSurface(props: MainSurfaceProps) {
       case "stack": actions.closeStackTab(wtId, tab.id); break;
       case "history": actions.closeHistoryTab(wtId, tab.id); break;
       case "timeline": actions.closeTimelineTab(wtId, tab.id); break;
+      case "combined": actions.closeCombinedTab(wtId, tab.id); break;
       case "mission": actions.closeMissionTab(wtId, tab.id); break;
       case "browser": actions.closeBrowserTab(wtId, tab.id); break;
       case "agent":
@@ -1221,6 +1238,15 @@ export function MainSurface(props: MainSurfaceProps) {
         {(tab) => (
           <div class={paneClass()} style={paneStyle(tab.id)}>
             <TimelineSurface repoPath={activeRepoPath() ?? ""} />
+          </div>
+        )}
+      </For>
+
+      {/* Every staged, unstaged and untracked change in one scroll */}
+      <For each={activeCombinedTabs()}>
+        {(tab) => (
+          <div class={paneClass()} style={paneStyle(tab.id)}>
+            <CombinedDiffView repoPath={activeRepoPath() ?? ""} />
           </div>
         )}
       </For>

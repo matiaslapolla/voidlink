@@ -206,6 +206,22 @@ export interface FileDiff {
   truncated?: boolean;
 }
 
+/// One side of a binary file, as `git_binary_sides` sends it. Base64 rather
+/// than bytes — see `src-tauri/src/git/binary.rs` for why.
+export interface BinaryBlob {
+  base64: string;
+  byteLen: number;
+}
+
+/// Both sides of a binary path. `null` on a side means it does not exist
+/// (added or deleted); `oversize` means one did exist and was too big to read,
+/// which is a different fact and must not read as "deleted".
+export interface BinarySides {
+  old: BinaryBlob | null;
+  new: BinaryBlob | null;
+  oversize: boolean;
+}
+
 export interface DiffResult {
   files: FileDiff[];
   totalAdditions: number;

@@ -1335,6 +1335,17 @@ export function ChangesPane(props: {
           >
             <Sparkles class={`w-3 h-3 ${drafting() ? "animate-pulse" : ""}`} />
           </button>
+          {/* The reading pass. Reviewing your own branch used to mean opening
+              one diff tab per file and holding the shape of the change in your
+              head across them. */}
+          <button
+            onClick={() => actions.openCombinedTab(props.worktreeId)}
+            aria-label="Review all changes in one view"
+            title="Review all changes in one view"
+            class="px-2 py-1 rounded-md text-ui text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+          >
+            <Layers class="w-3 h-3" />
+          </button>
           <button
             onClick={() => void stageAll()}
             disabled={busy()}

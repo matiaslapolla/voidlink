@@ -11,12 +11,23 @@
 /// hunks (see `diffModel.ts`) rather than fetched — there is no "read file at
 /// ref" command, and the reconstruction is exact.
 
-import { Show, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  on,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import {
   Columns2,
   GitCompare,
   RotateCw,
   Rows3,
+  Hash,
+  Image as ImageIcon,
   Space,
   SplitSquareVertical,
   Trash2,
@@ -32,8 +43,15 @@ import {
   DiffRenderer,
   type HunkActions,
 } from "@/components/git/shared/SplitDiffRenderer";
+import { ImageDiffView } from "@/components/git/shared/ImageDiffView";
+import { bytesFromBase64, imageKindFromPath, planImageDiff } from "@/components/git/shared/imageDiff";
 import { ProvenanceNote } from "@/components/git/shared/ProvenanceNote";
 import { loadFileProvenance } from "@/components/git/shared/provenance";
+import {
+  applyLineClick,
+  buildLineSelectionDiff,
+  type LineSelection,
+} from "@/components/git/shared/linePatch";
 import { workingTreeSides } from "./diffModel";
 import { MonacoDiffPane } from "./MonacoPanes";
 import type { FileDiff } from "@/types/git";
@@ -115,6 +133,7 @@ export function DiffTabView(props: DiffTabViewProps) {
     onCleanup(
       onGitRefsChanged(() => {
         void refetch();
+        void refetchBinary();
         // The mtime the claim rests on moves whenever the file does, so a stale
         // attribution would keep naming the agent that wrote the *previous*
         // version — §7.5.4's stale-value failure, with a name attached.
@@ -128,9 +147,109 @@ export function DiffTabView(props: DiffTabViewProps) {
   /// iterates the same array Rust will index into.
   const fileDiff = createMemo<FileDiff | null>(() => data()?.fileDiff ?? null);
 
+  // ── Image diffs ───────────────────────────────────────────────────────
+  //
+  // Fetched separately from the diff, and only when the *path* claims to be an
+  // image: base64-encoding a side costs real bytes, and asking for them on
+  // every text file would pay that cost on every diff in the app to answer a
+  // question the filename already answers.
+
+  const [binary, { refetch: refetchBinary }] = createResource(
+    () => {
+      const claimed = imageKindFromPath(relPath());
+      if (!claimed) return null;
+      return {
+        repo: props.repoPath,
+        rel: relPath(),
+        oldBlobOid: fileDiff()?.oldBlobOid ?? null,
+        fromWorkdir: !(props.staged ?? false),
+      };
+    },
+    (k) => gitApi.binarySides(k.repo, k.rel, k.oldBlobOid, k.fromWorkdir).catch(() => null),
+  );
+
+  /// Whether this file can be *drawn*, as opposed to merely being named like
+  /// an image. Both sides are sniffed — see `imageDiff.ts`. `null` means fall
+  /// back to the ordinary renderer, which for a real binary is the placeholder
+  /// and for a mislabelled `.png` is exactly the right answer.
+  const imagePlan = createMemo(() => {
+    const sides = binary();
+    if (!sides) return null;
+    return planImageDiff(
+      relPath(),
+      sides.old ? bytesFromBase64(sides.old.base64) : null,
+      sides.new ? bytesFromBase64(sides.new.base64) : null,
+    );
+  });
+
+  /// SVG is an image *and* a text file, so it gets both views and this decides
+  /// which is showing. Defaults to the picture: that is what changed.
+  const [preferText, setPreferText] = createSignal(false);
+  const showingImage = () => imagePlan() !== null && !preferText();
+
   /// Per-hunk view. Local rather than a stored preference: you turn it on for
   /// the file you are splitting up, not forever.
   const [hunkMode, setHunkMode] = createSignal(false);
+
+  /// The lines picked inside one hunk, and where a shift-click ranges from.
+  ///
+  /// Cleared on every refetch: the selection names positions in a `FileDiff`
+  /// that has just been replaced, and a stale index would send the next click
+  /// at whatever line happens to sit there now. That is the failure this
+  /// feature exists to not have.
+  const [selection, setSelection] = createSignal<LineSelection | null>(null);
+  const [anchor, setAnchor] = createSignal<number | null>(null);
+
+  function clearSelection() {
+    setSelection(null);
+    setAnchor(null);
+  }
+
+  /// What the selection's indices are indices *into*, as a value that only
+  /// changes when the lines do.
+  ///
+  /// Not the resource object: this tab refetches on every refs pulse — several
+  /// a second while an agent is running — and clearing on each of those would
+  /// take the selection out from under a user who is halfway through making
+  /// it. Clearing on a genuine content change is the part that matters, since
+  /// after one the indices point at whatever now sits in those positions.
+  const hunkFingerprint = createMemo(() =>
+    (fileDiff()?.hunks ?? [])
+      .map((h) => `${h.header}\u0000${h.lines.map((l) => l.origin + l.content).join("\u0001")}`)
+      .join("\u0002"),
+  );
+
+  createEffect(on(hunkFingerprint, () => clearSelection(), { defer: true }));
+
+  function pickLine(hunkIndex: number, lineIndex: number, shift: boolean) {
+    const file = fileDiff();
+    const hunk = file?.hunks[hunkIndex];
+    if (!hunk) return;
+    const next = applyLineClick(selection(), anchor(), hunk, hunkIndex, lineIndex, shift);
+    setSelection(next.selection);
+    setAnchor(next.anchor);
+  }
+
+  /// The diff a hunk action should be sent, and the hunk index inside it.
+  ///
+  /// With a selection in this hunk, that is a one-hunk `FileDiff` narrowed to
+  /// the picked lines (see `linePatch.ts`); without one it is the real diff at
+  /// the real index. `null` means the selection could not be turned into a
+  /// patch — refused rather than quietly widened to the whole hunk.
+  function target(
+    hunkIndex: number,
+    direction: "forward" | "reverse",
+  ): { file: FileDiff; index: number } | null {
+    const file = fileDiff();
+    if (!file) return null;
+    const sel = selection();
+    if (!sel || sel.hunkIndex !== hunkIndex || sel.lines.length === 0) {
+      return { file, index: hunkIndex };
+    }
+    const narrowed = buildLineSelectionDiff(file, hunkIndex, sel.lines, direction);
+    if (!narrowed) return null;
+    return { file: narrowed, index: 0 };
+  }
 
   /// Stage or unstage one hunk.
   ///
@@ -140,28 +259,44 @@ export function DiffTabView(props: DiffTabViewProps) {
   /// `GitDiffView` carried a whole remap to undo that. Moving whitespace into
   /// the diff deleted the problem rather than the workaround.)
   async function stageHunk(hunkIndex: number) {
-    const file = fileDiff();
-    if (!file) return;
     const staged = props.staged ?? false;
+    // Unstaging is the reverse direction, so the selection has to be narrowed
+    // against the *new* side. Passing the wrong one here is the whole bug
+    // `linePatch.ts` is written to make impossible to write by accident.
+    const t = target(hunkIndex, staged ? "reverse" : "forward");
+    if (!t) {
+      pushToast("Those lines cannot be staged on their own — use the whole hunk.", "warning");
+      return;
+    }
+    const picked = t.index === 0 && t.file !== fileDiff() ? (selection()?.lines.length ?? 0) : 0;
     await run(staged ? "Could not unstage hunk" : "Could not stage hunk", async () => {
-      await gitApi.applyHunk(props.repoPath, file, hunkIndex, staged);
-      pushToast(staged ? "Unstaged hunk" : "Staged hunk", "success", 1800);
+      await gitApi.applyHunk(props.repoPath, t.file, t.index, staged);
+      const what = picked > 0 ? `${picked} line${picked === 1 ? "" : "s"}` : "hunk";
+      pushToast(`${staged ? "Unstaged" : "Staged"} ${what}`, "success", 1800);
+      clearSelection();
     });
   }
 
   /// Revert one hunk in the working tree. Irreversible, so it asks — and Rust
   /// refuses outright if the file moved since this diff was rendered.
   async function discardHunk(hunkIndex: number) {
-    const file = fileDiff();
-    if (!file) return;
+    // Discard un-applies against the working tree, which holds the new side.
+    const t = target(hunkIndex, "reverse");
+    if (!t) {
+      pushToast("Those lines cannot be discarded on their own — use the whole hunk.", "warning");
+      return;
+    }
+    const picked = t.index === 0 && t.file !== fileDiff() ? (selection()?.lines.length ?? 0) : 0;
+    const what = picked > 0 ? `${picked} selected line${picked === 1 ? "" : "s"}` : "this hunk";
     const ok = await dialogConfirm(
-      `Discard this hunk in ${relPath()}? Only these lines revert, and this cannot be undone.`,
-      { title: "Discard hunk", kind: "warning" },
+      `Discard ${what} in ${relPath()}? Only those lines revert, and this cannot be undone.`,
+      { title: picked > 0 ? "Discard lines" : "Discard hunk", kind: "warning" },
     );
     if (!ok) return;
     await run("Could not discard hunk", async () => {
-      await gitApi.discardHunk(props.repoPath, file, hunkIndex);
-      pushToast("Discarded hunk", "info", 2200);
+      await gitApi.discardHunk(props.repoPath, t.file, t.index);
+      pushToast(picked > 0 ? `Discarded ${what}` : "Discarded hunk", "info", 2200);
+      clearSelection();
     });
   }
 
@@ -173,6 +308,9 @@ export function DiffTabView(props: DiffTabViewProps) {
     // the working tree is not what you are looking at, so offering it there
     // would revert something off screen.
     onDiscardHunk: props.staged ? undefined : (i) => void discardHunk(i),
+    selection: selection(),
+    onLineClick: pickLine,
+    onClearSelection: clearSelection,
   });
 
   const sides = createMemo(() => {
@@ -272,6 +410,25 @@ export function DiffTabView(props: DiffTabViewProps) {
             draws hunks as discrete blocks — Monaco's diff view has no such
             unit. The controls existed and were rendered by nothing: their one
             caller had no import site anywhere in the tree. */}
+        {/* Only for a file that has both readings — an SVG. A PNG has no text
+            diff to switch to and a `.rs` has no picture, so in both of those
+            the control would be a choice with one option. */}
+        <Show when={imagePlan()?.hasTextDiff}>
+          <button
+            onClick={() => setPreferText((v) => !v)}
+            aria-label="Toggle image and text view"
+            aria-pressed={showingImage()}
+            class={`flex items-center gap-1 px-2 py-0.5 text-label rounded border transition-colors ${
+              showingImage()
+                ? "bg-primary/15 border-primary/40 text-primary"
+                : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
+            title="This file is both a picture and text — switch between them"
+          >
+            <ImageIcon class="w-3 h-3" />
+            {showingImage() ? "Image" : "Text"}
+          </button>
+        </Show>
         <button
           onClick={() => setHunkMode((v) => !v)}
           aria-label="Toggle per-hunk view"
@@ -289,6 +446,20 @@ export function DiffTabView(props: DiffTabViewProps) {
         >
           <SplitSquareVertical class="w-3 h-3" />
           Hunks
+        </button>
+        <button
+          onClick={() => actions.toggleDiffLineNumbers()}
+          aria-label="Toggle line numbers"
+          aria-pressed={state.diffLineNumbers}
+          class={`flex items-center gap-1 px-2 py-0.5 text-label rounded border transition-colors ${
+            state.diffLineNumbers
+              ? "bg-primary/15 border-primary/40 text-primary"
+              : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+          }`}
+          title="Show old/new line numbers in the diff gutters"
+        >
+          <Hash class="w-3 h-3" />
+          Lines
         </button>
         <button
           onClick={() => actions.toggleIgnoreWhitespace()}
@@ -345,7 +516,18 @@ export function DiffTabView(props: DiffTabViewProps) {
           about whichever hunk it happened to sit beside. */}
       <ProvenanceNote provenance={provenance()} />
 
-      <div class="flex-1 min-h-0">
+      <div class="flex-1 min-h-0 relative">
+        <Show when={showingImage()}>
+          {/* Keyed on the plan, so switching files rebuilds the view rather
+              than leaving the previous image's swipe position on the new one. */}
+          <ImageDiffView
+            plan={imagePlan()!}
+            old={binary()?.old ?? null}
+            new={binary()?.new ?? null}
+            oversize={binary()?.oversize}
+          />
+        </Show>
+        <Show when={!showingImage()}>
         <Show when={!hunkMode()} fallback={
           <div class="h-full overflow-auto scrollbar-thin font-mono text-body leading-[1.5]">
             <Show
@@ -364,6 +546,7 @@ export function DiffTabView(props: DiffTabViewProps) {
                   mode={state.diffMode}
                   hunkActions={hunkActions()}
                   repoPath={props.repoPath}
+                  lineNumbers={state.diffLineNumbers}
                 />
               )}
             </Show>
@@ -397,6 +580,7 @@ export function DiffTabView(props: DiffTabViewProps) {
               />
             </Show>
           )}
+        </Show>
         </Show>
         </Show>
       </div>

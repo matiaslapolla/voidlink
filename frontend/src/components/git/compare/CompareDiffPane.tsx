@@ -18,6 +18,9 @@ type Props = {
   baseRef: string;
   headRef: string;
   diffMode: DiffMode;
+  /// Global (see `prefs.diffLineNumbers`), unlike `diffMode` above, which this
+  /// tab deliberately keeps to itself.
+  lineNumbers?: boolean;
 };
 
 function displayPath(file: FileDiff): { primary: string; rename: string | null } {
@@ -99,7 +102,11 @@ export function CompareDiffPane(props: Props) {
               </div>
               <ProvenanceNote provenance={provenance()} />
               <div class="flex-1 overflow-auto scrollbar-thin font-mono text-body leading-[1.5]">
-                <DiffRenderer file={f()} mode={props.diffMode} />
+                <DiffRenderer
+                  file={f()}
+                  mode={props.diffMode}
+                  lineNumbers={props.lineNumbers}
+                />
               </div>
             </>
           );

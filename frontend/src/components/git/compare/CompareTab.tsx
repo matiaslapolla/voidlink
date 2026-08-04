@@ -39,7 +39,7 @@ type Props = {
 };
 
 export function CompareTab(props: Props) {
-  const { actions } = useAppStore();
+  const { state, actions } = useAppStore();
   /// The element the drag measures against, held directly.
   ///
   /// It used to be re-found by id on every mousemove — a document-wide lookup
@@ -510,6 +510,7 @@ export function CompareTab(props: Props) {
               baseRef={props.tab.baseRef}
               headRef={props.tab.headRef}
               diffMode={diffMode()}
+              lineNumbers={state.diffLineNumbers}
             />
           </div>
         </Show>

@@ -489,6 +489,15 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     const wtId = state.activeWorktreeId;
     return [
       {
+        id: "view.combined-diff",
+        label: "Review all changes",
+        description:
+          "Every staged, unstaged and untracked change in one scroll, one collapsible row per file",
+        group: "View",
+        enabled: () => !!activeRepoPath(),
+        run: () => void actions.openCombinedTab(wtId),
+      },
+      {
         id: "view.timeline",
         label: "Open the timeline",
         description: "The event log: commits, agent turns and commands, newest first",
@@ -781,6 +790,8 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       items.push({ type: "history", id: h.id });
     for (const t of state.timelineTabsByWorktree[wtId] ?? [])
       items.push({ type: "timeline", id: t.id });
+    for (const c of state.combinedTabsByWorktree[wtId] ?? [])
+      items.push({ type: "combined", id: c.id });
     for (const m of state.missionTabsByWorktree[wtId] ?? [])
       items.push({ type: "mission", id: m.id });
     for (const b of state.browserTabsByWorktree[wtId] ?? [])
@@ -837,6 +848,14 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         label: "Timeline",
         kind: "timeline",
         open: go({ type: "timeline", id: t.id }),
+      });
+    }
+    for (const c of state.combinedTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: c.id,
+        label: "All changes",
+        kind: "combined",
+        open: go({ type: "combined", id: c.id }),
       });
     }
     for (const m of state.missionTabsByWorktree[wtId] ?? []) {
@@ -982,6 +1001,9 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       case "timeline":
         actions.selectTimelineTab(wtId, item.id);
         break;
+      case "combined":
+        actions.selectCombinedTab(wtId, item.id);
+        break;
       case "mission":
         actions.selectMissionTab(wtId, item.id);
         break;
@@ -1076,6 +1098,9 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         break;
       case "timeline":
         actions.closeTimelineTab(wtId, item.id);
+        break;
+      case "combined":
+        actions.closeCombinedTab(wtId, item.id);
         break;
       case "mission":
         actions.closeMissionTab(wtId, item.id);

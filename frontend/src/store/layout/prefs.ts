@@ -99,6 +99,12 @@ export interface UiPrefs {
   leftSidebarCollapsed: boolean;
   sidebarsSwapped: boolean;
   diffMode: DiffMode;
+  /// Whether the hunk renderer prints old/new line numbers in its gutters.
+  ///
+  /// Global rather than per worktree for the same reason `diffMode` is: it is a
+  /// statement about how you read diffs, and having it flip back when you
+  /// switch worktree is the behaviour nobody wants.
+  diffLineNumbers: boolean;
   gitTab: GitTab;
   ignoreWhitespace: boolean;
   sidebarTab: SidebarTab;
@@ -123,6 +129,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   leftSidebarCollapsed: false,
   sidebarsSwapped: false,
   diffMode: "inline",
+  diffLineNumbers: true,
   gitTab: "changes",
   ignoreWhitespace: false,
   sidebarTab: "terminals",
@@ -180,6 +187,7 @@ export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
     leftSidebarCollapsed: parsed.leftSidebarCollapsed ?? d.leftSidebarCollapsed,
     sidebarsSwapped: parsed.sidebarsSwapped ?? d.sidebarsSwapped,
     diffMode: parsed.diffMode === "split" ? "split" : "inline",
+    diffLineNumbers: parsed.diffLineNumbers ?? d.diffLineNumbers,
     gitTab:
       parsed.gitTab === "branches" || parsed.gitTab === "history"
         ? parsed.gitTab
