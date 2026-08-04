@@ -215,7 +215,12 @@ export function BoardSurface(props: BoardSurfaceProps) {
               size="pane"
               class="flex-1"
               action={
-                <EmptyStateAction onClick={() => setComposing(true)}>New card</EmptyStateAction>
+                // Not "New card": that is the header button's label, and two
+                // controls with one name is what a screen reader — and a
+                // render test — has no way to tell apart.
+                <EmptyStateAction onClick={() => setComposing(true)}>
+                  Add the first card
+                </EmptyStateAction>
               }
             />
           }
