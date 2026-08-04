@@ -14,6 +14,7 @@ mod journal;
 mod notify;
 mod lsp;
 mod brain;
+mod board;
 mod menu;
 mod secrets;
 mod watch;
@@ -1384,6 +1385,9 @@ pub fn run() {
             brain::brain_list_entries,
             brain::brain_read_entry,
             brain::brain_save_entry,
+            board::board_list_cards,
+            board::board_read_card,
+            board::board_save_card,
             secrets::secret_set,
             secrets::secret_delete,
             secrets::secret_status,
