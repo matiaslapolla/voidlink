@@ -76,6 +76,11 @@ export const EMPTY_STATES = {
     iconName: "Archive",
     line: "Nothing has been snapshotted in this worktree yet.",
   },
+  /// `BoardSurface`, a repo whose `.voidlink/board/` holds no cards.
+  boardEmpty: {
+    iconName: "Columns3",
+    line: "This project's board has no cards.",
+  },
   /// The editor window with no file open. Owned by the editor branch and
   /// registered here for the same reason.
   editorNoFile: {

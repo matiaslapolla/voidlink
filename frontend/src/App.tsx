@@ -40,15 +40,18 @@ import { TooltipLayer } from "@/components/ui/Tooltip";
 import { PromptHost } from "@/commands/PromptHost";
 import {
   closeCheatSheet,
+  closeBoard,
   closeBrain,
   closeFileFinder,
   closePalette,
   getActions,
   isCheatSheetOpen,
+  isBoardOpen,
   isBrainOpen,
   isFileFinderOpen,
   isPaletteOpen,
   isTabSwitcherOpen,
+  openBoard,
   openBrain,
   openCheatSheet,
   openFileFinder,
@@ -73,6 +76,7 @@ import { askAgent, registerAgentActions } from "@/commands/agent";
 import { agentById, resolveAgentCommand, useSettings } from "@/store/settings";
 import { FilesPanel } from "@/components/files/FilesPanel";
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
+import { BoardOverlayHost } from "@/components/board/BoardOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { createOverlay, setOverlayOpen } from "@/commands/overlay";
 import { requestNewWorktree } from "@/commands/worktree";
@@ -614,6 +618,13 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         description: "Browse, read and capture entries in this project's brain",
         group: "View",
         run: () => openBrain(),
+      },
+      {
+        id: "board.open",
+        label: "Open board…",
+        description: "This project's kanban board, kept as markdown files in .voidlink/board",
+        group: "View",
+        run: () => openBoard(),
       },
       {
         id: "browser.new",
@@ -1245,6 +1256,14 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         open={isBrainOpen()}
         repoPath={activeWorkspace()?.repoRoot ?? ""}
         onClose={closeBrain}
+      />
+      {/* Same repo root, and for the same reason: a card about the project
+          should not disappear because you switched to the worktree you wrote
+          it for. */}
+      <BoardOverlayHost
+        open={isBoardOpen()}
+        repoPath={activeWorkspace()?.repoRoot ?? ""}
+        onClose={closeBoard}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />
