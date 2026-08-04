@@ -2,6 +2,12 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { diffWordsWithSpace } from "diff";
 import { Check, Clipboard, MessageSquarePlus, Plus, Minus, X } from "lucide-solid";
 import type { DiffHunk, DiffLine, FileDiff } from "@/types/git";
+import {
+  explainLineStagingBlock,
+  lineStagingBlock,
+  selectionSizeFor,
+  type LineSelection,
+} from "./linePatch";
 import { createRowIdentity } from "@/store/stableRows";
 import {
   addReviewNote,
@@ -22,6 +28,20 @@ export interface HunkActions {
   /// Called when the user clicks "Discard hunk" — reverts just this hunk in
   /// the working tree. Only shown for unstaged working-tree diffs.
   onDiscardHunk?: (hunkIndex: number) => void | Promise<void>;
+  /// The lines picked inside one hunk, or `null` for "no selection".
+  ///
+  /// The renderer draws it and reports clicks; it never decides what the
+  /// buttons *do* with it. `onStageHunk`/`onDiscardHunk` keep their exact
+  /// signature — a hunk index and nothing else — because the caller already
+  /// holds the selection it passed down, and widening that callback is how a
+  /// control ends up applying one hunk's lines to another.
+  selection?: LineSelection | null;
+  /// A click on a changed line. `shift` extends from the last plain click.
+  /// Absent means line selection is off entirely, and the rows are inert.
+  onLineClick?: (hunkIndex: number, lineIndex: number, shift: boolean) => void;
+  /// Drop the selection without acting on it. Toggling every line back off one
+  /// by one is not an exit from a twenty-line shift-select.
+  onClearSelection?: () => void;
 }
 
 // JetBrains-style diff renderer used by both working-tree and ref-vs-ref
@@ -48,9 +68,70 @@ export function hasNoNewlineMarker(lines: readonly DiffLine[]): boolean {
   return lines.some((l) => l.origin === NO_NEWLINE_ORIGIN);
 }
 
+/// A line together with where it sits in the hunk's own `lines` array.
+///
+/// The index is carried, not recomputed: line selection addresses the raw
+/// array (see `linePatch.ts`), and a row-position numbering derived separately
+/// would be a second source of truth for the one thing that must not have two.
+interface IndexedLine {
+  line: DiffLine;
+  index: number;
+}
+
 /// The lines that are lines. See `NO_NEWLINE_ORIGIN`.
-function codeLines(lines: DiffLine[]): DiffLine[] {
-  return lines.filter((l) => l.origin !== NO_NEWLINE_ORIGIN);
+function codeLines(lines: DiffLine[]): IndexedLine[] {
+  const out: IndexedLine[] = [];
+  lines.forEach((line, index) => {
+    if (line.origin !== NO_NEWLINE_ORIGIN) out.push({ line, index });
+  });
+  return out;
+}
+
+// ─── Line selection ──────────────────────────────────────────────────────────
+
+/// Is this raw-array position part of the current selection?
+///
+/// `undefined` for `lineIndex` is a row with no line on this side — the empty
+/// half of a split pair — which is never selected and never pickable.
+function isLineSelected(
+  actions: HunkActions | undefined,
+  hunkIndex: number,
+  lineIndex: number | undefined,
+): boolean {
+  const sel = actions?.selection;
+  if (!sel || lineIndex === undefined) return false;
+  return sel.hunkIndex === hunkIndex && sel.lines.includes(lineIndex);
+}
+
+/// The click handler for one row, or `null` when the row is not a pick target.
+///
+/// Returning `null` rather than a no-op is deliberate: the callers spread it
+/// straight onto `onClick`/`role`/`tabindex`, so an inert row gets no
+/// interactive affordances at all rather than a focusable element that does
+/// nothing when you press it.
+function pickHandler(
+  actions: HunkActions | undefined,
+  hunkIndex: number,
+  lineIndex: number | undefined,
+  isPickable: boolean,
+): ((e: MouseEvent) => void) | null {
+  const onLineClick = actions?.onLineClick;
+  if (!onLineClick || !isPickable || lineIndex === undefined) return null;
+  return (e: MouseEvent) => {
+    // Let a drag-select of the text win: pulling across three lines to copy
+    // them should not also stage them.
+    if (window.getSelection()?.toString()) return;
+    onLineClick(hunkIndex, lineIndex, e.shiftKey);
+  };
+}
+
+/// Selected rows get a ring rather than a background: the background already
+/// carries the +/− meaning, and overwriting it would trade one fact for
+/// another. Pickable-but-unselected rows only get a cursor, so the surface
+/// does not shimmer under the pointer while you read.
+function selectionClass(selected: boolean, pickable: boolean): string {
+  if (selected) return "ring-1 ring-inset ring-primary/70 bg-primary/10";
+  return pickable ? "cursor-pointer" : "";
 }
 
 /// The footnote a hunk carries when one of its sides has no trailing newline.
@@ -67,6 +148,8 @@ function NoNewlineNote() {
 interface InlineRowData {
   origin: " " | "+" | "-";
   line: DiffLine;
+  /// Position in the hunk's raw `lines` array — what a line selection names.
+  index: number;
   segments?: Segment[];
 }
 
@@ -76,18 +159,18 @@ export function inlineRowsForHunk(all: DiffLine[]): InlineRowData[] {
   let i = 0;
   while (i < lines.length) {
     const l = lines[i];
-    if (l.origin === " " || l.origin === "~") {
-      out.push({ origin: " ", line: l });
+    if (l.line.origin === " " || l.line.origin === "~") {
+      out.push({ origin: " ", line: l.line, index: l.index });
       i++;
       continue;
     }
-    const dels: DiffLine[] = [];
-    while (i < lines.length && lines[i].origin === "-") {
+    const dels: IndexedLine[] = [];
+    while (i < lines.length && lines[i].line.origin === "-") {
       dels.push(lines[i]);
       i++;
     }
-    const adds: DiffLine[] = [];
-    while (i < lines.length && lines[i].origin === "+") {
+    const adds: IndexedLine[] = [];
+    while (i < lines.length && lines[i].line.origin === "+") {
       adds.push(lines[i]);
       i++;
     }
@@ -96,7 +179,7 @@ export function inlineRowsForHunk(all: DiffLine[]): InlineRowData[] {
       const d = dels[k];
       const a = adds[k];
       if (d && a) {
-        const wordDiff = diffWordsWithSpace(d.content, a.content);
+        const wordDiff = diffWordsWithSpace(d.line.content, a.line.content);
         const leftSegs: Segment[] = [];
         const rightSegs: Segment[] = [];
         for (const part of wordDiff) {
@@ -107,12 +190,12 @@ export function inlineRowsForHunk(all: DiffLine[]): InlineRowData[] {
             rightSegs.push({ text: part.value, changed: false });
           }
         }
-        out.push({ origin: "-", line: d, segments: leftSegs });
-        out.push({ origin: "+", line: a, segments: rightSegs });
+        out.push({ origin: "-", line: d.line, index: d.index, segments: leftSegs });
+        out.push({ origin: "+", line: a.line, index: a.index, segments: rightSegs });
       } else if (d) {
-        out.push({ origin: "-", line: d });
+        out.push({ origin: "-", line: d.line, index: d.index });
       } else if (a) {
-        out.push({ origin: "+", line: a });
+        out.push({ origin: "+", line: a.line, index: a.index });
       }
     }
   }
@@ -167,6 +250,8 @@ function InlineDiff(props: {
                   line={row.line}
                   segments={row.segments}
                   lineNumbers={props.lineNumbers}
+                  selected={isLineSelected(props.hunkActions, i(), row.index)}
+                  onPick={pickHandler(props.hunkActions, i(), row.index, row.origin !== " ")}
                 />
               )}
             </For>
@@ -188,6 +273,10 @@ function InlineRow(props: {
   /// "line 40 became line 42" — so hiding one and keeping the other would be a
   /// third state nobody asked for.
   lineNumbers: boolean;
+  selected: boolean;
+  /// `null` when this row is not pickable — a context line, or a caller that
+  /// did not opt into line selection at all.
+  onPick: ((e: MouseEvent) => void) | null;
 }) {
   const bg = () => {
     switch (props.origin) {
@@ -200,7 +289,20 @@ function InlineRow(props: {
     }
   };
   return (
-    <div class={`flex whitespace-pre ${bg()}`}>
+    <div
+      class={`flex whitespace-pre ${bg()} ${selectionClass(props.selected, !!props.onPick)}`}
+      onClick={props.onPick ?? undefined}
+      role={props.onPick ? "checkbox" : undefined}
+      aria-checked={props.onPick ? props.selected : undefined}
+      aria-label={props.onPick ? `${props.origin === "+" ? "Added" : "Removed"} line: ${props.line.content}` : undefined}
+      tabindex={props.onPick ? 0 : undefined}
+      onKeyDown={(e) => {
+        if (!props.onPick) return;
+        if (e.key !== " " && e.key !== "Enter") return;
+        e.preventDefault();
+        props.onPick(e as unknown as MouseEvent);
+      }}
+    >
       <Show when={props.lineNumbers}>
         <span
           data-lineno="old"
@@ -246,6 +348,11 @@ interface SplitPair {
   left: DiffLine | null;
   right: DiffLine | null;
   context: DiffLine | null;
+  /// Raw-array positions of whichever of the three above is present. See
+  /// `IndexedLine`.
+  leftIndex?: number;
+  rightIndex?: number;
+  contextIndex?: number;
   segments?: {
     leftSegs: Segment[];
     rightSegs: Segment[];
@@ -258,18 +365,18 @@ export function pairHunkLines(all: DiffLine[]): SplitPair[] {
   let i = 0;
   while (i < lines.length) {
     const l = lines[i];
-    if (l.origin === " " || l.origin === "~") {
-      out.push({ left: null, right: null, context: l });
+    if (l.line.origin === " " || l.line.origin === "~") {
+      out.push({ left: null, right: null, context: l.line, contextIndex: l.index });
       i++;
       continue;
     }
-    const dels: DiffLine[] = [];
-    while (i < lines.length && lines[i].origin === "-") {
+    const dels: IndexedLine[] = [];
+    while (i < lines.length && lines[i].line.origin === "-") {
       dels.push(lines[i]);
       i++;
     }
-    const adds: DiffLine[] = [];
-    while (i < lines.length && lines[i].origin === "+") {
+    const adds: IndexedLine[] = [];
+    while (i < lines.length && lines[i].line.origin === "+") {
       adds.push(lines[i]);
       i++;
     }
@@ -279,7 +386,7 @@ export function pairHunkLines(all: DiffLine[]): SplitPair[] {
       const a = adds[k] ?? null;
       let segments: SplitPair["segments"] | undefined;
       if (d && a) {
-        const wordDiff = diffWordsWithSpace(d.content, a.content);
+        const wordDiff = diffWordsWithSpace(d.line.content, a.line.content);
         const leftSegs: Segment[] = [];
         const rightSegs: Segment[] = [];
         for (const part of wordDiff) {
@@ -294,7 +401,14 @@ export function pairHunkLines(all: DiffLine[]): SplitPair[] {
         }
         segments = { leftSegs, rightSegs };
       }
-      out.push({ left: d, right: a, context: null, segments });
+      out.push({
+        left: d?.line ?? null,
+        right: a?.line ?? null,
+        context: null,
+        leftIndex: d?.index,
+        rightIndex: a?.index,
+        segments,
+      });
     }
   }
   return out;
@@ -313,6 +427,32 @@ function HunkHeader(props: {
   const [draft, setDraft] = createSignal("");
 
   const filePath = () => props.file.newPath ?? props.file.oldPath ?? "";
+
+  /// How many lines the buttons would act on. Zero means "the whole hunk" —
+  /// the selection is elsewhere, or there is none — which is what makes this
+  /// an extension of hunk staging rather than a replacement for it.
+  const picked = () => selectionSizeFor(props.actions?.selection ?? null, props.hunkIndex);
+
+  /// Why this hunk cannot be split by line, when it cannot. Shown as a hint on
+  /// the buttons rather than silently omitting the ability, so "you cannot
+  /// pick lines here" is a sentence instead of an absence.
+  const blocked = () =>
+    props.actions?.onLineClick ? lineStagingBlock(props.file, props.hunk) : null;
+
+  const stageLabel = () => {
+    const base = props.actions?.stageLabel ?? "Stage hunk";
+    const n = picked();
+    if (n === 0) return base;
+    // "Stage 3 lines", "Unstage 1 line" — the verb comes from the caller, the
+    // noun from the selection.
+    const verb = base.split(" ")[0];
+    return `${verb} ${n} line${n === 1 ? "" : "s"}`;
+  };
+
+  const discardLabel = () => {
+    const n = picked();
+    return n === 0 ? "Discard hunk" : `Discard ${n} line${n === 1 ? "" : "s"}`;
+  };
 
   /// The notes anchored to *this* hunk.
   ///
@@ -413,6 +553,20 @@ function HunkHeader(props: {
             {notes().length}
           </span>
         </Show>
+        {/* Outside the hover group, like the note count above: a live selection
+            is state the user is standing in the middle of, and state you can
+            only see by hovering is state you forget you are in. */}
+        <Show when={picked() > 0}>
+          <button
+            onClick={() => props.actions?.onClearSelection?.()}
+            title="Clear the line selection — the buttons go back to the whole hunk"
+            aria-label="Clear line selection"
+            class="flex items-center gap-1 px-1 rounded bg-primary/15 text-primary text-micro hover:bg-primary/25 transition-colors"
+          >
+            <span class="tabular-nums">{picked()}</span>
+            <X class="w-2.5 h-2.5" />
+          </button>
+        </Show>
         <div class="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <Show when={props.repoPath && filePath()}>
             <button
@@ -430,8 +584,12 @@ function HunkHeader(props: {
             <button
               onClick={() => void stage()}
               disabled={running()}
-              title={props.actions?.stageLabel ?? "Stage hunk"}
-              aria-label={props.actions?.stageLabel ?? "Stage hunk"}
+              title={
+                blocked()
+                  ? `${stageLabel()} — ${explainLineStagingBlock(blocked()!)}`
+                  : stageLabel()
+              }
+              aria-label={stageLabel()}
               class="flex items-center gap-1 px-1.5 py-0.5 rounded text-micro hover:bg-accent/60 hover:text-foreground transition-colors"
             >
               <Show
@@ -440,19 +598,23 @@ function HunkHeader(props: {
               >
                 <Minus class="w-2.5 h-2.5" />
               </Show>
-              {props.actions?.stageLabel ?? "Stage hunk"}
+              {stageLabel()}
             </button>
           </Show>
           <Show when={props.actions?.onDiscardHunk}>
             <button
               onClick={() => void discard()}
               disabled={running()}
-              title="Discard hunk (revert in working tree)"
-              aria-label="Discard hunk"
+              title={
+                picked() === 0
+                  ? "Discard hunk (revert in working tree)"
+                  : `${discardLabel()} (revert in working tree)`
+              }
+              aria-label={discardLabel()}
               class="flex items-center gap-1 px-1.5 py-0.5 rounded text-micro hover:bg-destructive/15 hover:text-destructive transition-colors"
             >
               <Minus class="w-2.5 h-2.5" />
-              Discard
+              {picked() === 0 ? "Discard" : discardLabel()}
             </button>
           </Show>
           <button
@@ -562,7 +724,14 @@ function SplitDiff(props: {
               repoPath={props.repoPath}
             />
             <For each={pairHunkLines(hunk.lines)}>
-              {(pair) => <SplitRow pair={pair} lineNumbers={props.lineNumbers} />}
+              {(pair) => (
+                <SplitRow
+                  pair={pair}
+                  lineNumbers={props.lineNumbers}
+                  actions={props.hunkActions}
+                  hunkIndex={i()}
+                />
+              )}
             </For>
             <Show when={hasNoNewlineMarker(hunk.lines)}>
               <NoNewlineNote />
@@ -574,7 +743,19 @@ function SplitDiff(props: {
   );
 }
 
-function SplitRow(props: { pair: SplitPair; lineNumbers: boolean }) {
+function SplitRow(props: {
+  pair: SplitPair;
+  lineNumbers: boolean;
+  actions?: HunkActions;
+  hunkIndex: number;
+}) {
+  /// Each half of a split row is its own pick target: the deletion on the left
+  /// and the addition on the right are two separate lines of the patch, and
+  /// `git add -p` lets you take one without the other.
+  const leftPick = () =>
+    pickHandler(props.actions, props.hunkIndex, props.pair.leftIndex, props.pair.left !== null);
+  const rightPick = () =>
+    pickHandler(props.actions, props.hunkIndex, props.pair.rightIndex, props.pair.right !== null);
   return (
     <div class="flex whitespace-pre min-w-0">
       <SplitCell
@@ -583,6 +764,8 @@ function SplitRow(props: { pair: SplitPair; lineNumbers: boolean }) {
         kind={props.pair.context ? "context" : props.pair.left ? "deleted" : "empty"}
         segments={props.pair.segments?.leftSegs}
         lineNumbers={props.lineNumbers}
+        selected={isLineSelected(props.actions, props.hunkIndex, props.pair.leftIndex)}
+        onPick={leftPick()}
       />
       <div class="w-px bg-border shrink-0" />
       <SplitCell
@@ -591,6 +774,8 @@ function SplitRow(props: { pair: SplitPair; lineNumbers: boolean }) {
         kind={props.pair.context ? "context" : props.pair.right ? "added" : "empty"}
         segments={props.pair.segments?.rightSegs}
         lineNumbers={props.lineNumbers}
+        selected={isLineSelected(props.actions, props.hunkIndex, props.pair.rightIndex)}
+        onPick={rightPick()}
       />
     </div>
   );
@@ -606,6 +791,8 @@ function SplitCell(props: {
   /// Off hides *both* sides' gutters — the two are one preference, and a split
   /// view numbered on one side only reads as a rendering bug.
   lineNumbers: boolean;
+  selected: boolean;
+  onPick: ((e: MouseEvent) => void) | null;
 }) {
   const gutter = () => {
     switch (props.kind) {
@@ -641,7 +828,24 @@ function SplitCell(props: {
       : (props.line.newLineno ?? "");
   };
   return (
-    <div class={`flex-1 flex min-w-0 ${rowBg()}`}>
+    <div
+      class={`flex-1 flex min-w-0 ${rowBg()} ${selectionClass(props.selected, !!props.onPick)}`}
+      onClick={props.onPick ?? undefined}
+      role={props.onPick ? "checkbox" : undefined}
+      aria-checked={props.onPick ? props.selected : undefined}
+      aria-label={
+        props.onPick
+          ? `${props.kind === "added" ? "Added" : "Removed"} line: ${props.line?.content ?? ""}`
+          : undefined
+      }
+      tabindex={props.onPick ? 0 : undefined}
+      onKeyDown={(e) => {
+        if (!props.onPick) return;
+        if (e.key !== " " && e.key !== "Enter") return;
+        e.preventDefault();
+        props.onPick(e as unknown as MouseEvent);
+      }}
+    >
       <div class={`w-1 shrink-0 ${gutter()}`} />
       <Show when={props.lineNumbers}>
         <span

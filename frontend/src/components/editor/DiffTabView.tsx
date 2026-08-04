@@ -11,7 +11,16 @@
 /// hunks (see `diffModel.ts`) rather than fetched — there is no "read file at
 /// ref" command, and the reconstruction is exact.
 
-import { Show, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  on,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import {
   Columns2,
   GitCompare,
@@ -35,6 +44,11 @@ import {
 } from "@/components/git/shared/SplitDiffRenderer";
 import { ProvenanceNote } from "@/components/git/shared/ProvenanceNote";
 import { loadFileProvenance } from "@/components/git/shared/provenance";
+import {
+  applyLineClick,
+  buildLineSelectionDiff,
+  type LineSelection,
+} from "@/components/git/shared/linePatch";
 import { workingTreeSides } from "./diffModel";
 import { MonacoDiffPane } from "./MonacoPanes";
 import type { FileDiff } from "@/types/git";
@@ -133,6 +147,66 @@ export function DiffTabView(props: DiffTabViewProps) {
   /// the file you are splitting up, not forever.
   const [hunkMode, setHunkMode] = createSignal(false);
 
+  /// The lines picked inside one hunk, and where a shift-click ranges from.
+  ///
+  /// Cleared on every refetch: the selection names positions in a `FileDiff`
+  /// that has just been replaced, and a stale index would send the next click
+  /// at whatever line happens to sit there now. That is the failure this
+  /// feature exists to not have.
+  const [selection, setSelection] = createSignal<LineSelection | null>(null);
+  const [anchor, setAnchor] = createSignal<number | null>(null);
+
+  function clearSelection() {
+    setSelection(null);
+    setAnchor(null);
+  }
+
+  /// What the selection's indices are indices *into*, as a value that only
+  /// changes when the lines do.
+  ///
+  /// Not the resource object: this tab refetches on every refs pulse — several
+  /// a second while an agent is running — and clearing on each of those would
+  /// take the selection out from under a user who is halfway through making
+  /// it. Clearing on a genuine content change is the part that matters, since
+  /// after one the indices point at whatever now sits in those positions.
+  const hunkFingerprint = createMemo(() =>
+    (fileDiff()?.hunks ?? [])
+      .map((h) => `${h.header}\u0000${h.lines.map((l) => l.origin + l.content).join("\u0001")}`)
+      .join("\u0002"),
+  );
+
+  createEffect(on(hunkFingerprint, () => clearSelection(), { defer: true }));
+
+  function pickLine(hunkIndex: number, lineIndex: number, shift: boolean) {
+    const file = fileDiff();
+    const hunk = file?.hunks[hunkIndex];
+    if (!hunk) return;
+    const next = applyLineClick(selection(), anchor(), hunk, hunkIndex, lineIndex, shift);
+    setSelection(next.selection);
+    setAnchor(next.anchor);
+  }
+
+  /// The diff a hunk action should be sent, and the hunk index inside it.
+  ///
+  /// With a selection in this hunk, that is a one-hunk `FileDiff` narrowed to
+  /// the picked lines (see `linePatch.ts`); without one it is the real diff at
+  /// the real index. `null` means the selection could not be turned into a
+  /// patch — refused rather than quietly widened to the whole hunk.
+  function target(
+    hunkIndex: number,
+    direction: "forward" | "reverse",
+  ): { file: FileDiff; index: number } | null {
+    const file = fileDiff();
+    if (!file) return null;
+    const sel = selection();
+    if (!sel || sel.hunkIndex !== hunkIndex || sel.lines.length === 0) {
+      return { file, index: hunkIndex };
+    }
+    const narrowed = buildLineSelectionDiff(file, hunkIndex, sel.lines, direction);
+    if (!narrowed) return null;
+    return { file: narrowed, index: 0 };
+  }
+
   /// Stage or unstage one hunk.
   ///
   /// The index is positional in `file.hunks`, and Rust indexes the same array
@@ -141,28 +215,44 @@ export function DiffTabView(props: DiffTabViewProps) {
   /// `GitDiffView` carried a whole remap to undo that. Moving whitespace into
   /// the diff deleted the problem rather than the workaround.)
   async function stageHunk(hunkIndex: number) {
-    const file = fileDiff();
-    if (!file) return;
     const staged = props.staged ?? false;
+    // Unstaging is the reverse direction, so the selection has to be narrowed
+    // against the *new* side. Passing the wrong one here is the whole bug
+    // `linePatch.ts` is written to make impossible to write by accident.
+    const t = target(hunkIndex, staged ? "reverse" : "forward");
+    if (!t) {
+      pushToast("Those lines cannot be staged on their own — use the whole hunk.", "warning");
+      return;
+    }
+    const picked = t.index === 0 && t.file !== fileDiff() ? (selection()?.lines.length ?? 0) : 0;
     await run(staged ? "Could not unstage hunk" : "Could not stage hunk", async () => {
-      await gitApi.applyHunk(props.repoPath, file, hunkIndex, staged);
-      pushToast(staged ? "Unstaged hunk" : "Staged hunk", "success", 1800);
+      await gitApi.applyHunk(props.repoPath, t.file, t.index, staged);
+      const what = picked > 0 ? `${picked} line${picked === 1 ? "" : "s"}` : "hunk";
+      pushToast(`${staged ? "Unstaged" : "Staged"} ${what}`, "success", 1800);
+      clearSelection();
     });
   }
 
   /// Revert one hunk in the working tree. Irreversible, so it asks — and Rust
   /// refuses outright if the file moved since this diff was rendered.
   async function discardHunk(hunkIndex: number) {
-    const file = fileDiff();
-    if (!file) return;
+    // Discard un-applies against the working tree, which holds the new side.
+    const t = target(hunkIndex, "reverse");
+    if (!t) {
+      pushToast("Those lines cannot be discarded on their own — use the whole hunk.", "warning");
+      return;
+    }
+    const picked = t.index === 0 && t.file !== fileDiff() ? (selection()?.lines.length ?? 0) : 0;
+    const what = picked > 0 ? `${picked} selected line${picked === 1 ? "" : "s"}` : "this hunk";
     const ok = await dialogConfirm(
-      `Discard this hunk in ${relPath()}? Only these lines revert, and this cannot be undone.`,
-      { title: "Discard hunk", kind: "warning" },
+      `Discard ${what} in ${relPath()}? Only those lines revert, and this cannot be undone.`,
+      { title: picked > 0 ? "Discard lines" : "Discard hunk", kind: "warning" },
     );
     if (!ok) return;
     await run("Could not discard hunk", async () => {
-      await gitApi.discardHunk(props.repoPath, file, hunkIndex);
-      pushToast("Discarded hunk", "info", 2200);
+      await gitApi.discardHunk(props.repoPath, t.file, t.index);
+      pushToast(picked > 0 ? `Discarded ${what}` : "Discarded hunk", "info", 2200);
+      clearSelection();
     });
   }
 
@@ -174,6 +264,9 @@ export function DiffTabView(props: DiffTabViewProps) {
     // the working tree is not what you are looking at, so offering it there
     // would revert something off screen.
     onDiscardHunk: props.staged ? undefined : (i) => void discardHunk(i),
+    selection: selection(),
+    onLineClick: pickLine,
+    onClearSelection: clearSelection,
   });
 
   const sides = createMemo(() => {

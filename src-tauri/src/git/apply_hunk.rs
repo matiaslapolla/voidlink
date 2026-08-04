@@ -625,6 +625,190 @@ mod tests {
         assert!(staged.contains("LINE2"), "index did not pick up change: {staged}");
     }
 
+    // ── Line-level staging ──────────────────────────────────────────────
+    //
+    // The frontend's `linePatch.ts` narrows a hunk to the lines the user
+    // picked and hands the result straight back through `git_apply_hunk`.
+    // Nothing on this side changed to allow it — the patch builder already
+    // ships whatever lines the `FileDiff` carries — so these tests exist to
+    // prove that claim against a real repository rather than to test new
+    // code. They are the only place the "applies cleanly and stages exactly
+    // those lines" half of the contract can be answered, because only git
+    // can answer it.
+
+    /// A four-line file where lines 2 and 3 both changed, so "stage one of
+    /// them" is a genuinely different outcome from "stage both".
+    fn two_change_repo(tmp: &Path) -> Repository {
+        let repo = init_repo(tmp);
+        fs::write(tmp.join("hello.txt"), "line1\nline2\nline3\nline4\n").unwrap();
+        commit_all(&repo, "init");
+        fs::write(tmp.join("hello.txt"), "line1\nLINE2\nLINE3\nline4\n").unwrap();
+        repo
+    }
+
+    /// Exactly what `buildLineSelectionDiff(…, [the second change], "forward")`
+    /// produces for that repo: the unpicked deletion neutralised to context,
+    /// the unpicked addition gone.
+    fn second_change_only() -> FileDiff {
+        FileDiff {
+            old_path: Some("hello.txt".to_string()),
+            new_path: Some("hello.txt".to_string()),
+            status: "modified".to_string(),
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                old_lines: 4,
+                new_start: 1,
+                new_lines: 4,
+                header: "@@ -1,4 +1,4 @@".to_string(),
+                lines: vec![
+                    line(" ", "line1", Some(1), Some(1)),
+                    line(" ", "line2", Some(2), Some(2)),
+                    line("-", "line3", Some(3), None),
+                    line("+", "LINE3", None, Some(3)),
+                    line(" ", "line4", Some(4), Some(4)),
+                ],
+            }],
+            is_binary: false,
+            additions: 1,
+            deletions: 1,
+            old_blob_oid: None,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn a_line_filtered_patch_stages_only_the_lines_it_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = two_change_repo(tmp.path());
+
+        git_apply_hunk_impl(
+            tmp.path().to_string_lossy().to_string(),
+            second_change_only(),
+            0,
+            false,
+        )
+        .expect("a line-filtered patch must apply");
+
+        let staged = staged_patch_with_origins(&repo);
+        assert!(staged.contains("+LINE3"), "the picked line was not staged: {staged}");
+        // The one that matters: the line the user did not pick must still be
+        // unstaged. A patch that applied at the wrong offset, or that dropped
+        // the neutralised deletion, lands here.
+        assert!(
+            !staged.contains("LINE2"),
+            "a line the user did not pick was staged too: {staged}"
+        );
+        // …and the working tree still has both edits, because staging reads
+        // the file rather than rewriting it.
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("hello.txt")).unwrap(),
+            "line1\nLINE2\nLINE3\nline4\n"
+        );
+    }
+
+    /// The other direction. `linePatch.ts` neutralises the *additions* for a
+    /// reverse patch, and the file that patch is un-applied against is the
+    /// working tree — so a mirror mistake shows up as a discard that reverts
+    /// the wrong line.
+    #[test]
+    fn a_line_filtered_discard_reverts_only_the_lines_it_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _repo = two_change_repo(tmp.path());
+
+        // `buildLineSelectionDiff(…, [the second change], "reverse")`: the
+        // unpicked addition becomes context, the unpicked deletion is dropped.
+        let file = FileDiff {
+            old_path: Some("hello.txt".to_string()),
+            new_path: Some("hello.txt".to_string()),
+            status: "modified".to_string(),
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                old_lines: 4,
+                new_start: 1,
+                new_lines: 4,
+                header: "@@ -1,4 +1,4 @@".to_string(),
+                lines: vec![
+                    line(" ", "line1", Some(1), Some(1)),
+                    line(" ", "LINE2", Some(2), Some(2)),
+                    line("-", "line3", Some(3), None),
+                    line("+", "LINE3", None, Some(3)),
+                    line(" ", "line4", Some(4), Some(4)),
+                ],
+            }],
+            is_binary: false,
+            additions: 1,
+            deletions: 1,
+            old_blob_oid: None,
+            truncated: false,
+        };
+
+        git_discard_hunk_impl(tmp.path().to_string_lossy().to_string(), file, 0)
+            .expect("a line-filtered discard must apply");
+
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("hello.txt")).unwrap(),
+            "line1\nLINE2\nline3\nline4\n",
+            "discard reverted the wrong line"
+        );
+    }
+
+    /// Two selections in sequence, which is the normal way a hunk gets split
+    /// up. The second patch is built against the *original* diff, so it only
+    /// works because the first one left the working tree alone.
+    #[test]
+    fn staging_the_rest_afterwards_still_applies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = two_change_repo(tmp.path());
+        let root = tmp.path().to_string_lossy().to_string();
+
+        git_apply_hunk_impl(root.clone(), second_change_only(), 0, false).unwrap();
+
+        let first_change_only = FileDiff {
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                old_lines: 4,
+                new_start: 1,
+                new_lines: 4,
+                header: "@@ -1,4 +1,4 @@".to_string(),
+                lines: vec![
+                    line(" ", "line1", Some(1), Some(1)),
+                    line("-", "line2", Some(2), None),
+                    line("+", "LINE2", None, Some(2)),
+                    line(" ", "LINE3", Some(3), Some(3)),
+                    line(" ", "line4", Some(4), Some(4)),
+                ],
+            }],
+            ..second_change_only()
+        };
+        git_apply_hunk_impl(root, first_change_only, 0, false)
+            .expect("the remainder must apply on top of the first selection");
+
+        let staged = staged_patch_with_origins(&repo);
+        assert!(staged.contains("+LINE2"), "{staged}");
+        assert!(staged.contains("+LINE3"), "{staged}");
+    }
+
+    /// Like `git_diff_tree_to_index`, but keeps each line's origin character.
+    /// The plain printer drops `+`/`-`, which makes "was this line added or
+    /// merely present as context" unaskable — and that is the entire question
+    /// a line-level staging test needs to answer.
+    fn staged_patch_with_origins(repo: &Repository) -> String {
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let diff = repo.diff_tree_to_index(Some(&head_tree), None, None).unwrap();
+        let mut out = String::new();
+        diff.print(git2::DiffFormat::Patch, |_d, _h, line| {
+            if matches!(line.origin(), '+' | '-' | ' ') {
+                out.push(line.origin());
+            }
+            if let Ok(s) = std::str::from_utf8(line.content()) {
+                out.push_str(s);
+            }
+            true
+        })
+        .unwrap();
+        out
+    }
+
     fn git_diff_tree_to_index(repo: &Repository) -> String {
         let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
         let diff = repo.diff_tree_to_index(Some(&head_tree), None, None).unwrap();
