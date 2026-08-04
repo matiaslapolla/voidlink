@@ -2,6 +2,7 @@ pub(crate) mod agent;
 pub(crate) mod ai_commit;
 pub(crate) mod apply_hunk;
 pub(crate) mod auth;
+pub(crate) mod binary;
 pub(crate) mod blame;
 pub(crate) mod branch;
 pub(crate) mod cli;
@@ -42,6 +43,7 @@ use crate::secrets::SecretBinding;
 use agent::git_agent_query_impl;
 use ai_commit::git_ai_generate_commit_impl;
 use apply_hunk::{git_apply_hunk_impl, git_discard_hunk_impl};
+use binary::{git_binary_sides_impl, BinarySides};
 use blame::{git_blame_file_impl, BlameLine};
 use branch::{
     git_checkout_branch_impl, git_create_branch_impl, git_delete_branch_impl,
@@ -685,6 +687,23 @@ pub async fn git_apply_hunk(
 ) -> Result<(), String> {
     let rev = reverse.unwrap_or(false);
     blocking_git!(state, repo_path, git_apply_hunk_impl(repo_path, file, hunk_index, rev))
+}
+
+/// Both sides of a binary path, as base64. See `git/binary.rs` — this is what
+/// an image diff is made of, and nothing else in the app can reach either side.
+#[tauri::command]
+pub async fn git_binary_sides(
+    repo_path: String,
+    path: String,
+    old_blob_oid: Option<String>,
+    from_workdir: bool,
+    state: tauri::State<'_, GitState>,
+) -> Result<BinarySides, String> {
+    blocking_git!(
+        state,
+        repo_path,
+        git_binary_sides_impl(repo_path, path, old_blob_oid, from_workdir)
+    )
 }
 
 #[tauri::command]

@@ -1304,6 +1304,7 @@ pub fn run() {
             git::git_ls_files,
             git::git_safe_checkout,
             git::git_apply_hunk,
+            git::git_binary_sides,
             git::git_ai_generate_commit,
             git::git_blame_file,
             git::git_list_conflicts,

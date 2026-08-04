@@ -27,6 +27,7 @@ import {
   RotateCw,
   Rows3,
   Hash,
+  Image as ImageIcon,
   Space,
   SplitSquareVertical,
   Trash2,
@@ -42,6 +43,8 @@ import {
   DiffRenderer,
   type HunkActions,
 } from "@/components/git/shared/SplitDiffRenderer";
+import { ImageDiffView } from "@/components/git/shared/ImageDiffView";
+import { bytesFromBase64, imageKindFromPath, planImageDiff } from "@/components/git/shared/imageDiff";
 import { ProvenanceNote } from "@/components/git/shared/ProvenanceNote";
 import { loadFileProvenance } from "@/components/git/shared/provenance";
 import {
@@ -130,6 +133,7 @@ export function DiffTabView(props: DiffTabViewProps) {
     onCleanup(
       onGitRefsChanged(() => {
         void refetch();
+        void refetchBinary();
         // The mtime the claim rests on moves whenever the file does, so a stale
         // attribution would keep naming the agent that wrote the *previous*
         // version — §7.5.4's stale-value failure, with a name attached.
@@ -142,6 +146,46 @@ export function DiffTabView(props: DiffTabViewProps) {
   /// which is also what makes hunk indices safe to send back: the renderer
   /// iterates the same array Rust will index into.
   const fileDiff = createMemo<FileDiff | null>(() => data()?.fileDiff ?? null);
+
+  // ── Image diffs ───────────────────────────────────────────────────────
+  //
+  // Fetched separately from the diff, and only when the *path* claims to be an
+  // image: base64-encoding a side costs real bytes, and asking for them on
+  // every text file would pay that cost on every diff in the app to answer a
+  // question the filename already answers.
+
+  const [binary, { refetch: refetchBinary }] = createResource(
+    () => {
+      const claimed = imageKindFromPath(relPath());
+      if (!claimed) return null;
+      return {
+        repo: props.repoPath,
+        rel: relPath(),
+        oldBlobOid: fileDiff()?.oldBlobOid ?? null,
+        fromWorkdir: !(props.staged ?? false),
+      };
+    },
+    (k) => gitApi.binarySides(k.repo, k.rel, k.oldBlobOid, k.fromWorkdir).catch(() => null),
+  );
+
+  /// Whether this file can be *drawn*, as opposed to merely being named like
+  /// an image. Both sides are sniffed — see `imageDiff.ts`. `null` means fall
+  /// back to the ordinary renderer, which for a real binary is the placeholder
+  /// and for a mislabelled `.png` is exactly the right answer.
+  const imagePlan = createMemo(() => {
+    const sides = binary();
+    if (!sides) return null;
+    return planImageDiff(
+      relPath(),
+      sides.old ? bytesFromBase64(sides.old.base64) : null,
+      sides.new ? bytesFromBase64(sides.new.base64) : null,
+    );
+  });
+
+  /// SVG is an image *and* a text file, so it gets both views and this decides
+  /// which is showing. Defaults to the picture: that is what changed.
+  const [preferText, setPreferText] = createSignal(false);
+  const showingImage = () => imagePlan() !== null && !preferText();
 
   /// Per-hunk view. Local rather than a stored preference: you turn it on for
   /// the file you are splitting up, not forever.
@@ -366,6 +410,25 @@ export function DiffTabView(props: DiffTabViewProps) {
             draws hunks as discrete blocks — Monaco's diff view has no such
             unit. The controls existed and were rendered by nothing: their one
             caller had no import site anywhere in the tree. */}
+        {/* Only for a file that has both readings — an SVG. A PNG has no text
+            diff to switch to and a `.rs` has no picture, so in both of those
+            the control would be a choice with one option. */}
+        <Show when={imagePlan()?.hasTextDiff}>
+          <button
+            onClick={() => setPreferText((v) => !v)}
+            aria-label="Toggle image and text view"
+            aria-pressed={showingImage()}
+            class={`flex items-center gap-1 px-2 py-0.5 text-label rounded border transition-colors ${
+              showingImage()
+                ? "bg-primary/15 border-primary/40 text-primary"
+                : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
+            title="This file is both a picture and text — switch between them"
+          >
+            <ImageIcon class="w-3 h-3" />
+            {showingImage() ? "Image" : "Text"}
+          </button>
+        </Show>
         <button
           onClick={() => setHunkMode((v) => !v)}
           aria-label="Toggle per-hunk view"
@@ -453,7 +516,18 @@ export function DiffTabView(props: DiffTabViewProps) {
           about whichever hunk it happened to sit beside. */}
       <ProvenanceNote provenance={provenance()} />
 
-      <div class="flex-1 min-h-0">
+      <div class="flex-1 min-h-0 relative">
+        <Show when={showingImage()}>
+          {/* Keyed on the plan, so switching files rebuilds the view rather
+              than leaving the previous image's swipe position on the new one. */}
+          <ImageDiffView
+            plan={imagePlan()!}
+            old={binary()?.old ?? null}
+            new={binary()?.new ?? null}
+            oversize={binary()?.oversize}
+          />
+        </Show>
+        <Show when={!showingImage()}>
         <Show when={!hunkMode()} fallback={
           <div class="h-full overflow-auto scrollbar-thin font-mono text-body leading-[1.5]">
             <Show
@@ -506,6 +580,7 @@ export function DiffTabView(props: DiffTabViewProps) {
               />
             </Show>
           )}
+        </Show>
         </Show>
         </Show>
       </div>

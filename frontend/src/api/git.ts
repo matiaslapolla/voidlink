@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BinarySides,
   BlameLine,
   CommitIdentity,
   ConfigEntry,
@@ -411,6 +412,26 @@ export const gitApi = {
       file,
       hunkIndex,
       reverse: reverse ?? false,
+    });
+  },
+
+  /// Both sides of a binary path, base64-encoded — what an image diff is made
+  /// of. `oldBlobOid` comes straight off the `FileDiff` on screen, so the old
+  /// side read here is the content that diff was computed against.
+  ///
+  /// `fromWorkdir` picks where the new side comes from: the working file for an
+  /// unstaged diff, the index entry for a staged one.
+  binarySides(
+    repoPath: string,
+    path: string,
+    oldBlobOid: string | null,
+    fromWorkdir: boolean,
+  ): Promise<BinarySides> {
+    return invoke<BinarySides>("git_binary_sides", {
+      repoPath,
+      path,
+      oldBlobOid,
+      fromWorkdir,
     });
   },
 
