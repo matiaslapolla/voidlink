@@ -15,6 +15,7 @@ describe("empty states", () => {
   it("covers every surface the design brief enumerates", () => {
     expect(Object.keys(EMPTY_STATES).sort()).toEqual(
       [
+        "boardEmpty",
         "changesClean",
         "changesNoMatch",
         "editorNoFile",

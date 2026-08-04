@@ -20,6 +20,7 @@ import {
   FilePlus2,
   GitCommitHorizontal,
   Brain,
+  Columns3 as BoardIcon,
   History as TimelineIcon,
   Radar as MissionIcon,
   Globe,
@@ -86,7 +87,7 @@ import { fsApi } from "@/api/fs";
 import { gitApi } from "@/api/git";
 import { recordBranchUse } from "@/commands/branchMru";
 import { pushToast } from "@/commands/toast";
-import { openBrain } from "@/commands/registry";
+import { openBoard, openBrain } from "@/commands/registry";
 
 interface MainSurfaceProps {
   /// Hand a file to the editor window. The workbench has no editor of its own
@@ -959,6 +960,13 @@ export function MainSurface(props: MainSurfaceProps) {
                   openBrain();
                   closeMenu();
                 }}
+                onOpenBoard={() => {
+                  // An overlay for the same reason the brain is one — see
+                  // `BoardOverlay.tsx` — and in the same menu for the same
+                  // reason: this is where somebody looks for it.
+                  openBoard();
+                  closeMenu();
+                }}
                 onOpenTimeline={() => {
                   actions.openTimelineTab(state.activeWorktreeId);
                   closeMenu();
@@ -1405,6 +1413,7 @@ function NewTabMenu(props: {
   onNewTerminal: () => void;
   onNewCompare: () => void;
   onOpenBrain: () => void;
+  onOpenBoard: () => void;
   onOpenTimeline: () => void;
   onOpenMission: () => void;
   onNewBrowser: () => void;
@@ -1581,6 +1590,13 @@ function NewTabMenu(props: {
                 tooltip="This repo's own notes and decisions, kept as markdown in .voidlink/brain/. Opens as an overlay, not a tab."
               >
                 Brain
+              </MenuItem>
+              <MenuItem
+                onClick={props.onOpenBoard}
+                icon={<BoardIcon class="w-3.5 h-3.5" />}
+                tooltip="This repo's kanban board, kept as one markdown file per card in .voidlink/board/. Opens as an overlay, not a tab."
+              >
+                Board
               </MenuItem>
               <MenuItem
                 onClick={props.onNewBrowser}

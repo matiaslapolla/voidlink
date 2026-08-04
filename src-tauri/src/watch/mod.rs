@@ -56,6 +56,18 @@ use tauri::{AppHandle, Emitter, Manager};
 /// not showing.
 pub const GIT_CHANGED_EVENT: &str = "voidlink://git-changed";
 
+/// Broadcast when a file under `<repo>/.voidlink/board/` changed. Payload is
+/// the repository root, same as the git pulse.
+///
+/// A *separate* event rather than a reason to widen `is_interesting`, for two
+/// reasons that pull the same way. `.voidlink/` is normally gitignored, so a
+/// board write is dropped by the ignore filter and would never reach the git
+/// pulse at all — and if it were let through, every board card moved would wake
+/// every git surface in the app to re-run `git status` for a change git cannot
+/// see. The board is the only subscriber to its own writes, so it gets its own
+/// channel.
+pub const BOARD_CHANGED_EVENT: &str = "voidlink://board-changed";
+
 /// How long a burst is collected before one change is reported.
 ///
 /// A single git command produces a scatter of writes; 250ms is comfortably
@@ -162,6 +174,26 @@ fn is_interesting(path: &Path, ignore: &Gitignore) -> bool {
     !ignore.matched_path_or_any_parents(path, false).is_ignore()
 }
 
+/// Does this path name a file in a project board?
+///
+/// Matched on the `.voidlink/board` component pair rather than against a
+/// resolved root, so it holds for a linked worktree without this function
+/// having to know which repository it is looking at. The gitignore matcher is
+/// deliberately not consulted: `.voidlink/` being ignored is the *expected*
+/// arrangement, and a board that stopped refreshing because the user ignored
+/// the directory the app told them to ignore would be a trap.
+fn is_board_path(path: &Path) -> bool {
+    let mut components = path.components();
+    while let Some(component) = components.next() {
+        if let Component::Normal(name) = component {
+            if name == ".voidlink" {
+                return matches!(components.next(), Some(Component::Normal(next)) if next == "board");
+            }
+        }
+    }
+    false
+}
+
 /// The directories that have to be watched to see everything about one repo.
 ///
 /// Usually one — the worktree root, which contains `.git`. A *linked* worktree
@@ -243,10 +275,23 @@ fn start_watching(app: &AppHandle, repo_path: &str) -> Result<Watched, String> {
                     return;
                 }
             };
-            let relevant = events
-                .iter()
-                .any(|event| event.event.paths.iter().any(|p| is_interesting(p, &ignore)));
-            if !relevant {
+            // Two independent questions about the same burst. A board write is
+            // usually invisible to the first one (see `BOARD_CHANGED_EVENT`),
+            // and a `git commit` is never relevant to the second.
+            let mut git_relevant = false;
+            let mut board_relevant = false;
+            for path in events.iter().flat_map(|event| event.event.paths.iter()) {
+                git_relevant = git_relevant || is_interesting(path, &ignore);
+                board_relevant = board_relevant || is_board_path(path);
+            }
+
+            if board_relevant {
+                if let Err(e) = handle.emit(BOARD_CHANGED_EVENT, &repo_for_event) {
+                    log::warn!("could not broadcast a board change for {repo_for_event}: {e}");
+                }
+            }
+
+            if !git_relevant {
                 return;
             }
             if let Err(e) = handle.emit(GIT_CHANGED_EVENT, &repo_for_event) {
@@ -425,6 +470,26 @@ mod tests {
         let common = roots[1].canonicalize().unwrap();
         let expected = main.join(".git").canonicalize().unwrap();
         assert_eq!(common, expected);
+    }
+
+    /// The board's own channel, and the reason it needs one: a gitignored
+    /// `.voidlink/` is the expected arrangement, so the git filter drops
+    /// exactly the writes the board has to hear about.
+    #[test]
+    fn board_paths_are_recognised_even_when_the_git_filter_drops_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join(".gitignore"), ".voidlink/\n").unwrap();
+        let ignore = ignore_for(root);
+
+        let card = root.join(".voidlink/board/2026-08-04-a-card.md");
+        assert!(is_board_path(&card));
+        assert!(!is_interesting(&card, &ignore), "the git pulse must not fire for a card");
+
+        // Its sibling under `.voidlink/` is not the board.
+        assert!(!is_board_path(&root.join(".voidlink/brain/notes/x.md")));
+        assert!(!is_board_path(&root.join("board/x.md")));
+        assert!(!is_board_path(&root.join("src/main.rs")));
     }
 
     /// The filter list is a claim about what git writes, so it is checked

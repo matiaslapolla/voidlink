@@ -5,6 +5,7 @@ import { Show, type Component, type JSX } from "solid-js";
 import {
   Archive,
   Boxes,
+  Columns3,
   FileSearch,
   FolderGit2,
   GitCommit,
@@ -26,6 +27,7 @@ type LucideIcon = Component<{ class?: string }>;
 const ICONS: Record<string, LucideIcon> = {
   Archive,
   Boxes,
+  Columns3,
   FileSearch,
   FolderGit2,
   GitCommit,

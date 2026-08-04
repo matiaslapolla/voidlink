@@ -46,6 +46,7 @@ by finding, see [`../audits/`](../audits/README.md); for everything still open,
 | [Secret scan](./secret-scan.md) | Pre-commit credential detection, the rule set, why it fails open |
 | [Workspace snapshots](./snapshots.md) | Saving and restoring tab layouts, and what they don't capture |
 | [Project brain](./project-brain.md) | Per-repo notes and decisions under `.voidlink/brain`, read and captured from an overlay |
+| [Project board](./project-board.md) | Per-repo kanban board — one markdown file per card under `.voidlink/board`, dragged between columns from an overlay |
 | [Embedded browser](./browser.md) | Browser tabs as child webviews, in-place navigation, history, the compositing constraint |
 
 ## Contributing
