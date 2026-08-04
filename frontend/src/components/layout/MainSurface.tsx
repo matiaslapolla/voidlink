@@ -47,7 +47,12 @@ import {
 } from "@/components/layout/TabStrip";
 import { Splitter, islandGapPx } from "@/components/layout/Splitter";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
-import { ratiosAfterDrag, resolveActiveTabId, type Rect } from "@/components/layout/paneDrop";
+import {
+  MIN_PANE_PX,
+  ratiosAfterDrag,
+  resolveActiveTabId,
+  type Rect,
+} from "@/components/layout/paneDrop";
 import { isZen, visibleGroupIds } from "@/store/focusMode";
 import {
   clearTabActivity,
@@ -71,8 +76,6 @@ import { notifyTerminal } from "@/commands/terminalNotify";
 import { watchTerminal } from "@/store/terminalWatch";
 import type { ActivitySignal } from "@/components/layout/StatusLed";
 import {
-  MIN_RATIO,
-  canSplit,
   groupList,
   resolveGroupTabs,
   type PaneNode,
@@ -625,8 +628,8 @@ export function MainSurface(props: MainSurfaceProps) {
   }
 
   /// A tab dropped on a group's edge: split that group and land the tab in the
-  /// new one. `splitPaneGroup` returns `null` at the cap — the drop target has
-  /// already refused by then, so this is only the belt to its braces.
+  /// new one. `splitPaneGroup` returns `null` only if the group has vanished
+  /// between the drag starting and the drop landing.
   function splitWithTab(
     payload: TabDragPayload,
     groupId: string,
@@ -1013,6 +1016,23 @@ export function MainSurface(props: MainSurfaceProps) {
     /// in ratios; feeding it the raw extent would make a drag drift by the
     /// gap's width across the pane.
     const usable = () => Math.max(0, extent() - (node.children.length - 1) * islandGapPx());
+    /// The px span the handle between `i` and `i + 1` may move within: the two
+    /// panes either side keep their combined width, so the handle's range is
+    /// that pair, inset by the minimum each pane is allowed to be.
+    ///
+    /// **This is where the group cap went.** The reducer no longer counts
+    /// groups; what stops a worktree from splitting into unusable slivers is
+    /// this floor plus the size of the window, which is the honest limit — a
+    /// 3840px display holds many more usable panes than a laptop, and a
+    /// constant in the store cannot know which one it is looking at.
+    ///
+    /// `floor` degrades rather than inverting: with enough panes in a narrow
+    /// window the pair may be under `2 × MIN_PANE_PX`, and half the pair is
+    /// then the most either side can be promised. Without that, `min` would
+    /// exceed `max` and `Splitter`'s clamp would pin the handle, which reads as
+    /// a broken control rather than a tight one.
+    const pairPx = (i: number) => (ratioAt(node.id, i) + ratioAt(node.id, i + 1)) * usable();
+    const floorPx = (i: number) => Math.min(MIN_PANE_PX, pairPx(i) / 2);
     return (
       <div
         ref={(el) => {
@@ -1044,9 +1064,9 @@ export function MainSurface(props: MainSurfaceProps) {
                   inGap
                   label={orientation === "row" ? "Pane width" : "Pane height"}
                   value={ratioAt(node.id, i) * usable()}
-                  min={MIN_RATIO * usable()}
-                  max={(ratioAt(node.id, i) + ratioAt(node.id, i + 1) - MIN_RATIO) * usable()}
-                  defaultValue={((ratioAt(node.id, i) + ratioAt(node.id, i + 1)) / 2) * usable()}
+                  min={floorPx(i)}
+                  max={pairPx(i) - floorPx(i)}
+                  defaultValue={pairPx(i) / 2}
                   onResize={(px) => {
                     actions.setPaneSplitRatios(
                       state.activeWorktreeId,
@@ -1337,7 +1357,6 @@ export function MainSurface(props: MainSurfaceProps) {
                 >
                   <PaneDropOverlay
                     groupId={group.id}
-                    canSplit={canSplit(paneLayout())}
                     onMoveTab={(payload, before) => moveTabHere(payload, group.id, before)}
                     onSplitDrop={(payload, orientation, placement) =>
                       splitWithTab(payload, group.id, orientation, placement)

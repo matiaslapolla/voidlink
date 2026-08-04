@@ -7,9 +7,6 @@
 /// stops a split from rotting into dead rectangles.
 import { describe, expect, it } from "vitest";
 import {
-  MAX_GROUPS,
-  MIN_RATIO,
-  canSplit,
   groupCount,
   groupList,
   groupOwning,
@@ -30,12 +27,30 @@ import {
 
 const TABS = ["t1", "t2", "t3", "t4"];
 
-/// Split repeatedly until the reducer refuses. Returns the tree and the id of
-/// the last group created, which is the one to try the refused split on.
-function splitToCap(): { layout: PaneNode; last: string } {
+/// A serialised flat `n`-way split — the shape a persisted layout takes when a
+/// user has split one row many times. Built as raw JSON because `splitGroup`
+/// only ever produces two-child splits.
+function flatSplit(n: number): unknown {
+  return {
+    kind: "split",
+    id: "s",
+    orientation: "row",
+    ratios: Array(n).fill(1 / n),
+    children: Array.from({ length: n }, (_, i) => ({
+      kind: "group",
+      id: `g${i}`,
+      group: { id: `g${i}`, tabIds: [], activeTabId: null },
+    })),
+  };
+}
+
+/// Split `n - 1` times, alternating orientation, so the tree is `n` groups deep
+/// in a nest of two-child splits. Returns the tree and the id of the last group
+/// created — the deepest one, and the awkward one to operate on.
+function splitToDepth(n: number): { layout: PaneNode; last: string } {
   let layout: PaneNode = singleGroupLayout("g1");
   let last = "g1";
-  for (let i = 1; i < MAX_GROUPS; i++) {
+  for (let i = 1; i < n; i++) {
     const r = splitGroup(layout, last, i % 2 === 0 ? "column" : "row", "after");
     expect(r.newGroupId).not.toBeNull();
     layout = r.layout;
@@ -103,75 +118,81 @@ describe("splitting", () => {
     expect(groupCount(b.layout)).toBe(3);
   });
 
-  it("refuses past the cap, leaving the tree untouched", () => {
-    const { layout, last } = splitToCap();
-    expect(groupCount(layout)).toBe(MAX_GROUPS);
-    expect(canSplit(layout)).toBe(false);
-
-    const refused = splitGroup(layout, last, "row", "after");
-    expect(refused.newGroupId).toBeNull();
-    expect(refused.layout).toBe(layout);
+  /// There is no cap. This is the test the old `MAX_GROUPS` assertion became:
+  /// splitting far past the number that used to be the ceiling keeps producing
+  /// real, distinct groups rather than silently returning the same tree.
+  it("keeps splitting past the number that used to be the cap", () => {
+    const { layout } = splitToDepth(16);
+    expect(groupCount(layout)).toBe(16);
+    expect(new Set(groupList(layout).map((g) => g.id)).size).toBe(16);
   });
 
-  /// Eight is the cap now. The reducer was always recursive, so what these
-  /// assert is that the *constraints* still hold at the new number: ratios add
-  /// up, no pane is starved below the floor, and collapse still walks back.
-  it("splits all the way to eight groups", () => {
-    expect(MAX_GROUPS).toBe(8);
-    const { layout } = splitToCap();
-    expect(groupCount(layout)).toBe(MAX_GROUPS);
-    expect(new Set(groupList(layout).map((g) => g.id)).size).toBe(MAX_GROUPS);
-  });
-
-  it("keeps every split's ratios summing to one at the cap", () => {
-    const { layout } = splitToCap();
+  it("keeps every split's ratios summing to one however deep the nest goes", () => {
+    const { layout } = splitToDepth(32);
     const walk = (node: PaneNode) => {
       if (node.kind !== "split") return;
       expect(node.ratios.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+      expect(node.ratios.every((r) => r > 0)).toBe(true);
       node.children.forEach(walk);
     };
     walk(layout);
   });
 
-  /// `normalizeRatios` clamps each entry to `MIN_RATIO` before renormalising,
-  /// which only stays coherent while `MAX_GROUPS * MIN_RATIO <= 1`. At eight
-  /// that is 0.8 — this is the assertion that catches a future cap raise that
-  /// forgets to lower the floor with it.
-  it("respects MIN_RATIO with every group in one flat split", () => {
-    const ratios = normalizeRatios([], MAX_GROUPS);
-    expect(MAX_GROUPS * MIN_RATIO).toBeLessThanOrEqual(1);
-    expect(Math.min(...ratios)).toBeGreaterThanOrEqual(MIN_RATIO);
-    expect(ratios.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
-    // A hand-edited blob that starves seven panes to feed one is repaired.
-    const starved = normalizeRatios([0.99, ...Array(MAX_GROUPS - 1).fill(0.001)], MAX_GROUPS);
-    expect(Math.min(...starved)).toBeGreaterThanOrEqual(MIN_RATIO);
-    expect(starved.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+  /// The old floor was a fraction (`MIN_RATIO`), which cannot survive an
+  /// unbounded count — eleven panes cannot each have a tenth. The contract now
+  /// is only "sums to one, nothing zero or negative", at any count, and the
+  /// usable-width question moved to `MIN_PANE_PX` in `paneDrop`.
+  it("normalises to a positive distribution at any count", () => {
+    for (const n of [2, 8, 20, 50]) {
+      const even = normalizeRatios([], n);
+      expect(even).toHaveLength(n);
+      expect(even.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+      expect(even.every((r) => r > 0)).toBe(true);
+
+      // A hand-edited blob that starves every pane but one still sums to 1 and
+      // still leaves every pane on screen, however small.
+      const starved = normalizeRatios([0.99, ...Array(n - 1).fill(0.0001)], n);
+      expect(starved.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+      expect(starved.every((r) => r > 0)).toBe(true);
+      // Proportions are *preserved*, not flattened: the old code fell back to
+      // even ratios above ten panes, discarding a layout the user arranged.
+      expect(starved[0]).toBeGreaterThan(starved[1] * 100);
+    }
   });
 
-  it("collapses back down one group at a time from the cap", () => {
-    let layout = splitToCap().layout;
-    for (let n = MAX_GROUPS; n > 1; n--) {
+  it("collapses back down one group at a time from a 20-way nest", () => {
+    let layout = splitToDepth(20).layout;
+    for (let n = 20; n > 1; n--) {
       const victim = groupList(layout)[groupList(layout).length - 1];
       layout = removeGroup(layout, victim.id);
       expect(groupCount(layout)).toBe(n - 1);
-      expect(collectRatios(layout).every((r) => r >= MIN_RATIO)).toBe(true);
+      const ratios = collectRatios(layout);
+      expect(ratios.every((r) => r > 0)).toBe(true);
     }
     expect(layout.kind).toBe("group");
   });
 
-  it("rejects a stored tree with more groups than the cap", () => {
-    const overfull = {
-      kind: "split",
-      id: "s",
-      orientation: "row",
-      ratios: Array(MAX_GROUPS + 1).fill(1 / (MAX_GROUPS + 1)),
-      children: Array.from({ length: MAX_GROUPS + 1 }, (_, i) => ({
-        kind: "group",
-        id: `g${i}`,
-        group: { id: `g${i}`, tabIds: [], activeTabId: null },
-      })),
-    };
-    expect(parsePaneLayout(overfull)).toBeNull();
+  /// Removing one child of a *flat* n-way split is the case the nested walk
+  /// above never reaches: the split survives with one fewer child and has to
+  /// renormalise in place.
+  it("renormalises a flat 20-way split when one group is removed", () => {
+    const layout = parsePaneLayout(flatSplit(20));
+    expect(layout).not.toBeNull();
+    const after = removeGroup(layout!, "g7");
+    expect(groupCount(after)).toBe(19);
+    expect(groupList(after).some((g) => g.id === "g7")).toBe(false);
+    if (after.kind !== "split") throw new Error("expected a split");
+    expect(after.ratios).toHaveLength(19);
+    expect(after.ratios.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+    expect(after.ratios.every((r) => r > 0)).toBe(true);
+  });
+
+  /// A tree saved by an older build, or by a bigger window, is not malformed.
+  /// The count check that used to reject this is what the cap removal deleted.
+  it("loads a stored tree with far more groups than the old cap", () => {
+    const back = parsePaneLayout(flatSplit(20));
+    expect(back).not.toBeNull();
+    expect(groupCount(back!)).toBe(20);
   });
 
   it("ignores a split of a group that does not exist", () => {
@@ -295,9 +316,13 @@ describe("ratios", () => {
     expect(normalizeRatios([], 3).reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
   });
 
-  it("refuse to starve a pane out of existence", () => {
+  /// A lopsided pair is honoured, not corrected. The reducer used to pull the
+  /// small side up to `MIN_RATIO`; the splitter's px floor is what keeps a pane
+  /// draggable now, and second-guessing a stored ratio here would only fight it.
+  it("keep a lopsided pair lopsided, and both panes alive", () => {
     const [a, b] = normalizeRatios([0.999, 0.001], 2);
-    expect(b).toBeGreaterThanOrEqual(0.09);
+    expect(b).toBeGreaterThan(0);
+    expect(a).toBeGreaterThan(b);
     expect(a + b).toBeCloseTo(1, 10);
   });
 

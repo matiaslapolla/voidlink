@@ -205,8 +205,9 @@ const isReorderable = (t: TabDescriptor) => t.draggable !== false;
 export interface TabDragPayload {
   kind: TabKind;
   id: string;
-  /// Shown in the drag ghost when a drop is refused, so the refusal names the
-  /// tab it is about.
+  /// The dragged tab's label. Nothing renders it since the refusal ghost went
+  /// away with the group cap, but it is what makes a payload readable in a
+  /// debugger mid-gesture, and it costs a string.
   label: string;
   /// The pane group the drag started in, or `null` in a window with no groups
   /// (the editor). `null` on both ends means "reorder only", which is exactly
@@ -227,16 +228,6 @@ const [tabDrag, setTabDrag] = createSignal<TabDragPayload | null>(null);
 /// only exist during a drag — a permanently mounted overlay would eat every
 /// click in the pane underneath.
 export const draggingTab = tabDrag;
-
-/// The ghost is a single element for the whole window; `owner` is whichever
-/// drop target last had the pointer, so two overlapping targets can't both
-/// render one.
-const [dragGhost, setDragGhost] = createSignal<{
-  owner: string;
-  x: number;
-  y: number;
-  reason: string;
-} | null>(null);
 
 export interface TabStripProps {
   tabs: TabDescriptor[];
@@ -441,7 +432,6 @@ export function TabStrip(props: TabStripProps) {
     setTabDrag(null);
     setDropRef(null);
     setDropAtEnd(false);
-    setDragGhost(null);
   }
 
   function onDragStart(e: DragEvent, tab: TabDescriptor) {
@@ -1771,7 +1761,7 @@ function TabContextMenu(props: {
 /// The drop target covering one pane group's body.
 ///
 /// It exists only while a tab is being dragged — the rest of the time there is
-/// nothing between the user and the pane. Three outcomes, and each one has to
+/// nothing between the user and the pane. Two outcomes, and each one has to
 /// be *visible before release*, because a drag whose result you can only
 /// discover by committing to it is not an affordance:
 ///
@@ -1782,17 +1772,17 @@ function TabContextMenu(props: {
 ///     computable because `splitGroup` always halves the group it splits. A
 ///     generic edge glow would tell the user something is about to happen but
 ///     not what.
-///   • The same edge at the four-group cap — refused: `cursor: no-drop`, no
-///     preview, and the reason in the ghost following the pointer. Not a toast:
-///     a toast about a gesture arrives after the gesture.
+///
+/// There is no third, refused outcome any more: the group cap is gone, so every
+/// edge always splits. What used to be unreachable-by-count is now
+/// unreachable-by-pixels, and a pane too narrow to be worth splitting is a
+/// judgement the user makes by looking at it.
 ///
 /// Only `background` and `opacity` move. The preview's geometry is never
 /// animated — it jumps between edges as the pointer crosses zones, which is
 /// what makes it readable at drag speed.
 export function PaneDropOverlay(props: {
   groupId: string;
-  /// From `canSplit(paneLayout())`. False at the cap.
-  canSplit: boolean;
   onMoveTab: (payload: TabDragPayload, beforeTabId: string | null) => void;
   onSplitDrop: (
     payload: TabDragPayload,
@@ -1805,25 +1795,19 @@ export function PaneDropOverlay(props: {
 
   function clear() {
     setIntent(null);
-    setDragGhost((g) => (g?.owner === props.groupId ? null : g));
   }
 
   function onDragOver(e: DragEvent) {
     if (!ref || !tabDrag()) return;
     e.preventDefault();
     const box = ref.getBoundingClientRect();
-    const next = dropIntentAt(
-      { width: box.width, height: box.height },
-      { x: e.clientX - box.left, y: e.clientY - box.top },
-      { canSplit: props.canSplit },
+    setIntent(
+      dropIntentAt(
+        { width: box.width, height: box.height },
+        { x: e.clientX - box.left, y: e.clientY - box.top },
+      ),
     );
-    setIntent(next);
-    if (e.dataTransfer) e.dataTransfer.dropEffect = next.kind === "refused" ? "none" : "move";
-    if (next.kind === "refused") {
-      setDragGhost({ owner: props.groupId, x: e.clientX, y: e.clientY, reason: next.reason });
-    } else {
-      setDragGhost((g) => (g?.owner === props.groupId ? null : g));
-    }
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
   }
 
   function onDrop(e: DragEvent) {
@@ -1855,7 +1839,6 @@ export function PaneDropOverlay(props: {
           clear();
         }}
         class="absolute inset-0 z-30 pointer-events-auto"
-        classList={{ "cursor-no-drop": intent()?.kind === "refused" }}
         aria-hidden="true"
       >
         <Show when={intent()?.kind === "body"}>
@@ -1875,18 +1858,6 @@ export function PaneDropOverlay(props: {
           )}
         </Show>
       </div>
-      <Show when={dragGhost()?.owner === props.groupId ? dragGhost() : null}>
-        {(g) => (
-          <Portal>
-            <div
-              class="fixed z-[var(--z-drag)] pointer-events-none rounded-md border border-destructive/60 material-chrome px-2 py-1 text-label text-destructive shadow-lg"
-              style={{ left: `${g().x + 14}px`, top: `${g().y + 14}px` }}
-            >
-              {g().reason}
-            </div>
-          </Portal>
-        )}
-      </Show>
     </Show>
   );
 }

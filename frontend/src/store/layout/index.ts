@@ -212,9 +212,6 @@ export {
   mruOrder,
 } from "./navigation";
 export {
-  MAX_GROUPS,
-  MIN_RATIO,
-  canSplit,
   groupCount,
   groupList,
   groupOwning,
@@ -1255,9 +1252,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
     // ── Pane groups ──────────────────────────────────────────────────────
     /// Split `groupId` (default: the focused group), returning the new group's
-    /// id or `null` when the four-group cap refused. The caller decides what
-    /// to put in it — a drag drops the dragged tab there, the keybinding moves
-    /// the active one.
+    /// id, or `null` when there is no such group to split. There is no cap:
+    /// how many panes fit is a question of pixels, answered by the splitter's
+    /// `MIN_PANE_PX` clamp, not by a count here. The caller decides what to put
+    /// in the new group — a drag drops the dragged tab there, the keybinding
+    /// moves the active one.
     splitPaneGroup(
       wtId: string,
       orientation: SplitOrientation,

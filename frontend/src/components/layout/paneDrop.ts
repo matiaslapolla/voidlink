@@ -5,7 +5,6 @@
 /// twentieth of the pane the pointer is in, what the resulting split would look
 /// like, what a splitter drag does to a ratio list — and none of them need a
 /// browser to be wrong in a way a user would notice.
-import { MAX_GROUPS } from "@/store/layout/panes";
 import type { SplitOrientation } from "@/store/layout";
 
 export interface Rect {
@@ -18,12 +17,27 @@ export interface Rect {
 /// How much of each edge is a split zone. 20% per the workbench prompt's
 /// `<design>`; the centre 60% × 60% is "drop into this group".
 ///
-/// It stays a fraction rather than becoming a pixel floor even now that eight
-/// groups fit. The narrowest pane the reducer will produce is `MIN_RATIO` of
-/// the content area — on a 1200px surface, 120px — and 20% of that is 24px,
+/// It stays a fraction rather than becoming a pixel floor. The narrowest pane
+/// the splitter will let you make is `MIN_PANE_PX`, and 20% of that is 24px,
 /// which is a comfortable target. A pixel floor would only start eating the
 /// centre zone, and "drop into this group" is the common gesture.
 export const EDGE_ZONE = 0.2;
+
+/// The narrowest a pane may be dragged to, in px along the split axis.
+///
+/// **This is the only thing bounding how many panes a worktree can have.** The
+/// reducer has no group cap: it is recursive, and a hard number there would be
+/// arbitrary the moment a window changed size. What is not arbitrary is that a
+/// pane under ~120px has no room for a tab label, let alone content — so the
+/// window's own width is the ceiling, and it moves when the user resizes the
+/// window instead of being frozen into a constant.
+///
+/// It is a *drag* floor, not a *layout* floor. Nothing stops n panes from
+/// sharing a window too narrow to give each 120px; when that happens the
+/// splitter degrades to half the pair it sits between (see `MainSurface`)
+/// rather than refusing to move, because a control that will not respond to a
+/// drag reads as broken.
+export const MIN_PANE_PX = 120;
 
 /// What a pointer at a given position inside a group body means.
 ///
@@ -31,6 +45,11 @@ export const EDGE_ZONE = 0.2;
 /// the whole point of the edge affordance is that the user sees the resulting
 /// layout before releasing. It is expressed in the body's own coordinates so
 /// the overlay can render it with no further arithmetic.
+///
+/// There used to be a third case, `refused`, carrying the sentence the drag
+/// ghost showed at the group cap. The cap is gone, so nothing can refuse a
+/// split any more and the variant went with it — a union member no producer
+/// emits is a branch every consumer still has to write.
 export type DropIntent =
   | { kind: "body" }
   | {
@@ -38,15 +57,7 @@ export type DropIntent =
       orientation: SplitOrientation;
       placement: "before" | "after";
       preview: Rect;
-    }
-  /// The four-group cap. Carries the sentence the drag ghost shows — §7.6
-  /// forbids a control that refuses without saying why, and a toast would
-  /// arrive after the gesture it is about.
-  | { kind: "refused"; reason: string };
-
-/// Derived from the reducer's cap rather than written out, so raising the cap
-/// cannot leave the refusal quoting a number that is no longer true.
-export const SPLIT_CAP_REASON = `${MAX_GROUPS} panes is the maximum — close one to split again`;
+    };
 
 /// `splitGroup` always creates a two-child split with even ratios, so the new
 /// group takes exactly half of the group being split. That constant is what
@@ -61,7 +72,6 @@ const NEW_GROUP_SHARE = 0.5;
 export function dropIntentAt(
   size: { width: number; height: number },
   point: { x: number; y: number },
-  opts: { canSplit: boolean },
 ): DropIntent {
   if (size.width <= 0 || size.height <= 0) return { kind: "body" };
 
@@ -79,8 +89,6 @@ export function dropIntentAt(
   ];
   const nearest = candidates.reduce((a, b) => (b.d < a.d ? b : a));
   if (nearest.d >= EDGE_ZONE) return { kind: "body" };
-
-  if (!opts.canSplit) return { kind: "refused", reason: SPLIT_CAP_REASON };
 
   return {
     kind: "edge",

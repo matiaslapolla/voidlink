@@ -1,10 +1,18 @@
-/// The pane tree: 1–4 tab groups in a recursive split, per worktree.
+/// The pane tree: any number of tab groups in a recursive split, per worktree.
 ///
 /// `MainSurface` renders exactly one pane at a time today. This module is the
 /// state half of letting it render several — a pure, DOM-free reducer over a
 /// binary-ish split tree, so the interesting cases (a group collapsing when its
-/// last tab closes, ratios renormalising after a collapse, the four-group cap)
-/// are testable without standing up a component.
+/// last tab closes, ratios renormalising after a collapse) are testable without
+/// standing up a component.
+///
+/// **There is no group cap.** There was one — eight — and it was the wrong
+/// shape of limit: someone running a dozen agent terminals wants all of them on
+/// screen, and the reducer is recursive and has never cared how many leaves it
+/// holds. What actually bounds the count is *pixels*, not a constant here: a
+/// pane below roughly 120px is unusable, so the window size decides how many
+/// panes are worth having. That floor is enforced at render/drag time in
+/// `MainSurface`/`paneDrop`, where pixels exist; this file stays fractions-only.
 ///
 /// **The default is load-bearing.** A worktree with no saved layout gets one
 /// group whose `tabIds` is empty, and an empty `tabIds` on the *first* group
@@ -42,27 +50,6 @@ export type PaneNode =
       children: PaneNode[];
     };
 
-/// Eight. Four covered terminal-beside-graph-beside-browser; a review layout —
-/// a diff, a terminal, a graph and a browser down each half of the window —
-/// wants twice that. It is a number, not a principle: the reducer is recursive
-/// and does not care, so the ceiling is set by what stays *usable*, which is
-/// `MIN_RATIO` below. A free-form grid is still a different feature.
-export const MAX_GROUPS = 8;
-
-/// Below this a group is unusable — no room for a tab label, let alone a pane.
-/// The reducer refuses splits that would push any sibling under it. Exported
-/// because the splitter between two groups has to clamp to the same number the
-/// reducer would renormalise to; two different minimums would mean a drag that
-/// silently snaps back.
-///
-/// Left at 0.1 for eight groups, deliberately. Eight evenly-split panes are
-/// 12.5% each, which is *above* the floor — so the floor never binds at the cap
-/// and raising it would only shrink the range a splitter drag can reach.
-/// `normalizeRatios` clamps each entry to at least this before renormalising,
-/// which stays coherent while `MAX_GROUPS * MIN_RATIO <= 1`; at eight that is
-/// 0.8, with room to spare.
-export const MIN_RATIO = 0.1;
-
 let idCounter = 0;
 /// Ids only have to be unique within one worktree's tree and stable across a
 /// reload. `crypto.randomUUID` is available everywhere this runs, but a
@@ -97,12 +84,6 @@ export function groupCount(node: PaneNode): number {
 
 export function findGroup(node: PaneNode, groupId: string): PaneGroup | null {
   return groupList(node).find((g) => g.id === groupId) ?? null;
-}
-
-/// Whether another split is allowed. Exposed so the drop target can refuse with
-/// `no-drop` and a stated reason instead of silently doing nothing.
-export function canSplit(node: PaneNode): boolean {
-  return groupCount(node) < MAX_GROUPS;
 }
 
 /// Resolve which tabs each group shows, given every tab the worktree has open
@@ -153,19 +134,23 @@ export function groupOwning(
 
 // ── Ratios ────────────────────────────────────────────────────────────────
 
-/// Normalise to sum 1 with every entry at or above `MIN_RATIO`. Called on the
-/// way out of every mutation, so no consumer ever has to defend against a
-/// tree whose ratios don't add up.
+/// Normalise to exactly `count` entries summing to 1, none of them zero or
+/// negative. Called on the way out of every mutation, so no consumer ever has
+/// to defend against a tree whose ratios don't add up.
 ///
-/// **Why this is not clamp-then-divide.** It used to be, and that only holds
-/// the floor when the clamped values happen to sum to roughly 1. Raise one
-/// entry to 0.99 and clamp seven siblings up to 0.1 and the total is 1.69 —
-/// dividing through then lands every sibling at 0.059, *under* the floor the
-/// clamp was there to enforce. With four groups the error was small enough to
-/// hide; with eight it is a 71px pane on a 1200px window. So the floor is
-/// applied *after* normalising, by water-filling: pin whatever falls under it,
-/// redistribute what is left proportionally among the rest, repeat. Each pass
-/// pins at least one more entry, so it terminates in at most `count` passes.
+/// **It deliberately enforces no minimum share.** It used to water-fill each
+/// entry up to a `MIN_RATIO` of 0.1, which is a rule that cannot survive an
+/// unbounded group count: eleven panes cannot all have a tenth of the window,
+/// and the old code detected that and silently fell back to even ratios —
+/// throwing away a layout the user had arranged by hand. "Usable width" is a
+/// question about pixels, and this file has none. The floor now lives where the
+/// pixels are (`MIN_PANE_PX` in `paneDrop`, applied by the splitter's clamps),
+/// which is also the only place it can degrade gracefully when the window is
+/// too small for the number of panes in it.
+///
+/// A non-finite or non-positive entry is still replaced — with the even share,
+/// not with zero — because a ratio of 0 is a pane that exists in the tree and
+/// nowhere on screen, which is worse than a wrong-but-visible width.
 export function normalizeRatios(ratios: number[], count: number): number[] {
   const n = Math.max(1, count);
   const even = 1 / n;
@@ -173,41 +158,9 @@ export function normalizeRatios(ratios: number[], count: number): number[] {
     const v = ratios[i];
     return Number.isFinite(v) && v > 0 ? v : even;
   });
-  // No arrangement can satisfy the floor at this count. `MAX_GROUPS` is what
-  // stops this being reachable; splitting evenly is the least-bad answer if it
-  // ever is.
-  if (n * MIN_RATIO > 1) return raw.map(() => even);
-
   const total = raw.reduce((a, b) => a + b, 0);
-  const out = raw.map((v) => v / total);
-  const pinned = new Array<boolean>(n).fill(false);
-
-  for (let pass = 0; pass < n; pass++) {
-    let budget = 1;
-    let freeTotal = 0;
-    let freeCount = 0;
-    for (let i = 0; i < n; i++) {
-      if (pinned[i]) budget -= out[i];
-      else {
-        freeTotal += out[i];
-        freeCount += 1;
-      }
-    }
-    if (freeCount === 0) break;
-    for (let i = 0; i < n; i++) {
-      if (pinned[i]) continue;
-      out[i] = freeTotal > 0 ? (out[i] / freeTotal) * budget : budget / freeCount;
-    }
-    let changed = false;
-    for (let i = 0; i < n; i++) {
-      if (pinned[i] || out[i] >= MIN_RATIO) continue;
-      out[i] = MIN_RATIO;
-      pinned[i] = true;
-      changed = true;
-    }
-    if (!changed) break;
-  }
-  return out;
+  // `raw` is all finite and positive, so `total` is too — no divide-by-zero.
+  return raw.map((v) => v / total);
 }
 
 /// Resize one split. `ratios` is taken as a proposal and normalised.
@@ -235,15 +188,15 @@ function mapTree(node: PaneNode, fn: (n: PaneNode) => PaneNode): PaneNode {
 // ── Splitting ─────────────────────────────────────────────────────────────
 
 /// Split `groupId`, putting a fresh empty group on `placement`'s side of it.
-/// Returns the tree unchanged at the four-group cap, and the new group's id
-/// alongside so the caller can move a tab into it in the same gesture.
+/// Returns the new group's id alongside the tree so the caller can move a tab
+/// into it in the same gesture. The only refusal left is a `groupId` that is
+/// not in the tree — there is no count at which a split stops being allowed.
 export function splitGroup(
   node: PaneNode,
   groupId: string,
   orientation: SplitOrientation,
   placement: "before" | "after",
 ): { layout: PaneNode; newGroupId: string | null } {
-  if (!canSplit(node)) return { layout: node, newGroupId: null };
   if (!findGroup(node, groupId)) return { layout: node, newGroupId: null };
 
   const fresh = makeGroup();
@@ -428,11 +381,14 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 /// Rebuild a tree from disk, rejecting anything malformed outright rather than
 /// half-honouring it. A partially-valid layout is worse than the default: the
 /// default is a workbench that works.
+///
+/// "Too many groups" is not malformed and never was — a tree saved by a build
+/// with a higher cap, or a hand-edited blob, loads as written. The only counts
+/// rejected are the impossible ones.
 export function parsePaneLayout(raw: unknown): PaneNode | null {
   const node = parseNode(raw);
   if (!node) return null;
-  const count = groupCount(node);
-  if (count === 0 || count > MAX_GROUPS) return null;
+  if (groupCount(node) === 0) return null;
   const ids = groupList(node).map((g) => g.id);
   if (new Set(ids).size !== ids.length) return null;
   return collapse(node);
