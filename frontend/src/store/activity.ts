@@ -24,7 +24,7 @@
 /// `focusMode`.
 import { createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
-import { highestSignal, type ActivitySignal } from "@/components/layout/StatusLed";
+import { highestSignal, type ActivitySignal } from "@/components/layout/activitySignal";
 import type { StackedView } from "@/commands/environment";
 
 /// Which signals each tab is currently carrying. A tab with none is absent
@@ -180,6 +180,19 @@ export function noteWorking(tabId: string, working: boolean): void {
   else clearSignal(tabId, "working");
 }
 
+/// An agent CLI in this shell has gone quiet and is waiting on the user — a
+/// permission prompt, a question, a plan to approve. Derived in
+/// `store/terminalWatch.ts`; see `store/agentCli.ts` for the heuristic.
+///
+/// Stored rather than computed at the render site, unlike `idle`, and for the
+/// opposite reason: this is the signal §7.5.3 rule 1 exists for. An agent asking
+/// for permission in a worktree the user is not looking at *must* reach the
+/// group header, the rail and the status bar, and only a stored signal escalates.
+export function noteWaiting(tabId: string, waiting: boolean): void {
+  if (waiting) raiseSignal(tabId, "waiting");
+  else clearSignal(tabId, "waiting");
+}
+
 /// VoidLink is fetching something for this tab (a diff, a stack). Distinct from
 /// `noteWorking`: that is the user's shell, this is our own chrome.
 export function noteRunning(tabId: string, running: boolean): void {
@@ -195,6 +208,10 @@ export function noteRunning(tabId: string, running: boolean): void {
 export function noteFinished(tabId: string, ok: boolean): void {
   clearSignal(tabId, "working");
   clearSignal(tabId, "running");
+  // The agent exited, so whatever it was asking is moot — and `waiting`
+  // outranks everything below `failed`, so leaving it up would mask the very
+  // result this call is reporting.
+  clearSignal(tabId, "waiting");
   if (!ok) {
     raiseSignal(tabId, "failed");
     return;

@@ -229,7 +229,12 @@ function TerminalRow(props: {
   const mark = () =>
     tabMark(
       props.term.id,
-      terminalSignal({ working: watch.working(), focused: props.active }),
+      terminalSignal({
+        working: watch.working(),
+        agent: watch.agent(),
+        waiting: watch.waiting(),
+        focused: props.active,
+      }),
     );
 
   return (

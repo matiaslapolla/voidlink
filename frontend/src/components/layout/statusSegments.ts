@@ -20,7 +20,7 @@
 /// Both are pure and take measured widths as data, so the ordering and the
 /// overflow rule are testable without a layout engine.
 import type { JSX } from "solid-js";
-import type { ActivitySignal } from "@/components/layout/StatusLed";
+import type { ActivitySignal } from "@/components/layout/activitySignal";
 
 /// Which end of the bar a segment sits at. Purely a rendering hint: the bar is
 /// one row with a spacer in the middle, and `align` decides which side of the

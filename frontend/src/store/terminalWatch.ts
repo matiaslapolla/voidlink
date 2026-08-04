@@ -54,7 +54,8 @@
 /// a status nobody told it.
 import { createSignal, onCleanup, type Accessor } from "solid-js";
 import { terminalApi } from "@/api/terminal";
-import { noteFinished, noteWorking } from "@/store/activity";
+import { agentIsWaiting, isAgentCli } from "@/store/agentCli";
+import { noteFinished, noteWaiting, noteWorking } from "@/store/activity";
 import { record } from "@/store/journal";
 import {
   commandFailed,
@@ -105,6 +106,20 @@ interface PtyState {
   windowStart: number;
   windowBytes: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /// When the last byte arrived from this PTY, or `null` if none ever has.
+  /// The clock the agent quiet-window is measured against; see `AGENT_QUIET_MS`.
+  lastOutputAt: number | null;
+
+  // ── Agent state (S-agent)
+  /// A recognised agent CLI is in the foreground, **and** it has been quiet
+  /// long enough to be waiting on the user rather than thinking.
+  ///
+  /// A signal rather than a derivation because the quiet window is a *duration*
+  /// and nothing in Solid re-runs a computation because time passed. It is
+  /// recomputed on the two edges that can change it — a byte arriving, and the
+  /// existing process poll — which is why this feature adds no timer of its own.
+  waiting: Accessor<boolean>;
+  setWaiting: (v: boolean) => void;
 
   // ── Alternate screen (S10)
   /// The emulator is currently in the alternate buffer — a full-screen app.
@@ -158,6 +173,7 @@ function stateFor(ptyId: string): PtyState {
   const [busy, setBusy] = createSignal(false);
   const [name, setName] = createSignal<string | null>(null);
   const [outputActive, setOutputActive] = createSignal(false);
+  const [waiting, setWaiting] = createSignal(false);
   state = {
     busy,
     setBusy,
@@ -168,6 +184,9 @@ function stateFor(ptyId: string): PtyState {
     windowStart: 0,
     windowBytes: 0,
     idleTimer: null,
+    lastOutputAt: null,
+    waiting,
+    setWaiting,
     altScreen: false,
     busySamples: 0,
     busyPid: null,
@@ -190,8 +209,26 @@ function isWorking(state: PtyState): boolean {
   return state.busy() && state.outputActive();
 }
 
+/// Is the thing in the foreground of this shell an agent CLI? `busy` is part of
+/// the question: `name` is only meaningful while something other than the shell
+/// holds the terminal's foreground process group.
+function isAgent(state: PtyState): boolean {
+  return state.busy() && isAgentCli(state.name());
+}
+
+/// Recompute the agent's waiting bit and publish everything downstream. Called
+/// on the two edges that can change it and nowhere else — see `PtyState.waiting`
+/// for why there is no timer here.
 function pushWorking(state: PtyState) {
-  if (state.tabId) noteWorking(state.tabId, isWorking(state));
+  const waiting = agentIsWaiting({
+    agent: isAgent(state),
+    outputActive: state.outputActive(),
+    quietMs: state.lastOutputAt === null ? null : Date.now() - state.lastOutputAt,
+  });
+  state.setWaiting(waiting);
+  if (!state.tabId) return;
+  noteWorking(state.tabId, isWorking(state));
+  noteWaiting(state.tabId, waiting);
 }
 
 // ── Output rate ─────────────────────────────────────────────────────────────
@@ -202,6 +239,8 @@ function pushWorking(state: PtyState) {
 export function noteTerminalOutput(ptyId: string, byteLength: number): void {
   const state = stateFor(ptyId);
   const now = Date.now();
+  const wasWaiting = state.waiting();
+  state.lastOutputAt = now;
   if (now - state.windowStart > OUTPUT_WINDOW_MS) {
     state.windowStart = now;
     state.windowBytes = 0;
@@ -210,6 +249,12 @@ export function noteTerminalOutput(ptyId: string, byteLength: number): void {
 
   if (state.windowBytes >= OUTPUT_BYTES_THRESHOLD && !state.outputActive()) {
     state.setOutputActive(true);
+    pushWorking(state);
+  } else if (wasWaiting) {
+    // Below the rate threshold, so this cannot *start* `working` — but an agent
+    // that was reported as waiting on the user has just written something, so
+    // it plainly is not. The answer has to drop on the first byte; leaving it up
+    // until the next poll is a "needs you" badge on a shell that is talking.
     pushWorking(state);
   }
 
@@ -377,6 +422,14 @@ async function poll(ptyId: string, state: PtyState) {
   state.setBusy(info.busy);
   state.setName(info.name);
 
+  // A shell back at its own prompt has no agent in the foreground, so it cannot
+  // be waiting on anybody. Cleared here rather than in the branches below,
+  // several of which return early.
+  if (!info.busy && state.waiting()) {
+    state.setWaiting(false);
+    if (state.tabId) noteWaiting(state.tabId, false);
+  }
+
   if (info.busy) {
     if (!wasBusy) {
       // Rising edge: start a new span.
@@ -480,6 +533,11 @@ export interface TerminalWatch {
   /// The foreground process name, so the tab can wear it. `null` at an idle
   /// prompt.
   processName: Accessor<string | null>;
+  /// The foreground process is a recognised agent CLI (`store/agentCli.ts`).
+  /// `false` for a plain shell, which is what makes "no indicator" reachable.
+  agent: Accessor<boolean>;
+  /// That agent has gone quiet and is waiting on the user.
+  waiting: Accessor<boolean>;
 }
 
 /// Subscribe to `ptyId`'s process state, reporting activity against `tabId`.
@@ -509,6 +567,8 @@ export function watchTerminal(tabId: string, ptyId: string): TerminalWatch {
     busy: state.busy,
     working: () => isWorking(state),
     processName: state.name,
+    agent: () => isAgent(state),
+    waiting: state.waiting,
   };
 }
 
