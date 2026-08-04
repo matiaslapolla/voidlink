@@ -170,6 +170,25 @@ export function parseGitSectionOrder(raw: unknown): GitSectionKey[] {
   return out;
 }
 
+/// What a blob read back off disk may actually look like.
+///
+/// `Partial<UiPrefs>` was too strong, and in a way only a merge could expose:
+/// `Partial` is shallow, so it says the *nested* records are absent-or-complete.
+/// A build that adds a key to `SidebarSections` — as the Agent Dashboard's
+/// `agents` did — instantly makes every blob written by every older build
+/// ill-typed, which is precisely the case this function exists to absorb. The
+/// nested records are restated as partials so the type says what the parser has
+/// always done: every field is independently optional, at every level.
+///
+/// `gitSectionOrder` stays a whole array. A partial array is a different and
+/// worse claim (`(GitSectionKey | undefined)[]`), and `parseGitSectionOrder`
+/// already validates it element by element.
+type PersistedPrefs = Omit<Partial<UiPrefs>, "panels" | "gitSections" | "sidebarSections"> & {
+  panels?: Partial<PanelWidths>;
+  gitSections?: Partial<GitSections>;
+  sidebarSections?: Partial<SidebarSections>;
+};
+
 /// Field-by-field so a blob written by an older (or newer) build cannot
 /// introduce a value the UI has no branch for — `diffMode: "sidebyside"` would
 /// render nothing at all.
@@ -183,7 +202,7 @@ export function parseGitSectionOrder(raw: unknown): GitSectionKey[] {
 /// layout" became whatever the last store to touch it had done. One window
 /// hides it; two stores in one process (the render tests, and stacked mode's
 /// second store) do not.
-export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
+export function parsePrefs(parsed: PersistedPrefs | null): UiPrefs {
   if (!parsed || typeof parsed !== "object") parsed = {};
   const d = DEFAULT_PREFS;
   return {

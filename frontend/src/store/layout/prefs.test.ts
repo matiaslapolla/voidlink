@@ -115,10 +115,14 @@ describe("file explorer collapse", () => {
   });
 
   it("revives a half-written sections blob one key at a time", () => {
-    // A build that only knew about `files` still leaves `terminals` correct.
-    expect(parsePrefs({ sidebarSections: { files: false } } as never).sidebarSections).toEqual({
+    // A build that only knew about `files` still leaves every other section at
+    // its default. Spread from `DEFAULT_PREFS` rather than listing the keys:
+    // this test is *about* a blob missing keys, so spelling out the full set
+    // would make it fail the next time a section is added — which is exactly
+    // what it did when the Agent Dashboard's `agents` arrived.
+    expect(parsePrefs({ sidebarSections: { files: false } }).sidebarSections).toEqual({
+      ...DEFAULT_PREFS.sidebarSections,
       files: false,
-      terminals: DEFAULT_PREFS.sidebarSections.terminals,
     });
   });
 
