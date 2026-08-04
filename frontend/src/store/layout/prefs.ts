@@ -40,6 +40,11 @@ export const GIT_SECTION_KEYS: GitSectionKey[] = [
 export interface SidebarSections {
   files: boolean;
   terminals: boolean;
+  /// The Agent Dashboard's disclosure. Persisted like the other two even
+  /// though the section only exists behind `experimental.agentDashboard` —
+  /// the preference is about the *section*, and losing it every time the flag
+  /// is toggled would make the experiment more annoying than the feature.
+  agents: boolean;
 }
 
 /// The three resizable columns of the shell, in px.
@@ -107,7 +112,7 @@ export const DEFAULT_PREFS: UiPrefs = {
     openedDiffs: true,
   },
   gitSectionOrder: [...GIT_SECTION_KEYS],
-  sidebarSections: { files: true, terminals: true },
+  sidebarSections: { files: true, terminals: true, agents: true },
 };
 
 /// Repair a persisted section order: drop keys this build doesn't know, drop
@@ -160,6 +165,7 @@ export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
     sidebarSections: {
       files: parsed.sidebarSections?.files ?? d.sidebarSections.files,
       terminals: parsed.sidebarSections?.terminals ?? d.sidebarSections.terminals,
+      agents: parsed.sidebarSections?.agents ?? d.sidebarSections.agents,
     },
   };
 }

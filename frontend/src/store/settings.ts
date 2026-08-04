@@ -303,12 +303,36 @@ export interface GitSettings {
   identityByRepo: Record<string, CommitIdentity>;
 }
 
+/// Features that are on trial. Everything here defaults to **off**, and a
+/// surface behind one of these flags must be genuinely absent when it is off —
+/// not rendered and hidden, not polling in the background. `display: none` is
+/// not an experiment, it is a feature you shipped and then apologised for.
+///
+/// A flag graduates by having its key deleted and its surface made
+/// unconditional, which is why nothing else in the app is allowed to read
+/// `settings.experimental` except the surface it gates.
+export interface ExperimentalSettings {
+  /// The agent kanban across every worktree in the active workspace: which
+  /// agent needs you, which is working, which is done. Adds a sidebar entry
+  /// and, with it, the board.
+  agentDashboard: boolean;
+  /// Show the Idle column — agents that have been quiet for
+  /// `AGENT_IDLE_MS` without reporting completion.
+  ///
+  /// No effect at all while `agentDashboard` is off, and deliberately not
+  /// coupled to it in the data: a nested flag that silently rewrites its
+  /// parent's value is worse than one that is simply inert, because the JSON
+  /// view would then show a value the GUI never set.
+  showIdleAgents: boolean;
+}
+
 export interface AppSettings {
   ui: UiSettings;
   terminal: TerminalSettings;
   editor: EditorSettings;
   ai: AiSettings;
   git: GitSettings;
+  experimental: ExperimentalSettings;
 }
 
 const STORAGE_KEY = "voidlink-settings";
@@ -378,6 +402,12 @@ const DEFAULTS: AppSettings = {
   git: {
     identityByRepo: {},
   },
+  /// Both off. An experiment that is on by default is not an experiment, and
+  /// an upgrade must never add a sidebar entry the user did not ask for.
+  experimental: {
+    agentDashboard: false,
+    showIdleAgents: false,
+  },
 };
 
 function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | undefined): T {
@@ -424,6 +454,18 @@ function parseAiSettings(partial: Partial<AiSettings> | undefined): AiSettings {
   return { ...ai, agents: parseAgentRoster(partial?.agents, ai.agentCommand) };
 }
 
+/// Validate the experimental flags. Anything that is not literally `true` is
+/// `false`: an absent key (every payload on disk today), a key from a build
+/// that has since graduated its flag, or a hand-edited non-boolean.
+function parseExperimentalSettings(
+  partial: Partial<ExperimentalSettings> | undefined,
+): ExperimentalSettings {
+  return {
+    agentDashboard: partial?.agentDashboard === true,
+    showIdleAgents: partial?.showIdleAgents === true,
+  };
+}
+
 /// Fold a persisted payload into a complete settings object.
 ///
 /// Split out of `load` and exported so the forward-compatibility rule — a
@@ -452,6 +494,11 @@ export function parseSettings(raw: string | null): AppSettings {
       // `parseAgentRoster`.
       ai: parseAiSettings(parsed.ai),
       git: mergeDefaults(DEFAULTS.git, parsed.git),
+      // Validated rather than merged, because these are flags and a flag has to
+      // be a boolean. A hand-edited `"agentDashboard": "yes"` from the JSON
+      // view is truthy, so a plain merge would turn a typo into an enabled
+      // experiment — the one direction a default-off flag must never fall.
+      experimental: parseExperimentalSettings(parsed.experimental),
     };
   } catch {
     return JSON.parse(JSON.stringify(DEFAULTS));
@@ -506,6 +553,9 @@ export function useSettings() {
     },
     updateAi(patch: Partial<AiSettings>) {
       setSettings("ai", patch);
+    },
+    updateExperimental(patch: Partial<ExperimentalSettings>) {
+      setSettings("experimental", patch);
     },
     /// Append a roster entry and return its id, so the caller can bind a tab to
     /// the agent it just created without re-reading the roster to find it.

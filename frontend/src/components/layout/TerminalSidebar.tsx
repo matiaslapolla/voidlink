@@ -1,5 +1,5 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import { Plus, X, FolderOpen, TerminalSquare, ChevronRight, ChevronDown, GitBranchPlus } from "lucide-solid";
+import { Plus, X, FolderOpen, TerminalSquare, ChevronRight, ChevronDown, GitBranchPlus, Bot } from "lucide-solid";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "@/store/LayoutContext";
 import { terminalApi } from "@/api/terminal";
@@ -13,6 +13,8 @@ import { Splitter } from "@/components/layout/Splitter";
 import { PANEL_BOUNDS } from "@/store/layout";
 import { tabMark } from "@/store/activity";
 import { watchTerminal } from "@/store/terminalWatch";
+import { useSettings } from "@/store/settings";
+import { AgentDashboard } from "@/components/agent/AgentDashboard";
 
 export function TerminalSidebar(props: {
   onOpenFile?: (path: string) => void;
@@ -21,6 +23,7 @@ export function TerminalSidebar(props: {
   files?: boolean;
 }) {
   const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
+  const { settings } = useSettings();
 
   async function chooseRepo() {
     const ws = activeWorkspace();
@@ -35,6 +38,7 @@ export function TerminalSidebar(props: {
   };
 
   const terminalsOpen = () => state.sidebarSections.terminals;
+  const agentsOpen = () => state.sidebarSections.agents;
 
   return (
     <aside
@@ -140,6 +144,31 @@ export function TerminalSidebar(props: {
           </div>
         </Show>
       </div>
+
+      {/* Agent Dashboard — experimental.
+          Absent, not hidden, when the flag is off: the `<Show>` is what keeps
+          `AgentDashboard` from mounting, and `useAgentSessions` is the only
+          caller that subscribes a poll to terminals outside the active
+          worktree. With the flag off, none of that exists. */}
+      <Show when={settings.experimental.agentDashboard}>
+        <div class="flex flex-col shrink-0 border-t border-border/50">
+          <button
+            onClick={() => actions.toggleSidebarSection("agents")}
+            class="flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-accent/30 transition-colors w-full"
+          >
+            <span class="w-3 h-3 shrink-0 text-muted-foreground">
+              {agentsOpen() ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
+            </span>
+            <Bot class="w-3 h-3 text-muted-foreground" />
+            <span class="flex-1 tracking-wide text-body text-muted-foreground font-semibold">
+              Agent Dashboard
+            </span>
+          </button>
+          <Show when={agentsOpen()}>
+            <AgentDashboard class="max-h-64" />
+          </Show>
+        </div>
+      </Show>
 
       {/* Compare branches — quick action */}
       <div class="border-t border-border/50 px-2 py-1.5 shrink-0">

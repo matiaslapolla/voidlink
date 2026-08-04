@@ -288,6 +288,20 @@ export function terminalOutputActive(ptyId: string): boolean {
   return states.get(ptyId)?.outputActive() ?? false;
 }
 
+/// When this shell last produced output, or `null` if it never has (or is not
+/// being watched). The clock the agent dashboard's idle threshold is measured
+/// against.
+///
+/// **Non-reactive on purpose.** A PTY writes thousands of times a second under
+/// load, and a signal here would make every one of them a store update that
+/// re-derives a board nobody's eye can follow at that rate. The dashboard
+/// re-reads it on its own coarse tick, which it needs anyway — a threshold
+/// measured in minutes cannot be driven by an event that fires when the
+/// *opposite* thing happens.
+export function terminalLastActivity(ptyId: string): number | null {
+  return states.get(ptyId)?.lastOutputAt ?? null;
+}
+
 // ── Shell integration ───────────────────────────────────────────────────────
 
 /// How many live shells have proved they emit OSC 133.

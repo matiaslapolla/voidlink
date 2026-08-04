@@ -65,6 +65,65 @@ describe("parseSettings", () => {
   });
 });
 
+describe("experimental flags", () => {
+  /// The forward-compatibility rule stated for the newest section: every blob
+  /// on disk today predates it, and every one of them has to boot with the
+  /// experiments off. A flag that arrives switched on is a feature the user
+  /// never agreed to.
+  it("revives an older blob without the section to both flags off", () => {
+    const legacy = JSON.stringify({
+      ui: { textSize: "sm" },
+      terminal: { fontSize: 15 },
+      editor: { fontSize: 20 },
+    });
+    const parsed = parseSettings(legacy);
+    expect(parsed.experimental).toEqual({ agentDashboard: false, showIdleAgents: false });
+    // …without disturbing what the old payload did say.
+    expect(parsed.ui.textSize).toBe("sm");
+    expect(parsed.editor.fontSize).toBe(20);
+  });
+
+  it("revives a payload holding only one of the two flags", () => {
+    const parsed = parseSettings(JSON.stringify({ experimental: { agentDashboard: true } }));
+    expect(parsed.experimental.agentDashboard).toBe(true);
+    expect(parsed.experimental.showIdleAgents).toBe(false);
+  });
+
+  /// GUI → JSON → GUI. The dialog writes the store, the store is serialised to
+  /// the one storage key, and the next boot parses it back — so a flag that
+  /// does not survive `JSON.stringify` round-tripping is a toggle that resets
+  /// itself overnight.
+  it("survives the GUI to JSON to GUI round trip", () => {
+    for (const experimental of [
+      { agentDashboard: true, showIdleAgents: true },
+      { agentDashboard: true, showIdleAgents: false },
+      { agentDashboard: false, showIdleAgents: true },
+      { agentDashboard: false, showIdleAgents: false },
+    ]) {
+      const saved = { ...DEFAULT_SETTINGS, experimental };
+      const revived = parseSettings(JSON.stringify(saved));
+      expect(revived.experimental).toEqual(experimental);
+      // The whole object, not just the section: a new top-level key that is
+      // not threaded through `parseSettings` comes back `undefined`, and that
+      // is exactly the bug this asserts against.
+      expect(revived).toEqual(saved);
+    }
+  });
+
+  /// This is user-editable JSON on disk. A truthy string must not be able to
+  /// switch an experiment on — the one direction a default-off flag must never
+  /// fall.
+  it("treats a non-boolean as off", () => {
+    const saved = JSON.stringify({
+      experimental: { agentDashboard: "yes", showIdleAgents: 1 },
+    });
+    expect(parseSettings(saved).experimental).toEqual({
+      agentDashboard: false,
+      showIdleAgents: false,
+    });
+  });
+});
+
 describe("agent roster migration", () => {
   it("builds a one-entry roster from the single agentCommand", () => {
     // Exactly what is on disk for an install that configured the pre-roster
