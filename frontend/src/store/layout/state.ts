@@ -102,6 +102,7 @@ export interface AppStoreState {
   leftSidebarCollapsed: boolean;
   sidebarsSwapped: boolean;
   diffMode: DiffMode;
+  diffLineNumbers: boolean;
   gitTab: GitTab;
   ignoreWhitespace: boolean;
   sidebarTab: SidebarTab;

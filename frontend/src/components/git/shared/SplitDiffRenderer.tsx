@@ -137,7 +137,12 @@ function useStableHunks(file: () => FileDiff) {
   return createMemo(() => stabilize(file().hunks));
 }
 
-function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
+function InlineDiff(props: {
+  file: FileDiff;
+  hunkActions?: HunkActions;
+  repoPath?: string;
+  lineNumbers: boolean;
+}) {
   const hunks = useStableHunks(() => props.file);
   return (
     <div>
@@ -157,7 +162,12 @@ function InlineDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath
             />
             <For each={inlineRowsForHunk(hunk.lines)}>
               {(row) => (
-                <InlineRow origin={row.origin} line={row.line} segments={row.segments} />
+                <InlineRow
+                  origin={row.origin}
+                  line={row.line}
+                  segments={row.segments}
+                  lineNumbers={props.lineNumbers}
+                />
               )}
             </For>
             <Show when={hasNoNewlineMarker(hunk.lines)}>
@@ -174,6 +184,10 @@ function InlineRow(props: {
   origin: " " | "+" | "-";
   line: DiffLine;
   segments?: Segment[];
+  /// Both gutters, together. A unified diff's two numbers are one reading —
+  /// "line 40 became line 42" — so hiding one and keeping the other would be a
+  /// third state nobody asked for.
+  lineNumbers: boolean;
 }) {
   const bg = () => {
     switch (props.origin) {
@@ -187,12 +201,20 @@ function InlineRow(props: {
   };
   return (
     <div class={`flex whitespace-pre ${bg()}`}>
-      <span class="w-12 flex-shrink-0 text-right pr-1 select-none text-muted-foreground/70 text-micro leading-[1.5]">
-        {props.line.oldLineno ?? ""}
-      </span>
-      <span class="w-12 flex-shrink-0 text-right pr-2 select-none text-muted-foreground/70 text-micro leading-[1.5]">
-        {props.line.newLineno ?? ""}
-      </span>
+      <Show when={props.lineNumbers}>
+        <span
+          data-lineno="old"
+          class="w-12 flex-shrink-0 text-right pr-1 select-none text-muted-foreground/70 text-micro leading-[1.5]"
+        >
+          {props.line.oldLineno ?? ""}
+        </span>
+        <span
+          data-lineno="new"
+          class="w-12 flex-shrink-0 text-right pr-2 select-none text-muted-foreground/70 text-micro leading-[1.5]"
+        >
+          {props.line.newLineno ?? ""}
+        </span>
+      </Show>
       <span class="w-4 flex-shrink-0 select-none opacity-70">{props.origin}</span>
       <span class="flex-1 pr-3">
         <Show when={props.segments} fallback={props.line.content}>
@@ -520,7 +542,12 @@ function HunkHeader(props: {
   );
 }
 
-function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?: string }) {
+function SplitDiff(props: {
+  file: FileDiff;
+  hunkActions?: HunkActions;
+  repoPath?: string;
+  lineNumbers: boolean;
+}) {
   const hunks = useStableHunks(() => props.file);
   return (
     <div>
@@ -535,7 +562,7 @@ function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?
               repoPath={props.repoPath}
             />
             <For each={pairHunkLines(hunk.lines)}>
-              {(pair) => <SplitRow pair={pair} />}
+              {(pair) => <SplitRow pair={pair} lineNumbers={props.lineNumbers} />}
             </For>
             <Show when={hasNoNewlineMarker(hunk.lines)}>
               <NoNewlineNote />
@@ -547,7 +574,7 @@ function SplitDiff(props: { file: FileDiff; hunkActions?: HunkActions; repoPath?
   );
 }
 
-function SplitRow(props: { pair: SplitPair }) {
+function SplitRow(props: { pair: SplitPair; lineNumbers: boolean }) {
   return (
     <div class="flex whitespace-pre min-w-0">
       <SplitCell
@@ -555,6 +582,7 @@ function SplitRow(props: { pair: SplitPair }) {
         side="left"
         kind={props.pair.context ? "context" : props.pair.left ? "deleted" : "empty"}
         segments={props.pair.segments?.leftSegs}
+        lineNumbers={props.lineNumbers}
       />
       <div class="w-px bg-border shrink-0" />
       <SplitCell
@@ -562,6 +590,7 @@ function SplitRow(props: { pair: SplitPair }) {
         side="right"
         kind={props.pair.context ? "context" : props.pair.right ? "added" : "empty"}
         segments={props.pair.segments?.rightSegs}
+        lineNumbers={props.lineNumbers}
       />
     </div>
   );
@@ -574,6 +603,9 @@ function SplitCell(props: {
   side: "left" | "right";
   kind: CellKind;
   segments?: Segment[];
+  /// Off hides *both* sides' gutters — the two are one preference, and a split
+  /// view numbered on one side only reads as a rendering bug.
+  lineNumbers: boolean;
 }) {
   const gutter = () => {
     switch (props.kind) {
@@ -611,9 +643,14 @@ function SplitCell(props: {
   return (
     <div class={`flex-1 flex min-w-0 ${rowBg()}`}>
       <div class={`w-1 shrink-0 ${gutter()}`} />
-      <span class="w-12 flex-shrink-0 text-right pr-2 select-none text-muted-foreground/70 text-micro leading-[1.5]">
-        {lineNum()}
-      </span>
+      <Show when={props.lineNumbers}>
+        <span
+          data-lineno={props.side}
+          class="w-12 flex-shrink-0 text-right pr-2 select-none text-muted-foreground/70 text-micro leading-[1.5]"
+        >
+          {lineNum()}
+        </span>
+      </Show>
       <span class="flex-1 pr-3 min-w-0 overflow-hidden">
         <Show
           when={props.segments && props.segments.length > 0}
@@ -664,10 +701,16 @@ export function DiffRenderer(props: {
               file={props.file}
               hunkActions={props.hunkActions}
               repoPath={props.repoPath}
+              lineNumbers={lineNumbers()}
             />
           }
         >
-          <SplitDiff file={props.file} hunkActions={props.hunkActions} repoPath={props.repoPath} />
+          <SplitDiff
+            file={props.file}
+            hunkActions={props.hunkActions}
+            repoPath={props.repoPath}
+            lineNumbers={lineNumbers()}
+          />
         </Show>
         {/* Rust stops storing lines once a file blows the budget in
             `collect_diff`. The header's +/− counts are still the true totals,

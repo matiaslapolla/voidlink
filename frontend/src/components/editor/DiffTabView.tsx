@@ -17,6 +17,7 @@ import {
   GitCompare,
   RotateCw,
   Rows3,
+  Hash,
   Space,
   SplitSquareVertical,
   Trash2,
@@ -291,6 +292,20 @@ export function DiffTabView(props: DiffTabViewProps) {
           Hunks
         </button>
         <button
+          onClick={() => actions.toggleDiffLineNumbers()}
+          aria-label="Toggle line numbers"
+          aria-pressed={state.diffLineNumbers}
+          class={`flex items-center gap-1 px-2 py-0.5 text-label rounded border transition-colors ${
+            state.diffLineNumbers
+              ? "bg-primary/15 border-primary/40 text-primary"
+              : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
+          }`}
+          title="Show old/new line numbers in the diff gutters"
+        >
+          <Hash class="w-3 h-3" />
+          Lines
+        </button>
+        <button
           onClick={() => actions.toggleIgnoreWhitespace()}
           aria-label="Toggle ignore whitespace"
           aria-pressed={state.ignoreWhitespace}
@@ -364,6 +379,7 @@ export function DiffTabView(props: DiffTabViewProps) {
                   mode={state.diffMode}
                   hunkActions={hunkActions()}
                   repoPath={props.repoPath}
+                  lineNumbers={state.diffLineNumbers}
                 />
               )}
             </Show>

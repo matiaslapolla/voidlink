@@ -387,6 +387,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     leftSidebarCollapsed: prefs.leftSidebarCollapsed,
     sidebarsSwapped: prefs.sidebarsSwapped,
     diffMode: prefs.diffMode,
+    diffLineNumbers: prefs.diffLineNumbers,
     gitTab: prefs.gitTab,
     ignoreWhitespace: prefs.ignoreWhitespace,
     sidebarTab: prefs.sidebarTab,
@@ -476,6 +477,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       leftSidebarCollapsed: state.leftSidebarCollapsed,
       sidebarsSwapped: state.sidebarsSwapped,
       diffMode: state.diffMode,
+      diffLineNumbers: state.diffLineNumbers,
       gitTab: state.gitTab,
       ignoreWhitespace: state.ignoreWhitespace,
       sidebarTab: state.sidebarTab,
@@ -1248,6 +1250,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
     setDiffMode(mode: AppStoreState["diffMode"]) {
       setState("diffMode", mode);
+    },
+    /// Line numbers on both diff gutters. A preference about reading, not about
+    /// this file — so it lives beside `diffMode` rather than in a tab.
+    toggleDiffLineNumbers() {
+      setState("diffLineNumbers", (v) => !v);
     },
     toggleIgnoreWhitespace() {
       setState("ignoreWhitespace", (v) => !v);

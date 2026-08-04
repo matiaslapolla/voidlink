@@ -100,6 +100,18 @@ export default defineConfig({
           name: { label: "browser", color: "cyan" },
           include: ["src/**/*.browser.test.tsx"],
           setupFiles: ["./src/test/setup.browser.ts"],
+          /// One file at a time. Vitest 4.1's Playwright provider hands every
+          /// parallel file the same browser context, and past the first the
+          /// test module fails to import at all — `TypeError: Cannot read
+          /// properties of undefined (reading 'config')`, attributed to
+          /// whichever `describe` was being registered. Every file here passes
+          /// on its own; only the whole-project run failed, which is exactly
+          /// the run CI does.
+          ///
+          /// The cost is seconds on a project that is already the slow one, and
+          /// these tests are geometry — a shared viewport they take turns in is
+          /// what they want anyway.
+          fileParallelism: false,
           browser: {
             enabled: true,
             provider: playwright(),

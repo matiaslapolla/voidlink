@@ -276,3 +276,78 @@ describe("split alignment", () => {
     expect(Math.abs(after.top - beside.top - rowHeight)).toBeLessThan(2);
   });
 });
+
+/// Line numbers are a *gutter*, and a gutter is geometry: turning them off has
+/// to give the width back to the code rather than leaving an empty column, and
+/// turning them on must number both sides of a split view rather than one.
+/// jsdom would report every rect as zero and call both states identical.
+describe("the line-number gutters", () => {
+  /// `data-lineno` is the renderer's own marker for these spans, so the test
+  /// names the gutter rather than a Tailwind width class that a restyle would
+  /// break.
+  function gutters(container: HTMLElement, side?: string) {
+    const sel = side ? `[data-lineno="${side}"]` : "[data-lineno]";
+    return Array.from(container.querySelectorAll<HTMLElement>(sel));
+  }
+
+  it("numbers both sides of a split diff when on", () => {
+    const { container } = mount(file([hunk("one", 3)]), "split", { lineNumbers: true });
+    const left = gutters(container, "left");
+    const right = gutters(container, "right");
+    expect(left).toHaveLength(3);
+    expect(right).toHaveLength(3);
+    expect(left.map((n) => n.textContent)).toEqual(["1", "2", "3"]);
+    expect(right.map((n) => n.textContent)).toEqual(["1", "2", "3"]);
+    // Each gutter sits to the left of the code it numbers, on the same line.
+    for (let i = 0; i < 3; i++) {
+      const code = screen.getByText(`oneold${i}`).getBoundingClientRect();
+      const num = left[i].getBoundingClientRect();
+      expect(num.right).toBeLessThanOrEqual(code.left + 1);
+      expect(Math.abs(num.top - code.top)).toBeLessThan(2);
+      expect(num.width).toBeGreaterThan(8);
+    }
+  });
+
+  it("removes the gutters entirely when off, giving the width to the code", () => {
+    const on = mount(file([hunk("one", 3)]), "split", { lineNumbers: true });
+    const withNumbers = screen.getAllByText("oneold0")[0].getBoundingClientRect();
+    on.container.remove();
+
+    const off = mount(file([hunk("one", 3)]), "split", { lineNumbers: false });
+    expect(gutters(off.container)).toHaveLength(0);
+    const withoutNumbers = screen.getAllByText("oneold0")[0].getBoundingClientRect();
+
+    // Not merely absent from the DOM: the code actually moved left into the
+    // reclaimed column, which is the difference between "hidden" and "gone".
+    expect(withoutNumbers.left).toBeLessThan(withNumbers.left - 8);
+    // …and the split columns are still level with each other.
+    const left = screen.getAllByText("oneold1")[0].getBoundingClientRect();
+    const right = screen.getAllByText("onenew1")[0].getBoundingClientRect();
+    expect(Math.abs(left.top - right.top)).toBeLessThan(2);
+    expect(left.right).toBeLessThanOrEqual(right.left + 1);
+  });
+
+  it("prints old and new numbers side by side in the inline view, and neither when off", () => {
+    const on = mount(file([hunk("one", 2)]), "inline", { lineNumbers: true });
+    expect(gutters(on.container, "old")).toHaveLength(4);
+    expect(gutters(on.container, "new")).toHaveLength(4);
+    // A deletion has an old number and no new one; the addition beneath it the
+    // reverse. That pairing is the whole reason a unified diff has two gutters.
+    const old0 = gutters(on.container, "old")[0].getBoundingClientRect();
+    const new0 = gutters(on.container, "new")[0].getBoundingClientRect();
+    expect(Math.abs(old0.top - new0.top)).toBeLessThan(2);
+    expect(old0.right).toBeLessThanOrEqual(new0.left + 1);
+    on.container.remove();
+
+    const off = mount(file([hunk("one", 2)]), "inline", { lineNumbers: false });
+    expect(gutters(off.container)).toHaveLength(0);
+    // The +/- origin column survives — it is not a line number and it is the
+    // only thing distinguishing the two halves of a pair once numbers are off.
+    expect(screen.getAllByText("oneold0")[0]).toBeTruthy();
+  });
+
+  it("defaults to on when the caller expresses no preference", () => {
+    const { container } = mount(file([hunk("one", 2)]), "split");
+    expect(gutters(container).length).toBeGreaterThan(0);
+  });
+});
