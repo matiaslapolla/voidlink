@@ -1,7 +1,7 @@
 # Brain routine — the saved prompt
 
 Runs 3×/day as a Claude Code Routine. One run: read the vault, think about what changed,
-open at most one PR, send at most one Telegram message, record its own state, exit.
+open at most one PR, send at most one Telegram message, exit.
 
 **You propose. You never write to `main`.** Every change to `brain-kb` — entries, soul
 refinements, anything — lands as a pull request Matias merges or closes. That is enforced
@@ -17,11 +17,18 @@ correct.
 
 ## 0. Setup
 
-The routine environment provides `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, and its
-network access is set to Custom with `api.telegram.org` allowed. If a Telegram call fails
-with a network or `403 host_not_allowed` error, **say so in your final output and continue
-with the rest of the run** — a broken nudge channel must not cost you the PR. Do not
-retry in a loop.
+The routine must be attached to the **`brain-kb`** repository — that is the repo the
+session clones, and GitHub API access is scoped to repositories attached to the session.
+
+Its environment provides `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, and its network
+access is set to Custom with `api.telegram.org` allowed. If a Telegram call fails with a
+network or `403 host_not_allowed` error, **say so in your final output and continue with
+the rest of the run** — a broken nudge channel must not cost you the PR. Do not retry in
+a loop.
+
+The vault is the clone itself, so `git` commands run against the working directory. There
+is no separate `brain-kb` subdirectory to `-C` into, and the `brain` CLI is not installed
+here — read the markdown directly.
 
 Note: a green run status only means the session exited without an infrastructure error.
 It does not mean anything worked. Whatever you conclude, state it explicitly in your final
@@ -30,7 +37,7 @@ output, because that transcript is the only real signal anyone gets.
 ## 1. Pull
 
 ```bash
-git -C brain-kb pull --ff-only
+git pull --ff-only
 ```
 
 If the pull fails, stop and report. Working from a stale vault produces proposals that
@@ -44,25 +51,40 @@ In this order, and no further than you need:
 - `soul/USER.md` — who he is, what to nag about, what never to raise.
 - `soul/MEMORY.md` — what you've already learned, including what he has rejected before.
   **A thing he turned down once does not come back.**
-- `inbox/pending/` — proposals from earlier runs still awaiting a verdict.
-- `inbox/state.json` — `{ "lastUpdateId": <n>, "runCount": <n> }`.
-- Entries created or changed since the last run:
-  `git -C brain-kb log --since="<last run>" --name-only --diff-filter=AMR`
+- Open PRs on `brain-kb` with a `claude/proposals-` branch — these are your pending
+  proposals from earlier runs. There is no state file; GitHub is the state.
+- Entries created or changed since the last run. You have no stored timestamp, so use a
+  window a little wider than the schedule and tolerate the overlap:
+  `git log --since="36 hours ago" --name-only --diff-filter=AMR`
+  Re-seeing an entry is harmless; `MEMORY.md` and the closed-PR history are what stop
+  you proposing the same thing twice.
 - Yesterday's raw log: `vault/log/YYYY-MM-DD.md` — the local sessions, which are the only
   window you have onto work that happened off GitHub.
-- `brain review` — stale entries, open tickets, decisions that never turned into anything.
+- Staleness: the `brain` CLI isn't installed here, so derive it from frontmatter yourself —
+  decisions with no later `shipped` in the same project, tickets with no `shipped` against
+  them, entries untouched for 90d. `brain review` is the local equivalent if you want to
+  see the shape of the output.
 
 ## 3. Process replies
 
 ```
-GET https://api.telegram.org/bot<TOKEN>/getUpdates?offset=<lastUpdateId + 1>&timeout=0
+GET https://api.telegram.org/bot<TOKEN>/getUpdates?timeout=0
 ```
 
-`offset` must be the highest `update_id` you have already handled **plus one** — that is
-what acknowledges the previous batch. Persist the new highest `update_id` in step 6 or you
-will reprocess the same replies forever. Undelivered updates are dropped by Telegram after
-24 hours; at 3 runs/day that is never a problem unless runs have been failing, which is
-itself worth reporting.
+Read what comes back, then **immediately acknowledge it in the same run**:
+
+```
+GET https://api.telegram.org/bot<TOKEN>/getUpdates?offset=<highest update_id + 1>&timeout=0
+```
+
+Calling `getUpdates` with an offset above an update's `update_id` confirms it *server-side*
+— Telegram itself remembers, which is why you need no state file of your own. Acknowledge
+after you have read the replies and before you finish the run.
+
+Two consequences worth knowing: a run that dies between the ack and the PR loses those
+replies, which is a better failure than replaying them forever; and Telegram drops
+unacknowledged updates after 24 hours, so at 3 runs/day nothing is ever lost unless runs
+have been failing — which is itself worth reporting.
 
 Apply what the replies say: a reply that answers your getting-to-know-you question becomes
 a proposed `soul/` refinement; a reply that rejects something becomes a `soul/MEMORY.md`
@@ -94,11 +116,17 @@ beat ten hedged ones, and one is a fine number. Zero is a fine number.
 If — and only if — something survived step 4:
 
 ```bash
-git -C brain-kb checkout -b claude/proposals-YYYY-MM-DD-<n>
+git checkout -b claude/proposals-YYYY-MM-DD-<n>
 # write the markdown files
-git -C brain-kb commit && git -C brain-kb push -u origin HEAD
-gh pr create --repo matiaslapolla/brain-kb --title "..." --body "..."
+git commit && git push -u origin HEAD
 ```
+
+Then open the PR with your **built-in GitHub tools**, not `gh` — `gh` is not installed on
+the session VM, and the built-in tools authenticate through the GitHub proxy so no token
+is involved. (If a setup script ever installs `gh`, it works too, but don't depend on it.)
+
+Push only to the branch you just created and are standing on: the proxy permits pushes to
+the session's current working branch and nothing else, so never try to push `main`.
 
 One PR per run, containing everything. Never more than one `soul/` change in it. The PR
 body is the argument: what you observed, what you propose, and why — one short paragraph
@@ -110,17 +138,25 @@ Write entries in the vault's own format — same frontmatter, same id shape
 claim, a body under ~6 lines that keeps the concrete specifics and cuts the narration.
 Read a few recent entries first and match them.
 
-## 6. Record state
+## 6. Expire what went unanswered
 
-Write, on `main`, in a commit of its own — this is the one thing you may write directly,
-because it is your own bookkeeping and never touches his content:
+**You cannot write to `main`.** The GitHub proxy permits pushes only to the branch the
+session is standing on, so there is no run-to-run state file to update — and that is fine,
+because everything you need is already on GitHub:
 
-- `inbox/state.json` — the new `lastUpdateId`, incremented `runCount`, this run's timestamp.
-- `inbox/pending/<pr-number>.md` — one file per open proposal PR, with the run count when
-  it was opened.
-- Anything pending for **3 runs** with no verdict moves to `inbox/expired/`, and the PR is
-  closed with a one-line comment saying it expired. Unanswered is an answer; a growing pile
-  of open PRs is the bottleneck this design exists to avoid.
+- **Pending proposals** are the open PRs on `brain-kb` whose branch starts with
+  `claude/proposals-`. That list *is* `inbox/pending/`, always accurate, and it survives a
+  failed run.
+- **Age** is the PR's creation date. At 3 runs/day, "3 runs" is roughly 24 hours — use the
+  date, not a run counter.
+
+Close any proposal PR older than **~24 hours** with no verdict, leaving a one-line comment
+saying it expired. Unanswered is an answer; a growing pile of open PRs is the bottleneck
+this design exists to avoid.
+
+`inbox/` in the repo is scaffolding for the local side and for anything you want to carry
+inside a proposal PR. Do not treat it as live state, and never try to push a state commit
+to `main` — it will fail, and failing on bookkeeping after a good PR is a wasted run.
 
 ## 7. Send one message
 
