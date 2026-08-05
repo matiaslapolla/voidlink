@@ -46,6 +46,7 @@ import {
   setSplitRatios,
   singleGroupLayout,
   splitGroup,
+  type PaneNode,
   type SplitOrientation,
 } from "./panes";
 import {
@@ -574,6 +575,29 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   /// caller has not filled it yet.
   const groupsThatHeldTabs = new Map<string, Set<string>>();
 
+  /// The **only** way to put a new tree in `paneLayoutByWorktree`.
+  ///
+  /// `setState("paneLayoutByWorktree", wtId, node)` looks like an assignment and
+  /// is not one: Solid merges a plain object into the node already at that path
+  /// rather than replacing it. A `PaneNode` is a discriminated union whose two
+  /// members have *disjoint* fields, so collapsing a split back to a group
+  /// merged `{kind, id, group}` onto a node that kept its `orientation`,
+  /// `ratios` and `children` — a node that is both a group and a split at once.
+  /// `groupList` then saw one group while the DOM still held two panes, every
+  /// pane measured 0px wide, and the workbench was unrecoverable without a
+  /// reload. That is the whole bug behind "drag a tab back and the UI dies".
+  ///
+  /// `produce` assigns the reference, which is what every caller means. Routing
+  /// all of them through one function is what stops the next one from spelling
+  /// it the other way.
+  function writePaneLayout(wtId: string, node: PaneNode) {
+    setState(
+      produce((s) => {
+        s.paneLayoutByWorktree[wtId] = node;
+      }),
+    );
+  }
+
   createEffect(() => {
     const wtId = state.activeWorktreeId;
     const current = state.paneLayoutByWorktree[wtId];
@@ -596,7 +620,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       new Set([...after].filter(([, tabs]) => tabs.length > 0).map(([groupId]) => groupId)),
     );
 
-    if (next !== current) setState("paneLayoutByWorktree", wtId, next);
+    if (next !== current) writePaneLayout(wtId, next);
   });
 
   // ── Tab groups ────────────────────────────────────────────────────────────
@@ -1395,14 +1419,14 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     /// clicking a tab in a background pane would steal the front pane's tab.
     setPaneGroupActiveTab(wtId: string, groupId: string, tabId: string | null) {
       const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
-      setState("paneLayoutByWorktree", wtId, setGroupActiveTab(current, groupId, tabId));
+      writePaneLayout(wtId, setGroupActiveTab(current, groupId, tabId));
     },
 
     /// Drag on a splitter between two groups.
     setPaneSplitRatios(wtId: string, splitId: string, ratios: number[]) {
       const current = state.paneLayoutByWorktree[wtId];
       if (!current) return;
-      setState("paneLayoutByWorktree", wtId, setSplitRatios(current, splitId, ratios));
+      writePaneLayout(wtId, setSplitRatios(current, splitId, ratios));
     },
 
     /// Back to one group holding everything. The escape hatch for a split the

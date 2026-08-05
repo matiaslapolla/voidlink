@@ -134,6 +134,50 @@ describe("splitting a pane by dropping a tab on its edge", () => {
     });
   });
 
+  /// The tree the *store* holds, not the one the reducer returned.
+  ///
+  /// `panes()` reads through `groupList`, which only ever looks at `kind`, so it
+  /// cannot see a node that is a group and a split at the same time. That shape
+  /// is exactly what this describes, so the assertion has to be on the raw node.
+  function rawLayout(store: ReturnType<typeof createAppStore>, wtId: string) {
+    return store.state.paneLayoutByWorktree[wtId] as unknown as Record<string, unknown>;
+  }
+
+  it("leaves no split fields behind when a collapse turns the root back into a group", async () => {
+    await withStore(async (store, wtId) => {
+      const { actions } = store;
+      actions.openCompareTab(wtId, { baseRef: "main", headRef: "a" });
+      actions.openCompareTab(wtId, { baseRef: "main", headRef: "b" });
+      const moving = store.workbenchTabIds()[1];
+
+      const newGroupId = actions.splitPaneGroupWithTab(wtId, "row", "after", undefined, moving)!;
+      await tick();
+      expect(rawLayout(store, wtId).kind).toBe("split");
+
+      // Drag it back: the pane it leaves is collapsed by the prune effect, and
+      // the root goes from a split to a group.
+      const home = panes(store).find((g) => g.id !== newGroupId)!;
+      actions.moveTabToPaneGroup(wtId, moving, home.id, null);
+      await tick();
+
+      // `setState(path, node)` *merges* a plain object into whatever sits at
+      // that path rather than replacing it — so this used to be a node carrying
+      // `kind: "group"` on top of the split's `orientation`, `ratios` and
+      // `children`. `groupList` reported one group while the renderer still had
+      // two panes to place, every pane measured 0px wide, and the workbench was
+      // unusable until a reload. See `writePaneLayout`.
+      const raw = rawLayout(store, wtId);
+      expect(raw.kind).toBe("group");
+      expect(raw.children).toBeUndefined();
+      expect(raw.ratios).toBeUndefined();
+      expect(raw.orientation).toBeUndefined();
+
+      // And the surviving group really holds both tabs.
+      const resolved = resolveGroupTabs(store.paneLayout(), store.workbenchTabIds());
+      expect(resolved.get(home.id)).toHaveLength(2);
+    });
+  });
+
   it("collapses a pane when its last tab is closed", async () => {
     await withStore(async (store, wtId) => {
       const { actions } = store;
