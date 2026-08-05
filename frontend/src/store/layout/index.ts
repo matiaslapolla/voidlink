@@ -558,17 +558,45 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   /// longer exists is dropped. Both are structural, so they run here rather
   /// than in each of the six per-kind close actions.
   ///
-  /// The stringify guard is what makes this terminate: `pruneClosedTabs`
-  /// rebuilds split nodes unconditionally, so writing its result back
-  /// unconditionally would retrigger this effect forever.
+  /// The identity guard is what makes this terminate. It used to be a
+  /// `JSON.stringify` of the whole tree on both sides, because `pruneClosedTabs`
+  /// rebuilt every split node whether or not anything was stale — so this ran
+  /// two full serialisations of the pane tree on every write to it, and a
+  /// splitter drag writes on every frame. `pruneClosedTabs` now returns its
+  /// input by reference when there is nothing to prune, which is the common
+  /// case and is checkable in a scan.
+  /// Which groups held at least one tab the last time this ran, per worktree.
+  ///
+  /// The collapse rule is "a group that *lost* its last tab goes away", and
+  /// that is a statement about two points in time. Judging it from the current
+  /// layout alone reads any empty group as one that lost something — including
+  /// the one a split created a moment ago, which is empty precisely because the
+  /// caller has not filled it yet.
+  const groupsThatHeldTabs = new Map<string, Set<string>>();
+
   createEffect(() => {
     const wtId = state.activeWorktreeId;
     const current = state.paneLayoutByWorktree[wtId];
     if (!current) return;
-    const next = pruneClosedTabs(current, workbenchTabIds());
-    if (JSON.stringify(next) !== JSON.stringify(current)) {
-      setState("paneLayoutByWorktree", wtId, next);
+    const ids = workbenchTabIds();
+
+    const held = groupsThatHeldTabs.get(wtId) ?? new Set<string>();
+    const resolved = resolveGroupTabs(current, ids);
+    // Only a group that was holding something and now holds nothing.
+    const collapsible = new Set<string>();
+    for (const [groupId, tabs] of resolved) {
+      if (tabs.length === 0 && held.has(groupId)) collapsible.add(groupId);
     }
+
+    const next = pruneClosedTabs(current, ids, collapsible);
+
+    const after = resolveGroupTabs(next, ids);
+    groupsThatHeldTabs.set(
+      wtId,
+      new Set([...after].filter(([, tabs]) => tabs.length > 0).map(([groupId]) => groupId)),
+    );
+
+    if (next !== current) setState("paneLayoutByWorktree", wtId, next);
   });
 
   // ── Tab groups ────────────────────────────────────────────────────────────
@@ -1284,13 +1312,38 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       placement: "before" | "after" = "after",
       groupId?: string,
     ): string | null {
+      return this.splitPaneGroupWithTab(wtId, orientation, placement, groupId, null);
+    },
+
+    /// Split, and put `tabId` in the new group — as **one** write.
+    ///
+    /// Two writes is what it used to be, and the gap between them was long
+    /// enough to lose the pane: a store write flushes effects, the prune effect
+    /// saw a brand-new group with no tabs in it, and collapsed it. The move
+    /// that followed then addressed a group that no longer existed and did
+    /// nothing at all, so a drag onto a pane edge produced no split and no
+    /// move — intermittently, depending on what else was scheduled. The prune
+    /// no longer collapses a group that never held anything, and this does not
+    /// give it the chance either.
+    splitPaneGroupWithTab(
+      wtId: string,
+      orientation: SplitOrientation,
+      placement: "before" | "after" = "after",
+      groupId?: string,
+      tabId?: string | null,
+    ): string | null {
       const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
       const target = groupId ?? focusedGroupId() ?? groupList(current)[0]?.id;
       if (!target) return null;
-      const { layout, newGroupId } = splitGroup(current, target, orientation, placement);
+      const ids = worktreeTabIds(wtId);
+      // The registry makes the claims explicit before the tree is restructured
+      // — see `splitGroup`, where a "before" placement would otherwise hand
+      // every unclaimed tab to the group it just created.
+      const { layout, newGroupId } = splitGroup(current, target, orientation, placement, ids);
       if (!newGroupId) return null;
+      const filled = tabId ? moveTabToGroup(layout, tabId, newGroupId, null, ids) : layout;
       setState(produce((s) => {
-        s.paneLayoutByWorktree[wtId] = layout;
+        s.paneLayoutByWorktree[wtId] = filled;
         s.focusedGroupByWorktree[wtId] = newGroupId;
       }));
       return newGroupId;
@@ -1321,7 +1374,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       beforeTabId: string | null = null,
     ) {
       const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
-      const next = moveTabToGroup(current, tabId, groupId, beforeTabId);
+      // The registry is what lets a drop into the *first* group land where the
+      // user pointed rather than at the end — see `moveTabToGroup`.
+      const next = moveTabToGroup(current, tabId, groupId, beforeTabId, worktreeTabIds(wtId));
       if (next === current) return;
       setState(produce((s) => {
         s.paneLayoutByWorktree[wtId] = next;

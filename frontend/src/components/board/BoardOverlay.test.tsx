@@ -1,17 +1,19 @@
-/// The board overlay, mounted.
+/// The board overlay, mounted in jsdom.
 ///
-/// The gesture *is* the surface — a board you cannot drag a card across is a
-/// list with headings — so the drag test is the one that matters here. The rest
-/// guard the states a board spends most of its life in (empty, no repo) and the
-/// arguments the write actually sends across the boundary, which is where the
-/// file-per-card design either holds or quietly stops holding.
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+/// What is here: the states a board spends most of its life in (empty, no
+/// repo), the arguments the write actually sends across the boundary — which is
+/// where the file-per-card design either holds or quietly stops holding — and
+/// the external-edit refetch.
+///
+/// What is *not* here: the drag. It resolves its destination from
+/// `getBoundingClientRect` and jsdom has no layout, so it lives in
+/// `BoardOverlay.browser.test.tsx` and shares this file's fixture.
+import { beforeEach, describe, expect, it } from "vitest";
+import { render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import {
   emitTauriEvent,
   lastInvokeArgs,
-  mockTauri,
   tauriCalls,
   tauriListenerCount,
 } from "@/test/tauri";
@@ -19,91 +21,19 @@ import { isOverlayOpen } from "@/commands/overlay";
 import { closeBoard, openBoard } from "@/commands/registry";
 import { BOARD_CHANGED_EVENT } from "@/api/board";
 
-import { BoardOverlay, BoardOverlayHost } from "./BoardOverlay";
-
-const REPO = "/repo";
-
-interface StoredCard {
-  id: string;
-  title: string;
-  column: string;
-  order: number;
-  rev: number;
-  body: string;
-}
-
-/// A stand-in for `.voidlink/board/`, because the thing under test is a
-/// read-modify-write against files. A fixed list of cards would let a drag
-/// "pass" by rendering the same board it started with.
-let disk: StoredCard[] = [];
-
-const asWire = (c: StoredCard) => ({
-  id: c.id,
-  title: c.title,
-  column: c.column,
-  order: c.order,
-  labels: [] as string[],
-  created: "2026-08-04T10:00:00.000-03:00",
-  path: `${c.id}.md`,
-  rev: `rev-${c.rev}`,
-});
-
-/// Read one frontmatter scalar back out of what the surface wrote. The point
-/// of parsing rather than trusting: the fake disk then holds what the *file*
-/// says, so a move that produced the wrong markdown shows up as the wrong
-/// board rather than as a passing test.
-function field(content: string, name: string): string {
-  return content.match(new RegExp(`^${name}: "?(.*?)"?$`, "m"))?.[1] ?? "";
-}
-
-function installBoard(cards: StoredCard[], columns = ["Todo", "Doing", "Done"]) {
-  disk = cards;
-  mockTauri({
-    board_list_cards: () => ({ columns, cards: disk.map(asWire) }),
-    board_read_card: (args: Record<string, unknown>) => {
-      const card = disk.find((c) => c.id === args.cardId);
-      if (!card) throw new Error(`no such card: ${String(args.cardId)}`);
-      return { ...asWire(card), body: card.body };
-    },
-    board_save_card: (args: Record<string, unknown>) => {
-      const id = String(args.cardId);
-      const content = String(args.content);
-      const existing = disk.find((c) => c.id === id);
-      if ((existing ? `rev-${existing.rev}` : null) !== (args.expectedRev ?? null)) {
-        throw new Error(`board-conflict: ${id} changed on disk since you read it`);
-      }
-      const next: StoredCard = {
-        id,
-        title: field(content, "title"),
-        column: field(content, "column"),
-        order: Number(field(content, "order")),
-        rev: (existing?.rev ?? 0) + 1,
-        body: content.split("---\n")[2] ?? "",
-      };
-      if (existing) Object.assign(existing, next);
-      else disk.push(next);
-      return { path: `.voidlink/board/${id}.md`, rev: `rev-${next.rev}` };
-    },
-  });
-}
-
-const THREE_CARDS: StoredCard[] = [
-  { id: "a", title: "Wire the watcher", column: "Todo", order: 1, rev: 1, body: "why\n" },
-  { id: "b", title: "Write the docs", column: "Todo", order: 2, rev: 1, body: "" },
-  { id: "c", title: "Ship it", column: "Doing", order: 1, rev: 1, body: "" },
-];
-
-const onClose = vi.fn(() => {});
-
-function mount(repoPath = REPO) {
-  onClose.mockClear();
-  return render(() => <BoardOverlay repoPath={repoPath} onClose={onClose} />);
-}
-
-const tile = (title: string) => screen.getByLabelText(title);
-const columnOf = (title: string) =>
-  tile(title).closest("[data-board-column]")?.getAttribute("data-board-column");
-const columnBody = (name: string) => document.querySelector(`[data-board-column="${name}"]`)!;
+import { BoardOverlayHost } from "./BoardOverlay";
+// The fake disk and the mount helpers are shared with the browser project —
+// see `boardFixture.tsx` for why the drag had to move there.
+import {
+  boardDisk,
+  columnBody,
+  columnOf,
+  installBoard,
+  mountBoard as mount,
+  onClose,
+  REPO,
+  THREE_CARDS,
+} from "./boardFixture";
 
 beforeEach(() => {
   installBoard(structuredClone(THREE_CARDS));
@@ -127,87 +57,6 @@ describe("the board it renders", () => {
     await screen.findByLabelText("Orphan");
     expect(columnOf("Orphan")).toBe("Todo");
     expect(screen.getByText(/“Blocked” is not declared/)).toBeInTheDocument();
-  });
-});
-
-/// The gesture the surface exists for.
-describe("dragging a card between columns", () => {
-  it("moves it, by rewriting exactly that one card's file", async () => {
-    mount();
-    const card = await screen.findByLabelText("Wire the watcher");
-    expect(columnOf("Wire the watcher")).toBe("Todo");
-
-    fireEvent.dragStart(card);
-    fireEvent.dragOver(columnBody("Done"));
-    fireEvent.drop(columnBody("Done"));
-
-    await waitFor(() => expect(columnOf("Wire the watcher")).toBe("Done"));
-
-    // One card written, and it is the one that was dragged.
-    expect(tauriCalls("board_save_card")).toHaveLength(1);
-    const args = lastInvokeArgs("board_save_card")!;
-    expect(args.repoRoot).toBe(REPO);
-    expect(args.cardId).toBe("a");
-    expect(args.content).toContain('column: "Done"');
-    // The card's own body survives the move: a drag changes where it sits,
-    // not what it says.
-    expect(args.content).toContain("why");
-
-    // Everything else is untouched on disk.
-    expect(disk.find((c) => c.id === "b")).toMatchObject({ column: "Todo", rev: 1 });
-    expect(disk.find((c) => c.id === "c")).toMatchObject({ column: "Doing", rev: 1 });
-  });
-
-  /// The whole reason the write carries a `rev`.
-  it("re-reads the card immediately before writing it, and sends that revision", async () => {
-    mount();
-    const card = await screen.findByLabelText("Ship it");
-    fireEvent.dragStart(card);
-    fireEvent.drop(columnBody("Todo"));
-
-    await waitFor(() => expect(tauriCalls("board_save_card")).toHaveLength(1));
-    expect(tauriCalls("board_read_card")).toHaveLength(1);
-    expect(lastInvokeArgs("board_save_card")!.expectedRev).toBe("rev-1");
-    // And no commit is asked for, ever.
-    expect(lastInvokeArgs("board_save_card")).not.toHaveProperty("message");
-  });
-
-  /// The race the `rev` exists for, narrowed to the only window the surface
-  /// cannot close by re-reading: between its read and its write.
-  ///
-  /// An external edit made *before* the drop is not this case — the re-read
-  /// picks it up and the move lands on top of it, which is the point of
-  /// re-reading. So the other writer is scheduled inside `board_read_card`,
-  /// where it is genuinely unobservable to the caller.
-  it("refuses to clobber a card someone else wrote between the read and the write", async () => {
-    mount();
-    const card = await screen.findByLabelText("Wire the watcher");
-
-    mockTauri({
-      board_read_card: (args: Record<string, unknown>) => {
-        const stored = disk.find((c) => c.id === args.cardId)!;
-        const asRead = { ...asWire(stored), body: stored.body };
-        stored.title = "Retitled elsewhere";
-        stored.rev = 9;
-        return asRead;
-      },
-    });
-
-    fireEvent.dragStart(card);
-    fireEvent.drop(columnBody("Done"));
-
-    // The board reloads and shows what is actually on disk, in its own column.
-    await waitFor(() => expect(screen.getByLabelText("Retitled elsewhere")).toBeInTheDocument());
-    expect(columnOf("Retitled elsewhere")).toBe("Todo");
-    expect(disk.find((c) => c.id === "a")!.title).toBe("Retitled elsewhere");
-  });
-
-  it("writes nothing when a card is dropped back where it started", async () => {
-    mount();
-    const card = await screen.findByLabelText("Wire the watcher");
-    fireEvent.dragStart(card);
-    fireEvent.drop(tile("Wire the watcher"));
-    await waitFor(() => expect(tauriCalls("board_save_card")).toHaveLength(0));
   });
 });
 
@@ -238,7 +87,7 @@ describe("external edits", () => {
     await screen.findByLabelText("Wire the watcher");
     await waitFor(() => expect(tauriListenerCount(BOARD_CHANGED_EVENT)).toBe(1));
 
-    disk.push({
+    boardDisk().push({
       id: "d",
       title: "Written by an agent",
       column: "Doing",

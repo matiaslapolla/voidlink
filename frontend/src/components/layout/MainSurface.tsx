@@ -660,8 +660,17 @@ export function MainSurface(props: MainSurfaceProps) {
   }
 
   /// A tab dropped on a group's edge: split that group and land the tab in the
-  /// new one. `splitPaneGroup` returns `null` only if the group has vanished
-  /// between the drag starting and the drop landing.
+  /// new one. Returns `null` only if the group has vanished between the drag
+  /// starting and the drop landing.
+  ///
+  /// The split and the move are one store write. As two, the prune effect ran
+  /// in between, saw a group with nothing in it, and collapsed the pane before
+  /// the tab could reach it — so the drop did nothing at all.
+  ///
+  /// A whole tab *group* still takes two steps: it moves through the tab-group
+  /// reducer, which re-claims each member one at a time. That is safe because
+  /// the new pane is no longer collapsed for being empty — only for having
+  /// been emptied.
   function splitWithTab(
     payload: TabDragPayload,
     groupId: string,
@@ -669,9 +678,12 @@ export function MainSurface(props: MainSurfaceProps) {
     placement: "before" | "after",
   ) {
     const wtId = state.activeWorktreeId;
-    const newGroupId = actions.splitPaneGroup(wtId, orientation, placement, groupId);
-    if (!newGroupId) return;
-    moveTabHere(payload, newGroupId, null);
+    if (payload.tabGroupId) {
+      const newGroupId = actions.splitPaneGroupWithTab(wtId, orientation, placement, groupId, null);
+      if (newGroupId) moveTabHere(payload, newGroupId, null);
+      return;
+    }
+    actions.splitPaneGroupWithTab(wtId, orientation, placement, groupId, payload.id);
   }
 
   function selectTab(tab: TabDescriptor, groupId: string) {

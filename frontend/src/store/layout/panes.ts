@@ -111,10 +111,23 @@ export function resolveGroupTabs(
   }
   const first = groups[0];
   if (first) {
-    // Registry order, not claim order: an unclaimed tab has never been placed,
-    // so the only order it has is the one the strip already used.
+    // Unclaimed tabs fall to the first group, **after** its claims.
+    //
+    // They used to be stacked in *front* of them, and that quietly broke every
+    // drop into the first pane: a tab dropped there becomes claimed, so it
+    // sorted behind every unclaimed tab no matter where the user aimed.
+    // "Drop it second" and "drop it last" were the same gesture, and
+    // `moveTabToGroup`'s careful `beforeTabId` arithmetic was discarded one
+    // line later.
+    //
+    // Appending works because ordering the first group is what *makes* its
+    // tabs claimed: `moveTabToGroup` materialises the whole resolved list
+    // before inserting, so by the time a claim exists here, everything the
+    // user has placed is in it. What is left unclaimed is what has been opened
+    // since — and a newly opened tab belongs at the end, which is where opening
+    // one has always put it.
     const unclaimed = allTabIds.filter((id) => !claimed.has(id));
-    out.set(first.id, [...unclaimed, ...(out.get(first.id) ?? [])]);
+    out.set(first.id, [...(out.get(first.id) ?? []), ...unclaimed]);
   }
   return out;
 }
@@ -191,16 +204,28 @@ function mapTree(node: PaneNode, fn: (n: PaneNode) => PaneNode): PaneNode {
 /// Returns the new group's id alongside the tree so the caller can move a tab
 /// into it in the same gesture. The only refusal left is a `groupId` that is
 /// not in the tree — there is no count at which a split stops being allowed.
+///
+/// `allTabIds` **materialises every group's claims first**, and a split is
+/// exactly the moment that stops being optional. "Unclaimed tabs fall to the
+/// first group" is a *positional* rule, and a split with `placement: "before"`
+/// changes which group is first: the fresh, empty group lands at the head of
+/// the tree and inherits every tab nobody had claimed, while the group the user
+/// actually split resolves to nothing. The visible result was every tab jumping
+/// into the new pane and the old one collapsing as empty — a split that ate the
+/// pane it was splitting. Writing the claims down before restructuring means no
+/// group depends on its position any more.
 export function splitGroup(
   node: PaneNode,
   groupId: string,
   orientation: SplitOrientation,
   placement: "before" | "after",
+  allTabIds: readonly string[] = [],
 ): { layout: PaneNode; newGroupId: string | null } {
   if (!findGroup(node, groupId)) return { layout: node, newGroupId: null };
 
+  const base = allTabIds.length > 0 ? materializeClaims(node, allTabIds) : node;
   const fresh = makeGroup();
-  const layout = mapTree(node, (n) => {
+  const layout = mapTree(base, (n) => {
     if (n.kind !== "group" || n.group.id !== groupId) return n;
     const leaf: PaneNode = { kind: "group", id: fresh.id, group: fresh };
     const children = placement === "before" ? [leaf, n] : [n, leaf];
@@ -213,6 +238,26 @@ export function splitGroup(
     };
   });
   return { layout: collapse(layout), newGroupId: fresh.id };
+}
+
+/// Write every group's *resolved* tab list into its claims.
+///
+/// Turns the implicit "unclaimed falls to the first group" rule into explicit
+/// membership, so nothing downstream depends on which group happens to be
+/// first. Idempotent, and a no-op for a tree that is already explicit.
+function materializeClaims(node: PaneNode, allTabIds: readonly string[]): PaneNode {
+  const resolved = resolveGroupTabs(node, [...allTabIds]);
+  return mapTree(node, (n) => {
+    if (n.kind !== "group") return n;
+    const tabIds = resolved.get(n.group.id) ?? n.group.tabIds;
+    if (
+      tabIds.length === n.group.tabIds.length &&
+      tabIds.every((id, i) => id === n.group.tabIds[i])
+    ) {
+      return n;
+    }
+    return { ...n, group: { ...n.group, tabIds: [...tabIds] } };
+  });
 }
 
 // ── Removing ──────────────────────────────────────────────────────────────
@@ -256,13 +301,28 @@ function collapse(node: PaneNode): PaneNode {
 /// group's claim on it goes too — including the implicit claim the first group
 /// has on unclaimed tabs, which is why the target's claim is written
 /// explicitly rather than left to the fallback.
+///
+/// `allTabIds` is what makes a *position* meaningful in the first group.
+/// Without it the target's order is only its explicit claims, and the first
+/// group's unclaimed tabs — which is most of them until somebody splits — are
+/// not in that list at all, so `beforeTabId` names a tab the insertion cannot
+/// see and every drop appends. Passing the registry lets the target
+/// materialise its resolved order first, so a drop lands where the user
+/// pointed and everything that was implicit about the order becomes explicit
+/// at the moment the user first cares about it.
 export function moveTabToGroup(
   node: PaneNode,
   tabId: string,
   toGroupId: string,
   beforeTabId: string | null,
+  allTabIds: readonly string[] = [],
 ): PaneNode {
   if (!findGroup(node, toGroupId)) return node;
+  // Only when a registry was actually passed. `resolveGroupTabs` filters by
+  // what is live, so handing it an empty registry answers "no group holds
+  // anything" — and using *that* as the base order would erase every claim the
+  // tree has, which is a far worse failure than ignoring a drop position.
+  const resolved = allTabIds.length > 0 ? resolveGroupTabs(node, [...allTabIds]) : null;
   return mapTree(node, (n) => {
     if (n.kind !== "group") return n;
     if (n.group.id !== toGroupId) {
@@ -279,7 +339,11 @@ export function moveTabToGroup(
         },
       };
     }
-    const without = n.group.tabIds.filter((id) => id !== tabId);
+    // The group's *resolved* order, not just its explicit claims — see the
+    // header. Falls back to the claims when the caller passed no registry,
+    // which is what every test that does not care about position does.
+    const base = resolved?.get(n.group.id) ?? n.group.tabIds;
+    const without = base.filter((id) => id !== tabId);
     const at = beforeTabId === null ? without.length : without.indexOf(beforeTabId);
     const tabIds = [...without];
     tabIds.splice(at === -1 ? without.length : at, 0, tabId);
@@ -307,8 +371,39 @@ export function setGroupActiveTab(
 /// that keeps a split from rotting into dead rectangles. The first group is
 /// exempt: it holds unclaimed tabs, so an empty claim list means "everything",
 /// not "nothing".
-export function pruneClosedTabs(node: PaneNode, allTabIds: string[]): PaneNode {
+///
+/// `collapsible` narrows *which* empty groups may go. Without it, "empty"
+/// alone decides — and a group is at its emptiest one instant after it is
+/// created. A split makes a fresh group and the caller fills it; anything that
+/// ran the prune in between deleted the pane before its tab arrived, so the
+/// drop landed in a group that no longer existed and the tab never moved. The
+/// store passes the set of groups that *had* tabs and now have none, which is
+/// the actual condition the behaviour above describes.
+export function pruneClosedTabs(
+  node: PaneNode,
+  allTabIds: string[],
+  collapsible?: ReadonlySet<string>,
+): PaneNode {
   const live = new Set(allTabIds);
+  const groups = groupList(node);
+  const firstGroupId = groups[0]?.id;
+  // Nothing to prune is the overwhelmingly common case — this runs on every
+  // change to the tree, which during a splitter drag means every frame. An
+  // O(groups) scan with no allocation lets the caller compare the result by
+  // *reference*, where it used to `JSON.stringify` the whole tree twice a frame
+  // to find out that nothing had happened.
+  const canCollapse = (g: PaneGroup) =>
+    g.id !== firstGroupId &&
+    g.tabIds.length === 0 &&
+    (collapsible === undefined || collapsible.has(g.id));
+  const stale = groups.some(
+    (g) =>
+      g.tabIds.some((id) => !live.has(id)) ||
+      (g.activeTabId !== null && !live.has(g.activeTabId)) ||
+      canCollapse(g),
+  );
+  if (!stale) return node;
+
   const cleaned = mapTree(node, (n) => {
     if (n.kind !== "group") return n;
     const tabIds = n.group.tabIds.filter((id) => live.has(id));
@@ -320,12 +415,9 @@ export function pruneClosedTabs(node: PaneNode, allTabIds: string[]): PaneNode {
     return { ...n, group: { ...n.group, tabIds, activeTabId } };
   });
 
-  const groups = groupList(cleaned);
-  const firstId = groups[0]?.id;
   let out = cleaned;
-  for (const g of groups) {
-    if (g.id === firstId) continue;
-    if (g.tabIds.length === 0) out = removeGroup(out, g.id);
+  for (const g of groupList(cleaned)) {
+    if (canCollapse(g)) out = removeGroup(out, g.id);
   }
   return out;
 }

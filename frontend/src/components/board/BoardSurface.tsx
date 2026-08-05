@@ -21,13 +21,28 @@
 ///   * **Nothing here decides the destination index.** The drop target names
 ///     the card it lands in front of; `planMove` turns that into orders.
 
-import { For, Show, createMemo, createResource, createSignal, onCleanup } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  onCleanup,
+} from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { Plus } from "lucide-solid";
 import { boardApi, isBoardConflict, onBoardChanged } from "@/api/board";
 import type { BoardCard, BoardSnapshot } from "@/types/board";
 import { pushToast } from "@/commands/toast";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
+import {
+  activeDrag,
+  beginDrag,
+  insertionIndex,
+  registerDropZone,
+  type Point,
+} from "@/components/layout/dragDrop";
 import {
   buildCardMarkdown,
   groupIntoColumns,
@@ -88,6 +103,72 @@ export function BoardSurface(props: BoardSurfaceProps) {
     setDropColumn(null);
   }
 
+  // ── Dragging a card ───────────────────────────────────────────────────────
+  // Pointer events, through the shared controller — see `dragDrop.ts` for why
+  // HTML5 drag-and-drop cannot work inside this window at all.
+  //
+  // One zone per *column*, and the position within it is resolved from the
+  // cards the column already laid out. The card tiles themselves are grips and
+  // nothing else, which is what stops a drag from somewhere else in the app
+  // from lighting one up.
+
+  const columnEls = new Map<string, HTMLElement>();
+  function registerColumn(name: string, el: HTMLElement) {
+    columnEls.set(name, el);
+    onCleanup(() => columnEls.delete(name));
+  }
+
+  /// The card the pointer would drop in front of, or `null` for the end of the
+  /// column. Measured off the tiles rather than computed from `columns()`, so a
+  /// scrolled column answers about what the user can actually see.
+  function cardBefore(columnName: string, at: Point): string | null {
+    const host = columnEls.get(columnName);
+    if (!host) return null;
+    const tiles = [...host.querySelectorAll<HTMLElement>("[data-card-id]")].filter(
+      (el) => el.dataset.cardId !== dragging(),
+    );
+    const i = insertionIndex(
+      tiles.map((el) => el.getBoundingClientRect()),
+      at,
+      "y",
+    );
+    return tiles[i]?.dataset.cardId ?? null;
+  }
+
+  function startCardDrag(e: PointerEvent, card: BoardCard) {
+    if (busy()) return;
+    setDragging(card.id);
+    beginDrag(e, { kind: "card", id: card.id, label: card.title });
+  }
+
+  /// The gesture ended — dropped, cancelled with `Escape`, or abandoned below
+  /// the drag threshold. Either way the tile stops being dimmed and no column
+  /// stays highlighted. Watching the controller rather than each exit is what
+  /// makes "no stale affordance" true by construction.
+  createEffect(() => {
+    if (!activeDrag() && dragging()) resetDrag();
+  });
+
+  // Registered once per column name the board has ever shown this session;
+  // `registerColumn`'s cleanup is what keeps a renamed column from lingering.
+  createEffect(() => {
+    for (const column of columns()) {
+      const name = column.name;
+      registerDropZone({
+        id: `board-column:${name}`,
+        el: () => columnEls.get(name),
+        accepts: (p) => p.kind === "card",
+        over: (_p, at) => {
+          setDropColumn(name);
+          const before = cardBefore(name, at);
+          return before ? `Move into ${name}` : `Move to the end of ${name}`;
+        },
+        leave: () => setDropColumn(null),
+        drop: (p, at) => dropInto(name, cardBefore(name, at), p.id),
+      });
+    }
+  });
+
   /// Write a plan. Sequential rather than concurrent: the normal plan is one
   /// write, and the renumbering plan touches cards that are about to be sorted
   /// against each other — a partial application of it in a racing order would
@@ -126,12 +207,10 @@ export function BoardSurface(props: BoardSurfaceProps) {
     }
   }
 
-  /// Drop `dragging()` into `columnName`, in front of `beforeId` (or at the
-  /// end when that is `null`).
-  function dropInto(columnName: string, beforeId: string | null) {
-    const id = dragging();
+  /// Drop `id` into `columnName`, in front of `beforeId` (or at the end when
+  /// that is `null`).
+  function dropInto(columnName: string, beforeId: string | null, id: string) {
     resetDrag();
-    if (!id) return;
 
     const destination = columns().find((c) => c.name === columnName);
     if (!destination) return;
@@ -230,16 +309,7 @@ export function BoardSurface(props: BoardSurfaceProps) {
               {(column) => (
                 <div
                   data-board-column={column.name}
-                  onDragOver={(e) => {
-                    if (!dragging()) return;
-                    e.preventDefault();
-                    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                    setDropColumn(column.name);
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    dropInto(column.name, null);
-                  }}
+                  ref={(el) => registerColumn(column.name, el)}
                   class="w-[260px] shrink-0 flex flex-col rounded-[var(--island-radius-inner)] border bg-card/40 transition-colors"
                   classList={{
                     "border-primary/60": dropColumn() === column.name,
@@ -260,9 +330,7 @@ export function BoardSurface(props: BoardSurfaceProps) {
                           misfiled={isMisfiled(card, board())}
                           dragging={dragging() === card.id}
                           disabled={busy()}
-                          onDragStart={() => setDragging(card.id)}
-                          onDragEnd={resetDrag}
-                          onDropBefore={() => dropInto(column.name, card.id)}
+                          onGrab={(e) => startCardDrag(e, card)}
                         />
                       )}
                     </For>
@@ -279,33 +347,24 @@ export function BoardSurface(props: BoardSurfaceProps) {
 
 /// One card. A `div` rather than a `button` because it is a drag handle first;
 /// the whole tile is the grip, which is the only affordance the surface has.
+///
+/// It is not a drop *target*: the column is, and it resolves the position from
+/// where the pointer is among the cards it already laid out. A card-sized
+/// target is hard to aim at and was the reason a foreign drag could light one
+/// up — there is nothing left here for a drag from elsewhere to land on.
 function CardTile(props: {
   card: BoardCard;
   misfiled: boolean;
   dragging: boolean;
   disabled: boolean;
-  onDragStart: () => void;
-  onDragEnd: () => void;
-  onDropBefore: () => void;
+  onGrab: (e: PointerEvent) => void;
 }) {
   return (
     <div
-      draggable={!props.disabled}
       data-card-id={props.card.id}
       aria-label={props.card.title}
-      onDragStart={(e) => {
-        // The payload is module-irrelevant — the surface tracks the drag in a
-        // signal — but a `dataTransfer` with nothing in it is a drag Firefox
-        // refuses to start.
-        e.dataTransfer?.setData("text/voidlink-card", props.card.id);
-        props.onDragStart();
-      }}
-      onDragEnd={props.onDragEnd}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        props.onDropBefore();
+      onPointerDown={(e) => {
+        if (!props.disabled) props.onGrab(e);
       }}
       class="rounded border border-border/70 bg-background px-2 py-1.5 cursor-grab select-none hover:border-border transition-colors"
       classList={{ "opacity-50": props.dragging }}

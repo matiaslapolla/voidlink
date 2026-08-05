@@ -224,6 +224,38 @@ describe("removing a group", () => {
     const layout = singleGroupLayout("g1");
     expect(removeGroup(layout, "g1")).toBe(layout);
   });
+
+  /// The split that ate the pane it was splitting.
+  ///
+  /// "Unclaimed tabs fall to the first group" is positional, and a `before`
+  /// placement puts the *new* group at the head of the tree. Without
+  /// materialising the claims first, the fresh empty group inherited every tab
+  /// and the group the user actually split resolved to nothing — so a drop on
+  /// a pane's left or top edge moved every tab into the new pane and then
+  /// collapsed the old one as empty.
+  it("keeps the split group's tabs when the new pane lands in front of it", () => {
+    const { layout } = splitGroup(singleGroupLayout("g1"), "g1", "row", "before", TABS);
+    const resolved = resolveGroupTabs(layout, TABS);
+    const [first, second] = groupList(layout);
+    // The new group is first in the tree and holds nothing; g1 keeps its tabs.
+    expect(first.id).not.toBe("g1");
+    expect(resolved.get(first.id)).toEqual([]);
+    expect(second.id).toBe("g1");
+    expect(resolved.get("g1")).toEqual(TABS);
+  });
+
+  it("leaves an `after` split's tabs where they were too", () => {
+    const { layout, newGroupId } = splitGroup(
+      singleGroupLayout("g1"),
+      "g1",
+      "row",
+      "after",
+      TABS,
+    );
+    const resolved = resolveGroupTabs(layout, TABS);
+    expect(resolved.get("g1")).toEqual(TABS);
+    expect(resolved.get(newGroupId!)).toEqual([]);
+  });
 });
 
 function collectRatios(node: PaneNode): number[] {
@@ -262,6 +294,31 @@ describe("moving a tab between groups", () => {
     expect(findGroupById(after, right).activeTabId).toBe("t1");
   });
 
+  it("lands at the pointed-at position in the first group, not at the end", () => {
+    // The regression this guards: the first group holds *unclaimed* tabs, so
+    // a drop into it used to name an anchor that its claim list could not see,
+    // and every drop appended. Passing the registry is what makes the position
+    // meaningful — see `moveTabToGroup`.
+    const { layout } = twoGroups();
+    // t3 lives in the second group; bring it back to the first, in front of t2.
+    const after = moveTabToGroup(layout, "t3", "g1", "t2", TABS);
+    expect(resolveGroupTabs(after, TABS).get("g1")).toEqual(["t1", "t3", "t2", "t4"]);
+  });
+
+  it("keeps a tab opened after the drop at the end of the first group", () => {
+    const { layout } = twoGroups();
+    const after = moveTabToGroup(layout, "t3", "g1", "t1", TABS);
+    // `t5` is not in the registry the move saw: it is a tab opened afterwards,
+    // and an unclaimed tab belongs where opening one has always put it.
+    expect(resolveGroupTabs(after, [...TABS, "t5"]).get("g1")).toEqual([
+      "t3",
+      "t1",
+      "t2",
+      "t4",
+      "t5",
+    ]);
+  });
+
   it("ignores a move into a group that does not exist", () => {
     const { layout } = twoGroups();
     expect(moveTabToGroup(layout, "t1", "nope", null)).toBe(layout);
@@ -287,6 +344,32 @@ describe("pruning closed tabs", () => {
     const after = pruneClosedTabs(layout, ["t1", "t2", "t4"]);
     expect(groupCount(after)).toBe(1);
     expect(after.kind).toBe("group");
+  });
+
+  /// The other half of "the drop did nothing": a split makes an empty group and
+  /// the caller fills it, and anything that pruned in between deleted the pane
+  /// before its tab arrived. `collapsible` is what distinguishes a group that
+  /// *lost* its last tab from one that has not been given one yet.
+  it("does not collapse a freshly split group that has not been filled yet", () => {
+    const { layout, newGroupId } = splitGroup(
+      singleGroupLayout("g1"),
+      "g1",
+      "row",
+      "after",
+      TABS,
+    );
+    // Nothing has ever held tabs in the new group, so nothing may collapse it.
+    const after = pruneClosedTabs(layout, TABS, new Set());
+    expect(groupCount(after)).toBe(2);
+    expect(groupList(after).some((g) => g.id === newGroupId)).toBe(true);
+  });
+
+  it("still collapses a group once it has lost the tabs it held", () => {
+    const { layout, right } = twoGroups();
+    // `right` held t3; move it away and the pane it leaves behind goes.
+    const emptied = moveTabToGroup(layout, "t3", "g1", null, TABS);
+    const after = pruneClosedTabs(emptied, TABS, new Set([right]));
+    expect(groupCount(after)).toBe(1);
   });
 
   it("keeps the first group even with nothing claimed — it holds the rest", () => {

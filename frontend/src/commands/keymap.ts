@@ -190,6 +190,24 @@ export const KEYMAP: readonly KeymapEntry[] = [
     note: "M for maximize. ⌘M is minimise-window on macOS and never reaches us; the ⌥ slot is free.",
   },
   {
+    actionId: "ui.split-pane-right",
+    group: "View",
+    binding: { meta: true, alt: true, key: "s" },
+    note: "S for split. The arrows would read better and are not available: ⌘⌥← / → are ui.navigate-back / forward and have been since before panes existed, and ⌘\\ (VS Code's split) is ui.swap-sidebars with ⌘⌥\\ taken by the editor window's own split-right.",
+  },
+  {
+    actionId: "ui.split-pane-down",
+    group: "View",
+    binding: { meta: true, alt: true, key: "d" },
+    note: "D for down, beside ui.split-pane-right in the ⌥ block. ⌘⇧D is the diff-layout toggle; this is the free slot next to it.",
+  },
+  {
+    actionId: "ui.close-pane",
+    group: "View",
+    binding: { meta: true, alt: true, key: "w" },
+    note: "⌘W closes a tab, so the pane that *holds* tabs takes the ⌥ slot beside it — the same relationship the two actions have on screen.",
+  },
+  {
     actionId: "ui.zen",
     group: "View",
     binding: { meta: true, alt: true, key: "z" },

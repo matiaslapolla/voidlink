@@ -69,25 +69,54 @@ With two or more:
   mark (see [Activity and escalation](#activity-and-escalation)).
 
 Groups live in a **recursive split tree**: any group can be split horizontally
-or vertically, and the tree caps at **eight** groups. Splits, their orientation
-and their flex ratios persist per worktree.
+or vertically, with **no cap on the count**. Splits, their orientation and their
+flex ratios persist per worktree.
 
-Eight is a number, not a principle. The reducer was always recursive; what sets
-the ceiling is what stays usable. No pane is ever narrower than `MIN_RATIO`
-(10%) of the content area, so the narrowest possible pane on a 1200px window is
-120px — enough for a strip, and enough for the 24px edge zones a split drop
-needs to stay hittable.
+There used to be a cap of eight, and it was the wrong shape of limit — someone
+running a dozen agent terminals wants all of them on screen, and the reducer
+never cared how many leaves it held. What bounds the count is *pixels*: a pane
+below `MIN_PANE_PX` (120px) has no room for a tab label, so the window's own
+size decides how many panes are worth having, and it moves when the window does.
+That floor is enforced where the pixels are — the splitter's clamp — not as a
+constant in the reducer.
 
-Create one by dragging a tab into the outer 20% of another group's body — the
-prospective new group fills with `bg-primary/15` **at the exact geometry it
-would occupy**, so you see the resulting layout before releasing. At the
-cap the edge zones stop responding, take `cursor: no-drop`, and say why in the
-drag ghost — quoting the cap itself, so raising it cannot leave the refusal
-citing a number that is no longer true.
+Create a split by dragging a tab into the outer 20% of another group's body. The
+prospective new group fills with `bg-primary/15` **at the exact geometry it would
+occupy**, the pane being split is shown at what it shrinks to, and the seam
+between them marks where the new splitter will sit — so you see the whole
+resulting layout before releasing, not a hint of it.
 
 Drop a tab on a group's *body* (the middle 60%) to move it into that group
 without splitting; drop it on a strip to place it between two specific tabs,
 marked by a 2px insertion caret.
+
+None of it is mouse-only. `⌘⌥S` and `⌘⌥D` split right and down, taking the
+active tab with them; `⌘⌥W` closes the focused pane (its tabs fall back to the
+first, never closed with it); **Focus the next pane** and **Reset the pane
+layout** are in the palette. Resetting returns to one pane holding every tab and
+closes nothing — distinct from Settings → **Reset layout**, which clears the
+tabs too.
+
+#### The gesture is pointer events, not HTML5 drag-and-drop
+
+Tauri installs an OS-level drag destination on the webview so the frontend can
+be handed real filesystem paths — that is how a Finder drop reaches a terminal.
+On macOS that destination overrides `draggingUpdated` and returns
+`NSDragOperationCopy` *without calling super*, so WebKit never sees the drag
+session and the page receives no `dragover` or `drop` at all. Tauri documents
+the same for Windows, where `dragDropEnabled` must be off "to allow HTML5 drag
+and drop on the frontend". An in-page HTML5 drag therefore cannot work while
+that handler is on, and turning it off would cost the one thing it uniquely
+provides.
+
+So every internal drag runs on pointer events through `dragDrop.ts`. Targets
+register a **zone**; the controller hit-tests them by rect and guarantees
+exactly one is live, which is why no strip can be left holding a caret for a
+drag that has moved on. Hit-testing by coordinate rather than by DOM is also
+what makes a browser tab's pane droppable at all: its page is a child webview
+composited above the DOM, and nothing underneath it can be hit-tested. (It
+hides itself for the duration so the preview is *visible* — the drop would land
+either way.) `Escape` cancels.
 
 #### Why panes are not rendered inside their groups
 
@@ -120,11 +149,23 @@ and nothing else in the strip moves.
 | Rename it | Double-click the chip's label |
 | Recolour it | Right-click the chip → one of the five swatches |
 | Collapse / expand | Click the chip |
-| Add a tab | Drag it onto the chip, or onto any tab already inside the group |
-| Remove a tab | Drag it onto the strip's empty space, or right-click → *Remove from group* |
+| Add a tab | Drop it anywhere between the chip and the group's last member |
+| Reorder inside a group | Drop it between two members — any two, of any kind |
+| Remove a tab | Drop it past the last row in the strip, or right-click → *Remove from group* |
 | Reorder groups | Drag one chip onto another |
 | Move the whole group to another pane | Drag its chip into that pane |
 | Dissolve it | Right-click the chip → *Dissolve group* |
+
+A group's membership *and its internal order* are decided by where you drop,
+which is what lets one hold **every kind of tab in whatever order you put
+them**. The per-kind store arrays cannot express that — a terminal and a compare
+tab live in different lists — so the group's own `tabIds` is the only ordering
+that can, and a drop writes it with a position rather than just a membership.
+Ungrouped tabs still sort by kind: they have no such list to be ordered in.
+
+The slot past the last row in the strip is deliberately *outside* every group.
+That asymmetry is what gives the gesture an inverse — without it, a drag could
+put a tab into a group and nothing but a menu could take it out.
 
 Three rules are load-bearing:
 

@@ -2,6 +2,7 @@ import {
   Show,
   Suspense,
   createEffect,
+  createMemo,
   createSignal,
   lazy,
   onCleanup,
@@ -113,7 +114,12 @@ import { watchRepos } from "@/api/watch";
 import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import { samePath } from "@/store/layout/tabs";
-import { resolveGroupTabs, type ActiveItem } from "@/store/layout";
+import {
+  groupList,
+  resolveGroupTabs,
+  type ActiveItem,
+  type SplitOrientation,
+} from "@/store/layout";
 import { browserTabLabel } from "@/components/browser/BrowserPane";
 
 /// The other two surfaces, loaded only if stacked mode actually renders them.
@@ -139,6 +145,27 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     actions,
   } = useAppStore();
   const { settings } = useSettings();
+
+  /// Every pane group in the active worktree, in visual order. The pane actions
+  /// below all need it — to know whether there is more than one pane, and to
+  /// walk them.
+  const paneGroups = createMemo(() => groupList(paneLayout()));
+
+  /// Split the focused pane and take the active tab with it.
+  ///
+  /// Taking the tab is the difference between this and the drag: a drag
+  /// carries a tab by definition, so a keyboard split that left the new pane
+  /// empty would be a different gesture wearing the same name. With no tab to
+  /// move the split still happens — an empty pane you can drop into is a
+  /// reasonable thing to ask for, and it says so in its own empty state.
+  function splitFocusedPane(orientation: SplitOrientation) {
+    const wtId = state.activeWorktreeId;
+    const from = focusedGroupId();
+    const tabId = state.activeItemByWorktree[wtId]?.id ?? null;
+    // One write, so nothing can observe — or collapse — the new pane between
+    // its creation and the tab landing in it.
+    actions.splitPaneGroupWithTab(wtId, orientation, "after", from ?? undefined, tabId);
+  }
 
   // ── Feature-owned palette entries ────────────────────────────────────────
   // Each of these registers its own slice of the catalog at the point the
@@ -600,6 +627,59 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       description: "Fill the workbench with the focused pane group; press again to restore",
       group: "View",
       run: () => toggleMaximizedGroup(focusedGroupId()),
+    },
+    // ── Panes ──────────────────────────────────────────────────────────────
+    // A split used to be a one-way trip: the only way in was dragging a tab
+    // onto a pane edge, and there was no way out short of closing every tab in
+    // a pane one at a time. These five are the keyboard-and-palette half of
+    // the gesture, and `ui.reset-pane-layout` is the escape hatch the store
+    // has always had and nothing ever called.
+    {
+      id: "ui.split-pane-right",
+      label: "Split pane right",
+      description: "Put the active tab in a new pane beside this one",
+      group: "View",
+      run: () => splitFocusedPane("row"),
+    },
+    {
+      id: "ui.split-pane-down",
+      label: "Split pane down",
+      description: "Put the active tab in a new pane below this one",
+      group: "View",
+      run: () => splitFocusedPane("column"),
+    },
+    {
+      id: "ui.close-pane",
+      label: "Close pane",
+      description: "Collapse the focused pane; its tabs move to the first one",
+      group: "View",
+      // The last pane is not closable — a worktree always needs somewhere to
+      // put a tab — and a disabled row that says why beats a silent no-op.
+      enabled: () => paneGroups().length > 1,
+      run: () => {
+        const target = focusedGroupId();
+        if (target) actions.closePaneGroup(state.activeWorktreeId, target);
+      },
+    },
+    {
+      id: "ui.focus-next-pane",
+      label: "Focus the next pane",
+      group: "View",
+      enabled: () => paneGroups().length > 1,
+      run: () => {
+        const groups = paneGroups();
+        const i = groups.findIndex((g) => g.id === focusedGroupId());
+        const next = groups[(i + 1) % groups.length];
+        if (next) actions.focusPaneGroup(state.activeWorktreeId, next.id);
+      },
+    },
+    {
+      id: "ui.reset-pane-layout",
+      label: "Reset the pane layout",
+      description: "Back to one pane holding every tab. Closes nothing.",
+      group: "View",
+      enabled: () => paneGroups().length > 1,
+      run: () => actions.resetPaneLayout(state.activeWorktreeId),
     },
     {
       id: "ui.zen",
