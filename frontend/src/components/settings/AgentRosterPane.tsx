@@ -1,11 +1,10 @@
 /// Settings → AI → Agents: the roster, and the form a Claude agent is built in.
 ///
-/// Its own file because it is no longer a row. Two entry points, two shapes of
-/// entry, a colour picker and ten `claude` flags is a pane, and it was the
-/// largest thing left inline in a `SettingsDialog.tsx` that was already two
-/// thousand lines. The row primitives it shares with the rest of the dialog
-/// live in `rows.tsx` — importing them from `SettingsDialog.tsx` would be a
-/// cycle, since the dialog renders this.
+/// Its own file because it is no longer a row. A colour picker and ten `claude`
+/// flags is a pane, and it was the largest thing left inline in a
+/// `SettingsDialog.tsx` that was already two thousand lines. The row primitives
+/// it shares with the rest of the dialog live in `rows.tsx` — importing them
+/// from `SettingsDialog.tsx` would be a cycle, since the dialog renders this.
 import { For, Show, createSignal } from "solid-js";
 import { ChevronDown, ChevronRight, X } from "lucide-solid";
 import {
@@ -33,66 +32,82 @@ import {
 const AGENT_INPUT_CLASS =
   "min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono outline-2 outline-transparent transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring";
 
-/// The workspace's named agents.
+/// The workspace's named agents — the Claude ones.
 ///
-/// A row is one of two things and the form it shows is the whole difference:
+/// A roster entry is still one of two things in the store. Only one of them is
+/// on screen: **a Claude agent**, built here from a model, a system prompt, a
+/// permission mode and tool lists, composed into a command shown read-only at
+/// the bottom of the form and launched in a real terminal.
 ///
-///   • **A Claude agent** is built here — a model, a system prompt, a
-///     permission mode, tool lists. The command is *derived*, shown read-only
-///     at the bottom of the form, and launched in a real terminal. That is the
-///     shape almost every entry in this roster actually wants, and typing it as
-///     a shell string meant getting eighty characters of quoting right in a
-///     single-line input where one apostrophe silently rebinds every flag after
-///     it.
-///   • **A command agent** is the original BYO-CLI contract, unchanged: a shell
-///     command a grounded prompt is piped to on stdin. It is what points at
-///     `ollama`, at `codex`, at anything not-Claude, and it is what every
-///     roster written before this pane existed already is.
+/// **The BYO-CLI command agent is hidden, not removed.** It is the original
+/// contract — a shell command a grounded prompt is piped to on stdin, pointing
+/// at `ollama`, at `codex`, at anything not-Claude — and everything behind it
+/// still works: `parseAgentRoster` still revives one, `resolveAgentCommand`
+/// still resolves it, an agent thread bound to one still runs, and the shared
+/// fallback command below still configures the thread. What is gone is the
+/// *surface*: no row renders for one, and there is no way to make a new one.
+///
+/// Hiding rather than deleting is the whole point. Every roster written before
+/// this pane existed is a command agent, and the shipped default still is one —
+/// deleting the concept would silently unconfigure them. A user who had one
+/// keeps it; they just cannot see it here for now.
+///
+/// Two consequences worth naming, because both look like bugs otherwise:
+///
+///   • The roster can render **empty** — a fresh install has exactly one agent
+///     and it is a command agent. That is why there is an empty state rather
+///     than a bare "Add" button under nothing.
+///   • The last-row remove guard counts *every* entry, including the hidden
+///     ones, so removing the last visible row is usually allowed. That is
+///     correct — the roster is not being emptied — but it means the disabled
+///     state is now rare rather than reliable at one row.
 ///
 /// Edits are written straight through on every keystroke, like every other row
 /// in this dialog — there is no Save button to be out of sync with, and a
 /// half-typed command is only ever spawned when the user asks the agent to run.
-///
-/// The last row's remove button stays *present* and disabled rather than
-/// disappearing (§7.6): a control that vanishes teaches nothing, and the reason
-/// a roster can't be emptied is exactly what the user needs told.
 export function AgentRosterSection() {
   const { settings, addAgent, removeAgent } = useSettings();
+  /// Only composed agents have a row. See this section's header for why the
+  /// others still exist in the store.
+  const visible = () => settings.ai.agents.filter((entry) => entry.claude);
   const soleEntry = () => settings.ai.agents.length <= 1;
   const [expanded, setExpanded] = createSignal<string | null>(null);
 
   return (
     <Section title="Agents">
       <p class="text-label text-muted-foreground leading-relaxed">
-        Each agent is a name and a way to run it. A <em>Claude agent</em> is
-        built from the fields below and opens as a real terminal session in this
-        worktree — named, so four of them in four panes are four
-        distinguishable agents. A <em>command agent</em> is any other CLI you
-        have installed, taking a grounded prompt on stdin.
+        An agent is a <code class="font-mono">claude</code> session built from
+        the fields below and opened as a real terminal in this worktree — named,
+        so four of them in four panes are four distinguishable agents rather
+        than four identical shells.
       </p>
-      <For each={settings.ai.agents}>
-        {(entry: AgentRosterEntry) => (
-          <AgentRow
-            entry={entry}
-            expanded={expanded() === entry.id}
-            onToggle={() => setExpanded(expanded() === entry.id ? null : entry.id)}
-            canRemove={!soleEntry()}
-            onRemove={() => removeAgent(entry.id)}
-          />
-        )}
-      </For>
+      <Show
+        when={visible().length > 0}
+        fallback={
+          <p class="text-label text-muted-foreground/70 leading-relaxed">
+            No agents yet. Add one and it appears in the workbench's <b>+</b>{" "}
+            menu, ready to open in a pane.
+          </p>
+        }
+      >
+        <For each={visible()}>
+          {(entry: AgentRosterEntry) => (
+            <AgentRow
+              entry={entry}
+              expanded={expanded() === entry.id}
+              onToggle={() => setExpanded(expanded() === entry.id ? null : entry.id)}
+              canRemove={!soleEntry()}
+              onRemove={() => removeAgent(entry.id)}
+            />
+          )}
+        </For>
+      </Show>
       <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
         <button
           onClick={() => setExpanded(addAgent("Claude agent", "", { ...DEFAULT_CLAUDE_SPEC }))}
           class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
         >
-          Add Claude agent
-        </button>
-        <button
-          onClick={() => setExpanded(addAgent("New agent", ""))}
-          class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Add command agent
+          Add agent
         </button>
       </div>
     </Section>
@@ -113,12 +128,12 @@ function AgentRow(props: {
   onRemove: () => void;
   onToggle: () => void;
 }) {
-  const { updateAgent, setAgentClaudeSpec } = useSettings();
+  const { updateAgent } = useSettings();
   const name = () => props.entry.name || "this agent";
+  /// Only composed entries reach here — `AgentRosterSection` filters — so the
+  /// `?? ""` is for the type rather than for a state that can occur.
   const summary = () =>
-    props.entry.claude
-      ? describeClaudeSpec(props.entry.claude)
-      : props.entry.commandTemplate.trim() || "no command — uses the fallback below";
+    props.entry.claude ? describeClaudeSpec(props.entry.claude) : "";
 
   return (
     <div class="rounded border border-border/60">
@@ -178,34 +193,11 @@ function AgentRow(props: {
               keyed `<Show>` over the object would tear down and rebuild the
               whole form every time a field changed identity — which, in a form
               that writes on every keystroke, is a form that destroys the input
-              you are typing into. */}
-          <Show
-            when={!!props.entry.claude}
-            fallback={
-              <>
-                <TextRow
-                  label="Command"
-                  value={props.entry.commandTemplate}
-                  placeholder="optional — falls back to the shared command below"
-                  onInput={(v) => updateAgent(props.entry.id, { commandTemplate: v })}
-                />
-                <p class={`text-label text-muted-foreground leading-relaxed ${LABEL_INDENT}`}>
-                  A grounded prompt goes in on stdin and the answer comes out on
-                  stdout. Leave it blank to use the fallback command.
-                </p>
-                <div class={LABEL_INDENT}>
-                  <button
-                    onClick={() =>
-                      setAgentClaudeSpec(props.entry.id, { ...DEFAULT_CLAUDE_SPEC })
-                    }
-                    class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    Build this as a Claude agent instead
-                  </button>
-                </div>
-              </>
-            }
-          >
+              you are typing into.
+
+              No fallback: `AgentRosterSection` only renders composed entries,
+              so a row with no spec is unreachable rather than unhandled. */}
+          <Show when={!!props.entry.claude}>
             <ClaudeAgentForm
               id={props.entry.id}
               name={props.entry.name}
@@ -263,7 +255,7 @@ function AgentColorPicker(props: {
 /// and the whole reason for building the command rather than typing it was that
 /// the quoting is hard to see. Showing the result closes that loop.
 function ClaudeAgentForm(props: { id: string; name: string; spec: ClaudeAgentSpec }) {
-  const { updateAgentClaude, setAgentClaudeSpec } = useSettings();
+  const { updateAgentClaude } = useSettings();
   const patch = (p: Partial<ClaudeAgentSpec>) => updateAgentClaude(props.id, p);
 
   return (
@@ -384,16 +376,6 @@ function ClaudeAgentForm(props: { id: string; name: string; spec: ClaudeAgentSpe
         <code class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono break-all text-foreground/80">
           {composeClaudeCommand(props.spec, props.name)}
         </code>
-      </div>
-      <div class={LABEL_INDENT}>
-        <button
-          onClick={() => setAgentClaudeSpec(props.id, null)}
-          // The consequence is on the button, not in a tooltip: this is the
-          // one control in the pane that throws away work the user typed.
-          class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-destructive hover:border-destructive/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Use a raw command instead — discards this form
-        </button>
       </div>
     </>
   );

@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { DEFAULT_SETTINGS, useSettings } from "@/store/settings";
+import { DEFAULT_CLAUDE_SPEC } from "@/store/claudeAgent";
 
 import { AgentRosterSection } from "./AgentRosterPane";
 
@@ -27,21 +28,44 @@ beforeEach(() => {
   render(() => <AgentRosterSection />);
 });
 
-const expand = async (user: ReturnType<typeof userEvent.setup>, summary: RegExp) =>
-  user.click(screen.getByRole("button", { expanded: false, name: summary }));
-
-describe("the two kinds of entry", () => {
-  it("ships one command agent, and it stays one", () => {
-    // The shipped roster predates Claude agents and every roster on disk is
-    // this shape. Adding a spec to it on load would silently convert every
-    // existing user's agent into a `claude` invocation.
+/// The BYO-CLI command agent is hidden from this pane and still present in the
+/// store. Both halves need asserting, because each without the other is a
+/// different bug: showing it is the regression, and *dropping* it would
+/// silently unconfigure every roster written before this pane existed — which
+/// is all of them, including the shipped default.
+describe("the hidden command agent", () => {
+  it("still ships, and still has no spec", () => {
     expect(agents()).toHaveLength(1);
     expect(agents()[0].claude).toBeUndefined();
   });
 
-  it("adds a Claude agent already built, so the form has something to show", async () => {
+  it("renders no row, so the pane starts on its empty state", () => {
+    expect(screen.queryByLabelText("Agent name")).toBeNull();
+    expect(screen.getByText(/No agents yet/i)).toBeInTheDocument();
+  });
+
+  it("offers no way to make another one", () => {
+    expect(screen.queryByRole("button", { name: /command agent/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /raw command/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add agent" })).toBeInTheDocument();
+  });
+
+  it("survives adding and removing a Claude agent beside it", async () => {
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Add Claude agent" }));
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
+    await user.click(screen.getByRole("button", { name: /Remove .* from the roster/ }));
+
+    // Back to one entry, and it is the one that was never on screen.
+    expect(agents()).toHaveLength(1);
+    expect(agents()[0].claude).toBeUndefined();
+    expect(screen.getByText(/No agents yet/i)).toBeInTheDocument();
+  });
+});
+
+describe("adding an agent", () => {
+  it("adds it already built, so the form has something to show", async () => {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
 
     expect(agents()).toHaveLength(2);
     expect(agents()[1].claude).toBeDefined();
@@ -50,21 +74,11 @@ describe("the two kinds of entry", () => {
     expect(screen.getByLabelText("System prompt")).toBeInTheDocument();
   });
 
-  it("adds a command agent with no spec, which is the other button's whole point", async () => {
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Add command agent" }));
-
-    expect(agents()[1].claude).toBeUndefined();
-    // The command input, not the Claude form.
-    expect(screen.getByLabelText("Command")).toBeInTheDocument();
-    expect(screen.queryByLabelText("System prompt")).toBeNull();
-  });
-
   it("gives consecutive agents different colours without asking", async () => {
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Add Claude agent" }));
-    await user.click(screen.getByRole("button", { name: "Add Claude agent" }));
-    const colors = agents().map((a) => a.color);
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
+    const colors = agents().filter((a) => a.claude).map((a) => a.color);
     expect(new Set(colors).size).toBe(colors.length);
   });
 });
@@ -72,7 +86,7 @@ describe("the two kinds of entry", () => {
 describe("the Claude form writes through to the spec", () => {
   it("patches one field without blanking the rest", async () => {
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Add Claude agent" }));
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
 
     await user.type(screen.getByLabelText("System prompt"), "Be blunt.");
     await user.selectOptions(screen.getByLabelText("Permissions"), "plan");
@@ -87,7 +101,7 @@ describe("the Claude form writes through to the spec", () => {
 
   it("shows the command it will actually run, quoting included", async () => {
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Add Claude agent" }));
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
     await user.type(screen.getByLabelText("System prompt"), "don't guess");
 
     // The read-only line is the only way a user can check the quoting the form
@@ -100,7 +114,7 @@ describe("the Claude form writes through to the spec", () => {
 
   it("warns that replacing the system prompt is not a stronger version of adding to it", async () => {
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Add Claude agent" }));
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
     expect(screen.getByText(/keeps everything it knows/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Replace Claude's" }));
@@ -108,49 +122,40 @@ describe("the Claude form writes through to the spec", () => {
   });
 });
 
-describe("switching between the two", () => {
-  it("builds an existing command agent into a Claude one", async () => {
-    const user = userEvent.setup();
-    await expand(user, /no command/i);
-    await user.click(screen.getByRole("button", { name: /Build this as a Claude agent/i }));
-
-    expect(agents()[0].claude).toEqual(DEFAULT_SETTINGS.ai.agents[0].claude ?? expect.anything());
-    expect(agents()[0].claude).toBeDefined();
-    expect(screen.getByLabelText("System prompt")).toBeInTheDocument();
-  });
-
-  it("keeps the typed command underneath, so switching back is not a blank input", async () => {
-    const user = userEvent.setup();
-    await expand(user, /no command/i);
-    await user.type(screen.getByLabelText("Command"), "ollama run llama3.2");
-    await user.click(screen.getByRole("button", { name: /Build this as a Claude agent/i }));
-    await user.click(screen.getByRole("button", { name: /Use a raw command instead/i }));
-
-    expect(agents()[0].claude).toBeUndefined();
-    expect(agents()[0].commandTemplate).toBe("ollama run llama3.2");
-  });
-
-  it("says on its face that it discards the form", async () => {
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Add Claude agent" }));
-    // Not in a tooltip: this is the one control here that throws away typing,
-    // and §7.6 wants the consequence where the user is already looking.
-    expect(screen.getByRole("button", { name: /discards this form/i })).toBeInTheDocument();
-  });
-});
-
+/// The guard counts every entry, hidden ones included, so it fires on the store
+/// rather than on what is drawn. With the shipped command agent present it
+/// therefore *should not* fire at one visible row — which is the case that
+/// would otherwise leave a user unable to delete an agent for a reason they
+/// cannot see.
 describe("the roster cannot be emptied", () => {
-  it("keeps the last remove button present and disabled, with the reason", () => {
+  it("lets the only visible row go, because a hidden entry still holds the floor", async () => {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
+    const remove = screen.getByRole("button", { name: /Remove .* from the roster/ });
+    expect(remove).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("refuses when that row is genuinely the last entry there is", async () => {
+    const user = userEvent.setup();
+    // No hidden command agent this time: the roster is exactly one Claude
+    // agent, and removing it would leave every bound agent tab pointing at
+    // nothing.
+    useSettings().updateAi({
+      agents: [
+        {
+          id: "only",
+          name: "Solo",
+          commandTemplate: "",
+          color: "chart-1",
+          claude: { ...DEFAULT_CLAUDE_SPEC },
+        },
+      ],
+    });
+    await Promise.resolve();
     const remove = screen.getByRole("button", { name: /Remove .* from the roster/ });
     expect(remove).toHaveAttribute("aria-disabled", "true");
     expect(remove).toHaveAttribute("title", "A roster needs at least one agent");
-  });
-
-  it("enables it once there is a second agent", async () => {
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Add Claude agent" }));
-    for (const remove of screen.getAllByRole("button", { name: /Remove .* from the roster/ })) {
-      expect(remove).not.toHaveAttribute("aria-disabled", "true");
-    }
+    await user.click(remove);
+    expect(agents()).toHaveLength(1);
   });
 });

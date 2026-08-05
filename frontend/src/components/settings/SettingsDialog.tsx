@@ -1411,10 +1411,13 @@ function AiPane() {
           onInput={(v) => updateAi({ agentCommand: v })}
         />
         <p class={`text-label text-muted-foreground leading-relaxed ${LABEL_INDENT}`}>
-          Used by any agent above that leaves its own command blank — and, if
-          this is blank too, the commit command. A prompt grounded in your live
-          workspace state — branch, status, recent log, staged diff, open files —
-          is piped to stdin; stdout is the answer ({shortcutLabel("agent.toggle")}).
+          What the agent <em>thread</em> runs — the slide-over at{" "}
+          {shortcutLabel("agent.toggle")}, which is a different thing from the
+          agents above: a prompt grounded in your live workspace state (branch,
+          status, recent log, staged diff, open files) is piped to stdin and
+          stdout is the answer, with no session and nothing to answer a
+          permission prompt with. Any CLI you have installed. Blank falls back
+          to the commit command.
         </p>
       </Section>
       <ProviderKeysSection />
