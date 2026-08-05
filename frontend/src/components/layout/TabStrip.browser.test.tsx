@@ -16,10 +16,17 @@
 /// jsdom does not implement at all — `new DataTransfer()` throws
 /// `ReferenceError` there, which is why every drag test up to now has had to
 /// stub the whole gesture rather than drive it.
-import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@solidjs/testing-library";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { JSX } from "solid-js";
-import { TabStrip, type TabDescriptor, type TabKind } from "./TabStrip";
+import {
+  DragGhost,
+  endTabDrag,
+  PaneDropOverlay,
+  TabStrip,
+  type TabDescriptor,
+  type TabKind,
+} from "./TabStrip";
 
 function tab(id: string, kind: TabKind = "file"): TabDescriptor {
   return {
@@ -184,5 +191,168 @@ describe("drag between groups", () => {
     // `DataTransfer` — proof the handler ran against this exact gesture and
     // not a stand-in for one.
     expect(dataTransfer.getData("text/voidlink-item")).toBe("file:a1");
+  });
+});
+
+/// The drag ghost and the pane preview, which have no jsdom equivalent for a
+/// third reason: both are driven by pointer *coordinates* carried on a real
+/// `DragEvent`, and both are read off `getBoundingClientRect`. jsdom reports a
+/// zero rect for every element, so `dropIntentAt` would classify every pointer
+/// position in the app as the same degenerate box and the preview would be
+/// identical for a centre drop and an edge one.
+///
+/// `paneDrop.test.ts` covers the arithmetic. What is only checkable here is
+/// that the arithmetic is wired to the pixels the user is actually pointing at.
+describe("the drag ghost", () => {
+  /// The payload, the pointer and the action sentence are module state in
+  /// `TabStrip.tsx` — one drag is in flight at a time across every strip in the
+  /// window, which is the whole reason they are not per-component. A test that
+  /// leaves a drag open therefore hands the next one a ghost it never started.
+  beforeEach(endTabDrag);
+
+  /// A pane body with a drop overlay on it, laid out at a known size so the
+  /// 20% edge zones land at known coordinates.
+  function pane(paneCount = 2) {
+    return (
+      <div style={{ position: "relative", width: "400px", height: "200px" }} data-testid="pane">
+        <PaneDropOverlay
+          groupId="group-b"
+          paneCount={paneCount}
+          onMoveTab={vi.fn()}
+          onSplitDrop={vi.fn()}
+        />
+      </div>
+    );
+  }
+
+  function startDrag(source: Element, dataTransfer: DataTransfer) {
+    source.dispatchEvent(
+      new DragEvent("dragstart", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+        clientX: 40,
+        clientY: 10,
+      }),
+    );
+  }
+
+  it("names the tab in flight and says what to do with it", () => {
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        <DragGhost />
+      </>
+    ));
+
+    // Nothing follows the cursor when nothing is being dragged.
+    expect(screen.queryByText("Release over a pane")).toBeNull();
+
+    startDrag(screen.getByTitle("a1"), new DataTransfer());
+
+    // The label comes off `TabDragPayload.label` — the ghost is the app's own
+    // drag image, so this is the only place the thing in flight is named.
+    // Scoped to the ghost: the tab card it was dragged from still carries the
+    // same label, and it should.
+    expect(within(screen.getByTestId("drag-ghost")).getByText("a1")).toBeInTheDocument();
+    // Over nothing yet: instruction rather than a blank line.
+    expect(screen.getByText("Release over a pane")).toBeInTheDocument();
+  });
+
+  it("says what releasing here would do, per zone, and updates as the pointer moves", () => {
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        {pane(2)}
+        <DragGhost />
+      </>
+    ));
+    const dataTransfer = new DataTransfer();
+    startDrag(screen.getByTitle("a1"), dataTransfer);
+
+    const box = screen.getByTestId("pane").getBoundingClientRect();
+    const over = (fx: number, fy: number) =>
+      screen.getByTestId("pane").firstElementChild!.dispatchEvent(
+        new DragEvent("dragover", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer,
+          clientX: box.left + box.width * fx,
+          clientY: box.top + box.height * fy,
+        }),
+      );
+
+    // Centre: a move, and the count is not mentioned because the layout does
+    // not change.
+    over(0.5, 0.5);
+    expect(screen.getByText("Move into this pane")).toBeInTheDocument();
+
+    // Right-hand 20%: a split, and the sentence is the count *after* the drop.
+    over(0.95, 0.5);
+    expect(screen.getByText("Split right — 3 panes")).toBeInTheDocument();
+    expect(screen.queryByText("Move into this pane")).toBeNull();
+
+    // Top 20%: same pane, different edge — the sentence tracks the pointer
+    // rather than the pane it is over.
+    over(0.5, 0.02);
+    expect(screen.getByText("Split up — 3 panes")).toBeInTheDocument();
+  });
+
+  it("goes away when the gesture does, wherever it ended", () => {
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        <DragGhost />
+      </>
+    ));
+    const source = screen.getByTitle("a1");
+    startDrag(source, new DataTransfer());
+    expect(screen.getByText("Release over a pane")).toBeInTheDocument();
+
+    // `dragend` fires on the source after *every* drag, including one the user
+    // abandoned over nothing — which is the case no drop handler would catch.
+    source.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true }));
+    expect(screen.queryByText("Release over a pane")).toBeNull();
+  });
+
+  /// The document-level teardown listener is in the bubble phase on purpose: in
+  /// the capture phase it would clear the payload before the pane's own `drop`
+  /// handler read it, and every drop in the app would silently do nothing.
+  it("still delivers the drop it is describing", () => {
+    const onSplitDrop = vi.fn();
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        <div style={{ position: "relative", width: "400px", height: "200px" }} data-testid="pane">
+          <PaneDropOverlay
+            groupId="group-b"
+            paneCount={2}
+            onMoveTab={vi.fn()}
+            onSplitDrop={onSplitDrop}
+          />
+        </div>
+        <DragGhost />
+      </>
+    ));
+    const dataTransfer = new DataTransfer();
+    startDrag(screen.getByTitle("a1"), dataTransfer);
+
+    const overlay = screen.getByTestId("pane").firstElementChild!;
+    const box = screen.getByTestId("pane").getBoundingClientRect();
+    const at = { clientX: box.left + box.width * 0.95, clientY: box.top + box.height * 0.5 };
+    overlay.dispatchEvent(
+      new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer, ...at }),
+    );
+    overlay.dispatchEvent(
+      new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer, ...at }),
+    );
+
+    expect(onSplitDrop).toHaveBeenCalledTimes(1);
+    const [payload, orientation, placement] = onSplitDrop.mock.calls[0];
+    expect(payload).toMatchObject({ id: "a1", groupId: "group-a" });
+    expect(orientation).toBe("row");
+    expect(placement).toBe("after");
+    // And the ghost is gone, without a second gesture to dismiss it.
+    expect(screen.queryByText(/Split right/)).toBeNull();
   });
 });

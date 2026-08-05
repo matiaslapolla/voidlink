@@ -95,6 +95,7 @@ import { FilesRail } from "@/components/files/FilesPanel";
 import { FindPanel } from "@/components/search/FindPanel";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import {
+  DragGhost,
   TabStrip,
   VERTICAL_TAB_WIDTH,
   type TabDescriptor,
@@ -1050,6 +1051,11 @@ export function EditorSurface(props: {
                 "flex-row": verticalTabs(),
               }}
             >
+              {/* The app draws its own drag image (see `beginDragTracking` in
+                  `TabStrip.tsx`), which means a window that mounts a strip and
+                  no ghost has an *invisible* drag. This window has no pane
+                  groups, so its hint says the only thing a drag can do here. */}
+              <DragGhost hint="Release to reorder" />
               <TabStrip
                 orientation={appSettings.ui.tabOrientation}
                 width={verticalTabWidth()}

@@ -41,6 +41,7 @@ import { AgentThreadView } from "@/components/agent/AgentThreadView";
 import { agentThread, dropAgentThread } from "@/commands/agent";
 import { agentById, defaultAgentId, useSettings } from "@/store/settings";
 import {
+  DragGhost,
   MenuItem,
   PaneDropOverlay,
   TabStrip,
@@ -1391,6 +1392,11 @@ export function MainSurface(props: MainSurfaceProps) {
                 >
                   <PaneDropOverlay
                     groupId={group.id}
+                    // The count before the drop. `visibleGroups()` rather than
+                    // `groups()`: in zen mode the others are not on screen, and
+                    // a ghost promising "4 panes" while three of them are
+                    // hidden is describing a layout the user cannot see.
+                    paneCount={visibleGroups().size}
                     onMoveTab={(payload, before) => moveTabHere(payload, group.id, before)}
                     onSplitDrop={(payload, orientation, placement) =>
                       splitWithTab(payload, group.id, orientation, placement)
@@ -1411,6 +1417,12 @@ export function MainSurface(props: MainSurfaceProps) {
           <p class="text-ui">Open a folder from the workspace rail to start working.</p>
         </div>
       </Show>
+
+      {/* One per window, portalled to `--z-drag`. It is mounted here rather
+          than in `AppShell` because the workbench is the only surface a tab can
+          be dragged *within*; the editor window's strip has no pane groups and
+          so nothing for a ghost to describe. */}
+      <DragGhost />
     </div>
   );
 }

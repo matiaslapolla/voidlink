@@ -25,8 +25,12 @@ import {
   onMount,
   type JSX,
 } from "solid-js";
-import { Portal } from "solid-js/web";
+import { Dynamic, Portal } from "solid-js/web";
 import {
+  ArrowDownToLine,
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  ArrowUpToLine,
   ChevronDown,
   ChevronRight,
   ChevronsRight,
@@ -34,6 +38,7 @@ import {
   FolderPlus,
   Pin,
   PinOff,
+  SquareDashed,
   X,
 } from "lucide-solid";
 import type { TerminalSession } from "@/types/workspace";
@@ -49,7 +54,15 @@ import { watchTerminal, type TerminalWatch } from "@/store/terminalWatch";
 // symbol it cannot see referenced as a value.
 import { tooltip } from "@/components/ui/Tooltip";
 void tooltip;
-import { dropIntentAt, type DropIntent } from "@/components/layout/paneDrop";
+import {
+  describeDropIntent,
+  dropIntentAt,
+  edgeDirection,
+  residualRect,
+  splitLineRect,
+  type DropIntent,
+  type Rect,
+} from "@/components/layout/paneDrop";
 import type { SplitOrientation, TabGroup, TabGroupColor } from "@/store/layout";
 import type { TabOrientation } from "@/store/settings";
 // Values come straight from the reducer module rather than through the store's
@@ -206,9 +219,9 @@ const isReorderable = (t: TabDescriptor) => t.draggable !== false;
 export interface TabDragPayload {
   kind: TabKind;
   id: string;
-  /// The dragged tab's label. Nothing renders it since the refusal ghost went
-  /// away with the group cap, but it is what makes a payload readable in a
-  /// debugger mid-gesture, and it costs a string.
+  /// The dragged tab's label. `DragGhost` renders it: the ghost is the app's
+  /// own drag image, so this is the only place the thing under the cursor is
+  /// named.
   label: string;
   /// The pane group the drag started in, or `null` in a window with no groups
   /// (the editor). `null` on both ends means "reorder only", which is exactly
@@ -229,6 +242,110 @@ const [tabDrag, setTabDrag] = createSignal<TabDragPayload | null>(null);
 /// only exist during a drag — a permanently mounted overlay would eat every
 /// click in the pane underneath.
 export const draggingTab = tabDrag;
+
+/// Where the pointer is, in viewport coordinates, for as long as a drag lasts.
+///
+/// HTML5 DnD gives no pointer position outside a `dragover` handler, and the
+/// handlers that do get one are scattered across every strip and every pane
+/// overlay. One document-level listener collects it in one place instead, which
+/// is what lets `DragGhost` be a single component at the top of the window
+/// rather than a copy inside each drop target.
+const [dragPointer, setDragPointer] = createSignal<{ x: number; y: number } | null>(null);
+
+/// What releasing right now would do, in a sentence — set by whichever drop
+/// target the pointer is currently over, cleared when it leaves.
+///
+/// Module state for the same reason the payload is: the target that knows the
+/// answer (`PaneDropOverlay`, one per pane) is never the component that draws
+/// the ghost. `null` means the pointer is over nothing that would accept the
+/// drop, and the ghost says so rather than showing a stale sentence from the
+/// last pane it crossed — a ghost that keeps claiming "Split right" while the
+/// pointer sits over the sidebar is worse than one that claims nothing.
+const [dropAction, setDropAction] = createSignal<string | null>(null);
+
+/// Publish the action sentence for the pointer's current position. Exported so
+/// a drop target outside this module could participate; today `PaneDropOverlay`
+/// is the only caller.
+export function setDropActionLabel(label: string | null): void {
+  setDropAction(label);
+}
+
+/// A 1×1 transparent image, kept for the life of the process.
+///
+/// `setDragImage` needs an element that is actually rendered, and the browser
+/// snapshots it synchronously during `dragstart` — so it cannot be created and
+/// removed inside the handler without racing the snapshot. One offscreen node
+/// reused by every drag is the cheapest thing that always works.
+let dragImageNode: HTMLElement | undefined;
+function transparentDragImage(): HTMLElement | undefined {
+  if (typeof document === "undefined") return undefined;
+  if (!dragImageNode) {
+    dragImageNode = document.createElement("div");
+    // Not `display:none` and not zero-sized: a drag image that is not laid out
+    // is ignored, and the browser falls back to snapshotting the source
+    // element — which is exactly the native ghost this replaces.
+    dragImageNode.style.cssText =
+      "position:fixed;top:-100px;left:-100px;width:1px;height:1px;opacity:0;pointer-events:none";
+    document.body.appendChild(dragImageNode);
+  }
+  return dragImageNode;
+}
+
+/// Start tracking a drag: replace the browser's drag image with our own, and
+/// begin following the pointer.
+///
+/// The native image is suppressed rather than left alongside `DragGhost`,
+/// because two things trailing one cursor is the reading problem the ghost
+/// exists to solve. What we draw in its place says strictly more: the tab's
+/// name *and* what the release would do.
+///
+/// `dragover` on `document` in the capture phase is the one event that fires
+/// wherever the pointer goes during a drag, including over surfaces that refuse
+/// the drop — a listener on the drop targets alone would lose the ghost every
+/// time the pointer crossed the sidebar.
+function beginDragTracking(e: DragEvent) {
+  const image = transparentDragImage();
+  if (image && typeof e.dataTransfer?.setDragImage === "function") {
+    e.dataTransfer.setDragImage(image, 0, 0);
+  }
+  setDragPointer({ x: e.clientX, y: e.clientY });
+  if (typeof document === "undefined") return;
+  // `dragover` in the **capture** phase, so the position keeps arriving even
+  // over a target that stops propagation. The two teardown events are in the
+  // **bubble** phase, and that difference is load-bearing: a capture-phase
+  // `drop` on `document` runs before the drop target's own handler and would
+  // clear `tabDrag` out from under it, turning every drop into a no-op.
+  document.addEventListener("dragover", trackPointer, true);
+  document.addEventListener("dragend", endTabDrag);
+  document.addEventListener("drop", endTabDrag);
+}
+
+function trackPointer(e: DragEvent) {
+  // Chromium fires a final `dragover` at (0, 0) as the drag tears down. Taking
+  // it would fling the ghost to the corner for one frame on every single drop.
+  if (e.clientX === 0 && e.clientY === 0) return;
+  setDragPointer({ x: e.clientX, y: e.clientY });
+}
+
+/// End the gesture, from wherever it ended.
+///
+/// Every exit runs through here — a drop on a target, a drop on nothing, `Esc`,
+/// the window losing the drag — because the listeners `beginDragTracking`
+/// attaches are on `document` and a missed teardown leaves them running for the
+/// rest of the session, moving a ghost for a drag that is over.
+///
+/// Idempotent, and it has to be: a drop fires this from the target's own
+/// handler *and* again from the document listener a moment later, and `Esc`
+/// fires it from neither.
+export function endTabDrag(): void {
+  setTabDrag(null);
+  setDragPointer(null);
+  setDropAction(null);
+  if (typeof document === "undefined") return;
+  document.removeEventListener("dragover", trackPointer, true);
+  document.removeEventListener("dragend", endTabDrag);
+  document.removeEventListener("drop", endTabDrag);
+}
 
 export interface TabStripProps {
   tabs: TabDescriptor[];
@@ -430,7 +547,7 @@ export function TabStrip(props: TabStripProps) {
   };
 
   function resetDrag() {
-    setTabDrag(null);
+    endTabDrag();
     setDropRef(null);
     setDropAtEnd(false);
   }
@@ -445,6 +562,7 @@ export function TabStrip(props: TabStripProps) {
       label: tab.label,
       groupId: props.groupId ?? null,
     });
+    beginDragTracking(e);
   }
 
   /// Start dragging a whole tab group. Same payload as a tab drag with
@@ -463,6 +581,7 @@ export function TabStrip(props: TabStripProps) {
       groupId: props.groupId ?? null,
       tabGroupId: group.id,
     });
+    beginDragTracking(e);
   }
 
   /// Can the in-flight drag land on `tab`? Either as a move from another group
@@ -1770,31 +1889,61 @@ function TabContextMenu(props: {
   );
 }
 
+/// A rect from `paneDrop` as absolute-position CSS, in the overlay's own box.
+function overlayRectStyle(rect: Rect): JSX.CSSProperties {
+  return {
+    left: `${rect.x}px`,
+    top: `${rect.y}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+  };
+}
+
+const EDGE_ARROWS = {
+  left: ArrowLeftToLine,
+  right: ArrowRightToLine,
+  up: ArrowUpToLine,
+  down: ArrowDownToLine,
+};
+
 /// The drop target covering one pane group's body.
 ///
 /// It exists only while a tab is being dragged — the rest of the time there is
-/// nothing between the user and the pane. Two outcomes, and each one has to
-/// be *visible before release*, because a drag whose result you can only
-/// discover by committing to it is not an affordance:
+/// nothing between the user and the pane. Every outcome has to be *visible
+/// before release*, because a drag whose result you can only discover by
+/// committing to it is not an affordance. Three layers of that, from weakest to
+/// strongest:
 ///
-///   • Centre 60% — "drop into this group". `bg-primary/10` plus a 1px inset
-///     `--primary` border.
-///   • Outer 20% of any edge — a split. The prospective new group is filled
-///     `bg-primary/15` **at the exact geometry it would occupy**, which is
-///     computable because `splitGroup` always halves the group it splits. A
-///     generic edge glow would tell the user something is about to happen but
-///     not what.
+///   • **Armed.** The moment any drag starts, every pane in the window takes a
+///     dashed `--primary/40` inset outline. Nothing else in the app says "there
+///     are N places this can land"; without it a user who has never split a pane
+///     has no reason to believe the pane beside the one they grabbed from is a
+///     target at all. It is the one state that is not about the pointer.
+///   • **Centre 60%** — "move into this pane". `bg-primary/10` plus a 1px inset
+///     `--primary` ring, and the ring goes solid so the armed dashes are
+///     visibly *resolved* rather than merely recoloured.
+///   • **Outer 20% of any edge** — a split, drawn as the whole resulting layout:
+///     the new pane filled at the exact geometry it would occupy, the pane being
+///     split shown at what it shrinks to, and the seam between them where the
+///     splitter would appear. `splitGroup` always halves the group it splits,
+///     which is what makes all three honest. A generic edge glow would say
+///     something is about to happen but not what.
 ///
-/// There is no third, refused outcome any more: the group cap is gone, so every
-/// edge always splits. What used to be unreachable-by-count is now
-/// unreachable-by-pixels, and a pane too narrow to be worth splitting is a
-/// judgement the user makes by looking at it.
+/// There is no refused outcome: the group cap is gone, so every edge always
+/// splits. What used to be unreachable-by-count is now unreachable-by-pixels,
+/// and a pane too narrow to be worth splitting is a judgement the user makes by
+/// looking at it.
 ///
 /// Only `background` and `opacity` move. The preview's geometry is never
 /// animated — it jumps between edges as the pointer crosses zones, which is
-/// what makes it readable at drag speed.
+/// what makes it readable at drag speed, and §7.3.10 forbids running a
+/// fixed-duration animation for something the user is still holding.
 export function PaneDropOverlay(props: {
   groupId: string;
+  /// How many panes the worktree has right now. Feeds the ghost's sentence —
+  /// "Split right — 3 panes" — which is the count *after* the drop, so the
+  /// arithmetic lives in `describeDropIntent` and not here.
+  paneCount: number;
   onMoveTab: (payload: TabDragPayload, beforeTabId: string | null) => void;
   onSplitDrop: (
     payload: TabDragPayload,
@@ -1804,21 +1953,29 @@ export function PaneDropOverlay(props: {
 }) {
   let ref: HTMLDivElement | undefined;
   const [intent, setIntent] = createSignal<DropIntent | null>(null);
+  /// The body's measured size, kept beside the intent because the residual and
+  /// the seam are computed from the whole box and `DropIntent` only carries the
+  /// new pane's rect.
+  const [box, setBox] = createSignal<{ width: number; height: number }>({ width: 0, height: 0 });
 
+  /// Clear this pane's own state, and the shared sentence *only if it is still
+  /// ours to clear*. Panes are adjacent, so the pointer reaches the next one's
+  /// `dragover` before this one's `dragleave` — clearing unconditionally would
+  /// blank a sentence the neighbour has already published.
   function clear() {
+    if (intent()) setDropActionLabel(null);
     setIntent(null);
   }
 
   function onDragOver(e: DragEvent) {
     if (!ref || !tabDrag()) return;
     e.preventDefault();
-    const box = ref.getBoundingClientRect();
-    setIntent(
-      dropIntentAt(
-        { width: box.width, height: box.height },
-        { x: e.clientX - box.left, y: e.clientY - box.top },
-      ),
-    );
+    const rect = ref.getBoundingClientRect();
+    const size = { width: rect.width, height: rect.height };
+    const next = dropIntentAt(size, { x: e.clientX - rect.left, y: e.clientY - rect.top });
+    setBox(size);
+    setIntent(next);
+    setDropActionLabel(describeDropIntent(next, props.paneCount));
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
   }
 
@@ -1826,8 +1983,8 @@ export function PaneDropOverlay(props: {
     const drag = tabDrag();
     const target = intent();
     e.preventDefault();
-    clear();
-    setTabDrag(null);
+    setIntent(null);
+    endTabDrag();
     if (!drag || !target) return;
     if (target.kind === "body") props.onMoveTab(drag, null);
     else if (target.kind === "edge") {
@@ -1837,7 +1994,7 @@ export function PaneDropOverlay(props: {
 
   const edge = () => {
     const i = intent();
-    return i?.kind === "edge" ? i.preview : null;
+    return i?.kind === "edge" ? i : null;
   };
 
   return (
@@ -1850,26 +2007,144 @@ export function PaneDropOverlay(props: {
           if (!ref || (e.relatedTarget instanceof Node && ref.contains(e.relatedTarget))) return;
           clear();
         }}
-        class="absolute inset-0 z-30 pointer-events-auto"
+        // The armed outline is on this wrapper rather than on a child, so it
+        // traces the pane's own bounds exactly and costs no extra node. Dashed
+        // and inset: a solid ring here would be indistinguishable from the
+        // "move into this pane" state it has to be weaker than.
+        class="absolute inset-0 z-30 pointer-events-auto outline-dashed outline-1 -outline-offset-1 outline-primary/40"
         aria-hidden="true"
       >
         <Show when={intent()?.kind === "body"}>
           <div class="absolute inset-0 bg-primary/10 ring-1 ring-inset ring-primary" />
         </Show>
         <Show when={edge()}>
-          {(rect) => (
-            <div
-              class="absolute bg-primary/15 ring-1 ring-inset ring-primary"
-              style={{
-                left: `${rect().x}px`,
-                top: `${rect().y}px`,
-                width: `${rect().width}px`,
-                height: `${rect().height}px`,
-              }}
-            />
+          {(hit) => (
+            <>
+              {/* What is left of the pane being split. Tinted the other way —
+                  a wash of the surface rather than of `--primary` — so the two
+                  halves read as "new" and "existing" rather than as two
+                  equally-new things. */}
+              <div
+                class="absolute bg-background/70"
+                style={overlayRectStyle(residualRect(box(), hit().orientation, hit().placement))}
+              />
+              {/* The new pane. */}
+              <div
+                class="absolute bg-primary/15 ring-1 ring-inset ring-primary"
+                style={overlayRectStyle(hit().preview)}
+              />
+              {/* The seam: where the splitter this drop creates will be. */}
+              <div
+                class="absolute bg-primary"
+                style={overlayRectStyle(splitLineRect(box(), hit().orientation, hit().placement))}
+              />
+              <SplitPreviewBadge
+                rect={hit().preview}
+                direction={edgeDirection(hit().orientation, hit().placement)}
+              />
+            </>
           )}
         </Show>
       </div>
+    </Show>
+  );
+}
+
+/// The arrow sitting in the middle of the prospective new pane.
+///
+/// Deliberately wordless. The sentence is the ghost's job and the ghost is
+/// already under the user's eye at the pointer; repeating it here would be two
+/// controls saying one thing (§7.6), and in a pane a few hundred pixels wide
+/// there is no room to say it twice anyway. What the badge adds that the ghost
+/// cannot is *location* — it marks which half of this pane the tab lands in,
+/// at the place it lands.
+///
+/// Hidden below `MIN_BADGE_PX` on either axis rather than scaled down: a glyph
+/// squeezed into a sliver of a pane is decoration that obscures the preview it
+/// is annotating.
+function SplitPreviewBadge(props: { rect: Rect; direction: "left" | "right" | "up" | "down" }) {
+  const MIN_BADGE_PX = 64;
+  const fits = () => props.rect.width >= MIN_BADGE_PX && props.rect.height >= MIN_BADGE_PX;
+  return (
+    <Show when={fits()}>
+      <div
+        class="absolute flex items-center justify-center pointer-events-none"
+        style={overlayRectStyle(props.rect)}
+      >
+        <span class="flex items-center justify-center rounded-[var(--island-radius-inner)] bg-primary text-primary-foreground p-1.5">
+          <Dynamic component={EDGE_ARROWS[props.direction]} class="w-4 h-4" />
+        </span>
+      </div>
+    </Show>
+  );
+}
+
+/// The thing that follows the cursor while a tab is in flight.
+///
+/// VoidLink draws its own drag image (see `beginDragTracking`) for one reason:
+/// the browser's is a snapshot of the tab card, which names what the user picked
+/// up — something they already know — and can never name what releasing would
+/// do, which is the only thing they cannot see. So the ghost carries both, and
+/// the second line changes live as the pointer crosses panes and edges.
+///
+/// Mounted once per window, at `--z-drag`, which the token table describes as
+/// "the drag ghost, above everything it explains" — this is the component that
+/// name was reserved for.
+///
+/// `pointer-events-none` is not a nicety: an element under the cursor during an
+/// HTML5 drag that accepted events would swallow the `dragover` of every drop
+/// target it covered, and the ghost covers whichever one the user is aiming at.
+///
+/// It tracks the pointer 1:1 with no transition (§7.3.10) — a ghost that eased
+/// toward the cursor would lag exactly when the user is aiming at a 20% edge
+/// zone.
+export function DragGhost(props: {
+  /// What the second line says while the pointer is over nothing that would
+  /// accept the drop. It is per window because the two windows offer different
+  /// gestures: the workbench has pane groups to land in, the editor window has
+  /// none and its drag can only ever reorder. A single sentence would be wrong
+  /// in one of them, and "Release over a pane" in a window that has no panes is
+  /// the worse of the two errors.
+  hint?: string;
+}) {
+  const drag = () => tabDrag();
+  const at = () => dragPointer();
+  const action = () => dropAction();
+
+  /// Offset from the pointer, in px. Below and right, so the ghost never covers
+  /// the edge zone the pointer is currently in — a label sitting *on* the strip
+  /// of pane the user is aiming at is a label hiding its own answer.
+  const OFFSET = 14;
+
+  return (
+    <Show when={drag() && at()}>
+      <Portal>
+        <div
+          class="fixed pointer-events-none z-[var(--z-drag)]"
+          style={{ left: `${(at()?.x ?? 0) + OFFSET}px`, top: `${(at()?.y ?? 0) + OFFSET}px` }}
+          // `aria-hidden` because a screen reader gets nothing from a thing
+          // trailing a pointer it cannot see; the test id is because the ghost
+          // repeats the dragged tab's label by design, so "the label appears
+          // twice on the page" is the correct state and a bare text query
+          // cannot tell the two copies apart.
+          aria-hidden="true"
+          data-testid="drag-ghost"
+        >
+          <div class="material-chrome flex flex-col gap-0.5 rounded-[var(--island-radius-inner)] border border-border px-2 py-1.5 shadow-lg max-w-[240px]">
+            <span class="flex items-center gap-1.5 text-body text-foreground truncate">
+              <SquareDashed class="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+              {drag()?.label}
+            </span>
+            {/* The sentence, and the em dash when there isn't one. §9.7 asks
+                for a specific sentence rather than a blank: a ghost with an
+                empty second line reads as a string that failed to load, where
+                "Release over a pane" reads as instruction. */}
+            <span class="text-label text-muted-foreground truncate">
+              {action() ?? props.hint ?? "Release over a pane"}
+            </span>
+          </div>
+        </div>
+      </Portal>
     </Show>
   );
 }

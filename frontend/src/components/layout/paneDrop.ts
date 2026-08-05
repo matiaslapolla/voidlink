@@ -122,6 +122,99 @@ export function previewRect(
   };
 }
 
+/// The rectangle the pane being dropped on would *shrink to*.
+///
+/// The complement of `previewRect`, and it exists because a preview that only
+/// draws the new pane shows half of what is about to happen. A user reading one
+/// filled rectangle at an edge has to infer that the pane underneath gives up
+/// exactly that much room; drawing both halves means there is nothing left to
+/// infer. Same `NEW_GROUP_SHARE`, so the two rectangles tile the body exactly
+/// and no seam or overlap can appear between them.
+export function residualRect(
+  size: { width: number; height: number },
+  orientation: SplitOrientation,
+  placement: "before" | "after",
+): Rect {
+  const preview = previewRect(size, orientation, placement);
+  if (orientation === "row") {
+    return {
+      x: placement === "before" ? preview.width : 0,
+      y: 0,
+      width: size.width - preview.width,
+      height: size.height,
+    };
+  }
+  return {
+    x: 0,
+    y: placement === "before" ? preview.height : 0,
+    width: size.width,
+    height: size.height - preview.height,
+  };
+}
+
+/// Half the thickness of the line drawn where the new splitter would sit, in px.
+///
+/// The line is centred on the boundary rather than laid inside either half, so
+/// it reads as the seam *between* two panes instead of as a border belonging to
+/// one of them — which is what a splitter is.
+const SPLIT_LINE_HALF = 1;
+
+/// The seam between the two halves: where the splitter this drop creates would
+/// actually be draggable.
+///
+/// Drawn as its own rect rather than as a border on the preview because a
+/// border belongs to a box and this line belongs to neither — it is the thing
+/// the user will grab afterwards, and showing it during the drag is what makes
+/// "this becomes two resizable panes" legible before release rather than after.
+export function splitLineRect(
+  size: { width: number; height: number },
+  orientation: SplitOrientation,
+  placement: "before" | "after",
+): Rect {
+  const preview = previewRect(size, orientation, placement);
+  if (orientation === "row") {
+    const x = placement === "before" ? preview.width : preview.x;
+    return { x: x - SPLIT_LINE_HALF, y: 0, width: SPLIT_LINE_HALF * 2, height: size.height };
+  }
+  const y = placement === "before" ? preview.height : preview.y;
+  return { x: 0, y: y - SPLIT_LINE_HALF, width: size.width, height: SPLIT_LINE_HALF * 2 };
+}
+
+/// Where the new pane lands, in the words a user would use.
+///
+/// `before`/`after` × `row`/`column` is the reducer's vocabulary and it is
+/// exactly wrong on a drag ghost: nobody drags a tab to the "before edge of a
+/// row split". Kept here rather than in the component so the four cases are
+/// covered by a unit test instead of by looking at four screenshots.
+export function edgeDirection(
+  orientation: SplitOrientation,
+  placement: "before" | "after",
+): "left" | "right" | "up" | "down" {
+  if (orientation === "row") return placement === "before" ? "left" : "right";
+  return placement === "before" ? "up" : "down";
+}
+
+/// The sentence the drag ghost shows for what is under the pointer right now.
+///
+/// A ghost that only carries the dragged tab's name tells the user what they
+/// picked up, which they already know. What they cannot know without releasing
+/// is what the drop will *do* — and §7.6's rule that a control must say what it
+/// does applies to a gesture at least as much as to a button.
+///
+/// `paneCount` is the count *before* the drop, so a split says what the layout
+/// becomes rather than what it is. `null` means the pointer is over no pane at
+/// all, and the caller shows the tab's name alone: an empty sentence would read
+/// as a missing string rather than as "nothing will happen here".
+export function describeDropIntent(
+  intent: DropIntent | null,
+  paneCount: number,
+): string | null {
+  if (!intent) return null;
+  if (intent.kind === "body") return "Move into this pane";
+  const next = paneCount + 1;
+  return `Split ${edgeDirection(intent.orientation, intent.placement)} — ${next} panes`;
+}
+
 /// Which tab a group shows.
 ///
 /// The worktree-wide active item wins whenever it lives in this group, which is
