@@ -23,6 +23,29 @@
 /// recalled.** Anything added later must be too: a flag that does not exist
 /// turns the whole agent into a usage error at spawn time, which the user sees
 /// as "the terminal opened and immediately printed help".
+///
+/// Last verified against **Claude Code 2.1.222, July 2026**. Every flag this
+/// file emits was present in that binary's `--help`, and both closed unions
+/// below are that help's own choice lists verbatim. `composeClaudeProbeCommand`
+/// is the runtime half of the same claim: the Test button in Settings → AI runs
+/// the user's own spec through `claude -p`, so a flag that has since been
+/// renamed upstream fails in a pane rather than in a terminal a week later.
+///
+/// **"Current" is a claim about a version, not about a user's machine**, and
+/// that distinction is not academic — it is the first thing the Test button
+/// found. A machine with two installs runs whichever wins the login shell's
+/// PATH, and `--name` and `--effort` are both unknown options on a CLI only a
+/// few minor versions back. Two consequences are designed in rather than
+/// patched over:
+///
+///   • **Nothing optional is emitted for its own sake.** Flags that were nice
+///     to have and not asked for (`--no-session-persistence` on the probe, for
+///     one) are gone: a convenience that turns a working agent into a usage
+///     error on an older CLI is not a convenience.
+///   • **`commandOverride` exists.** When the form and the installed binary
+///     disagree, the user needs a way to win that does not require this file to
+///     ship a fix, so the composed line is editable and an edited one is used
+///     verbatim.
 
 /// Claude Code's permission modes, as the CLI's own `--permission-mode` choice
 /// list gives them. A closed union rather than a string, so a mode that is
@@ -90,6 +113,21 @@ export interface ClaudeAgentSpec {
   /// Appended verbatim, after everything else. The escape hatch for flags this
   /// form does not model — and the reason not modelling one is survivable.
   extraArgs: string;
+  /// The whole command, hand-written, replacing everything composed above.
+  ///
+  /// Blank for every agent that has never been edited, which is the normal
+  /// state — the form is the point and this is the door out of it. It exists
+  /// because the form can be *wrong on this machine*: the flags it emits are
+  /// right for the CLI they were read off and an older `claude` first on the
+  /// PATH rejects `--name` outright, at which point a user with no way to
+  /// delete that flag has an agent they cannot start and no recourse inside the
+  /// app.
+  ///
+  /// Kept beside the fields rather than replacing them, for the same reason the
+  /// roster keeps `commandTemplate` beside `claude`: clearing the override has
+  /// to give the composed command back intact, or editing it once is a one-way
+  /// door the user discovers afterwards.
+  commandOverride: string;
 }
 
 export const DEFAULT_CLAUDE_SPEC: ClaudeAgentSpec = {
@@ -103,6 +141,7 @@ export const DEFAULT_CLAUDE_SPEC: ClaudeAgentSpec = {
   addDirs: "",
   continueSession: false,
   extraArgs: "",
+  commandOverride: "",
 };
 
 /// POSIX single-quoting: wrap in `'`, and write an embedded `'` as `'\''`.
@@ -160,10 +199,41 @@ function splitLines(raw: string): string[] {
 /// with no name composes to bare `claude`, which is exactly what a user who
 /// filled nothing in has asked for.
 export function composeClaudeCommand(spec: ClaudeAgentSpec, name = ""): string {
+  // Verbatim, and before anything else is computed. A user who edited this line
+  // did so because the composition was wrong for their machine; re-deriving any
+  // part of it would put back the flag they deleted.
+  const override = spec.commandOverride.trim();
+  if (override) return override;
+
   const argv: string[] = ["claude"];
 
   const label = name.trim();
   if (label) argv.push("--name", shellQuote(label));
+
+  argv.push(...configuredFlags(spec));
+
+  if (spec.continueSession) argv.push("--continue");
+
+  // Last, and unquoted. It is the escape hatch: a user writing `--betas foo`
+  // here means two arguments, and quoting the string would pass it as one.
+  const extra = spec.extraArgs.trim();
+  if (extra) argv.push(extra);
+
+  return argv.join(" ");
+}
+
+/// The flags that describe *how this agent thinks*, shared by the real launch
+/// and by the probe.
+///
+/// Split out so the Test button cannot drift from the thing it claims to test.
+/// A probe composed from its own copy of this list is a probe that passes while
+/// the agent it vouched for fails on the one flag the copy forgot.
+///
+/// Deliberately excludes `--name`, `--continue` and `extraArgs` — those are
+/// about the *session*, not the configuration, and each is wrong in a probe for
+/// its own reason. See `composeClaudeProbeCommand`.
+function configuredFlags(spec: ClaudeAgentSpec): string[] {
+  const argv: string[] = [];
 
   const model = spec.model.trim();
   if (model) argv.push("--model", shellQuote(model));
@@ -190,10 +260,59 @@ export function composeClaudeCommand(spec: ClaudeAgentSpec, name = ""): string {
   // without depending on how the CLI splits its own argument.
   for (const dir of splitLines(spec.addDirs)) argv.push("--add-dir", shellQuote(dir));
 
-  if (spec.continueSession) argv.push("--continue");
+  return argv;
+}
 
-  // Last, and unquoted. It is the escape hatch: a user writing `--betas foo`
-  // here means two arguments, and quoting the string would pass it as one.
+/// What the Test button pipes to the CLI, and the whole of what a pass means.
+///
+/// Short and answerable without tools or repository knowledge, so a failure is
+/// always about reaching an authenticated CLI and never about the question.
+export const CLAUDE_PROBE_PROMPT = "Reply with exactly: ok";
+
+/// The user's own agent configuration, run once in print mode.
+///
+/// This is what makes the form checkable. Everything about a composed agent is
+/// currently believed rather than known — the flags are believed to exist, the
+/// CLI is believed to be installed, the machine is believed to be signed in —
+/// and all three are only tested at the moment a user opens a pane expecting to
+/// work. Running the same flags through `-p` moves every one of those failures
+/// into a button next to the field that caused it.
+///
+/// Three deliberate differences from the launch command:
+///
+///   • **`-p`**, obviously: a probe has to terminate. An interactive `claude`
+///     spawned into a pipe would sit on an empty stdin forever.
+///   • **`--tools ''`** disables the built-in tool set for this run. A Test
+///     button is not permitted to edit the user's repository, and a probe that
+///     could is one nobody should press twice. `--allowed-tools` is still
+///     passed, so the flag is still *validated* — it is a permission list, and
+///     restricting the available set does not make it unparsed.
+///   • **No `--continue`**: resuming the folder's real conversation to ask it
+///     "reply ok" would write a turn into a session the user cares about.
+///
+/// And one flag deliberately *not* here. The probe used to pass
+/// `--no-session-persistence` to keep itself out of `/resume` — tidy, unasked
+/// for, and unknown to a `claude` two minor versions old, so the first thing it
+/// ever reported was its own tidiness failing. A probe may not add flags the
+/// agent does not need; a stray probe session in the picker is the cheaper
+/// problem by a wide margin.
+///
+/// `extraArgs` *is* included. It is configuration the user typed and expects to
+/// be covered — with the known cost that an interactive-only flag in there
+/// (`--ide`, say) fails the probe while the real agent would be fine. Reporting
+/// that is better than silently testing a different command than the one shown.
+export function composeClaudeProbeCommand(spec: ClaudeAgentSpec): string {
+  // An edited command is tested as written, with only `-p` added — the one
+  // change without which a probe cannot terminate. Nothing else is layered on:
+  // an override may not even be `claude`, and appending our flags to someone
+  // else's binary is how a test fails for a reason it invented itself.
+  const override = spec.commandOverride.trim();
+  if (override) return `${override} -p`;
+
+  const argv: string[] = ["claude", "-p", "--tools", "''"];
+
+  argv.push(...configuredFlags(spec));
+
   const extra = spec.extraArgs.trim();
   if (extra) argv.push(extra);
 
@@ -208,6 +327,11 @@ export function composeClaudeCommand(spec: ClaudeAgentSpec, name = ""): string {
 /// the row is expanded. Says "Claude defaults" rather than nothing when every
 /// field is blank: an empty summary reads as a row that failed to load.
 export function describeClaudeSpec(spec: ClaudeAgentSpec): string {
+  // An overridden agent is not "opus, plan, 2 tools allowed" — none of those
+  // fields are being passed any more, and a summary that recited them would be
+  // describing a command that is not going to run.
+  if (spec.commandOverride.trim()) return "custom command";
+
   const parts: string[] = [];
   if (spec.model.trim()) parts.push(spec.model.trim());
   if (spec.permissionMode) parts.push(spec.permissionMode);
@@ -250,5 +374,6 @@ export function parseClaudeSpec(raw: unknown): ClaudeAgentSpec | undefined {
     addDirs: str(r.addDirs),
     continueSession: r.continueSession === true,
     extraArgs: str(r.extraArgs),
+    commandOverride: str(r.commandOverride),
   };
 }

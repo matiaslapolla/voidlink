@@ -41,10 +41,7 @@ import {
   type ConfigField,
 } from "./gitConfig";
 import {
-  AI_KEY_PRESETS,
-  aiKeyBindings,
   useSettings,
-  type AiKeyBinding,
   type CursorStyle,
   type EditorCoreSettings,
   type EditorSettings,
@@ -85,7 +82,6 @@ import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
 import { resetLayoutStorage } from "@/store/layout";
 import { stackApi } from "@/api/stack";
-import { secretsApi, type SecretStatus } from "@/api/secrets";
 import { pushToast } from "@/commands/toast";
 import { getAction } from "@/commands/registry";
 import { shortcutLabel, shortcutLabels } from "@/commands/shortcuts";
@@ -1350,379 +1346,72 @@ function ShortcutRow(props: { entry: KeymapEntry }) {
 /// a change of mode.
 // ─── AI Pane ────────────────────────────────────────────────────────────────
 
-const AI_COMMAND_PRESETS: { label: string; command: string }[] = [
-  {
-    label: "Claude CLI",
-    command:
-      'claude --no-tools -p "You are a senior engineer. Write a concise, imperative-mood git commit message (50-char title, optional body) for the following staged diff. Output ONLY the message."',
-  },
-  {
-    label: "Ollama (llama3.2)",
-    command:
-      'ollama run llama3.2 "Write a concise imperative-mood git commit message for this diff. Output ONLY the message:"',
-  },
-  {
-    label: "OpenAI Codex CLI",
-    command:
-      'codex exec -m gpt-5 "Write a concise imperative-mood git commit message (50-char title, optional body) for this staged diff. Output ONLY the message."',
-  },
-];
-
+/// Settings → AI: one vendor, no keys, and a form for the agents.
+///
+/// This pane used to be three text boxes and a keychain manager, on the premise
+/// that AI here is BYO-CLI: type any command, store any provider's key, point
+/// it at `ollama` or `codex` or whatever you have. That premise is still true
+/// of the *code* — `run_cli` will spawn anything, and a stored `commitCommand`
+/// still wins — and it was a bad thing to put in front of a user. Three
+/// consequences drove pulling it:
+///
+///   1. **Nothing worked out of the box.** Every AI action in the app was a
+///      no-op behind a "no AI command configured" toast until the user pasted a
+///      command they had to compose themselves. The presets it offered were
+///      also drifting: the shipped Claude one passed `--no-tools`, a flag the
+///      CLI has not had for some time, so the one-click option was broken.
+///   2. **The key rows were a bill.** Claude Code resolves `ANTHROPIC_API_KEY`
+///      *before* a subscription, so storing one silently moved a signed-in user
+///      onto per-token billing — a footgun the pane could only warn about, and
+///      the warning was three lines long. With only `claude` supported the
+///      whole question disappears: auth is whatever the CLI already has.
+///   3. **Two contracts, one box.** A pasted command could be a filter or a
+///      session and the box could not tell you which it needed to be.
+///
+/// So the surface is now exactly one thing: named `claude` agents, built in the
+/// form below. The escape hatches survive without a UI — `commitCommand`,
+/// `agentCommand` and stored keys are all still read, and Settings → JSON still
+/// edits the first two — because deleting them would silently unconfigure
+/// everyone who had set one. Same reasoning as the hidden command agent in
+/// `AgentRosterPane`: hide the surface, keep the contract.
 function AiPane() {
-  const { settings, updateAi } = useSettings();
+  const { activeRepoPath } = useAppStore();
   return (
     <div class="space-y-4">
       <p class="text-label text-muted-foreground leading-relaxed">
         VoidLink runs no model of its own and talks to no service on your
-        behalf. Everything here is a CLI you already have installed, spawned on
-        your machine: the staged diff is piped to one for commit messages, and
-        the agents below are <code class="font-mono">claude</code> invocations
-        built from a form and run in a real terminal. If a CLI needs a key or a
-        token, store it under Provider keys below — it goes to your OS keychain,
-        never to voidlink's settings.
+        behalf. It spawns the <code class="font-mono">claude</code> CLI you
+        already have installed, in this folder, on your machine.
       </p>
-      <Section title="Commit messages">
-        <TextRow
-          label="Commit command"
-          value={settings.ai.commitCommand}
-          placeholder={'e.g. claude --no-tools -p "Write a git commit message:"'}
-          onInput={(v) => updateAi({ commitCommand: v })}
-        />
-        <div class={`flex flex-wrap gap-1 ${LABEL_INDENT}`}>
-          <For each={AI_COMMAND_PRESETS}>
-            {(p) => (
-              <button
-                onClick={() => updateAi({ commitCommand: p.command })}
-                class="px-2 py-0.5 text-micro rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
-                title={p.command}
-              >
-                {p.label}
-              </button>
-            )}
-          </For>
-        </div>
-      </Section>
-      <AgentRosterSection />
-      <Section title="Agent fallback command">
-        <TextRow
-          label="Fallback command"
-          value={settings.ai.agentCommand}
-          placeholder={'optional — defaults to the commit command'}
-          onInput={(v) => updateAi({ agentCommand: v })}
-        />
-        <p class={`text-label text-muted-foreground leading-relaxed ${LABEL_INDENT}`}>
-          What the agent <em>thread</em> runs — the slide-over at{" "}
-          {shortcutLabel("agent.toggle")}, which is a different thing from the
-          agents above: a prompt grounded in your live workspace state (branch,
-          status, recent log, staged diff, open files) is piped to stdin and
-          stdout is the answer, with no session and nothing to answer a
-          permission prompt with. Any CLI you have installed. Blank falls back
-          to the commit command.
+      {/* The scope note. It is a limitation, so it says so plainly and says
+          what it buys — a user who wants Ollama should learn that here and not
+          from a settings box that accepted the command and then did nothing
+          useful with it. */}
+      <div class="rounded border border-border/60 bg-muted/30 p-2.5 space-y-1.5">
+        <p class="text-label text-foreground/90 leading-relaxed">
+          For now, Claude Code only.
         </p>
-      </Section>
-      <ProviderKeysSection />
-    </div>
-  );
-}
-
-// ─── Provider keys ──────────────────────────────────────────────────────────
-
-/// Manage AI provider keys held in the OS credential store.
-///
-/// The value is write-only from here: it is sent to Rust once, stored in the
-/// keychain, and never comes back. All this pane can learn is presence plus a
-/// four-character tail, which is exactly what `secret_status` returns. Presence
-/// is always re-read from the keychain rather than tracked locally, so the UI
-/// can't show "saved" for something that isn't there.
-function ProviderKeysSection() {
-  const { removeAiKey } = useSettings();
-  const [keychainError, setKeychainError] = createSignal<string | null>(null);
-
-  const [statuses, { refetch }] = createResource(
-    () => aiKeyBindings().map((b) => b.id),
-    async (ids): Promise<SecretStatus[]> => {
-      // Caught here rather than left to reject: reading a resource accessor
-      // in a failed state rethrows into render, and there is no ErrorBoundary
-      // inside the dialog. A locked or denied keychain has to be *reported* —
-      // never flattened into an empty list that would read as "no keys set".
-      try {
-        const result = await secretsApi.status(ids);
-        setKeychainError(null);
-        return result;
-      } catch (e) {
-        setKeychainError(String(e));
-        return [];
-      }
-    },
-  );
-
-  createEffect(() => {
-    const err = keychainError();
-    if (err) pushToast(`Couldn't read the OS keychain: ${err}`, "error", 7000);
-  });
-
-  const statusFor = (id: string) => statuses()?.find((s) => s.id === id);
-
-  const forget = async (binding: AiKeyBinding) => {
-    try {
-      // Delete the stored value before dropping the mapping, otherwise the
-      // credential is orphaned in the keychain with nothing pointing at it.
-      await secretsApi.delete(binding.id);
-      removeAiKey(binding.id);
-      pushToast(`Removed ${binding.envVar}`, "success");
-      void refetch();
-    } catch (e) {
-      pushToast(`Couldn't remove ${binding.envVar}: ${String(e)}`, "error", 7000);
-    }
-  };
-
-  return (
-    <Section title="Provider keys">
-      <p class="text-label text-muted-foreground leading-relaxed">
-        Optional. Keys go to your OS credential store (macOS Keychain, Windows
-        Credential Manager, Linux secret-service) — never to voidlink's settings
-        or localStorage — and are exported into the environment of the commands
-        above. VoidLink itself never sends them anywhere. Injection is additive:
-        if your shell already exports the same variable, yours wins.
-      </p>
-      {/* The precedence note above is true of *VoidLink's* injection. This one
-          is about what the CLI does with what it receives, and it is the more
-          expensive surprise: Claude Code resolves an API key before a
-          subscription, so a stored `ANTHROPIC_API_KEY` silently bills per
-          token even when the machine is signed in to a paid plan. The pane
-          previously showed both rows and said nothing about which would win.
-          Rendered as a plain note rather than a warning tone because both
-          states are legitimate — this is a fact about ordering, not a
-          misconfiguration. */}
-      <p class="text-label text-muted-foreground leading-relaxed">
-        Two of these are alternatives, not additions. A Claude CLI or the agent
-        SDK will use <span class="font-mono">ANTHROPIC_API_KEY</span> if it is
-        set and fall back to{" "}
-        <span class="font-mono">CLAUDE_CODE_OAUTH_TOKEN</span> — or to a{" "}
-        <span class="font-mono">claude</span> already signed in on this machine
-        — only when it isn't. Store the API key and you are billed per token
-        even on a paid plan; leave it empty to use the plan.
-      </p>
-      <Show when={keychainError()}>
-        {(err) => (
-          <p class="text-label text-destructive leading-relaxed" title={err()}>
-            Can't reach the OS credential store, so which keys are stored is
-            unknown. Saving will report the same error.
-          </p>
-        )}
-      </Show>
-      <For each={aiKeyBindings()}>
-        {(binding) => (
-          <KeyRow
-            binding={binding}
-            status={statusFor(binding.id)}
-            loading={statuses.loading}
-            unknown={keychainError() !== null}
-            onChanged={() => void refetch()}
-            removable={!AI_KEY_PRESETS.some((p) => p.id === binding.id)}
-            onForget={() => void forget(binding)}
-          />
-        )}
-      </For>
-      <AddCustomKey onAdded={() => void refetch()} />
-    </Section>
-  );
-}
-
-function KeyRow(props: {
-  binding: AiKeyBinding;
-  status: SecretStatus | undefined;
-  loading: boolean;
-  /// The keychain couldn't be read at all — presence is genuinely unknown,
-  /// which is not the same thing as "not set".
-  unknown: boolean;
-  onChanged: () => void;
-  removable: boolean;
-  onForget: () => void;
-}) {
-  const [value, setValue] = createSignal("");
-  const [busy, setBusy] = createSignal(false);
-  const present = () => props.status?.present ?? false;
-
-  const statusText = () => {
-    if (props.unknown) return "Unknown";
-    if (props.loading && !props.status) return "Checking…";
-    if (!present()) return "Not set";
-    const hint = props.status?.hint ?? "";
-    return hint ? `Set · ••••${hint}` : "Set";
-  };
-
-  const save = async () => {
-    const v = value().trim();
-    if (!v) {
-      pushToast("Paste a key value first.", "warning");
-      return;
-    }
-    setBusy(true);
-    try {
-      await secretsApi.set(props.binding.id, props.binding.envVar, v);
-      pushToast(`${props.binding.label} key saved to the OS keychain`, "success");
-      props.onChanged();
-    } catch (e) {
-      pushToast(`Couldn't save the ${props.binding.label} key: ${String(e)}`, "error", 7000);
-    } finally {
-      // Never leave a secret sitting in a DOM input, success or failure.
-      setValue("");
-      setBusy(false);
-    }
-  };
-
-  const remove = async () => {
-    setBusy(true);
-    try {
-      await secretsApi.delete(props.binding.id);
-      pushToast(`${props.binding.label} key deleted from the OS keychain`, "success");
-      props.onChanged();
-    } catch (e) {
-      pushToast(`Couldn't delete the ${props.binding.label} key: ${String(e)}`, "error", 7000);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div class="flex items-start gap-2">
-      <div class="w-28 shrink-0 pt-1">
-        <div class="truncate text-foreground/90" title={props.binding.label}>
-          {props.binding.label}
-        </div>
-        <div
-          class="truncate font-mono text-micro text-muted-foreground/70"
-          title={props.binding.envVar}
-        >
-          {props.binding.envVar}
-        </div>
+        <p class="text-label text-muted-foreground leading-relaxed">
+          Commit messages and the agent thread run{" "}
+          <code class="font-mono">claude -p</code>, and the agents below run{" "}
+          <code class="font-mono">claude</code> in a real terminal. Both use{" "}
+          <b>your own already-authenticated Claude Code CLI</b> — whatever{" "}
+          <code class="font-mono">claude</code> is signed in as when you run it
+          in a terminal. VoidLink stores no API key and asks you for none; if
+          the CLI works in your shell, it works here. Support for other CLIs is
+          not gone from the code, only from this pane.
+        </p>
       </div>
-      <div class="flex-1 min-w-0 space-y-1">
-        <div class="flex items-center gap-1.5">
-          <input
-            type="password"
-            autocomplete="off"
-            spellcheck={false}
-            value={value()}
-            disabled={busy()}
-            placeholder={present() ? "Replace key…" : "Paste key…"}
-            onInput={(e) => setValue(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void save();
-            }}
-            class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
-          />
-          <button
-            onClick={() => void save()}
-            disabled={busy()}
-            class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
-          >
-            Save
-          </button>
-          <Show when={present()}>
-            <button
-              onClick={() => void remove()}
-              disabled={busy()}
-              title={`Delete the stored ${props.binding.label} key`}
-              aria-label={`Delete the stored ${props.binding.label} key`}
-              class="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 disabled:opacity-50 transition-colors"
-            >
-              <Trash2 class="w-3.5 h-3.5" />
-            </button>
-          </Show>
-          <Show when={props.removable}>
-            <button
-              onClick={props.onForget}
-              disabled={busy()}
-              title={`Remove ${props.binding.envVar} from this list`}
-              aria-label={`Remove ${props.binding.envVar} from this list`}
-              class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
-            >
-              <X class="w-3.5 h-3.5" />
-            </button>
-          </Show>
-        </div>
-        <div
-          class={`text-micro ${present() ? "text-primary/80" : "text-muted-foreground/70"}`}
-        >
-          {statusText()}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AddCustomKey(props: { onAdded: () => void }) {
-  const { addAiKey } = useSettings();
-  const [envVar, setEnvVar] = createSignal("");
-  const [value, setValue] = createSignal("");
-  const [busy, setBusy] = createSignal(false);
-
-  const add = async () => {
-    const name = envVar().trim();
-    const v = value().trim();
-    if (!name) {
-      pushToast("Enter the environment variable name your CLI expects.", "warning");
-      return;
-    }
-    if (!v) {
-      pushToast("Paste a key value first.", "warning");
-      return;
-    }
-    const id = `custom.${name}`;
-    setBusy(true);
-    try {
-      // Store first: Rust owns the one implementation of the env-var name
-      // rule, so a rejected name never leaves a dangling binding behind.
-      await secretsApi.set(id, name, v);
-      const added = addAiKey({ id, envVar: name, label: name });
-      pushToast(
-        added ? `${name} saved to the OS keychain` : `${name} was already listed — value updated`,
-        "success",
-      );
-      setEnvVar("");
-      props.onAdded();
-    } catch (e) {
-      pushToast(`Couldn't save ${name}: ${String(e)}`, "error", 7000);
-    } finally {
-      setValue("");
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
-      <input
-        type="text"
-        value={envVar()}
-        disabled={busy()}
-        placeholder="MY_PROVIDER_API_KEY"
-        onInput={(e) => setEnvVar(e.currentTarget.value)}
-        aria-label="Custom environment variable name"
-        class="w-28 shrink-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
-      />
-      <input
-        type="password"
-        autocomplete="off"
-        spellcheck={false}
-        value={value()}
-        disabled={busy()}
-        placeholder="Paste key…"
-        aria-label="Custom key value"
-        onInput={(e) => setValue(e.currentTarget.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") void add();
-        }}
-        class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
-      />
-      <button
-        onClick={() => void add()}
-        disabled={busy()}
-        class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
-      >
-        Add
-      </button>
+      <AgentRosterSection repoPath={activeRepoPath()} />
+      <p class="text-label text-muted-foreground/70 leading-relaxed">
+        The agent <em>thread</em> — the slide-over at{" "}
+        {shortcutLabel("agent.toggle")} — is a different thing from the agents
+        above: a prompt grounded in your live workspace state (branch, status,
+        recent log, staged diff, open files) is piped to{" "}
+        <code class="font-mono">claude -p</code> and stdout is the answer, with
+        no session and nothing to answer a permission prompt with. It needs no
+        configuration.
+      </p>
     </div>
   );
 }

@@ -5,8 +5,9 @@
 /// `SettingsDialog.tsx` that was already two thousand lines. The row primitives
 /// it shares with the rest of the dialog live in `rows.tsx` — importing them
 /// from `SettingsDialog.tsx` would be a cycle, since the dialog renders this.
-import { For, Show, createSignal } from "solid-js";
-import { ChevronDown, ChevronRight, X } from "lucide-solid";
+import { For, Match, Show, Switch, createSignal } from "solid-js";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, X } from "lucide-solid";
+import { probeClaudeAgent, type ProbeState } from "@/commands/agentProbe";
 import {
   CLAUDE_EFFORTS,
   CLAUDE_MODEL_PRESETS,
@@ -65,7 +66,12 @@ const AGENT_INPUT_CLASS =
 /// Edits are written straight through on every keystroke, like every other row
 /// in this dialog — there is no Save button to be out of sync with, and a
 /// half-typed command is only ever spawned when the user asks the agent to run.
-export function AgentRosterSection() {
+///
+/// `repoPath` is the folder the Test button probes in — the active repository,
+/// passed down rather than read from the app store, because this pane is a leaf
+/// and the store is a context two levels above it. Absent means no repository is
+/// open, which the button renders as disabled with a reason.
+export function AgentRosterSection(props: { repoPath?: string | null }) {
   const { settings, addAgent, removeAgent } = useSettings();
   /// Only composed agents have a row. See this section's header for why the
   /// others still exist in the store.
@@ -94,6 +100,7 @@ export function AgentRosterSection() {
           {(entry: AgentRosterEntry) => (
             <AgentRow
               entry={entry}
+              repoPath={props.repoPath ?? null}
               expanded={expanded() === entry.id}
               onToggle={() => setExpanded(expanded() === entry.id ? null : entry.id)}
               canRemove={!soleEntry()}
@@ -123,6 +130,7 @@ export function AgentRosterSection() {
 /// the form carries what distinguishes one *run* from another.
 function AgentRow(props: {
   entry: AgentRosterEntry;
+  repoPath: string | null;
   expanded: boolean;
   canRemove: boolean;
   onRemove: () => void;
@@ -201,6 +209,7 @@ function AgentRow(props: {
             <ClaudeAgentForm
               id={props.entry.id}
               name={props.entry.name}
+              repoPath={props.repoPath}
               spec={props.entry.claude!}
             />
           </Show>
@@ -254,7 +263,12 @@ function AgentColorPicker(props: {
 /// in it: a form that hides what it will run is a form the user cannot check,
 /// and the whole reason for building the command rather than typing it was that
 /// the quoting is hard to see. Showing the result closes that loop.
-function ClaudeAgentForm(props: { id: string; name: string; spec: ClaudeAgentSpec }) {
+function ClaudeAgentForm(props: {
+  id: string;
+  name: string;
+  repoPath: string | null;
+  spec: ClaudeAgentSpec;
+}) {
   const { updateAgentClaude } = useSettings();
   const patch = (p: Partial<ClaudeAgentSpec>) => updateAgentClaude(props.id, p);
 
@@ -371,14 +385,190 @@ function ClaudeAgentForm(props: { id: string; name: string; spec: ClaudeAgentSpe
         onInput={(v) => patch({ extraArgs: v })}
       />
 
-      <div class="flex items-start gap-3">
-        <span class={`${LABEL_COL} text-muted-foreground pt-1`}>Runs</span>
-        <code class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono break-all text-foreground/80">
-          {composeClaudeCommand(props.spec, props.name)}
-        </code>
-      </div>
+      <CommandRow id={props.id} name={props.name} spec={props.spec} />
+
+      <TestRow spec={props.spec} repoPath={props.repoPath} />
     </>
   );
+}
+
+/// The command this agent runs — composed from the form, and editable.
+///
+/// It was read-only, on the reasoning that a derived value you can type into is
+/// a value that fights whatever derives it. That reasoning was right about the
+/// mechanism and wrong about the situation: the form composes flags for the CLI
+/// they were read off, the user's machine runs whichever `claude` wins the login
+/// shell's PATH, and those are not always the same program. An agent whose
+/// `--name` the installed binary rejects was, before this, unfixable from
+/// inside the app.
+///
+/// So editing switches the agent to the edited string and says so. Two rules
+/// make that safe rather than merely possible:
+///
+///   • **Editing never destroys the form.** The fields keep their values and
+///     keep working; they simply stop being what runs. Clearing the box hands
+///     the composed command back exactly as it was.
+///   • **The disconnect is stated, not discovered.** While an override is in
+///     force the fields above are inert, and a form whose controls silently do
+///     nothing is the worst thing a settings pane can be — so the note says it
+///     and the Reset button is right there.
+function CommandRow(props: { id: string; name: string; spec: ClaudeAgentSpec }) {
+  const { updateAgentClaude } = useSettings();
+  const composed = () => composeClaudeCommand({ ...props.spec, commandOverride: "" }, props.name);
+  const overridden = () => props.spec.commandOverride.trim().length > 0;
+  /// The composed command while untouched, the user's text once touched. Not a
+  /// local signal seeded from the composed value: that would stop tracking the
+  /// form the moment it mounted, and a user who edits Model and then looks at
+  /// this line would see the old command with no indication of why.
+  const value = () => (overridden() ? props.spec.commandOverride : composed());
+
+  return (
+    <div class="flex items-start gap-3">
+      <span class={`${LABEL_COL} text-muted-foreground pt-1`}>Runs</span>
+      <div class="flex-1 min-w-0 space-y-1">
+        <textarea
+          value={value()}
+          aria-label="Command this agent runs"
+          spellcheck={false}
+          rows={2}
+          onInput={(e) => updateAgentClaude(props.id, { commandOverride: e.currentTarget.value })}
+          class="w-full rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono resize-y text-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        />
+        <Show
+          when={overridden()}
+          fallback={
+            <p class="text-micro text-muted-foreground/70">
+              Built from the fields above — edit it to take over, e.g. to drop a
+              flag your installed <code class="font-mono">claude</code> doesn't
+              have.
+            </p>
+          }
+        >
+          <div class="flex items-start gap-2">
+            <p class="flex-1 text-micro text-muted-foreground">
+              Edited — this exact command runs, and the fields above no longer
+              affect it.
+            </p>
+            <button
+              onClick={() => updateAgentClaude(props.id, { commandOverride: "" })}
+              class="shrink-0 px-1.5 py-0.5 text-micro rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Reset to the form
+            </button>
+          </div>
+        </Show>
+      </div>
+    </div>
+  );
+}
+
+/// Spawn this agent once, and say what came back.
+///
+/// The form's read-only command line closes the *quoting* loop — the user can
+/// see what will run. This closes the other one: whether what will run works.
+/// Those are different questions with different failure modes, and until now
+/// only the first had an answer anywhere in the app. Everything else here — is
+/// `claude` on the PATH a windowed app inherits, is this machine signed in,
+/// does the installed version still have `--effort` — was discovered by opening
+/// a pane and reading a usage message.
+///
+/// Deliberately *not* a status that persists or re-runs. A green tick from four
+/// minutes and two edits ago is a claim about a command that no longer exists,
+/// so the result is cleared the moment the spec changes underneath it. See the
+/// `spec` guard below.
+function TestRow(props: { spec: ClaudeAgentSpec; repoPath: string | null }) {
+  const [state, setState] = createSignal<ProbeState>({ kind: "idle" });
+  /// The spec the last result was about. A result is only shown while the form
+  /// still says what it said when the probe ran — otherwise the pane vouches
+  /// for a configuration nobody tested.
+  const [testedSpec, setTestedSpec] = createSignal("");
+  const current = () => JSON.stringify(props.spec);
+  const stale = () => state().kind !== "running" && testedSpec() !== current();
+  const passed = () => {
+    const s = state();
+    return s.kind === "ok" ? s : undefined;
+  };
+  const failed = () => {
+    const s = state();
+    return s.kind === "failed" ? s : undefined;
+  };
+
+  /// The probe runs in a real directory because the CLI does: `--add-dir`,
+  /// `CLAUDE.md` discovery and settings resolution are all cwd-relative, and a
+  /// probe run somewhere else would be testing a different agent.
+  const run = async () => {
+    const repoPath = props.repoPath;
+    if (!repoPath || state().kind === "running") return;
+    setState({ kind: "running" });
+    setTestedSpec(current());
+    setState(await probeClaudeAgent(repoPath, props.spec));
+  };
+
+  return (
+    <div class="flex items-start gap-3">
+      <span class={`${LABEL_COL} text-muted-foreground pt-1`}>Test</span>
+      <div class="flex-1 min-w-0 space-y-1">
+        <div class="flex items-center gap-2">
+          <button
+            onClick={() => void run()}
+            disabled={state().kind === "running" || !props.repoPath}
+            title={
+              props.repoPath
+                ? "Run this agent once with -p and report what comes back"
+                : "Open a repository first — the probe runs in its folder"
+            }
+            class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Show when={state().kind === "running"} fallback="Test agent">
+              <span class="flex items-center gap-1.5">
+                <Loader2 class="w-3.5 h-3.5 animate-spin" /> Testing…
+              </span>
+            </Show>
+          </button>
+          <span class="text-micro text-muted-foreground/70 truncate">
+            One `claude -p` turn, no tools, nothing written.
+          </span>
+        </div>
+        {/* Not `<Show when={!stale()}>` around the whole block: a result that
+            has gone stale is still the most recent thing that happened, and
+            blanking it as the user types the next character reads as the pane
+            forgetting. It is dimmed and labelled instead. */}
+        <Switch>
+          <Match when={passed()}>
+            {(ok) => (
+              <p
+                class={`flex items-start gap-1.5 text-micro ${stale() ? "text-muted-foreground/60" : "text-primary/90"}`}
+                role="status"
+              >
+                <Check class="w-3 h-3 mt-0.5 shrink-0" />
+                <span>
+                  <Show when={!stale()} fallback="Passed before your last edit — test again. ">
+                    Works — replied in {formatMs(ok().ms)}.{" "}
+                  </Show>
+                  <span class="font-mono text-muted-foreground/70">{ok().reply}</span>
+                </span>
+              </p>
+            )}
+          </Match>
+          <Match when={failed()}>
+            {(bad) => (
+              <p
+                class={`flex items-start gap-1.5 text-micro ${stale() ? "text-muted-foreground/60" : "text-destructive"}`}
+                role="status"
+              >
+                <AlertTriangle class="w-3 h-3 mt-0.5 shrink-0" />
+                <span>{bad().reason}</span>
+              </p>
+            )}
+          </Match>
+        </Switch>
+      </div>
+    </div>
+  );
+}
+
+function formatMs(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 /// A closed enum with a blank option meaning "don't pass the flag".

@@ -9,8 +9,11 @@
 /// round-trip of a tidy sentence.
 import { describe, expect, it } from "vitest";
 import {
+  CLAUDE_EFFORTS,
+  CLAUDE_PERMISSION_MODES,
   DEFAULT_CLAUDE_SPEC,
   composeClaudeCommand,
+  composeClaudeProbeCommand,
   describeClaudeSpec,
   parseClaudeSpec,
   shellQuote,
@@ -110,6 +113,123 @@ describe("composeClaudeCommand", () => {
   it("is interactive — no -p, because a piped agent cannot answer a permission prompt", () => {
     expect(composeClaudeCommand(spec({ systemPrompt: "x" }))).not.toMatch(/(^|\s)-p(\s|$)/);
     expect(composeClaudeCommand(spec({ systemPrompt: "x" }))).not.toContain("--print");
+  });
+});
+
+/// The probe is only worth having if it tests the *same* agent the user
+/// configured. Every case here is a way for it to quietly test something else
+/// and pass — which is worse than having no button, because a green tick is a
+/// claim.
+describe("composeClaudeProbeCommand", () => {
+  it("prints and restricts tools, and adds nothing else", () => {
+    expect(composeClaudeProbeCommand(DEFAULT_CLAUDE_SPEC)).toBe("claude -p --tools ''");
+  });
+
+  it("adds no flag the agent itself does not need", () => {
+    // `--no-session-persistence` was here, purely so the probe would not show
+    // up in `/resume`, and it is unknown to a `claude` two minor versions old —
+    // so the first failure the button ever reported was one it had invented.
+    // A probe that fails on its own conveniences tests nothing.
+    expect(composeClaudeProbeCommand(DEFAULT_CLAUDE_SPEC)).not.toContain(
+      "--no-session-persistence",
+    );
+  });
+
+  it("carries every configured flag, so a rejected flag is a failed test", () => {
+    // The list is the point: a probe missing one of these passes for an agent
+    // that will not start.
+    const out = composeClaudeProbeCommand(
+      spec({
+        model: "opus",
+        systemPrompt: "Be terse.",
+        permissionMode: "plan",
+        effort: "high",
+        allowedTools: "Read Grep",
+        disallowedTools: "Bash",
+        addDirs: "/a/b",
+      }),
+    );
+    expect(out).toContain("--model 'opus'");
+    expect(out).toContain("--append-system-prompt 'Be terse.'");
+    expect(out).toContain("--permission-mode plan");
+    expect(out).toContain("--effort high");
+    expect(out).toContain("--allowed-tools 'Read' 'Grep'");
+    expect(out).toContain("--disallowed-tools 'Bash'");
+    expect(out).toContain("--add-dir '/a/b'");
+  });
+
+  it("quotes the system prompt the same way the launch command does", () => {
+    const patch = { systemPrompt: "don't guess" };
+    expect(composeClaudeProbeCommand(spec(patch))).toContain(
+      `--append-system-prompt 'don'\\''t guess'`,
+    );
+  });
+
+  it("never resumes the folder's real conversation to ask it a test question", () => {
+    // `--continue` in a probe writes a turn into a session the user cares
+    // about, which is a side effect no test button is allowed to have.
+    expect(composeClaudeProbeCommand(spec({ continueSession: true }))).not.toContain("--continue");
+  });
+
+  it("includes the escape hatch, because it is configuration too", () => {
+    expect(composeClaudeProbeCommand(spec({ extraArgs: "--betas foo" }))).toContain("--betas foo");
+  });
+
+  it("has no --name: a probe is not a session anyone will look for", () => {
+    expect(composeClaudeProbeCommand(spec({ model: "opus" }))).not.toContain("--name");
+  });
+});
+
+/// The one thing this file cannot prove on its own is that these are the CLI's
+/// actual options — that is what the Test button is for at runtime. What it can
+/// pin is the *spelling* of what we emit, so an edit that renames a flag has to
+/// be deliberate rather than incidental.
+///
+/// Verified against `claude --help` on 2.1.222 (July 2026).
+describe("the flag vocabulary, as of the installed CLI", () => {
+  it("emits only options that version documents", () => {
+    const emitted = composeClaudeProbeCommand(
+      spec({
+        model: "opus",
+        systemPrompt: "x",
+        permissionMode: "plan",
+        effort: "high",
+        allowedTools: "Read",
+        disallowedTools: "Bash",
+        addDirs: "/a",
+      }),
+    )
+      .split(" ")
+      .filter((token) => token.startsWith("--") || token === "-p");
+    expect(new Set(emitted)).toEqual(
+      new Set([
+        "-p",
+        "--tools",
+        "--model",
+        "--append-system-prompt",
+        "--permission-mode",
+        "--effort",
+        "--allowed-tools",
+        "--disallowed-tools",
+        "--add-dir",
+      ]),
+    );
+    // The two the launch command adds on top.
+    const launch = composeClaudeCommand(spec({ continueSession: true }), "Reviewer");
+    expect(launch).toContain("--name");
+    expect(launch).toContain("--continue");
+    expect(composeClaudeCommand(spec({ systemPrompt: "x", systemPromptMode: "replace" }))).toContain(
+      "--system-prompt",
+    );
+  });
+
+  it("offers exactly the CLI's own choice lists", () => {
+    // `--permission-mode (choices: "acceptEdits", "auto", "bypassPermissions",
+    // "manual", "dontAsk", "plan")` and `--effort <low|medium|high|xhigh|max>`.
+    expect([...CLAUDE_PERMISSION_MODES].sort()).toEqual(
+      ["acceptEdits", "auto", "bypassPermissions", "dontAsk", "manual", "plan"].sort(),
+    );
+    expect([...CLAUDE_EFFORTS]).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 });
 

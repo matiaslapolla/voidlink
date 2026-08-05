@@ -84,7 +84,7 @@ import {
   normalizeRemoteName,
 } from "@/commands/remoteUrl";
 import { removeWorktreeWithConfirm } from "@/commands/worktreeRemove";
-import { useSettings } from "@/store/settings";
+import { resolveCommitCommand, useSettings } from "@/store/settings";
 import { scanStagedDiff, type SecretFinding } from "@/commands/secretScan";
 import { SecretScanDialog } from "@/commands/SecretScanDialog";
 import { pushToast } from "@/commands/toast";
@@ -1212,10 +1212,10 @@ export function ChangesPane(props: {
       return;
     }
     if (drafting()) return;
-    const result = await draftCommitMessage(
-      props.repoPath,
-      settings.ai.commitCommand,
-    );
+    // `resolveCommitCommand()` rather than the raw setting: Settings → AI no
+    // longer has a command box, so a blank `commitCommand` is now the normal
+    // state and means "the built-in `claude -p`", not "unconfigured".
+    const result = await draftCommitMessage(props.repoPath, resolveCommitCommand());
     if (result.ok && result.message) {
       const current = commitMsg().trim();
       // Preserve any in-progress message by appending — drafts are
@@ -1320,12 +1320,13 @@ export function ChangesPane(props: {
             onClick={() => void draftAiCommit()}
             disabled={drafting() || staged().length === 0}
             aria-label={recentDraftMs() !== null ? "Regenerate commit message" : "Draft commit message with AI"}
+            // No "configure a command first" branch any more — there is nothing
+            // left to configure, and the button is never a no-op waiting on a
+            // settings box.
             title={
-              !settings.ai.commitCommand.trim()
-                ? "Configure AI command in Settings → AI"
-                : recentDraftMs() !== null
-                  ? `Regenerate (last draft: ${recentDraftMs()}ms)`
-                  : `Draft commit message with AI (${shortcutLabel("git.ai-draft-commit")})`
+              recentDraftMs() !== null
+                ? `Regenerate (last draft: ${recentDraftMs()}ms)`
+                : `Draft commit message with AI (${shortcutLabel("git.ai-draft-commit")})`
             }
             class={`px-2 py-1 rounded-md text-ui transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               recentDraftMs() !== null

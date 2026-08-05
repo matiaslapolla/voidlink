@@ -316,6 +316,39 @@ export interface AiSettings {
   customKeys: AiKeyBinding[];
 }
 
+/// What runs when nothing is configured: the user's own `claude`, in print
+/// mode, authenticated however that CLI is already authenticated on this
+/// machine.
+///
+/// **This is the shipped answer now, not a suggestion.** Settings → AI no
+/// longer offers a command box — see `AiPane` for why — so these two constants
+/// are what a fresh install actually spawns. Both are one-shot filters: the
+/// grounded text is piped to stdin and stdout is the answer, which is the
+/// contract `run_cli` implements and the reason `-p` is not optional here.
+///
+/// Exactly two flags, and the shortness is the design. Every optional extra is
+/// a way for these to fail on a `claude` older than the one they were written
+/// against — which is not hypothetical, it is what the Test button found the
+/// day it shipped. `--print` and `--tools` are both long-standing; anything
+/// newer belongs in a user's own command, not in the default.
+///   • `-p` — one-shot. These are filters, not sessions.
+///   • `--tools ''` — an empty built-in tool set. Neither of these paths wants
+///     a model that can edit the repository; they want prose back. It also
+///     makes them dramatically cheaper and faster than a tool-enabled turn.
+///
+/// The stored `commitCommand` / `agentCommand` still win when non-empty. They
+/// are unreachable from the dialog and remain editable from Settings → JSON, so
+/// an install that had `ollama run llama3.2` in there keeps it rather than being
+/// silently switched to a different vendor on upgrade.
+export const DEFAULT_COMMIT_COMMAND =
+  `claude -p --tools '' ` +
+  `'Write a concise, imperative-mood git commit message (50-character title, optional body) ` +
+  `for the staged diff above. Output ONLY the message.'`;
+
+export const DEFAULT_AGENT_COMMAND =
+  `claude -p --tools '' ` +
+  `'Answer the question above about this repository, using only the context given.'`;
+
 /// Commit identity overrides, keyed by repository root.
 ///
 /// Per-repo rather than global because the whole point is having a different
@@ -787,12 +820,22 @@ export function agentLaunchCommand(entry: AgentRosterEntry | null): string | nul
   return composeClaudeCommand(entry.claude, entry.name);
 }
 
+/// The shell template the commit-message drafter pipes the staged diff to.
+///
+/// Never blank. It used to be — the pane shipped an empty box and every AI
+/// action in the app was a no-op with a "configure a command" toast until the
+/// user filled it in. With BYO-CLI off the dialog there is nothing to fill in,
+/// so the built-in `claude -p` is the answer and a stored command is the
+/// override rather than the other way round.
+export function resolveCommitCommand(): string {
+  return settings.ai.commitCommand.trim() || DEFAULT_COMMIT_COMMAND;
+}
+
 /// The shell template to pipe a grounded prompt to for `entry`: its own
-/// template, else the shared `ai.agentCommand`, else `ai.commitCommand` — the
-/// same two fallbacks the single-command agent already had, with the per-entry
-/// template layered on top. Returns `""` when nothing is configured, which
-/// callers render as the "no AI command configured" notice rather than spawning
-/// an empty shell.
+/// template, else the shared `ai.agentCommand`, else `ai.commitCommand`, else
+/// the built-in `claude -p` — the same fallbacks the single-command agent
+/// already had, with the per-entry template on top and a working default
+/// underneath instead of `""`.
 ///
 /// **Deliberately blind to `entry.claude`.** A composed agent describes an
 /// *interactive session* — no `-p`, a real PTY, a permission prompt it can
@@ -807,7 +850,9 @@ export function resolveAgentCommand(entry: AgentRosterEntry | null): string {
   if (own) return own;
   const shared = settings.ai.agentCommand.trim();
   if (shared) return shared;
-  return settings.ai.commitCommand.trim();
+  const commit = settings.ai.commitCommand.trim();
+  if (commit) return commit;
+  return DEFAULT_AGENT_COMMAND;
 }
 
 /// The saved identity override for `repoRoot`, or `null` when that repo has

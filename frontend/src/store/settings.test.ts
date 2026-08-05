@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { editorOptions } from "@/components/editor/monaco";
 import type { AppSettings } from "./settings";
 
@@ -9,6 +9,7 @@ import type { AppSettings } from "./settings";
 /// in a DOM implementation for a pure-data test.
 let parseSettings: (raw: string | null) => AppSettings;
 let DEFAULT_SETTINGS: AppSettings;
+let mod: typeof import("./settings");
 
 beforeAll(async () => {
   const store = new Map<string, string>();
@@ -22,7 +23,7 @@ beforeAll(async () => {
       documentElement: { style: {}, setAttribute() {} },
     },
   });
-  const mod = await import("./settings");
+  mod = await import("./settings");
   parseSettings = mod.parseSettings;
   DEFAULT_SETTINGS = mod.DEFAULT_SETTINGS;
 });
@@ -269,5 +270,49 @@ describe("editor defaults", () => {
     expect(d.formatOnSave).toBe(false);
     expect(d.trimTrailingWhitespaceOnSave).toBe(false);
     expect(d.insertFinalNewlineOnSave).toBe(false);
+  });
+});
+
+/// What runs when the user has configured nothing — which, now that Settings →
+/// AI has no command box, is every fresh install.
+///
+/// This used to resolve to `""` and every AI action in the app was a no-op
+/// behind a "configure a command" toast. The chain still has to prefer a stored
+/// command, because the boxes are gone from the dialog but not from the JSON
+/// pane, and an install that had `ollama run llama3.2` must not be switched to
+/// a different vendor by an upgrade.
+describe("the built-in claude -p fallbacks", () => {
+  const setAi = (patch: Partial<AppSettings["ai"]>) => mod.useSettings().updateAi(patch);
+
+  beforeEach(() => setAi({ commitCommand: "", agentCommand: "" }));
+
+  it("drafts commit messages with the built-in command when nothing is set", () => {
+    expect(mod.resolveCommitCommand()).toBe(mod.DEFAULT_COMMIT_COMMAND);
+    // Print mode and no tools — enough to be safe against a user's repository
+    // without asking, and nothing beyond that. Every additional flag is a way
+    // to fail on an older `claude`, which is a real machine and not a
+    // hypothetical one.
+    expect(mod.DEFAULT_COMMIT_COMMAND).toContain("claude -p");
+    expect(mod.DEFAULT_COMMIT_COMMAND).toContain("--tools ''");
+    expect(mod.DEFAULT_COMMIT_COMMAND).not.toContain("--no-session-persistence");
+    expect(mod.DEFAULT_AGENT_COMMAND).not.toContain("--no-session-persistence");
+  });
+
+  it("still lets a stored command win, so no upgrade retargets a vendor", () => {
+    setAi({ commitCommand: "  ollama run llama3.2  " });
+    expect(mod.resolveCommitCommand()).toBe("ollama run llama3.2");
+  });
+
+  it("walks the agent chain and lands on the built-in rather than on nothing", () => {
+    const entry = { id: "a", name: "A", commandTemplate: "", color: "chart-1" as const };
+    expect(mod.resolveAgentCommand(entry)).toBe(mod.DEFAULT_AGENT_COMMAND);
+
+    setAi({ commitCommand: "commit-cli" });
+    expect(mod.resolveAgentCommand(entry)).toBe("commit-cli");
+
+    setAi({ agentCommand: "shared-cli" });
+    expect(mod.resolveAgentCommand(entry)).toBe("shared-cli");
+
+    expect(mod.resolveAgentCommand({ ...entry, commandTemplate: "own-cli" })).toBe("own-cli");
   });
 });

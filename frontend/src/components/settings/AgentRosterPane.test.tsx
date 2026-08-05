@@ -11,21 +11,37 @@
 /// `updateAgent` instead would replace the whole spec and blank every other
 /// field. That is invisible in a single-field test and obvious in a two-field
 /// one, so every write here is checked against a field it did not touch.
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { DEFAULT_SETTINGS, useSettings } from "@/store/settings";
 import { DEFAULT_CLAUDE_SPEC } from "@/store/claudeAgent";
+
+/// The Test button spawns a real CLI through Tauri, so the one thing every
+/// mounted test needs is for that not to happen. See the hand-rolled double in
+/// `agentProbe.test.ts` for why this is not `vi.fn()`.
+const probeCalls: unknown[][] = [];
+let probeAnswer: () => Promise<string> = () => Promise.resolve("ok");
+vi.mock("@/api/git", () => ({
+  gitApi: {
+    agentQuery: (...args: unknown[]) => {
+      probeCalls.push(args);
+      return probeAnswer();
+    },
+  },
+}));
 
 import { AgentRosterSection } from "./AgentRosterPane";
 
 const agents = () => useSettings().settings.ai.agents;
 
 beforeEach(() => {
+  probeCalls.length = 0;
+  probeAnswer = () => Promise.resolve("ok");
   // The store is a module singleton, so each test starts from the shipped
   // one-entry roster rather than from whatever the last one built.
   useSettings().updateAi({ agents: structuredClone(DEFAULT_SETTINGS.ai.agents) });
-  render(() => <AgentRosterSection />);
+  render(() => <AgentRosterSection repoPath="/repo" />);
 });
 
 /// The BYO-CLI command agent is hidden from this pane and still present in the
@@ -104,12 +120,12 @@ describe("the Claude form writes through to the spec", () => {
     await user.click(screen.getByRole("button", { name: "Add agent" }));
     await user.type(screen.getByLabelText("System prompt"), "don't guess");
 
-    // The read-only line is the only way a user can check the quoting the form
-    // exists to spare them from writing — so it has to be the real composition,
-    // not a summary of it.
-    expect(
-      screen.getByText(`claude --name 'Claude agent' --append-system-prompt 'don'\\''t guess'`),
-    ).toBeInTheDocument();
+    // This line is the only way a user can check the quoting the form exists to
+    // spare them from writing — so it has to be the real composition, not a
+    // summary of it.
+    expect(screen.getByLabelText("Command this agent runs")).toHaveValue(
+      `claude --name 'Claude agent' --append-system-prompt 'don'\\''t guess'`,
+    );
   });
 
   it("warns that replacing the system prompt is not a stronger version of adding to it", async () => {
@@ -119,6 +135,130 @@ describe("the Claude form writes through to the spec", () => {
 
     await user.click(screen.getByRole("button", { name: "Replace Claude's" }));
     expect(screen.getByText(/no longer be told about its tools/i)).toBeInTheDocument();
+  });
+});
+
+/// Editing the composed command is the escape hatch for the case the form
+/// cannot fix itself: flags that are right for the CLI they were read off and
+/// wrong for the one on this machine's PATH. What has to hold is that taking
+/// the hatch is reversible and never silent.
+describe("editing the command", () => {
+  const openForm = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole("button", { name: "Add agent" }));
+    return screen.getByLabelText("Command this agent runs");
+  };
+
+  it("tracks the form until the moment it is edited", async () => {
+    const user = userEvent.setup();
+    const box = await openForm(user);
+    expect(box).toHaveValue("claude --name 'Claude agent'");
+
+    await user.type(screen.getByLabelText("Agent name"), "!");
+    expect(box).toHaveValue("claude --name 'Claude agent!'");
+  });
+
+  it("runs what was typed, verbatim, once it is edited", async () => {
+    const user = userEvent.setup();
+    const box = await openForm(user);
+    await user.clear(box);
+    await user.type(box, "claude --model sonnet");
+
+    expect(agents()[1].claude!.commandOverride).toBe("claude --model sonnet");
+    // And the fields it no longer derives from are visibly inert rather than
+    // quietly ignored.
+    expect(screen.getByText(/fields above no longer affect it/i)).toBeInTheDocument();
+  });
+
+  it("stops tracking the form, which is the whole point of an override", async () => {
+    const user = userEvent.setup();
+    const box = await openForm(user);
+    await user.clear(box);
+    await user.type(box, "claude --model sonnet");
+    await user.type(screen.getByLabelText("Agent name"), "!");
+
+    expect(box).toHaveValue("claude --model sonnet");
+  });
+
+  it("gives the composed command back intact — it is a hatch, not a door", async () => {
+    const user = userEvent.setup();
+    const box = await openForm(user);
+    await user.type(screen.getByLabelText("System prompt"), "Be terse.");
+    await user.clear(box);
+    await user.type(box, "whatever");
+    await user.click(screen.getByRole("button", { name: /Reset to the form/ }));
+
+    expect(box).toHaveValue("claude --name 'Claude agent' --append-system-prompt 'Be terse.'");
+    expect(agents()[1].claude!.systemPrompt).toBe("Be terse.");
+  });
+
+  it("tests the edited command rather than the one it replaced", async () => {
+    const user = userEvent.setup();
+    const box = await openForm(user);
+    await user.clear(box);
+    await user.type(box, "my-cli --flag");
+    await user.click(screen.getByRole("button", { name: /Test agent/ }));
+
+    // `-p` and nothing else: an override may not even be `claude`, so layering
+    // our flags onto it would fail the test for a reason we invented.
+    expect((probeCalls[0] as string[])[1]).toBe("my-cli --flag -p");
+  });
+});
+
+/// The Test button is the only thing in this dialog that makes a claim about
+/// the outside world, so the properties worth mounting for are the ones that
+/// would let it make a *false* one: testing a command other than the configured
+/// agent, and keeping a green tick after the configuration changed.
+describe("testing an agent", () => {
+  const addAgent = async (user: ReturnType<typeof userEvent.setup>) =>
+    user.click(screen.getByRole("button", { name: "Add agent" }));
+
+  it("probes the agent the user is looking at, flags and all", async () => {
+    const user = userEvent.setup();
+    await addAgent(user);
+    await user.type(screen.getByLabelText("System prompt"), "Be terse.");
+    await user.click(screen.getByRole("button", { name: /Test agent/ }));
+
+    expect(probeCalls).toHaveLength(1);
+    const [repoPath, command] = probeCalls[0] as string[];
+    expect(repoPath).toBe("/repo");
+    // -p, because a probe has to terminate; no tools, because a test button
+    // may not edit the repository; and the field that was just typed.
+    expect(command).toContain("-p");
+    expect(command).toContain("--tools ''");
+    expect(command).toContain("--append-system-prompt 'Be terse.'");
+    expect(await screen.findByText(/Works — replied in/)).toBeInTheDocument();
+  });
+
+  it("says what went wrong in terms of the fix, not the exit code", async () => {
+    const user = userEvent.setup();
+    probeAnswer = () =>
+      Promise.reject(new Error("failed to spawn `claude`: No such file (os error 2)"));
+    await addAgent(user);
+    await user.click(screen.getByRole("button", { name: /Test agent/ }));
+
+    expect(await screen.findByText(/isn't on this app's PATH/)).toBeInTheDocument();
+  });
+
+  it("stops vouching for a result once the form has moved on", async () => {
+    const user = userEvent.setup();
+    await addAgent(user);
+    await user.click(screen.getByRole("button", { name: /Test agent/ }));
+    expect(await screen.findByText(/Works — replied in/)).toBeInTheDocument();
+
+    // One keystroke later the tick describes a command that no longer exists.
+    await user.type(screen.getByLabelText("System prompt"), "x");
+    expect(screen.queryByText(/Works — replied in/)).toBeNull();
+    expect(screen.getByText(/Passed before your last edit/)).toBeInTheDocument();
+  });
+
+  it("does not offer to probe with no repository open", async () => {
+    const user = userEvent.setup();
+    render(() => <AgentRosterSection repoPath={null} />);
+    // Two sections are mounted now; the second one is the repo-less one.
+    await user.click(screen.getAllByRole("button", { name: "Add agent" })[1]);
+    const buttons = screen.getAllByRole("button", { name: /Test agent/ });
+    expect(buttons[buttons.length - 1]).toBeDisabled();
+    expect(probeCalls).toHaveLength(0);
   });
 });
 
