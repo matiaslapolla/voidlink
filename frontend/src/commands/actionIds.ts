@@ -83,6 +83,7 @@ export const ACTION_IDS = [
   "ui.close-pane",
   "ui.focus-next-pane",
   "ui.reset-pane-layout",
+  "ui.toggle-tab-group",
   "ui.zen",
   "ui.navigate-back",
   "ui.navigate-forward",

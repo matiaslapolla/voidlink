@@ -167,6 +167,18 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     actions.splitPaneGroupWithTab(wtId, orientation, "after", from ?? undefined, tabId);
   }
 
+  /// The labelled tab group holding the active tab, or `null` when it is in
+  /// none. What `ui.toggle-tab-group` acts on: "the group you are looking at"
+  /// is the only group a keyboard command can mean, since a chip click names
+  /// its group by being clicked and a chord has nothing to point at.
+  const activeTabGroupId = createMemo(() => {
+    const tabId = state.activeItemByWorktree[state.activeWorktreeId]?.id ?? null;
+    if (!tabId) return null;
+    const paneGroupId = focusedGroupId();
+    if (!paneGroupId) return null;
+    return actions.tabGroupsOfPane(paneGroupId).find((g) => g.tabIds.includes(tabId))?.id ?? null;
+  });
+
   // ── Feature-owned palette entries ────────────────────────────────────────
   // Each of these registers its own slice of the catalog at the point the
   // feature already lives, instead of `App.tsx` importing from every one of
@@ -680,6 +692,24 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       group: "View",
       enabled: () => paneGroups().length > 1,
       run: () => actions.resetPaneLayout(state.activeWorktreeId),
+    },
+    {
+      // Tab groups were the one collapse in the shell reachable by pointer
+      // only — a click on the chip or a row in its context menu. Every other
+      // one (both sidebars, the explorer, zen, maximize, and the four pane
+      // actions above) has a palette entry, and a collapse that hides tabs is
+      // not the one to leave off the keyboard.
+      id: "ui.toggle-tab-group",
+      label: "Collapse / expand the active tab's group",
+      description: "Fold the group holding the active tab down to its chip, or unfold it",
+      group: "View",
+      // The active tab is in no group most of the time, and a row that would
+      // silently do nothing is worse than a row that says why (§7.6).
+      enabled: () => activeTabGroupId() !== null,
+      run: () => {
+        const groupId = activeTabGroupId();
+        if (groupId) actions.toggleTabGroup(state.activeWorktreeId, groupId);
+      },
     },
     {
       id: "ui.zen",

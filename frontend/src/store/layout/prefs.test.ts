@@ -179,3 +179,38 @@ describe("git section order", () => {
     expect(parsePrefs({}).gitSectionOrder).toEqual(GIT_SECTION_KEYS);
   });
 });
+
+/// The rail's collapse was a component-local `Set` until the collapse audit;
+/// two things about moving it here are easy to get wrong and neither would
+/// throw.
+describe("collapsed workspaces", () => {
+  it("starts with nothing collapsed", () => {
+    expect(parsePrefs({}).collapsedWorkspaces).toEqual([]);
+  });
+
+  it("round-trips ids and drops duplicates", () => {
+    expect(parsePrefs({ collapsedWorkspaces: ["a", "b", "a"] }).collapsedWorkspaces).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("keeps ids for workspaces this build has not hydrated yet", () => {
+    // Deliberately *not* validated against the workspace list: prefs are parsed
+    // before it exists, and dropping an unknown id would lose the collapse for
+    // a workspace that is merely not loaded.
+    expect(parsePrefs({ collapsedWorkspaces: ["never-seen"] }).collapsedWorkspaces).toEqual([
+      "never-seen",
+    ]);
+  });
+
+  it("survives a blob written as something other than an array of strings", () => {
+    // A `Set` serialises to `{}` — the exact shape the old code would have
+    // written had it been persisted as-is, so this is the regression that
+    // matters most.
+    expect(parsePrefs({ collapsedWorkspaces: {} as never }).collapsedWorkspaces).toEqual([]);
+    expect(parsePrefs({ collapsedWorkspaces: [1, null, "a"] as never }).collapsedWorkspaces).toEqual(
+      ["a"],
+    );
+  });
+});

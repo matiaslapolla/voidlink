@@ -111,6 +111,7 @@ export interface AppStoreState {
   gitSections: GitSections;
   gitSectionOrder: GitSectionKey[];
   sidebarSections: SidebarSections;
+  collapsedWorkspaces: string[];
 }
 
 /// Compile-time proof that every `stateKey` a registry spec names is a real

@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import {
   ChevronDown,
   ChevronRight,
@@ -48,7 +48,10 @@ export function WorkspaceRail() {
   const { state, actions } = useAppStore();
   const [renaming, setRenaming] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal("");
-  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
+  /// Collapsed workspace ids, as a `Set` for the membership test the rows run
+  /// on every render. The list itself is persisted state (`prefs.ts`), not a
+  /// component signal — this is only the shape that answers `has` in O(1).
+  const collapsed = createMemo(() => new Set(state.collapsedWorkspaces));
   /// Drag state stays in component-local signals — no need to round-trip
   /// through the store. `dragId` is the workspace being dragged; `dropTarget`
   /// is the workspace it would land *before* (or "end" for the trailing slot).
@@ -67,14 +70,7 @@ export function WorkspaceRail() {
   onMount(() => onCleanup(onGitRefsChanged(() => void actions.hydrateAllWorktrees())));
 
   const isCollapsed = (id: string) => collapsed().has(id);
-  function toggleCollapsed(id: string) {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
+  const toggleCollapsed = (id: string) => actions.toggleWorkspaceCollapsed(id);
 
   const startRename = (id: string, name: string) => {
     setRenaming(id);
@@ -258,6 +254,11 @@ export function WorkspaceRail() {
                   <button
                     onClick={() => toggleCollapsed(ws.id)}
                     aria-label={isCollapsed(ws.id) ? `Expand ${ws.name}` : `Collapse ${ws.name}`}
+                    // The chevron is the *only* thing that reports this row's
+                    // state, and a chevron is not a state a screen reader can
+                    // read. `Disclosure.tsx` has always said so; every
+                    // hand-rolled toggle in the shell now says it too.
+                    aria-expanded={!isCollapsed(ws.id)}
                     // Same gesture as the three trailing buttons below, so the
                     // same tint and the same duration. It used to be the only
                     // hover in this file with no transition at all — two

@@ -81,6 +81,15 @@ export const STATUS_PRIORITY = {
   /// is narrow enough to hold only one, it should be the one that names panes.
   worktreeActivity: 95,
   focusMode: 90,
+  /// Just below the focus modes, and above every standing fact, for the same
+  /// reason they are there: a split is a layout the user can reach *by
+  /// accident* — one drag onto a pane edge — and until this chip existed the
+  /// only ways back were a palette command and a Settings reset that also
+  /// closed every tab. It ranks under zen and maximize because those hide the
+  /// whole shell and a split hides nothing; it ranks over `branch` because a
+  /// branch name is a fact you can also read in the sidebar, and this is the
+  /// only place the way out is written down.
+  paneSplit: 85,
   branch: 80,
   aheadBehind: 60,
   dirty: 50,

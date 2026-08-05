@@ -398,6 +398,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     gitSections: prefs.gitSections,
     gitSectionOrder: prefs.gitSectionOrder,
     sidebarSections: prefs.sidebarSections,
+    collapsedWorkspaces: prefs.collapsedWorkspaces,
   });
 
   createEffect(() => {
@@ -488,6 +489,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       gitSections: state.gitSections,
       gitSectionOrder: [...state.gitSectionOrder],
       sidebarSections: state.sidebarSections,
+      // Copied, like `gitSectionOrder` and for the same reason: handing the
+      // store's own array to `writeJson` makes the persisted blob alias live
+      // state, and the debounce means it would be serialised after the next
+      // mutation rather than at the value this effect ran on.
+      collapsedWorkspaces: [...state.collapsedWorkspaces],
     });
   });
 
@@ -1773,6 +1779,15 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     // ── Left sidebar collapsible sections ────────────────────────────────
     toggleSidebarSection(section: keyof AppStoreState["sidebarSections"]) {
       setState("sidebarSections", section, (v) => !v);
+    },
+
+    /// Collapse or expand a workspace's worktree list in the rail. Persisted
+    /// through `prefs`, unlike the component-local signal this replaced — see
+    /// `collapsedWorkspaces` there.
+    toggleWorkspaceCollapsed(workspaceId: string) {
+      setState("collapsedWorkspaces", (ids) =>
+        ids.includes(workspaceId) ? ids.filter((id) => id !== workspaceId) : [...ids, workspaceId],
+      );
     },
 
     // ── Reopen recently closed ───────────────────────────────────────────

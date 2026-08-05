@@ -119,6 +119,22 @@ export interface UiPrefs {
   /// past them forever.
   gitSectionOrder: GitSectionKey[];
   sidebarSections: SidebarSections;
+  /// Workspace ids whose worktree list is collapsed in the rail.
+  ///
+  /// This lived in a `createSignal<Set<string>>` inside `WorkspaceRail`, which
+  /// made it the one collapse in the shell that sprang back — on every reload,
+  /// and in stacked mode on every switch away from the workbench and back. A
+  /// user with six workspaces collapses five of them precisely so the sixth is
+  /// readable, and re-doing that on each boot is the behaviour this file's
+  /// header says nobody wants.
+  ///
+  /// An **array**, not a `Set`, because it is persisted: `JSON.stringify` of a
+  /// `Set` is `{}`, which would have quietly written the collapse away every
+  /// time while looking like it worked. The rail rebuilds the `Set` it queries.
+  ///
+  /// Keyed by workspace and global like the rest of this record — a workspace
+  /// row is the same row whichever worktree is in front of it.
+  collapsedWorkspaces: string[];
 }
 
 /// Today's spacing is the default (MASTER §5 and the workbench prompt's
@@ -149,6 +165,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   },
   gitSectionOrder: [...GIT_SECTION_KEYS],
   sidebarSections: { files: true, terminals: true, agents: true },
+  collapsedWorkspaces: [],
 };
 
 /// Repair a persisted section order: drop keys this build doesn't know, drop
@@ -233,6 +250,15 @@ export function parsePrefs(parsed: PersistedPrefs | null): UiPrefs {
       terminals: parsed.sidebarSections?.terminals ?? d.sidebarSections.terminals,
       agents: parsed.sidebarSections?.agents ?? d.sidebarSections.agents,
     },
+    // Filtered element by element like `gitSectionOrder`, and deliberately not
+    // checked against the workspaces that exist: prefs are parsed before the
+    // workspace list is, and an id for a workspace that has since been deleted
+    // is inert — `isCollapsed` simply never asks about it. Dropping unknown ids
+    // here would instead lose the collapse for a workspace that is only absent
+    // because this window has not hydrated it yet.
+    collapsedWorkspaces: Array.isArray(parsed.collapsedWorkspaces)
+      ? [...new Set(parsed.collapsedWorkspaces.filter((id): id is string => typeof id === "string"))]
+      : [...d.collapsedWorkspaces],
   };
 }
 

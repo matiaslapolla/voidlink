@@ -131,6 +131,10 @@ function IconBtn(props: {
   /// Work is in flight. Swaps the icon for a spinner; the button stays
   /// focusable and in the tab order (§7.6 — pending is not disabled).
   pending?: boolean;
+  /// Set only when the button toggles something's disclosure, and then to the
+  /// state that thing is in *now*. An icon button whose whole meaning is a
+  /// chevron reports nothing to a screen reader without it.
+  expanded?: boolean;
 }) {
   return (
     <Button
@@ -141,6 +145,7 @@ function IconBtn(props: {
       pending={props.pending}
       icon={props.children}
       aria-label={props.label}
+      aria-expanded={props.expanded}
       title={props.title ?? props.label}
       use:tooltip={props.title ?? props.label}
       class={props.class}
@@ -672,7 +677,7 @@ export function GitSidebar(props: GitSidebarProps) {
           <IconBtn label="Refresh" onClick={() => void refreshAll()}>
             <RefreshCw class={`w-3 h-3 ${isRefreshing() ? "animate-spin" : ""}`} />
           </IconBtn>
-          <IconBtn label="Collapse git panel" onClick={() => actions.toggleGitSidebar()}>
+          <IconBtn label="Collapse git panel" expanded onClick={() => actions.toggleGitSidebar()}>
             <ChevronRight class="w-3.5 h-3.5" />
           </IconBtn>
         </div>
@@ -3917,11 +3922,35 @@ function FileRow(props: {
 
 /** Collapsed rail */
 export function GitSidebarCollapsed(props: { onExpand: () => void }) {
+  const { state } = useAppStore();
   return (
-    <div class="flex flex-col items-center w-8 bg-sidebar py-2 gap-2 h-full">
+    <div class="flex flex-col items-center w-8 bg-sidebar py-2 gap-2 h-full relative">
+      {/* The handle survives the collapse, disabled and saying why — the
+          arrangement `TerminalSidebar` already had and this rail did not. A
+          splitter that disappears with its panel leaves the user no evidence
+          the column is resizable at all, and §7.6 asks a disabled control to
+          state its reason rather than simply stop responding.
+
+          `value` is the pre-collapse width, not the rail's 8 units: the rail is
+          a render-time width that is never written to the store, which is what
+          makes expanding come back to the width the user dragged to. */}
+      <Splitter
+        side="start"
+        label="Git sidebar width"
+        value={state.panels.gitSidebar}
+        min={PANEL_BOUNDS.gitSidebar.min}
+        max={PANEL_BOUNDS.gitSidebar.max}
+        defaultValue={PANEL_BOUNDS.gitSidebar.default}
+        disabledReason="The git panel is collapsed — expand it to resize"
+        onResize={() => {}}
+      />
       <button
         onClick={props.onExpand}
         aria-label="Expand git panel"
+        // The counterpart of the collapse button in the expanded header, and it
+        // has to make the same claim in the same vocabulary — `FilesRail` sets
+        // this too, for the same pair.
+        aria-expanded={false}
         class="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
         title="Expand git panel"
       >

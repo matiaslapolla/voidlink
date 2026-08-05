@@ -928,6 +928,21 @@ export function MainSurface(props: MainSurfaceProps) {
       groups().length < 2 ? undefined : focusedGroupId() === groupId ? "focused" : "unfocused";
     const focusGroup = () => actions.focusPaneGroup(state.activeWorktreeId, groupId);
 
+    /// Zen carries the focus rule itself, because the strip that normally
+    /// carries it is not rendered.
+    ///
+    /// Zen hides chrome, not panes — so a zen split shows two or more live
+    /// panes and, until this existed, nothing at all saying which one the
+    /// keyboard was pointed at. `ui.focus-next-pane` still worked; it just
+    /// moved an invisible cursor, which is the one thing §7.6 will not have.
+    ///
+    /// An `outline` rather than a border or a ring: outlines are drawn outside
+    /// the box and take part in no layout, so this cannot shift a pane by a
+    /// pixel — the same no-reflow guarantee the strip's 2px-in-both-states rule
+    /// gives, reached a different way because there is no second state to pad
+    /// against here.
+    const zenFocus = () => isZen() && groups().length > 1 && focusedGroupId() === groupId;
+
     return (
       // One pane group = one island (D1). The radius and the clipping come
       // from `.island` in `index.css`; this component owns *where* islands sit
@@ -939,7 +954,11 @@ export function MainSurface(props: MainSurfaceProps) {
       // still looks like the diagram in the directions spec.
       <div
         class="island flex-1 flex min-w-0 min-h-0 bg-background"
-        classList={{ "flex-col": !verticalTabs(), "flex-row": verticalTabs() }}
+        classList={{
+          "flex-col": !verticalTabs(),
+          "flex-row": verticalTabs(),
+          "outline-2 -outline-offset-2 outline-primary": zenFocus(),
+        }}
       >
         <Show when={showTabBar() && !isZen()}>
           <TabStrip
@@ -971,6 +990,15 @@ export function MainSurface(props: MainSurfaceProps) {
               actions.reorderTabGroup(state.activeWorktreeId, id, before)
             }
             onFocusGroup={focusGroup}
+            // Only with a split to undo. `closePaneGroup` refuses the last
+            // group anyway, but a button that silently does nothing is worse
+            // than no button — so the strip is told there is nothing to close
+            // rather than being left to render a dead one.
+            onClosePane={
+              groups().length > 1
+                ? () => actions.closePaneGroup(state.activeWorktreeId, groupId)
+                : undefined
+            }
             onMoveTab={(payload, before) => moveTabHere(payload, groupId, before)}
             onSelect={(tab) => selectTab(tab, groupId)}
             onClose={closeTab}

@@ -31,6 +31,7 @@ import {
 } from "solid-js";
 import { Portal } from "solid-js/web";
 import {
+  Columns2,
   GitBranch,
   GitCommit,
   Layers,
@@ -46,6 +47,7 @@ import { gitApi } from "@/api/git";
 import { stackApi } from "@/api/stack";
 import { isMac } from "@/api/platform";
 import { useAppStore } from "@/store/LayoutContext";
+import { groupCount } from "@/store/layout";
 import { worktreeLabel } from "@/types/workspace";
 import { aiCommitState } from "@/commands/aiCommit";
 import { formatChord } from "@/commands/keys";
@@ -136,8 +138,13 @@ function chordLabel(actionId: string): string {
 }
 
 export function StatusBar() {
-  const { state, activeRepoPath } = useAppStore();
+  const { state, actions, activeRepoPath, paneLayout } = useAppStore();
   const repoPath = () => activeRepoPath() ?? null;
+
+  /// How many panes the workbench is showing. Read off the tree rather than
+  /// counted at a call site so the chip below cannot disagree with what is on
+  /// screen after a collapse.
+  const paneCount = () => groupCount(paneLayout());
 
   /// A worktree's display name, for the segment that reports activity in one
   /// the user is not in. Falls back to the id rather than to "somewhere": an
@@ -399,6 +406,44 @@ export function StatusBar() {
         ),
       });
     }
+    // The way out of a *split*, on the same argument as the two chips above
+    // and for a state that is easier to enter by accident than either of them:
+    // one drag onto a pane edge splits the workbench, and nothing on screen
+    // said how to undo it. The pane group header is a 2px rule with no control
+    // on it, `ui.close-pane` and `ui.reset-pane-layout` lived only in the
+    // palette, and Settings → Reset layout — the one discoverable exit — also
+    // throws away every open tab. So the split announced itself and its own
+    // inverse nowhere, which is exactly what §7.6 forbids of a state a gesture
+    // can produce.
+    //
+    // Clicking flattens the whole tree rather than closing one pane: the chip
+    // is the *panic* exit, and "put it back the way it was" is the thing
+    // somebody who did not mean to split is asking for. Closing one pane at a
+    // time stays on `ui.close-pane`, which the title names so the finer tool is
+    // discoverable from the blunt one. No tab is closed either way — a pane
+    // going away hands its tabs back to the first group.
+    //
+    // Suppressed under maximize: one pane is on screen, so a chip offering to
+    // "restore one pane" would name a layout the user cannot see, and the
+    // maximize chip directly above it is already the exit from that.
+    if (paneCount() > 1 && !maxGroup) {
+      const n = paneCount();
+      out.push({
+        id: "pane-split",
+        priority: STATUS_PRIORITY.paneSplit,
+        align: "end",
+        label: `${n} panes — back to one`,
+        title: `${n} panes — click to flatten the split (${chordLabel("ui.reset-pane-layout")}); ${chordLabel("ui.close-pane")} closes just the focused one. No tabs are closed.`,
+        onClick: () => actions.resetPaneLayout(state.activeWorktreeId),
+        render: () => (
+          <>
+            <Columns2 class="w-3 h-3" />
+            <span class="text-micro tracking-wide tabular-nums">{n} panes</span>
+          </>
+        ),
+      });
+    }
+
     if (isZen()) {
       out.push({
         id: "zen",

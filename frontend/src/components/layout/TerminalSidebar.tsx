@@ -117,6 +117,9 @@ export function TerminalSidebar(props: {
       <div class="flex flex-col shrink-0">
         <button
           onClick={() => actions.toggleSidebarSection("terminals")}
+          // The chevron beside the label is the only thing reporting whether
+          // this section is open, and it reports it to sighted users only.
+          aria-expanded={terminalsOpen()}
           class="flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-accent/30 transition-colors w-full"
         >
           <span class="w-3 h-3 shrink-0 text-muted-foreground">
@@ -182,6 +185,7 @@ export function TerminalSidebar(props: {
         <div class="flex flex-col shrink-0 border-t border-border/50">
           <button
             onClick={() => actions.toggleSidebarSection("agents")}
+            aria-expanded={agentsOpen()}
             class="flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-accent/30 transition-colors w-full"
           >
             <span class="w-3 h-3 shrink-0 text-muted-foreground">

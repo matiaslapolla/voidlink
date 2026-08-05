@@ -208,6 +208,12 @@ export const KEYMAP: readonly KeymapEntry[] = [
     note: "⌘W closes a tab, so the pane that *holds* tabs takes the ⌥ slot beside it — the same relationship the two actions have on screen.",
   },
   {
+    actionId: "ui.toggle-tab-group",
+    group: "View",
+    binding: { meta: true, alt: true, key: "g" },
+    note: "G for group, in the same ⌥ block as the four pane actions — a tab group is a collapse inside a pane, so it belongs beside them rather than near the tab chords. ⌘G is find-next in Monaco and never reaches the workbench; ⌘⇧G is its reverse.",
+  },
+  {
     actionId: "ui.zen",
     group: "View",
     binding: { meta: true, alt: true, key: "z" },

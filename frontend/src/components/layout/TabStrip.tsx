@@ -36,6 +36,7 @@ import {
   ChevronsRight,
   FolderMinus,
   FolderPlus,
+  PanelRightClose,
   Pin,
   PinOff,
   SquareDashed,
@@ -294,6 +295,14 @@ export interface TabStripProps {
   groupActivity?: ActivitySignal;
   /// Clicking anywhere in the strip focuses its group.
   onFocusGroup?: () => void;
+  /// Collapse this pane, handing its tabs back to the first group.
+  ///
+  /// Rendered only alongside `groupHeader`, which is to say only when there is
+  /// more than one pane — the last pane is not closable and a control that is
+  /// always disabled is not a control. The strip is where it belongs because
+  /// the strip is the only chrome a pane has: the "header" is a 2px rule, and
+  /// hanging a button off a rule is not a place a user would look.
+  onClosePane?: () => void;
   /// A tab from another group landed here. `beforeTabId` is the tab it should
   /// land in front of, or `null` for the end of the strip. When the payload
   /// carries a `tabGroupId` this is a whole group arriving.
@@ -1022,6 +1031,32 @@ export function TabStrip(props: TabStripProps) {
             onJump={(tab) => props.onSelect(tab)}
           />
         </Show>
+
+        {/* Undoing a split, in the place the split happened. Last in the
+            trailing row so it sits at the pane's outside corner, away from the
+            "+" — closing the pane and opening a tab in it are opposite
+            intents and adjacency invites the wrong one. `PanelRightClose`
+            rather than an `×`: an × in a tab strip already means "close the
+            tab", and two glyphs a few pixels apart meaning different closes is
+            the confusion §7.6 is about. */}
+        <Show when={props.groupHeader && props.onClosePane}>
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onClosePane?.();
+            }}
+            class="ml-0.5 p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-accent/40 hover:text-foreground transition-[opacity,background-color,color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Close this pane"
+            // §7.6: the control says what it does, including the part a user
+            // would otherwise have to risk a click to find out — that the tabs
+            // survive. Losing a terminal to a layout tweak is the fear that
+            // stops people using splits at all.
+            use:tooltip="Close this pane — its tabs move to the first pane"
+          >
+            <PanelRightClose class="w-3 h-3" />
+          </button>
+        </Show>
       </div>
 
       <TabGroupContextMenu
@@ -1172,6 +1207,27 @@ function TabGroupChip(props: {
     <div
       // What the strip's drop zone measures to find group boundaries.
       data-tab-group-id={props.group.id}
+      // A `div` that toggles a disclosure on click is a button that told
+      // nobody. It stays a `div` because a real `<button>` cannot host the
+      // rename `<input>` this swaps in, so the role, the tab stop and the
+      // keyboard activation below are what a `<button>` would have given for
+      // free — and `aria-expanded` is what the chevron says to everyone else.
+      role={editing() ? undefined : "button"}
+      tabIndex={editing() ? undefined : 0}
+      aria-expanded={editing() ? undefined : !props.group.collapsed}
+      onKeyDown={(e) => {
+        if (editing()) return;
+        // `F2` renames, matching the double-click the pointer has. Enter and
+        // Space toggle, which is what the role promises.
+        if (e.key === "F2") {
+          e.preventDefault();
+          startEditing();
+          return;
+        }
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        props.onToggle();
+      }}
       onPointerDown={(e) => {
         // A chip being renamed is a text field, not a grip.
         if (!editing()) props.onPointerDown(e);
