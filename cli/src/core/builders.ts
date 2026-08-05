@@ -138,8 +138,8 @@ function dedupeLinks(links: Link[]): Link[] {
  * (which contain `:` and would be read as a YAML timestamp). Correct YAML beats
  * aesthetic bareness.
  */
-function yamlScalar(value: string): string {
-  const needsQuote =
+function needsQuote(value: string): boolean {
+  return (
     value === "" ||
     /^\s|\s$/.test(value) || // leading/trailing whitespace
     /[\n\t]/.test(value) || // control chars
@@ -149,8 +149,12 @@ function yamlScalar(value: string): string {
     /^[!&*\[\]{}>|'"%@`,]/.test(value) || // reserved/flow indicator at start
     /^(true|false|null|yes|no|on|off|~)$/i.test(value) || // bool/null
     /^[-+]?(\d[\d_]*\.?[\d_]*|\.\d+)([eE][-+]?\d+)?$/.test(value) || // number
-    /^\d{4}-\d\d-\d\d([T ]\d\d:)/.test(value); // ISO datetime (e.g. created)
-  if (!needsQuote) return value;
+    /^\d{4}-\d\d-\d\d([T ]\d\d:)/.test(value) // ISO datetime (e.g. created)
+  );
+}
+
+/** Double-quote and escape, unconditionally. */
+function quote(value: string): string {
   const escaped = value
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
@@ -159,9 +163,21 @@ function yamlScalar(value: string): string {
   return `"${escaped}"`;
 }
 
-/** Render a YAML flow array of strings, e.g. [payments, reliability]. */
+function yamlScalar(value: string): string {
+  return needsQuote(value) ? quote(value) : value;
+}
+
+/**
+ * Render a YAML flow array of strings, e.g. [payments, reliability].
+ *
+ * Inside `[...]` a comma or bracket separates items wherever it appears, not
+ * just at the start — which is all `needsQuote` guards against. So a value
+ * containing one must be quoted here even though it's a safe bare scalar
+ * elsewhere: `labels: [a, b]` reads back as two labels, silently splitting a
+ * single label named "a, b" into two.
+ */
 function yamlFlowArray(values: string[]): string {
-  return `[${values.map(yamlScalar).join(", ")}]`;
+  return `[${values.map((v) => (needsQuote(v) || /[,[\]]/.test(v) ? quote(v) : v)).join(", ")}]`;
 }
 
 export interface BuildMeta {

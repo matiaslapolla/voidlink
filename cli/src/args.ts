@@ -1,5 +1,5 @@
 /**
- * Minimal hand-rolled arg parser for `brain add` / `brain search`.
+ * Minimal hand-rolled arg parser for `brain add` / `search` / `index` / `review`.
  *
  * Supports:
  *   --type <value>
@@ -10,6 +10,9 @@
  *   --ticket <value>
  *   --json <value>
  *   --vault-path <value>
+ *   --stale-days <n>  (review threshold)
+ *   --ticket-days <n> (review threshold)
+ *   --dry-run         (boolean flag)
  *   --yes / -y        (boolean flag)
  *   --help / -h       (boolean flag)
  *
@@ -18,7 +21,7 @@
  */
 
 export interface ParsedArgs {
-  command: string | undefined; // e.g. "add", "search"
+  command: string | undefined; // e.g. "add", "search", "index", "review"
   positionals: string[];
   type?: string;
   title?: string;
@@ -28,8 +31,17 @@ export interface ParsedArgs {
   ticket?: string;
   json?: string;
   vaultPath?: string;
+  staleDays?: number;
+  ticketDays?: number;
+  dryRun: boolean;
   yes: boolean;
   help: boolean;
+}
+
+/** Parse a non-negative integer flag, ignoring anything that isn't one. */
+function intFlag(raw: string): number | undefined {
+  if (!/^\d+$/.test(raw)) return undefined;
+  return Number.parseInt(raw, 10);
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -39,6 +51,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     command: undefined,
     positionals: [],
     labels: [],
+    dryRun: false,
     yes: false,
     help: false,
   };
@@ -56,6 +69,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
     if (arg === "--help" || arg === "-h") {
       result.help = true;
+      i++;
+      continue;
+    }
+
+    if (arg === "--dry-run") {
+      result.dryRun = true;
       i++;
       continue;
     }
@@ -93,13 +112,19 @@ export function parseArgs(argv: string[]): ParsedArgs {
         case "vault-path":
           result.vaultPath = next;
           break;
+        case "stale-days":
+          result.staleDays = intFlag(next);
+          break;
+        case "ticket-days":
+          result.ticketDays = intFlag(next);
+          break;
         // unknown flags: silently skip both key and value
       }
       i += 2;
       continue;
     }
 
-    // first positional → sub-command ("add" or "search").
+    // first positional → sub-command ("add", "search", "index", "review").
     if (result.command === undefined) {
       result.command = arg;
     } else {
@@ -119,6 +144,8 @@ Usage:
   brain add --type <type> --title "..." [flags]      Non-interactive
   brain add --json '<RegisterInput JSON>'            Raw passthrough
   brain search <query>                               Search the local vault
+  brain index                                        Regenerate projects/ labels/ tickets/
+  brain review                                       Report stale entries and dropped threads
 
 Types: decision, shipped, note, discovery, content, training
 
@@ -131,7 +158,10 @@ Flags:
   --ticket <PROJ-123>  Brain board card id (required for shipped)
   --json <json>        Raw RegisterInput JSON (skips flag parsing)
   --vault-path <path>  Override the local vault path
-  --yes / -y           Skip confirmation prompt
+  --dry-run            index: report what would change, write nothing
+  --stale-days <n>     review: days before an entry is stale (default 90)
+  --ticket-days <n>    review: days before an open ticket is overdue (default 30)
+  --yes / -y           Skip confirmation prompt (add), skip commit prompt (index)
   --help / -h          Show this help
 
 Config (priority: flag > env > ~/.config/brain/config.json > no default):

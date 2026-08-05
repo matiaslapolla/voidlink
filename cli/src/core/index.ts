@@ -1,8 +1,12 @@
 /**
- * Vendored copy of the `brain` repo's @brain/core package — the zod contract
- * + pure (IO-free) markdown/id builders for the second-brain vault format.
- * Kept in sync by hand; this is the CLI's only copy, not a shared workspace
- * package (voidlink is a plain npm project, not the `brain` pnpm monorepo).
+ * core — the zod contract plus the pure (IO-free) logic for the second-brain
+ * vault format. Originally the `brain` repo's @brain/core package; that repo is
+ * being torn down, so this is now the only copy rather than a vendored mirror.
+ *
+ * The purity rule is the load-bearing part: everything here is a function of
+ * its arguments, including the clock. Reading and writing the vault is the
+ * CLI's job (`vault.ts`), which keeps all of this testable without a fixture
+ * directory.
  */
 
 export {
@@ -25,3 +29,27 @@ export {
   type BuildExtra,
   type BuiltMarkdown,
 } from "./builders.js";
+
+export {
+  FOLDER_TYPE,
+  parseEntry,
+  type ParsedEntry,
+} from "./parse.js";
+
+export {
+  buildIndexNotes,
+  orphanedIndexNotes,
+  type IndexKind,
+  type IndexNote,
+  type ExistingCreated,
+} from "./index-notes.js";
+
+export {
+  review,
+  DEFAULT_THRESHOLDS,
+  type Finding,
+  type FindingKind,
+  type Severity,
+  type ReviewInput,
+  type ReviewThresholds,
+} from "./review.js";

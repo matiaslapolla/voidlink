@@ -6,6 +6,8 @@
  *   brain add --type <t> --title "..." [flags]   non-interactive flags
  *   brain add --json '<json>'                     raw JSON passthrough
  *   brain search <query>                          search the local vault
+ *   brain index                                   regenerate the index notes
+ *   brain review                                  report staleness
  *
  * Interactivity (rich prompts) and digest live in the Claude skills that call
  * this CLI — the binary itself stays a thin, scriptable client. Use --yes to
@@ -19,14 +21,23 @@
  */
 
 import { createInterface } from "node:readline/promises";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { parseArgs, printHelp } from "./args.js";
 import { requireVaultPath, resolveConfig } from "./config.js";
 import { renderPreview } from "./preview.js";
 import { validateInput } from "./validate.js";
 import { runLocalRegister } from "./local-register.js";
-import { TYPE_FOLDER } from "./core/index.js";
+import { buildIndexNotes, orphanedIndexNotes, review, TYPE_FOLDER } from "./core/index.js";
+import type { Finding, ReviewThresholds } from "./core/index.js";
+import {
+  readEntries,
+  readExistingCreated,
+  readIndexNotePaths,
+  readLastTouched,
+  readTicketStatus,
+} from "./vault.js";
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
@@ -45,6 +56,16 @@ async function main(): Promise<void> {
 
   if (args.command === "search") {
     runSearch(args, config);
+    return;
+  }
+
+  if (args.command === "index") {
+    runIndex(args, config);
+    return;
+  }
+
+  if (args.command === "review") {
+    runReview(args, config);
     return;
   }
 
@@ -176,6 +197,157 @@ function runSearch(
 
   if (matches === 0) {
     console.log("No matches.");
+  }
+}
+
+/**
+ * `brain index` — regenerate `projects/`, `labels/` and `tickets/` from entry
+ * frontmatter.
+ *
+ * These index notes used to be stubs backed by Postgres. Now the backlinks are
+ * written into the markdown, so the same file is readable from GitHub,
+ * Obsidian, the terminal, and by an agent with only a checkout.
+ *
+ * Writes only the notes whose contents actually changed, so a no-op reindex
+ * produces an empty diff rather than touching every file. Commits unless
+ * `--dry-run`.
+ */
+function runIndex(
+  args: ReturnType<typeof parseArgs>,
+  config: ReturnType<typeof resolveConfig>,
+): void {
+  const vaultPath = requireVaultPath(config);
+
+  const entries = readEntries(vaultPath);
+  if (entries.length === 0) {
+    console.error("No entries found — is the vault path correct?");
+    process.exit(1);
+  }
+
+  const existingPaths = readIndexNotePaths(vaultPath);
+  const notes = buildIndexNotes(entries, readExistingCreated(vaultPath, existingPaths));
+  const orphans = orphanedIndexNotes(existingPaths, notes);
+
+  const changed: string[] = [];
+  const created: string[] = [];
+  for (const note of notes) {
+    const full = join(vaultPath, note.path);
+    let before: string | undefined;
+    try {
+      before = readFileSync(full, "utf8");
+    } catch {
+      before = undefined;
+    }
+    if (before === note.contents) continue;
+    (before === undefined ? created : changed).push(note.path);
+    if (!args.dryRun) {
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, note.contents, "utf8");
+    }
+  }
+
+  console.log(
+    `\n  ${entries.length} entries → ${notes.length} index notes ` +
+      `(${created.length} new, ${changed.length} updated, ${orphans.length} orphaned)`,
+  );
+  for (const p of created) console.log(`    + ${p}`);
+  for (const p of changed) console.log(`    ~ ${p}`);
+  for (const p of orphans) console.log(`    ? ${p}  (no entry references it)`);
+
+  // Orphans are reported, never deleted. A ref can vanish because an entry was
+  // legitimately retyped, or because a file is mid-edit — and an index note
+  // silently deleted by a routine run is exactly the kind of surprise that
+  // makes a tool untrustworthy. Delete them by hand.
+  if (orphans.length > 0) {
+    console.log("\n  Orphans are left in place. Remove them yourself if they're really dead.");
+  }
+
+  if (args.dryRun) {
+    console.log("\n  --dry-run: nothing written.\n");
+    return;
+  }
+
+  const touched = [...created, ...changed];
+  if (touched.length === 0) {
+    console.log("\n  Already up to date.\n");
+    return;
+  }
+
+  try {
+    execFileSync("git", ["-C", vaultPath, "add", ...touched], { encoding: "utf8" });
+    execFileSync(
+      "git",
+      ["-C", vaultPath, "commit", "-m", `index: regenerate ${touched.length} index notes`, "--", ...touched],
+      { encoding: "utf8" },
+    );
+    console.log(`\n  committed ${touched.length} index notes\n`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`\nIndex written but commit failed: ${msg}`);
+    process.exit(1);
+  }
+}
+
+const SEVERITY_MARK: Record<Finding["severity"], string> = {
+  high: "!!",
+  medium: " !",
+  low: "  ",
+};
+
+/**
+ * `brain review` — what did I start and not finish?
+ *
+ * Read-only. Exits 0 whether or not it finds anything: staleness is a report,
+ * not a failure, and a non-zero exit would make this useless in a routine that
+ * treats a bad exit code as a broken run.
+ */
+function runReview(
+  args: ReturnType<typeof parseArgs>,
+  config: ReturnType<typeof resolveConfig>,
+): void {
+  const vaultPath = requireVaultPath(config);
+
+  const entries = readEntries(vaultPath);
+  if (entries.length === 0) {
+    console.error("No entries found — is the vault path correct?");
+    process.exit(1);
+  }
+
+  const thresholds: Partial<ReviewThresholds> = {};
+  if (args.staleDays !== undefined) thresholds.staleEntryDays = args.staleDays;
+  if (args.ticketDays !== undefined) thresholds.openTicketDays = args.ticketDays;
+
+  const findings = review({
+    entries,
+    now: new Date(),
+    lastTouched: readLastTouched(vaultPath),
+    ticketStatus: readTicketStatus(vaultPath),
+    thresholds,
+  });
+
+  if (findings.length === 0) {
+    console.log(`\n  ${entries.length} entries, nothing stale.\n`);
+    return;
+  }
+
+  const groups: Finding["kind"][] = ["unfinished-decision", "open-ticket", "stale-entry"];
+  const heading: Record<Finding["kind"], string> = {
+    "unfinished-decision": "Decisions with nothing shipped after them",
+    "open-ticket": "Tickets open with no shipped entry",
+    "stale-entry": "Entries nobody has touched",
+  };
+
+  console.log(`\n  ${entries.length} entries · ${findings.length} findings\n`);
+  for (const kind of groups) {
+    const group = findings.filter((f) => f.kind === kind);
+    if (group.length === 0) continue;
+    console.log(`  ${heading[kind]} (${group.length})`);
+    for (const f of group) {
+      console.log(`   ${SEVERITY_MARK[f.severity]} ${f.ref}`);
+      console.log(`        ${f.title}`);
+      console.log(`        ${f.detail}`);
+    }
+    console.log("");
   }
 }
 
