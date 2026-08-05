@@ -2,6 +2,7 @@ import {
   Show,
   Suspense,
   createEffect,
+  createMemo,
   createSignal,
   lazy,
   onCleanup,
@@ -40,15 +41,18 @@ import { TooltipLayer } from "@/components/ui/Tooltip";
 import { PromptHost } from "@/commands/PromptHost";
 import {
   closeCheatSheet,
+  closeBoard,
   closeBrain,
   closeFileFinder,
   closePalette,
   getActions,
   isCheatSheetOpen,
+  isBoardOpen,
   isBrainOpen,
   isFileFinderOpen,
   isPaletteOpen,
   isTabSwitcherOpen,
+  openBoard,
   openBrain,
   openCheatSheet,
   openFileFinder,
@@ -71,8 +75,10 @@ import { repeatLastCommand } from "@/commands/terminalHistory";
 import { pushToast } from "@/commands/toast";
 import { askAgent, registerAgentActions } from "@/commands/agent";
 import { agentById, resolveAgentCommand, useSettings } from "@/store/settings";
+import { AgentBoardBroadcast } from "@/components/agent/AgentBoardBroadcast";
 import { FilesPanel } from "@/components/files/FilesPanel";
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
+import { BoardOverlayHost } from "@/components/board/BoardOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { createOverlay, setOverlayOpen } from "@/commands/overlay";
 import { requestNewWorktree } from "@/commands/worktree";
@@ -108,7 +114,12 @@ import { watchRepos } from "@/api/watch";
 import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import { samePath } from "@/store/layout/tabs";
-import { resolveGroupTabs, type ActiveItem } from "@/store/layout";
+import {
+  groupList,
+  resolveGroupTabs,
+  type ActiveItem,
+  type SplitOrientation,
+} from "@/store/layout";
 import { browserTabLabel } from "@/components/browser/BrowserPane";
 
 /// The other two surfaces, loaded only if stacked mode actually renders them.
@@ -134,6 +145,27 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     actions,
   } = useAppStore();
   const { settings } = useSettings();
+
+  /// Every pane group in the active worktree, in visual order. The pane actions
+  /// below all need it — to know whether there is more than one pane, and to
+  /// walk them.
+  const paneGroups = createMemo(() => groupList(paneLayout()));
+
+  /// Split the focused pane and take the active tab with it.
+  ///
+  /// Taking the tab is the difference between this and the drag: a drag
+  /// carries a tab by definition, so a keyboard split that left the new pane
+  /// empty would be a different gesture wearing the same name. With no tab to
+  /// move the split still happens — an empty pane you can drop into is a
+  /// reasonable thing to ask for, and it says so in its own empty state.
+  function splitFocusedPane(orientation: SplitOrientation) {
+    const wtId = state.activeWorktreeId;
+    const from = focusedGroupId();
+    const tabId = state.activeItemByWorktree[wtId]?.id ?? null;
+    // One write, so nothing can observe — or collapse — the new pane between
+    // its creation and the tab landing in it.
+    actions.splitPaneGroupWithTab(wtId, orientation, "after", from ?? undefined, tabId);
+  }
 
   // ── Feature-owned palette entries ────────────────────────────────────────
   // Each of these registers its own slice of the catalog at the point the
@@ -485,6 +517,15 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     const wtId = state.activeWorktreeId;
     return [
       {
+        id: "view.combined-diff",
+        label: "Review all changes",
+        description:
+          "Every staged, unstaged and untracked change in one scroll, one collapsible row per file",
+        group: "View",
+        enabled: () => !!activeRepoPath(),
+        run: () => void actions.openCombinedTab(wtId),
+      },
+      {
         id: "view.timeline",
         label: "Open the timeline",
         description: "The event log: commits, agent turns and commands, newest first",
@@ -587,6 +628,59 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       group: "View",
       run: () => toggleMaximizedGroup(focusedGroupId()),
     },
+    // ── Panes ──────────────────────────────────────────────────────────────
+    // A split used to be a one-way trip: the only way in was dragging a tab
+    // onto a pane edge, and there was no way out short of closing every tab in
+    // a pane one at a time. These five are the keyboard-and-palette half of
+    // the gesture, and `ui.reset-pane-layout` is the escape hatch the store
+    // has always had and nothing ever called.
+    {
+      id: "ui.split-pane-right",
+      label: "Split pane right",
+      description: "Put the active tab in a new pane beside this one",
+      group: "View",
+      run: () => splitFocusedPane("row"),
+    },
+    {
+      id: "ui.split-pane-down",
+      label: "Split pane down",
+      description: "Put the active tab in a new pane below this one",
+      group: "View",
+      run: () => splitFocusedPane("column"),
+    },
+    {
+      id: "ui.close-pane",
+      label: "Close pane",
+      description: "Collapse the focused pane; its tabs move to the first one",
+      group: "View",
+      // The last pane is not closable — a worktree always needs somewhere to
+      // put a tab — and a disabled row that says why beats a silent no-op.
+      enabled: () => paneGroups().length > 1,
+      run: () => {
+        const target = focusedGroupId();
+        if (target) actions.closePaneGroup(state.activeWorktreeId, target);
+      },
+    },
+    {
+      id: "ui.focus-next-pane",
+      label: "Focus the next pane",
+      group: "View",
+      enabled: () => paneGroups().length > 1,
+      run: () => {
+        const groups = paneGroups();
+        const i = groups.findIndex((g) => g.id === focusedGroupId());
+        const next = groups[(i + 1) % groups.length];
+        if (next) actions.focusPaneGroup(state.activeWorktreeId, next.id);
+      },
+    },
+    {
+      id: "ui.reset-pane-layout",
+      label: "Reset the pane layout",
+      description: "Back to one pane holding every tab. Closes nothing.",
+      group: "View",
+      enabled: () => paneGroups().length > 1,
+      run: () => actions.resetPaneLayout(state.activeWorktreeId),
+    },
     {
       id: "ui.zen",
       label: "Toggle zen mode",
@@ -614,6 +708,13 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         description: "Browse, read and capture entries in this project's brain",
         group: "View",
         run: () => openBrain(),
+      },
+      {
+        id: "board.open",
+        label: "Open board…",
+        description: "This project's kanban board, kept as markdown files in .voidlink/board",
+        group: "View",
+        run: () => openBoard(),
       },
       {
         id: "browser.new",
@@ -770,6 +871,8 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       items.push({ type: "history", id: h.id });
     for (const t of state.timelineTabsByWorktree[wtId] ?? [])
       items.push({ type: "timeline", id: t.id });
+    for (const c of state.combinedTabsByWorktree[wtId] ?? [])
+      items.push({ type: "combined", id: c.id });
     for (const m of state.missionTabsByWorktree[wtId] ?? [])
       items.push({ type: "mission", id: m.id });
     for (const b of state.browserTabsByWorktree[wtId] ?? [])
@@ -826,6 +929,14 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         label: "Timeline",
         kind: "timeline",
         open: go({ type: "timeline", id: t.id }),
+      });
+    }
+    for (const c of state.combinedTabsByWorktree[wtId] ?? []) {
+      out.push({
+        id: c.id,
+        label: "All changes",
+        kind: "combined",
+        open: go({ type: "combined", id: c.id }),
       });
     }
     for (const m of state.missionTabsByWorktree[wtId] ?? []) {
@@ -971,6 +1082,9 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       case "timeline":
         actions.selectTimelineTab(wtId, item.id);
         break;
+      case "combined":
+        actions.selectCombinedTab(wtId, item.id);
+        break;
       case "mission":
         actions.selectMissionTab(wtId, item.id);
         break;
@@ -1066,6 +1180,9 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       case "timeline":
         actions.closeTimelineTab(wtId, item.id);
         break;
+      case "combined":
+        actions.closeCombinedTab(wtId, item.id);
+        break;
       case "mission":
         actions.closeMissionTab(wtId, item.id);
         break;
@@ -1133,7 +1250,19 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
           the two can never disagree about how wide the column is. */}
       <div class="flex flex-col min-h-0 bg-sidebar">
         <Show when={!state.leftSidebarCollapsed}>
-          <div class="flex-1 min-h-0 flex flex-col border-b border-border/60 w-full">
+          {/* `flex-1` only while the explorer is open. The column's *width*
+              belongs to the git panel here, so what a collapse gives back is
+              vertical space — and a wrapper that stayed `flex-1` around a
+              collapsed `FilesPanel` would hold half the column open for a
+              header row, which is the disclosure-that-buys-you-nothing this
+              feature exists to remove. */}
+          <div
+            class="min-h-0 flex flex-col border-b border-border/60 w-full"
+            classList={{
+              "flex-1": state.sidebarSections.files,
+              "shrink-0": !state.sidebarSections.files,
+            }}
+          >
             <FilesPanel onOpenFile={(path) => void openInEditorWindow(path)} />
           </div>
         </Show>
@@ -1149,6 +1278,15 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   /// must not remount it — the terminals hanging off it own live PTYs that do
   /// not come back.
   const workbench = (
+    <>
+    {/* The agent board's one writer. Outside `AppShell` because it renders
+        nothing and must survive zen, which passes `null` for every panel —
+        a broadcaster that stops when a sidebar is hidden is the per-strip
+        poll `terminalWatch.ts` was written to replace. Behind the flag
+        fully: with it off this never mounts, so nothing polls. */}
+    <Show when={settings.experimental.agentDashboard}>
+      <AgentBoardBroadcast />
+    </Show>
     <AppShell
       fill
       // The window's title bar is drawn above the view container in both modes,
@@ -1168,6 +1306,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       rightSidebar={isZen() ? null : state.sidebarsSwapped ? leftPane() : rightPane()}
       statusBar={<StatusBar />}
     />
+    </>
   );
 
   /// One stacked view. Hidden with `visibility`, not `display`, and never
@@ -1245,6 +1384,14 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         open={isBrainOpen()}
         repoPath={activeWorkspace()?.repoRoot ?? ""}
         onClose={closeBrain}
+      />
+      {/* Same repo root, and for the same reason: a card about the project
+          should not disappear because you switched to the worktree you wrote
+          it for. */}
+      <BoardOverlayHost
+        open={isBoardOpen()}
+        repoPath={activeWorkspace()?.repoRoot ?? ""}
+        onClose={closeBoard}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />

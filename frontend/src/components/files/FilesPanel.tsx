@@ -11,6 +11,14 @@
 /// this component, so the tree, its empty state and the disclosure's persisted
 /// open/closed state are one implementation rather than two that drift.
 ///
+/// Collapsing is one flag (`sidebarSections.files`) and two consequences,
+/// because the two homes have different space to give back. In the left sidebar
+/// the host swaps this whole panel for `FilesRail` and takes the column down to
+/// `SIDEBAR_RAIL_WIDTH`, so the width goes to the workbench. In the right column
+/// the width belongs to the git panel below, so collapsing gives back *vertical*
+/// space and this component's own `<Show>` is what does it. The button below is
+/// the control in both cases and keeps its `aria-expanded` contract either way.
+///
 /// It deliberately does **not** carry the repo picker that sits above it in
 /// the left sidebar. That header is the sidebar's, not the explorer's, and the
 /// workspace rail offers the same "open a folder" affordance — a second picker
@@ -19,6 +27,12 @@ import { Show } from "solid-js";
 import { ChevronDown, ChevronRight, Files } from "lucide-solid";
 import { useAppStore } from "@/store/LayoutContext";
 import { FileTree } from "@/components/files/FileTree";
+// The rail's one icon carries no visible label, so its tooltip is information
+// rather than a restatement — the same argument that put `WorkspaceRail`'s
+// three `title`s onto the real tooltip. `void tooltip` keeps the import alive:
+// Solid erases a `use:` directive whose symbol is otherwise unused.
+import { tooltip } from "@/components/ui/Tooltip";
+void tooltip;
 
 export function FilesPanel(props: {
   onOpenFile?: (path: string) => void;
@@ -63,6 +77,36 @@ export function FilesPanel(props: {
           </Show>
         </div>
       </Show>
+    </div>
+  );
+}
+
+/// What the explorer collapses *to* where collapsing reclaims horizontal space:
+/// a `SIDEBAR_RAIL_WIDTH` strip with the Files icon, and clicking it brings the
+/// panel back at the width it had.
+///
+/// It is one component for the same reason `FilesPanel` is: the explorer now
+/// collapses in the workbench sidebar and in the popped-out editor window, and
+/// two rails would be two idioms to keep in step. The visual language is
+/// `GitSidebarCollapsed`'s, deliberately — the shell already has a collapsed
+/// rail and inventing a second one would say the two panels are different kinds
+/// of thing.
+///
+/// One icon is the whole rail at this slice (the assumption list says so). It
+/// becomes a real rail if the terminals section ever adopts the same collapse,
+/// which is why the layout is a column with a gap rather than a single button.
+export function FilesRail(props: { onExpand: () => void }) {
+  return (
+    <div class="flex flex-col items-center w-full h-full bg-sidebar py-2 gap-2">
+      <button
+        onClick={props.onExpand}
+        aria-expanded={false}
+        aria-label="Show the file explorer"
+        use:tooltip={"Show the file explorer\nThe sidebar returns to the width you left it at"}
+        class="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-[background-color,color] duration-[var(--dur-tint)] ease-out"
+      >
+        <Files class="w-4 h-4" />
+      </button>
     </div>
   );
 }

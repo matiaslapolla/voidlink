@@ -64,6 +64,15 @@ export interface TimelineTab {
   id: string;
 }
 
+/// The combined-diff tab: every staged, unstaged and untracked change in the
+/// worktree, in one scroll.
+///
+/// Repo-wide and stateless like `HistoryTab` — which file is expanded is view
+/// state, and one per worktree is all there ever needs to be.
+export interface CombinedDiffTab {
+  id: string;
+}
+
 /// A Mission Control tab. Singleton and stateless like the three above: which
 /// section is showing is view state, and the lineup, check-in and hills all
 /// read from Rust rather than from anything worth persisting.
@@ -193,6 +202,7 @@ export type ActiveItem =
   | { type: "history"; id: string }
   | { type: "preview"; id: string; path: string }
   | { type: "timeline"; id: string }
+  | { type: "combined"; id: string }
   | { type: "mission"; id: string }
   | { type: "browser"; id: string }
   | { type: "agent"; id: string };
@@ -228,6 +238,7 @@ export type ClosedTab =
   | { type: "history" }
   | { type: "preview"; filePath: string }
   | { type: "timeline" }
+  | { type: "combined" }
   | { type: "mission" }
   | { type: "browser"; url: string; title?: string }
   /// The thread's transcript is not in here. What a reopen brings back is a tab
@@ -247,6 +258,7 @@ export type TabKind =
   | "history"
   | "preview"
   | "timeline"
+  | "combined"
   | "mission"
   | "browser"
   | "agent";
@@ -263,6 +275,7 @@ export interface TabTypes {
   history: HistoryTab;
   preview: PreviewTab;
   timeline: TimelineTab;
+  combined: CombinedDiffTab;
   mission: MissionTab;
   browser: BrowserTab;
   agent: AgentTab;
@@ -281,6 +294,7 @@ export type TabCollectionKey =
   | "historyTabsByWorktree"
   | "previewTabsByWorktree"
   | "timelineTabsByWorktree"
+  | "combinedTabsByWorktree"
   | "missionTabsByWorktree"
   | "browserTabsByWorktree"
   | "agentTabsByWorktree";
@@ -600,6 +614,19 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     closedSnapshot: (t) => ({ type: "preview", filePath: t.filePath }),
   },
 
+  combined: {
+    kind: "combined",
+    stateKey: "combinedTabsByWorktree",
+    storage: { key: STORAGE_KEYS.combinedTabs },
+    serialize: (t) => ({ id: t.id }),
+    deserialize: (raw) => idOnlyTab<CombinedDiffTab>(raw),
+    restore: async (raw) => idOnlyTab<CombinedDiffTab>(raw),
+    // Repo-wide: any two combined-diff tabs show the same thing.
+    equals: () => true,
+    label: () => "All changes",
+    closedSnapshot: () => ({ type: "combined" }),
+  },
+
   timeline: {
     kind: "timeline",
     stateKey: "timelineTabsByWorktree",
@@ -684,6 +711,7 @@ export const TAB_KIND_GROUP_LABELS: Record<TabKind, string> = {
   history: "Commit graph",
   preview: "Previews",
   timeline: "Timeline",
+  combined: "All changes",
   mission: "Mission Control",
   browser: "Browser",
   agent: "Agents",
@@ -701,6 +729,7 @@ export const TAB_KINDS: TabKind[] = [
   "history",
   "preview",
   "timeline",
+  "combined",
   "mission",
   "browser",
   "agent",
@@ -777,6 +806,7 @@ export function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
     // Singletons: same type is same tab.
     case "history":
     case "timeline":
+    case "combined":
     case "mission":
       return true;
   }
@@ -847,6 +877,8 @@ export function deserializeClosedTab(raw: unknown): ClosedTab | null {
       return { type: "history" };
     case "timeline":
       return { type: "timeline" };
+    case "combined":
+      return { type: "combined" };
     case "mission":
       return { type: "mission" };
     default:

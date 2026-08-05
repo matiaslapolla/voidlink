@@ -1,10 +1,18 @@
-/// The pane tree: 1–4 tab groups in a recursive split, per worktree.
+/// The pane tree: any number of tab groups in a recursive split, per worktree.
 ///
 /// `MainSurface` renders exactly one pane at a time today. This module is the
 /// state half of letting it render several — a pure, DOM-free reducer over a
 /// binary-ish split tree, so the interesting cases (a group collapsing when its
-/// last tab closes, ratios renormalising after a collapse, the four-group cap)
-/// are testable without standing up a component.
+/// last tab closes, ratios renormalising after a collapse) are testable without
+/// standing up a component.
+///
+/// **There is no group cap.** There was one — eight — and it was the wrong
+/// shape of limit: someone running a dozen agent terminals wants all of them on
+/// screen, and the reducer is recursive and has never cared how many leaves it
+/// holds. What actually bounds the count is *pixels*, not a constant here: a
+/// pane below roughly 120px is unusable, so the window size decides how many
+/// panes are worth having. That floor is enforced at render/drag time in
+/// `MainSurface`/`paneDrop`, where pixels exist; this file stays fractions-only.
 ///
 /// **The default is load-bearing.** A worktree with no saved layout gets one
 /// group whose `tabIds` is empty, and an empty `tabIds` on the *first* group
@@ -42,27 +50,6 @@ export type PaneNode =
       children: PaneNode[];
     };
 
-/// Eight. Four covered terminal-beside-graph-beside-browser; a review layout —
-/// a diff, a terminal, a graph and a browser down each half of the window —
-/// wants twice that. It is a number, not a principle: the reducer is recursive
-/// and does not care, so the ceiling is set by what stays *usable*, which is
-/// `MIN_RATIO` below. A free-form grid is still a different feature.
-export const MAX_GROUPS = 8;
-
-/// Below this a group is unusable — no room for a tab label, let alone a pane.
-/// The reducer refuses splits that would push any sibling under it. Exported
-/// because the splitter between two groups has to clamp to the same number the
-/// reducer would renormalise to; two different minimums would mean a drag that
-/// silently snaps back.
-///
-/// Left at 0.1 for eight groups, deliberately. Eight evenly-split panes are
-/// 12.5% each, which is *above* the floor — so the floor never binds at the cap
-/// and raising it would only shrink the range a splitter drag can reach.
-/// `normalizeRatios` clamps each entry to at least this before renormalising,
-/// which stays coherent while `MAX_GROUPS * MIN_RATIO <= 1`; at eight that is
-/// 0.8, with room to spare.
-export const MIN_RATIO = 0.1;
-
 let idCounter = 0;
 /// Ids only have to be unique within one worktree's tree and stable across a
 /// reload. `crypto.randomUUID` is available everywhere this runs, but a
@@ -99,12 +86,6 @@ export function findGroup(node: PaneNode, groupId: string): PaneGroup | null {
   return groupList(node).find((g) => g.id === groupId) ?? null;
 }
 
-/// Whether another split is allowed. Exposed so the drop target can refuse with
-/// `no-drop` and a stated reason instead of silently doing nothing.
-export function canSplit(node: PaneNode): boolean {
-  return groupCount(node) < MAX_GROUPS;
-}
-
 /// Resolve which tabs each group shows, given every tab the worktree has open
 /// in registry order.
 ///
@@ -130,10 +111,23 @@ export function resolveGroupTabs(
   }
   const first = groups[0];
   if (first) {
-    // Registry order, not claim order: an unclaimed tab has never been placed,
-    // so the only order it has is the one the strip already used.
+    // Unclaimed tabs fall to the first group, **after** its claims.
+    //
+    // They used to be stacked in *front* of them, and that quietly broke every
+    // drop into the first pane: a tab dropped there becomes claimed, so it
+    // sorted behind every unclaimed tab no matter where the user aimed.
+    // "Drop it second" and "drop it last" were the same gesture, and
+    // `moveTabToGroup`'s careful `beforeTabId` arithmetic was discarded one
+    // line later.
+    //
+    // Appending works because ordering the first group is what *makes* its
+    // tabs claimed: `moveTabToGroup` materialises the whole resolved list
+    // before inserting, so by the time a claim exists here, everything the
+    // user has placed is in it. What is left unclaimed is what has been opened
+    // since — and a newly opened tab belongs at the end, which is where opening
+    // one has always put it.
     const unclaimed = allTabIds.filter((id) => !claimed.has(id));
-    out.set(first.id, [...unclaimed, ...(out.get(first.id) ?? [])]);
+    out.set(first.id, [...(out.get(first.id) ?? []), ...unclaimed]);
   }
   return out;
 }
@@ -153,19 +147,23 @@ export function groupOwning(
 
 // ── Ratios ────────────────────────────────────────────────────────────────
 
-/// Normalise to sum 1 with every entry at or above `MIN_RATIO`. Called on the
-/// way out of every mutation, so no consumer ever has to defend against a
-/// tree whose ratios don't add up.
+/// Normalise to exactly `count` entries summing to 1, none of them zero or
+/// negative. Called on the way out of every mutation, so no consumer ever has
+/// to defend against a tree whose ratios don't add up.
 ///
-/// **Why this is not clamp-then-divide.** It used to be, and that only holds
-/// the floor when the clamped values happen to sum to roughly 1. Raise one
-/// entry to 0.99 and clamp seven siblings up to 0.1 and the total is 1.69 —
-/// dividing through then lands every sibling at 0.059, *under* the floor the
-/// clamp was there to enforce. With four groups the error was small enough to
-/// hide; with eight it is a 71px pane on a 1200px window. So the floor is
-/// applied *after* normalising, by water-filling: pin whatever falls under it,
-/// redistribute what is left proportionally among the rest, repeat. Each pass
-/// pins at least one more entry, so it terminates in at most `count` passes.
+/// **It deliberately enforces no minimum share.** It used to water-fill each
+/// entry up to a `MIN_RATIO` of 0.1, which is a rule that cannot survive an
+/// unbounded group count: eleven panes cannot all have a tenth of the window,
+/// and the old code detected that and silently fell back to even ratios —
+/// throwing away a layout the user had arranged by hand. "Usable width" is a
+/// question about pixels, and this file has none. The floor now lives where the
+/// pixels are (`MIN_PANE_PX` in `paneDrop`, applied by the splitter's clamps),
+/// which is also the only place it can degrade gracefully when the window is
+/// too small for the number of panes in it.
+///
+/// A non-finite or non-positive entry is still replaced — with the even share,
+/// not with zero — because a ratio of 0 is a pane that exists in the tree and
+/// nowhere on screen, which is worse than a wrong-but-visible width.
 export function normalizeRatios(ratios: number[], count: number): number[] {
   const n = Math.max(1, count);
   const even = 1 / n;
@@ -173,41 +171,9 @@ export function normalizeRatios(ratios: number[], count: number): number[] {
     const v = ratios[i];
     return Number.isFinite(v) && v > 0 ? v : even;
   });
-  // No arrangement can satisfy the floor at this count. `MAX_GROUPS` is what
-  // stops this being reachable; splitting evenly is the least-bad answer if it
-  // ever is.
-  if (n * MIN_RATIO > 1) return raw.map(() => even);
-
   const total = raw.reduce((a, b) => a + b, 0);
-  const out = raw.map((v) => v / total);
-  const pinned = new Array<boolean>(n).fill(false);
-
-  for (let pass = 0; pass < n; pass++) {
-    let budget = 1;
-    let freeTotal = 0;
-    let freeCount = 0;
-    for (let i = 0; i < n; i++) {
-      if (pinned[i]) budget -= out[i];
-      else {
-        freeTotal += out[i];
-        freeCount += 1;
-      }
-    }
-    if (freeCount === 0) break;
-    for (let i = 0; i < n; i++) {
-      if (pinned[i]) continue;
-      out[i] = freeTotal > 0 ? (out[i] / freeTotal) * budget : budget / freeCount;
-    }
-    let changed = false;
-    for (let i = 0; i < n; i++) {
-      if (pinned[i] || out[i] >= MIN_RATIO) continue;
-      out[i] = MIN_RATIO;
-      pinned[i] = true;
-      changed = true;
-    }
-    if (!changed) break;
-  }
-  return out;
+  // `raw` is all finite and positive, so `total` is too — no divide-by-zero.
+  return raw.map((v) => v / total);
 }
 
 /// Resize one split. `ratios` is taken as a proposal and normalised.
@@ -235,19 +201,31 @@ function mapTree(node: PaneNode, fn: (n: PaneNode) => PaneNode): PaneNode {
 // ── Splitting ─────────────────────────────────────────────────────────────
 
 /// Split `groupId`, putting a fresh empty group on `placement`'s side of it.
-/// Returns the tree unchanged at the four-group cap, and the new group's id
-/// alongside so the caller can move a tab into it in the same gesture.
+/// Returns the new group's id alongside the tree so the caller can move a tab
+/// into it in the same gesture. The only refusal left is a `groupId` that is
+/// not in the tree — there is no count at which a split stops being allowed.
+///
+/// `allTabIds` **materialises every group's claims first**, and a split is
+/// exactly the moment that stops being optional. "Unclaimed tabs fall to the
+/// first group" is a *positional* rule, and a split with `placement: "before"`
+/// changes which group is first: the fresh, empty group lands at the head of
+/// the tree and inherits every tab nobody had claimed, while the group the user
+/// actually split resolves to nothing. The visible result was every tab jumping
+/// into the new pane and the old one collapsing as empty — a split that ate the
+/// pane it was splitting. Writing the claims down before restructuring means no
+/// group depends on its position any more.
 export function splitGroup(
   node: PaneNode,
   groupId: string,
   orientation: SplitOrientation,
   placement: "before" | "after",
+  allTabIds: readonly string[] = [],
 ): { layout: PaneNode; newGroupId: string | null } {
-  if (!canSplit(node)) return { layout: node, newGroupId: null };
   if (!findGroup(node, groupId)) return { layout: node, newGroupId: null };
 
+  const base = allTabIds.length > 0 ? materializeClaims(node, allTabIds) : node;
   const fresh = makeGroup();
-  const layout = mapTree(node, (n) => {
+  const layout = mapTree(base, (n) => {
     if (n.kind !== "group" || n.group.id !== groupId) return n;
     const leaf: PaneNode = { kind: "group", id: fresh.id, group: fresh };
     const children = placement === "before" ? [leaf, n] : [n, leaf];
@@ -260,6 +238,26 @@ export function splitGroup(
     };
   });
   return { layout: collapse(layout), newGroupId: fresh.id };
+}
+
+/// Write every group's *resolved* tab list into its claims.
+///
+/// Turns the implicit "unclaimed falls to the first group" rule into explicit
+/// membership, so nothing downstream depends on which group happens to be
+/// first. Idempotent, and a no-op for a tree that is already explicit.
+function materializeClaims(node: PaneNode, allTabIds: readonly string[]): PaneNode {
+  const resolved = resolveGroupTabs(node, [...allTabIds]);
+  return mapTree(node, (n) => {
+    if (n.kind !== "group") return n;
+    const tabIds = resolved.get(n.group.id) ?? n.group.tabIds;
+    if (
+      tabIds.length === n.group.tabIds.length &&
+      tabIds.every((id, i) => id === n.group.tabIds[i])
+    ) {
+      return n;
+    }
+    return { ...n, group: { ...n.group, tabIds: [...tabIds] } };
+  });
 }
 
 // ── Removing ──────────────────────────────────────────────────────────────
@@ -303,13 +301,28 @@ function collapse(node: PaneNode): PaneNode {
 /// group's claim on it goes too — including the implicit claim the first group
 /// has on unclaimed tabs, which is why the target's claim is written
 /// explicitly rather than left to the fallback.
+///
+/// `allTabIds` is what makes a *position* meaningful in the first group.
+/// Without it the target's order is only its explicit claims, and the first
+/// group's unclaimed tabs — which is most of them until somebody splits — are
+/// not in that list at all, so `beforeTabId` names a tab the insertion cannot
+/// see and every drop appends. Passing the registry lets the target
+/// materialise its resolved order first, so a drop lands where the user
+/// pointed and everything that was implicit about the order becomes explicit
+/// at the moment the user first cares about it.
 export function moveTabToGroup(
   node: PaneNode,
   tabId: string,
   toGroupId: string,
   beforeTabId: string | null,
+  allTabIds: readonly string[] = [],
 ): PaneNode {
   if (!findGroup(node, toGroupId)) return node;
+  // Only when a registry was actually passed. `resolveGroupTabs` filters by
+  // what is live, so handing it an empty registry answers "no group holds
+  // anything" — and using *that* as the base order would erase every claim the
+  // tree has, which is a far worse failure than ignoring a drop position.
+  const resolved = allTabIds.length > 0 ? resolveGroupTabs(node, [...allTabIds]) : null;
   return mapTree(node, (n) => {
     if (n.kind !== "group") return n;
     if (n.group.id !== toGroupId) {
@@ -326,7 +339,11 @@ export function moveTabToGroup(
         },
       };
     }
-    const without = n.group.tabIds.filter((id) => id !== tabId);
+    // The group's *resolved* order, not just its explicit claims — see the
+    // header. Falls back to the claims when the caller passed no registry,
+    // which is what every test that does not care about position does.
+    const base = resolved?.get(n.group.id) ?? n.group.tabIds;
+    const without = base.filter((id) => id !== tabId);
     const at = beforeTabId === null ? without.length : without.indexOf(beforeTabId);
     const tabIds = [...without];
     tabIds.splice(at === -1 ? without.length : at, 0, tabId);
@@ -354,8 +371,39 @@ export function setGroupActiveTab(
 /// that keeps a split from rotting into dead rectangles. The first group is
 /// exempt: it holds unclaimed tabs, so an empty claim list means "everything",
 /// not "nothing".
-export function pruneClosedTabs(node: PaneNode, allTabIds: string[]): PaneNode {
+///
+/// `collapsible` narrows *which* empty groups may go. Without it, "empty"
+/// alone decides — and a group is at its emptiest one instant after it is
+/// created. A split makes a fresh group and the caller fills it; anything that
+/// ran the prune in between deleted the pane before its tab arrived, so the
+/// drop landed in a group that no longer existed and the tab never moved. The
+/// store passes the set of groups that *had* tabs and now have none, which is
+/// the actual condition the behaviour above describes.
+export function pruneClosedTabs(
+  node: PaneNode,
+  allTabIds: string[],
+  collapsible?: ReadonlySet<string>,
+): PaneNode {
   const live = new Set(allTabIds);
+  const groups = groupList(node);
+  const firstGroupId = groups[0]?.id;
+  // Nothing to prune is the overwhelmingly common case — this runs on every
+  // change to the tree, which during a splitter drag means every frame. An
+  // O(groups) scan with no allocation lets the caller compare the result by
+  // *reference*, where it used to `JSON.stringify` the whole tree twice a frame
+  // to find out that nothing had happened.
+  const canCollapse = (g: PaneGroup) =>
+    g.id !== firstGroupId &&
+    g.tabIds.length === 0 &&
+    (collapsible === undefined || collapsible.has(g.id));
+  const stale = groups.some(
+    (g) =>
+      g.tabIds.some((id) => !live.has(id)) ||
+      (g.activeTabId !== null && !live.has(g.activeTabId)) ||
+      canCollapse(g),
+  );
+  if (!stale) return node;
+
   const cleaned = mapTree(node, (n) => {
     if (n.kind !== "group") return n;
     const tabIds = n.group.tabIds.filter((id) => live.has(id));
@@ -367,12 +415,9 @@ export function pruneClosedTabs(node: PaneNode, allTabIds: string[]): PaneNode {
     return { ...n, group: { ...n.group, tabIds, activeTabId } };
   });
 
-  const groups = groupList(cleaned);
-  const firstId = groups[0]?.id;
   let out = cleaned;
-  for (const g of groups) {
-    if (g.id === firstId) continue;
-    if (g.tabIds.length === 0) out = removeGroup(out, g.id);
+  for (const g of groupList(cleaned)) {
+    if (canCollapse(g)) out = removeGroup(out, g.id);
   }
   return out;
 }
@@ -428,11 +473,14 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 /// Rebuild a tree from disk, rejecting anything malformed outright rather than
 /// half-honouring it. A partially-valid layout is worse than the default: the
 /// default is a workbench that works.
+///
+/// "Too many groups" is not malformed and never was — a tree saved by a build
+/// with a higher cap, or a hand-edited blob, loads as written. The only counts
+/// rejected are the impossible ones.
 export function parsePaneLayout(raw: unknown): PaneNode | null {
   const node = parseNode(raw);
   if (!node) return null;
-  const count = groupCount(node);
-  if (count === 0 || count > MAX_GROUPS) return null;
+  if (groupCount(node) === 0) return null;
   const ids = groupList(node).map((g) => g.id);
   if (new Set(ids).size !== ids.length) return null;
   return collapse(node);

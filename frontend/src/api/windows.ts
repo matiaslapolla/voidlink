@@ -39,6 +39,7 @@ import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emitRemoteGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { GIT_CHANGED_EVENT } from "@/api/watch";
+import type { AgentSession } from "@/components/agent/agentBoard";
 import type {
   ActiveItem,
   ConflictTab,
@@ -603,4 +604,58 @@ export async function openEditorTab(
   if (isMainWindow()) applyInWorkbench();
   else await sendEditorRequest(req);
   await showEditorWindow();
+}
+
+// ── The agent board ─────────────────────────────────────────────────────────
+
+const AGENT_BOARD_EVENT = "voidlink://agent-board";
+const AGENT_BOARD_REQUEST_EVENT = "voidlink://agent-board-request";
+
+/// The agent dashboard's whole state, as one value.
+///
+/// Same one-directional model as the editor tab list, and for the same reason:
+/// only the workbench can see every worktree's terminals and only the workbench
+/// runs the PTY poll that derives their signals, so it is the sole writer. A
+/// satellite renders what it is handed and asks for a fresh copy when it mounts.
+///
+/// It is a *snapshot of sessions*, not of columns. The column derivation lives
+/// in `components/agent/agentBoard.ts` and the receiving window runs it itself,
+/// against its own clock — which is what keeps the thirty-minute idle threshold
+/// from freezing at whatever it was when the last snapshot happened to be sent.
+///
+/// There is deliberately no request channel back. The dashboard is
+/// read-and-navigate: the one mutation it offers is "focus this agent's tab",
+/// and that is a `focusMainWindow` plus a selection the workbench already
+/// exposes — not a new kind of write. A second, bidirectional channel would be
+/// two writers for one board.
+export interface AgentBoardSnapshot {
+  /// Every terminal session in every worktree of the active workspace, agent
+  /// or not. The receiver filters; see `buildAgentBoard`.
+  sessions: AgentSession[];
+  /// `experimental.showIdleAgents`, carried with the data so a satellite does
+  /// not need its own copy of a setting the workbench owns.
+  showIdle: boolean;
+}
+
+/// Publish the board. Workbench side, on every change.
+export async function publishAgentBoard(snapshot: AgentBoardSnapshot): Promise<void> {
+  await emitQuietly(AGENT_BOARD_EVENT, snapshot);
+}
+
+/// Subscribe to the board. Satellite side.
+export function onAgentBoard(
+  handler: (snapshot: AgentBoardSnapshot) => void,
+): Promise<UnlistenFn> {
+  return listenLoudly<AgentBoardSnapshot>(AGENT_BOARD_EVENT, handler);
+}
+
+/// Ask for a fresh snapshot. Satellite side, once both subscriptions are live —
+/// see `EditorApp` for why asking before `listen` resolves races the reply.
+export async function requestAgentBoard(): Promise<void> {
+  await emitQuietly(AGENT_BOARD_REQUEST_EVENT);
+}
+
+/// A satellite joined late and wants the board. Workbench side.
+export function onAgentBoardRequest(handler: () => void): Promise<UnlistenFn> {
+  return listenLoudly(AGENT_BOARD_REQUEST_EVENT, () => handler());
 }

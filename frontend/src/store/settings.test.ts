@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { editorOptions } from "@/components/editor/monaco";
 import type { AppSettings } from "./settings";
 
@@ -9,6 +9,7 @@ import type { AppSettings } from "./settings";
 /// in a DOM implementation for a pure-data test.
 let parseSettings: (raw: string | null) => AppSettings;
 let DEFAULT_SETTINGS: AppSettings;
+let mod: typeof import("./settings");
 
 beforeAll(async () => {
   const store = new Map<string, string>();
@@ -22,7 +23,7 @@ beforeAll(async () => {
       documentElement: { style: {}, setAttribute() {} },
     },
   });
-  const mod = await import("./settings");
+  mod = await import("./settings");
   parseSettings = mod.parseSettings;
   DEFAULT_SETTINGS = mod.DEFAULT_SETTINGS;
 });
@@ -65,6 +66,65 @@ describe("parseSettings", () => {
   });
 });
 
+describe("experimental flags", () => {
+  /// The forward-compatibility rule stated for the newest section: every blob
+  /// on disk today predates it, and every one of them has to boot with the
+  /// experiments off. A flag that arrives switched on is a feature the user
+  /// never agreed to.
+  it("revives an older blob without the section to both flags off", () => {
+    const legacy = JSON.stringify({
+      ui: { textSize: "sm" },
+      terminal: { fontSize: 15 },
+      editor: { fontSize: 20 },
+    });
+    const parsed = parseSettings(legacy);
+    expect(parsed.experimental).toEqual({ agentDashboard: false, showIdleAgents: false });
+    // …without disturbing what the old payload did say.
+    expect(parsed.ui.textSize).toBe("sm");
+    expect(parsed.editor.fontSize).toBe(20);
+  });
+
+  it("revives a payload holding only one of the two flags", () => {
+    const parsed = parseSettings(JSON.stringify({ experimental: { agentDashboard: true } }));
+    expect(parsed.experimental.agentDashboard).toBe(true);
+    expect(parsed.experimental.showIdleAgents).toBe(false);
+  });
+
+  /// GUI → JSON → GUI. The dialog writes the store, the store is serialised to
+  /// the one storage key, and the next boot parses it back — so a flag that
+  /// does not survive `JSON.stringify` round-tripping is a toggle that resets
+  /// itself overnight.
+  it("survives the GUI to JSON to GUI round trip", () => {
+    for (const experimental of [
+      { agentDashboard: true, showIdleAgents: true },
+      { agentDashboard: true, showIdleAgents: false },
+      { agentDashboard: false, showIdleAgents: true },
+      { agentDashboard: false, showIdleAgents: false },
+    ]) {
+      const saved = { ...DEFAULT_SETTINGS, experimental };
+      const revived = parseSettings(JSON.stringify(saved));
+      expect(revived.experimental).toEqual(experimental);
+      // The whole object, not just the section: a new top-level key that is
+      // not threaded through `parseSettings` comes back `undefined`, and that
+      // is exactly the bug this asserts against.
+      expect(revived).toEqual(saved);
+    }
+  });
+
+  /// This is user-editable JSON on disk. A truthy string must not be able to
+  /// switch an experiment on — the one direction a default-off flag must never
+  /// fall.
+  it("treats a non-boolean as off", () => {
+    const saved = JSON.stringify({
+      experimental: { agentDashboard: "yes", showIdleAgents: 1 },
+    });
+    expect(parseSettings(saved).experimental).toEqual({
+      agentDashboard: false,
+      showIdleAgents: false,
+    });
+  });
+});
+
 describe("agent roster migration", () => {
   it("builds a one-entry roster from the single agentCommand", () => {
     // Exactly what is on disk for an install that configured the pre-roster
@@ -73,7 +133,7 @@ describe("agent roster migration", () => {
     const parsed = parseSettings(legacy);
 
     expect(parsed.ai.agents).toEqual([
-      { id: "default", name: "Repo agent", commandTemplate: "llm run" },
+      { id: "default", name: "Repo agent", commandTemplate: "llm run", color: "chart-1" },
     ]);
     // The fallback field survives the migration — it is what a roster entry
     // with a blank template resolves through.
@@ -83,7 +143,7 @@ describe("agent roster migration", () => {
   it("synthesizes a blank entry when no agent was ever configured", () => {
     const parsed = parseSettings(JSON.stringify({ ai: { commitCommand: "cc" } }));
     expect(parsed.ai.agents).toEqual([
-      { id: "default", name: "Repo agent", commandTemplate: "" },
+      { id: "default", name: "Repo agent", commandTemplate: "", color: "chart-1" },
     ]);
   });
 
@@ -91,9 +151,15 @@ describe("agent roster migration", () => {
     const saved = JSON.stringify({
       ai: { agentCommand: "shared", agents: [{ id: "a", name: "Reviewer", commandTemplate: "x" }] },
     });
-    expect(parseSettings(saved).ai.agents).toEqual([
+    // `toMatchObject`: the colour is repaired in rather than persisted here,
+    // and it has its own test below. What "verbatim" claims is that the three
+    // fields the user set come back untouched.
+    expect(parseSettings(saved).ai.agents).toMatchObject([
       { id: "a", name: "Reviewer", commandTemplate: "x" },
     ]);
+    // A roster written before agents had a spec stays hand-written. Filling one
+    // in would silently convert every existing agent into a `claude` command.
+    expect(parseSettings(saved).ai.agents[0].claude).toBeUndefined();
   });
 
   it("drops malformed rows instead of throwing, and dedupes ids keeping the first", () => {
@@ -110,18 +176,62 @@ describe("agent roster migration", () => {
         ],
       },
     });
-    expect(parseSettings(saved).ai.agents).toEqual([
+    expect(parseSettings(saved).ai.agents).toMatchObject([
       { id: "a", name: "Good", commandTemplate: "x" },
     ]);
+    expect(parseSettings(saved).ai.agents).toHaveLength(1);
   });
 
   it("falls back to the synthesized entry when every persisted row is malformed", () => {
     const saved = JSON.stringify({ ai: { agentCommand: "llm", agents: [{ nope: true }] } });
     expect(parseSettings(saved).ai.agents).toEqual([
-      { id: "default", name: "Repo agent", commandTemplate: "llm" },
+      { id: "default", name: "Repo agent", commandTemplate: "llm", color: "chart-1" },
     ]);
     // …and for a roster that is not an array at all.
     expect(parseSettings(JSON.stringify({ ai: { agents: {} } })).ai.agents).toHaveLength(1);
+  });
+
+  /// The colour is not a preference the user has ever set on any roster on
+  /// disk, so every one of them arrives without it. An absent or unknown token
+  /// renders as *no* colour rather than as a wrong one — a chip with no fill —
+  /// which is why it is repaired rather than passed through.
+  it("gives every persisted agent a colour, repairing a token it does not know", () => {
+    const saved = JSON.stringify({
+      ai: {
+        agents: [
+          { id: "a", name: "A", commandTemplate: "" },
+          { id: "b", name: "B", commandTemplate: "", color: "chart-4" },
+          { id: "c", name: "C", commandTemplate: "", color: "puce" },
+        ],
+      },
+    });
+    const agents = parseSettings(saved).ai.agents;
+    expect(agents.map((a) => a.color)).toEqual(["chart-1", "chart-4", "chart-1"]);
+  });
+
+  /// A spec on disk is what makes an entry a *composed* agent rather than a
+  /// hand-written command, so it has to survive the round trip — and a spec
+  /// with a bad field has to survive it too, minus that field. Anything else
+  /// turns one hand-edited character in Settings → JSON into a lost agent.
+  it("revives a composed agent, and only drops the fields it cannot vouch for", () => {
+    const saved = JSON.stringify({
+      ai: {
+        agents: [
+          {
+            id: "a",
+            name: "Reviewer",
+            commandTemplate: "",
+            claude: { model: "opus", permissionMode: "plan", effort: "nope" },
+          },
+        ],
+      },
+    });
+    const spec = parseSettings(saved).ai.agents[0].claude;
+    expect(spec).toMatchObject({ model: "opus", permissionMode: "plan", effort: "" });
+    // And the fields the payload never mentioned come back at their defaults
+    // rather than as `undefined`, which is what every form control binds to.
+    expect(spec?.systemPromptMode).toBe("append");
+    expect(spec?.continueSession).toBe(false);
   });
 
   it("never hands the store a reference to the defaults array", () => {
@@ -160,5 +270,49 @@ describe("editor defaults", () => {
     expect(d.formatOnSave).toBe(false);
     expect(d.trimTrailingWhitespaceOnSave).toBe(false);
     expect(d.insertFinalNewlineOnSave).toBe(false);
+  });
+});
+
+/// What runs when the user has configured nothing — which, now that Settings →
+/// AI has no command box, is every fresh install.
+///
+/// This used to resolve to `""` and every AI action in the app was a no-op
+/// behind a "configure a command" toast. The chain still has to prefer a stored
+/// command, because the boxes are gone from the dialog but not from the JSON
+/// pane, and an install that had `ollama run llama3.2` must not be switched to
+/// a different vendor by an upgrade.
+describe("the built-in claude -p fallbacks", () => {
+  const setAi = (patch: Partial<AppSettings["ai"]>) => mod.useSettings().updateAi(patch);
+
+  beforeEach(() => setAi({ commitCommand: "", agentCommand: "" }));
+
+  it("drafts commit messages with the built-in command when nothing is set", () => {
+    expect(mod.resolveCommitCommand()).toBe(mod.DEFAULT_COMMIT_COMMAND);
+    // Print mode and no tools — enough to be safe against a user's repository
+    // without asking, and nothing beyond that. Every additional flag is a way
+    // to fail on an older `claude`, which is a real machine and not a
+    // hypothetical one.
+    expect(mod.DEFAULT_COMMIT_COMMAND).toContain("claude -p");
+    expect(mod.DEFAULT_COMMIT_COMMAND).toContain("--tools ''");
+    expect(mod.DEFAULT_COMMIT_COMMAND).not.toContain("--no-session-persistence");
+    expect(mod.DEFAULT_AGENT_COMMAND).not.toContain("--no-session-persistence");
+  });
+
+  it("still lets a stored command win, so no upgrade retargets a vendor", () => {
+    setAi({ commitCommand: "  ollama run llama3.2  " });
+    expect(mod.resolveCommitCommand()).toBe("ollama run llama3.2");
+  });
+
+  it("walks the agent chain and lands on the built-in rather than on nothing", () => {
+    const entry = { id: "a", name: "A", commandTemplate: "", color: "chart-1" as const };
+    expect(mod.resolveAgentCommand(entry)).toBe(mod.DEFAULT_AGENT_COMMAND);
+
+    setAi({ commitCommand: "commit-cli" });
+    expect(mod.resolveAgentCommand(entry)).toBe("commit-cli");
+
+    setAi({ agentCommand: "shared-cli" });
+    expect(mod.resolveAgentCommand(entry)).toBe("shared-cli");
+
+    expect(mod.resolveAgentCommand({ ...entry, commandTemplate: "own-cli" })).toBe("own-cli");
   });
 });

@@ -15,6 +15,7 @@ import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Portal } from "solid-js/web";
 import { ChevronRight, ChevronDown, Eye, EyeOff, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare, ClipboardCopy, FileCode, Plus, Undo2, UserRound } from "lucide-solid";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
+import { beginDrag } from "@/components/layout/dragDrop";
 import { fsApi, type FsEntry } from "@/api/fs";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
@@ -422,15 +423,13 @@ export function FileTree(props: {
         }
         return (
           <button
-            draggable={true}
-            onDragStart={(ev) => {
-              // Carry the absolute path so a terminal pane can inject it on drop.
-              // A custom mime keeps us from colliding with arbitrary text drags;
-              // text/plain is the fallback for non-aware drop targets.
-              ev.dataTransfer?.setData("application/x-voidlink-path", r.path);
-              ev.dataTransfer?.setData("text/plain", r.path);
-              if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "copy";
-            }}
+            // Carries the absolute path so a terminal pane can inject it on
+            // drop. Pointer events rather than HTML5 DnD for the reason in
+            // `dragDrop.ts`: Tauri's OS drag destination means the webview
+            // never sees a `dragover` of its own.
+            onPointerDown={(ev) =>
+              beginDrag(ev, { kind: "path", id: r.path, label: r.name, path: r.path })
+            }
             onClick={() => props.onOpenFile?.(r.path)}
             onContextMenu={ev => { ev.preventDefault(); setContextMenu({ x: ev.clientX, y: ev.clientY, path: r.path, isDir: false, name: r.name }); }}
             class={`w-full flex items-center gap-1.5 py-0.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors ${r.ignored ? "opacity-50" : ""}`}

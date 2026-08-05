@@ -11,15 +11,83 @@
 /// against this control would either always see the chevron or never see it,
 /// regardless of whether the strip actually overflowed.
 ///
-/// **Cross-group drag** hands a real `DataTransfer` to `dataTransfer.setData`
-/// in `onDragStart` (`TabStrip.tsx`). `DataTransfer` is a browser constructor
-/// jsdom does not implement at all — `new DataTransfer()` throws
-/// `ReferenceError` there, which is why every drag test up to now has had to
-/// stub the whole gesture rather than drive it.
-import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@solidjs/testing-library";
+/// **Cross-group drag** is resolved entirely from `getBoundingClientRect` now:
+/// the strip is one drop zone and it works out *where* a release lands by
+/// measuring the rows it rendered. jsdom reports a zero rect for every element,
+/// so every drop position in the app would resolve to the same slot and none of
+/// these assertions could fail.
+///
+/// The gesture is pointer events rather than HTML5 drag-and-drop — see
+/// `dragDrop.ts` for why it has to be — so the helpers below drive
+/// `pointerdown` / `pointermove` / `pointerup` directly.
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { JSX } from "solid-js";
-import { TabStrip, type TabDescriptor, type TabKind } from "./TabStrip";
+import { cancelDrag } from "./dragDrop";
+import {
+  DragGhost,
+  PaneDropOverlay,
+  TabStrip,
+  type TabDescriptor,
+  type TabKind,
+} from "./TabStrip";
+
+/// Drive a drag. The first move has to clear `DRAG_THRESHOLD_PX` or the
+/// controller treats the whole thing as a click and never starts — which is the
+/// property that lets a tab still be clicked at all.
+function press(source: Element, at: { x: number; y: number }) {
+  source.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      button: 0,
+      buttons: 1,
+      clientX: at.x,
+      clientY: at.y,
+    }),
+  );
+}
+
+function moveTo(at: { x: number; y: number }) {
+  window.dispatchEvent(
+    new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      buttons: 1,
+      clientX: at.x,
+      clientY: at.y,
+    }),
+  );
+}
+
+function release(at: { x: number; y: number }) {
+  window.dispatchEvent(
+    new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      button: 0,
+      buttons: 0,
+      clientX: at.x,
+      clientY: at.y,
+    }),
+  );
+}
+
+/// The centre of an element, in viewport coordinates.
+function centre(el: Element) {
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+/// A point just inside an element's leading edge — where an insertion lands
+/// *before* it, since `insertionIndex` splits each row at its midpoint.
+function leadingEdge(el: Element) {
+  const r = el.getBoundingClientRect();
+  return { x: r.left + 2, y: r.top + r.height / 2 };
+}
 
 function tab(id: string, kind: TabKind = "file"): TabDescriptor {
   return {
@@ -141,48 +209,360 @@ describe("vertical orientation", () => {
 });
 
 describe("drag between groups", () => {
-  it("moves a tab from one pane group's strip onto another's with a real DataTransfer", async () => {
+  beforeEach(cancelDrag);
+
+  it("moves a tab from one pane group's strip onto another's", () => {
     const onMoveTabA = vi.fn();
     const onMoveTabB = vi.fn();
-    const tabA = tab("a1");
-    const tabB = tab("b1");
 
     render(() => (
       <div style={{ display: "flex" }}>
         <div style={{ width: "400px" }}>
-          <TabStrip {...baseProps([tabA])} groupId="group-a" onMoveTab={onMoveTabA} />
+          <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={onMoveTabA} />
         </div>
         <div style={{ width: "400px" }}>
-          <TabStrip {...baseProps([tabB])} groupId="group-b" onMoveTab={onMoveTabB} />
+          <TabStrip {...baseProps([tab("b1")])} groupId="group-b" onMoveTab={onMoveTabB} />
         </div>
       </div>
     ));
 
-    const source = screen.getByTitle("a1");
-    const target = screen.getByTitle("b1");
-
-    // `DataTransfer` is a real browser API. Constructing one is the line this
-    // test could not cross in jsdom.
-    const dataTransfer = new DataTransfer();
-    source.dispatchEvent(
-      new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer }),
-    );
-    target.dispatchEvent(
-      new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }),
-    );
-    target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+    const target = leadingEdge(screen.getByTitle("b1"));
+    press(screen.getByTitle("a1"), centre(screen.getByTitle("a1")));
+    moveTo(target);
+    release(target);
 
     // The strip the tab landed *on* is the one whose `onMoveTab` fires — group
     // A, which the drag started in, gets nothing.
     expect(onMoveTabB).toHaveBeenCalledTimes(1);
     const [payload, beforeTabId] = onMoveTabB.mock.calls[0];
-    expect(payload).toMatchObject({ kind: "file", id: "a1", groupId: "group-a" });
+    expect(payload).toMatchObject({ kind: "tab", id: "a1", paneGroupId: "group-a" });
+    // Released on b1's leading half, so it lands in front of b1 rather than
+    // wherever the strip happened to end.
     expect(beforeTabId).toBe("b1");
     expect(onMoveTabA).not.toHaveBeenCalled();
+  });
 
-    // `text/voidlink-item` is what `onDragStart` wrote into the real
-    // `DataTransfer` — proof the handler ran against this exact gesture and
-    // not a stand-in for one.
-    expect(dataTransfer.getData("text/voidlink-item")).toBe("file:a1");
+  /// Reordering inside one strip — the oldest thing the strip does, and the
+  /// case a cross-pane test does not touch at all.
+  it("reorders within a strip, anchored on the tab the pointer is in front of", () => {
+    const props = baseProps([tab("a", "terminal"), tab("b", "terminal"), tab("c", "terminal")]);
+    render(() => (
+      <div style={{ width: "800px" }}>
+        <TabStrip {...props} groupId="group-a" onMoveTab={vi.fn()} />
+      </div>
+    ));
+
+    const target = leadingEdge(screen.getByTitle("a"));
+    press(screen.getByTitle("c"), centre(screen.getByTitle("c")));
+    moveTo(target);
+    release(target);
+
+    expect(props.onReorder).toHaveBeenCalledWith("terminal", "c", "a");
+  });
+
+  /// The anchor has to be of the dragged tab's own kind: `onReorder` moves a
+  /// tab within its kind's store array, and a tab of another kind is not in
+  /// that array to be positioned against.
+  it("anchors a reorder on the next tab of the same kind, not the next tab", () => {
+    const props = baseProps([
+      tab("cmp", "compare"),
+      tab("t1", "terminal"),
+      tab("t2", "terminal"),
+    ]);
+    render(() => (
+      <div style={{ width: "800px" }}>
+        <TabStrip {...props} groupId="group-a" onMoveTab={vi.fn()} />
+      </div>
+    ));
+
+    // Dropped in front of the compare tab, which a terminal cannot be ordered
+    // against — so the anchor walks on to the first terminal at or after it.
+    const target = leadingEdge(screen.getByTitle("cmp"));
+    press(screen.getByTitle("t2"), centre(screen.getByTitle("t2")));
+    moveTo(target);
+    release(target);
+
+    expect(props.onReorder).toHaveBeenCalledWith("terminal", "t2", "t1");
+  });
+
+  it("is a click, not a drag, when the pointer never moves", () => {
+    const props = baseProps([tab("a1")]);
+    render(() => <TabStrip {...props} groupId="group-a" onMoveTab={vi.fn()} />);
+
+    const card = screen.getByTitle("a1");
+    press(card, centre(card));
+    release(centre(card));
+    card.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    // Below the threshold the controller never starts, so the click that
+    // follows is the user's and reaches `onSelect`.
+    expect(props.onSelect).toHaveBeenCalledTimes(1);
+  });
+});
+
+/// What the user asked for and the old per-tab drop targets could not express:
+/// a group holding tabs of different kinds, in the order they were dropped.
+///
+/// Per-kind store arrays cannot represent that — a terminal and a compare tab
+/// live in different lists — so the group's own `tabIds` is the only ordering
+/// that can, and `onAssignTab` is the only call that writes it. The drop has to
+/// make that call with a *position*, not just a membership.
+describe("mixing kinds inside a tab group", () => {
+  beforeEach(cancelDrag);
+
+  it("drops a tab of another kind between two members, at that position", () => {
+    const onAssignTab = vi.fn();
+    const group = {
+      id: "tg1",
+      label: "Review",
+      color: "chart-1" as const,
+      collapsed: false,
+      tabIds: ["term-1", "term-2"],
+    };
+    const tabs = [
+      tab("term-1", "terminal"),
+      tab("term-2", "terminal"),
+      tab("cmp-1", "compare"),
+    ];
+
+    render(() => (
+      <div style={{ width: "800px" }}>
+        <TabStrip
+          {...baseProps(tabs)}
+          groupId="group-a"
+          tabGroups={[group]}
+          onAssignTab={onAssignTab}
+        />
+      </div>
+    ));
+
+    // Drop the compare tab on term-2's leading half — between the two
+    // terminals, which is a slot no per-kind array has a name for.
+    const target = leadingEdge(screen.getByTitle("term-2"));
+    press(screen.getByTitle("cmp-1"), centre(screen.getByTitle("cmp-1")));
+    moveTo(target);
+    release(target);
+
+    expect(onAssignTab).toHaveBeenCalledWith("cmp-1", "tg1", "term-2");
+  });
+
+  it("takes a tab out of the group when it is dropped past the last row", () => {
+    const onAssignTab = vi.fn();
+    const group = {
+      id: "tg1",
+      label: "Review",
+      color: "chart-1" as const,
+      collapsed: false,
+      tabIds: ["term-1"],
+    };
+
+    render(() => (
+      <div style={{ width: "800px" }}>
+        <TabStrip
+          {...baseProps([tab("term-1", "terminal")])}
+          groupId="group-a"
+          tabGroups={[group]}
+          onAssignTab={onAssignTab}
+        />
+      </div>
+    ));
+
+    // The far end of the strip is outside every group — the inverse of the
+    // gesture that put the tab in one.
+    const strip = screen.getByTitle("term-1").parentElement!.getBoundingClientRect();
+    const end = { x: strip.right - 4, y: strip.top + strip.height / 2 };
+    press(screen.getByTitle("term-1"), centre(screen.getByTitle("term-1")));
+    moveTo(end);
+    release(end);
+
+    expect(onAssignTab).toHaveBeenCalledWith("term-1", null, null);
+  });
+});
+
+/// The drag ghost and the pane preview, which have no jsdom equivalent for a
+/// third reason: both are driven by pointer *coordinates* carried on a real
+/// `DragEvent`, and both are read off `getBoundingClientRect`. jsdom reports a
+/// zero rect for every element, so `dropIntentAt` would classify every pointer
+/// position in the app as the same degenerate box and the preview would be
+/// identical for a centre drop and an edge one.
+///
+/// `paneDrop.test.ts` covers the arithmetic. What is only checkable here is
+/// that the arithmetic is wired to the pixels the user is actually pointing at.
+describe("the drag ghost and the pane preview", () => {
+  /// The payload, the pointer and the action sentence are module state in
+  /// `dragDrop.ts` — one drag is in flight at a time across every strip and
+  /// pane in the window, which is the whole reason they are not per-component.
+  /// A test that leaves a drag open therefore hands the next one a ghost it
+  /// never started.
+  beforeEach(cancelDrag);
+
+  /// A pane body with a drop overlay on it, laid out at a known size so the
+  /// 20% edge zones land at known coordinates.
+  function pane(onSplitDrop = vi.fn(), onMoveTab = vi.fn()) {
+    return (
+      <div style={{ position: "relative", width: "400px", height: "200px" }} data-testid="pane">
+        <PaneDropOverlay
+          groupId="group-b"
+          paneCount={2}
+          onMoveTab={onMoveTab}
+          onSplitDrop={onSplitDrop}
+        />
+      </div>
+    );
+  }
+
+  /// A point at a fraction of the pane's box.
+  function inPane(fx: number, fy: number) {
+    const box = screen.getByTestId("pane").getBoundingClientRect();
+    return { x: box.left + box.width * fx, y: box.top + box.height * fy };
+  }
+
+  it("names the tab in flight and says what to do with it", () => {
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        <DragGhost />
+      </>
+    ));
+
+    // Nothing follows the cursor when nothing is being dragged.
+    expect(screen.queryByTestId("drag-ghost")).toBeNull();
+
+    const card = screen.getByTitle("a1");
+    press(card, centre(card));
+    // Somewhere over nothing, well clear of the strip.
+    moveTo({ x: 5, y: 400 });
+
+    // The label comes off the payload — the ghost is the app's own drag image,
+    // so this is the only place the thing in flight is named. Scoped to the
+    // ghost: the tab card it was dragged from still carries the same label,
+    // and it should.
+    expect(within(screen.getByTestId("drag-ghost")).getByText("a1")).toBeInTheDocument();
+    // Over nothing: instruction rather than a blank line.
+    expect(screen.getByText("Release over a pane")).toBeInTheDocument();
+  });
+
+  it("says what releasing here would do, per zone, and updates as the pointer moves", () => {
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        {pane()}
+        <DragGhost />
+      </>
+    ));
+    const card = screen.getByTitle("a1");
+    press(card, centre(card));
+
+    // Centre: a move, and the count is not mentioned because the layout does
+    // not change.
+    moveTo(inPane(0.5, 0.5));
+    expect(screen.getByText("Move into this pane")).toBeInTheDocument();
+
+    // Right-hand 20%: a split, and the sentence is the count *after* the drop.
+    moveTo(inPane(0.95, 0.5));
+    expect(screen.getByText("Split right — 3 panes")).toBeInTheDocument();
+    expect(screen.queryByText("Move into this pane")).toBeNull();
+
+    // Top 20%: same pane, different edge — the sentence tracks the pointer
+    // rather than the pane it is over.
+    moveTo(inPane(0.5, 0.02));
+    expect(screen.getByText("Split up — 3 panes")).toBeInTheDocument();
+  });
+
+  it("goes away when the gesture does, wherever it ended", () => {
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        <DragGhost />
+      </>
+    ));
+    const card = screen.getByTitle("a1");
+    press(card, centre(card));
+    moveTo({ x: 5, y: 400 });
+    expect(screen.getByText("Release over a pane")).toBeInTheDocument();
+
+    // Released over nothing — the case no drop target would ever hear about.
+    release({ x: 5, y: 400 });
+    expect(screen.queryByTestId("drag-ghost")).toBeNull();
+  });
+
+  it("cancels on Escape without dropping", () => {
+    const onSplitDrop = vi.fn();
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        {pane(onSplitDrop)}
+        <DragGhost />
+      </>
+    ));
+    const card = screen.getByTitle("a1");
+    press(card, centre(card));
+    moveTo(inPane(0.95, 0.5));
+    expect(screen.getByText("Split right — 3 panes")).toBeInTheDocument();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(screen.queryByTestId("drag-ghost")).toBeNull();
+
+    // And the release that follows the cancel is not a drop.
+    release(inPane(0.95, 0.5));
+    expect(onSplitDrop).not.toHaveBeenCalled();
+  });
+
+  it("still delivers the drop it is describing", () => {
+    const onSplitDrop = vi.fn();
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        {pane(onSplitDrop)}
+        <DragGhost />
+      </>
+    ));
+    const card = screen.getByTitle("a1");
+    press(card, centre(card));
+    moveTo(inPane(0.95, 0.5));
+    release(inPane(0.95, 0.5));
+
+    expect(onSplitDrop).toHaveBeenCalledTimes(1);
+    const [payload, orientation, placement] = onSplitDrop.mock.calls[0];
+    expect(payload).toMatchObject({ id: "a1", paneGroupId: "group-a" });
+    expect(orientation).toBe("row");
+    expect(placement).toBe("after");
+    // And the ghost is gone, without a second gesture to dismiss it.
+    expect(screen.queryByTestId("drag-ghost")).toBeNull();
+  });
+
+  /// The property that makes a browser tab's pane droppable at all.
+  ///
+  /// Its page is an OS-level child webview composited *above* the DOM, so a
+  /// drop target underneath it can never be hit-tested by the DOM — which is
+  /// what the old HTML5 implementation relied on. The controller hit-tests by
+  /// rect instead, so anything painted on top is irrelevant. An opaque element
+  /// over the pane is the closest a test can get to a native view, and it is
+  /// the same question.
+  it("lands the drop even when something opaque covers the pane", () => {
+    const onSplitDrop = vi.fn();
+    render(() => (
+      <>
+        <TabStrip {...baseProps([tab("a1")])} groupId="group-a" onMoveTab={vi.fn()} />
+        <div style={{ position: "relative", width: "400px", height: "200px" }}>
+          {pane(onSplitDrop)}
+          <div
+            style={{
+              position: "absolute",
+              inset: "0",
+              "z-index": "999",
+              background: "black",
+            }}
+          />
+        </div>
+        <DragGhost />
+      </>
+    ));
+    const card = screen.getByTitle("a1");
+    press(card, centre(card));
+    moveTo(inPane(0.95, 0.5));
+    release(inPane(0.95, 0.5));
+
+    expect(onSplitDrop).toHaveBeenCalledTimes(1);
   });
 });

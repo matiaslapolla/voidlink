@@ -47,7 +47,12 @@ pub struct BrainEntryDetail {
 /// Split a markdown file's leading `---`-fenced frontmatter block from its
 /// body. The frontmatter shape here is fixed and flat, so a hand-rolled split
 /// is enough — no YAML parser.
-fn split_frontmatter(raw: &str) -> (Option<&str>, &str) {
+///
+/// `pub(crate)` because the board (`crate::board`) stores its cards in the same
+/// markdown-with-flat-frontmatter format, deliberately: a second parser would
+/// be a second opinion about what a `.voidlink/` file looks like, and the two
+/// would drift the first time one of them learned to quote something.
+pub(crate) fn split_frontmatter(raw: &str) -> (Option<&str>, &str) {
     if !raw.starts_with("---") {
         return (None, raw);
     }
@@ -63,7 +68,8 @@ fn split_frontmatter(raw: &str) -> (Option<&str>, &str) {
     }
 }
 
-fn unquote_scalar(s: &str) -> String {
+/// `pub(crate)` for the same reason as `split_frontmatter` — see its comment.
+pub(crate) fn unquote_scalar(s: &str) -> String {
     let s = s.trim();
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         s[1..s.len() - 1].replace("\\\"", "\"").replace("\\\\", "\\")
@@ -72,7 +78,8 @@ fn unquote_scalar(s: &str) -> String {
     }
 }
 
-fn parse_flow_array(s: &str) -> Vec<String> {
+/// `pub(crate)` for the same reason as `split_frontmatter` — see its comment.
+pub(crate) fn parse_flow_array(s: &str) -> Vec<String> {
     let s = s.trim();
     if s.len() >= 2 && s.starts_with('[') && s.ends_with(']') {
         s[1..s.len() - 1]

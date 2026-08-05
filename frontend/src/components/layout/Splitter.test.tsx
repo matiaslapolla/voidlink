@@ -45,7 +45,11 @@ describe("what it announces", () => {
   it("says in its tooltip that it takes arrows and a double-click", () => {
     const { handle } = mount();
     expect(handle.getAttribute("title")).toMatch(/arrow keys/i);
-    expect(handle.getAttribute("title")).toMatch(/double-click to reset/i);
+    expect(handle.getAttribute("title")).toMatch(/double-click or Enter to reset/i);
+    // `Home`/`End` and `Enter` are handled in `onKeyDown` and used to be
+    // documented nowhere, which for a keyboard affordance is the same as not
+    // existing.
+    expect(handle.getAttribute("title")).toMatch(/Home\/End/i);
   });
 
   /// §7.6 forbids a silent disabled control: the reason replaces the tooltip

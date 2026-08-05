@@ -158,6 +158,9 @@ const tabSwitcherOverlay = createOverlay("tab-switcher");
 /// itself on mount and unregister on cleanup; owning the state here means the
 /// registration cannot disagree with whether the surface is actually open.
 const brainOverlay = createOverlay("brain");
+/// The project board. Beside the brain rather than on the tab strip, for the
+/// reason `BoardOverlay.tsx`'s header sets out.
+const boardOverlay = createOverlay("board");
 
 // ─── Recently-used actions ────────────────────────────────────────────────
 /// Ids in most-recent-first order, capped. In memory rather than persisted: the
@@ -263,6 +266,21 @@ export function openBrain() {
 
 export function closeBrain() {
   brainOverlay.close();
+}
+
+/// The project board — cards as markdown files under `.voidlink/board/`, the
+/// same storage bargain the brain makes. See `BoardOverlay.tsx` for why it is
+/// an overlay rather than a tab kind.
+export function isBoardOpen() {
+  return boardOverlay.isOpen();
+}
+
+export function openBoard() {
+  boardOverlay.open();
+}
+
+export function closeBoard() {
+  boardOverlay.close();
 }
 
 /// The worktree/workspace switcher: every worktree across every workspace, with

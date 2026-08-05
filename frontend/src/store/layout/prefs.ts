@@ -37,9 +37,26 @@ export const GIT_SECTION_KEYS: GitSectionKey[] = [
   "openedDiffs",
 ];
 
+/// The left sidebar's two disclosures.
+///
+/// `files` is the file explorer's expanded/collapsed state and it is global on
+/// purpose (see this file's header): collapsing the explorer in one worktree
+/// and having it spring back on the next switch is the behaviour nobody wants.
+///
+/// It means slightly different things in the explorer's two homes, because the
+/// axis it reclaims differs. In the left sidebar it collapses the *panel* to a
+/// `SIDEBAR_RAIL_WIDTH` icon rail, so the width goes back to the workbench; in
+/// the right column (vertical tabs) the column's width belongs to the git
+/// panel, so it reclaims the vertical space instead. One flag either way — two
+/// would be two things to keep in step for one user intent.
 export interface SidebarSections {
   files: boolean;
   terminals: boolean;
+  /// The Agent Dashboard's disclosure. Persisted like the other two even
+  /// though the section only exists behind `experimental.agentDashboard` —
+  /// the preference is about the *section*, and losing it every time the flag
+  /// is toggled would make the experiment more annoying than the feature.
+  agents: boolean;
 }
 
 /// The three resizable columns of the shell, in px.
@@ -64,12 +81,35 @@ export const PANEL_BOUNDS: Record<PanelId, { min: number; max: number; default: 
   gitSidebar: { min: 220, max: 600, default: 320 },
 };
 
+/// Width of a sidebar that has been collapsed to its icon rail, in px.
+///
+/// Beside `PANEL_BOUNDS` rather than in it, because it is not a *bound*: a rail
+/// has no min, no max and nothing to drag. It is the one width the panel takes
+/// while the user has asked for the space back, and it matches the git
+/// sidebar's collapsed rail (`GitSidebarCollapsed`, `w-8`) so the shell has one
+/// rail idiom rather than two.
+///
+/// Deliberately **not** written into `panels.sidebar` on collapse. That field
+/// keeps holding the width the user last dragged to, which is what makes
+/// expanding restore *their* width instead of the default — the pre-collapse
+/// width is persisted because it was never overwritten, not because a second
+/// key shadows it. A collapsed panel has no splitter to change it either (the
+/// handle is rendered disabled, §7.6), so the value cannot drift while it is
+/// out of view.
+export const SIDEBAR_RAIL_WIDTH = 32;
+
 export interface UiPrefs {
   panels: PanelWidths;
   gitSidebarCollapsed: boolean;
   leftSidebarCollapsed: boolean;
   sidebarsSwapped: boolean;
   diffMode: DiffMode;
+  /// Whether the hunk renderer prints old/new line numbers in its gutters.
+  ///
+  /// Global rather than per worktree for the same reason `diffMode` is: it is a
+  /// statement about how you read diffs, and having it flip back when you
+  /// switch worktree is the behaviour nobody wants.
+  diffLineNumbers: boolean;
   gitTab: GitTab;
   ignoreWhitespace: boolean;
   sidebarTab: SidebarTab;
@@ -94,6 +134,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   leftSidebarCollapsed: false,
   sidebarsSwapped: false,
   diffMode: "inline",
+  diffLineNumbers: true,
   gitTab: "changes",
   ignoreWhitespace: false,
   sidebarTab: "terminals",
@@ -107,7 +148,7 @@ export const DEFAULT_PREFS: UiPrefs = {
     openedDiffs: true,
   },
   gitSectionOrder: [...GIT_SECTION_KEYS],
-  sidebarSections: { files: true, terminals: true },
+  sidebarSections: { files: true, terminals: true, agents: true },
 };
 
 /// Repair a persisted section order: drop keys this build doesn't know, drop
@@ -129,11 +170,40 @@ export function parseGitSectionOrder(raw: unknown): GitSectionKey[] {
   return out;
 }
 
+/// What a blob read back off disk may actually look like.
+///
+/// `Partial<UiPrefs>` was too strong, and in a way only a merge could expose:
+/// `Partial` is shallow, so it says the *nested* records are absent-or-complete.
+/// A build that adds a key to `SidebarSections` — as the Agent Dashboard's
+/// `agents` did — instantly makes every blob written by every older build
+/// ill-typed, which is precisely the case this function exists to absorb. The
+/// nested records are restated as partials so the type says what the parser has
+/// always done: every field is independently optional, at every level.
+///
+/// `gitSectionOrder` stays a whole array. A partial array is a different and
+/// worse claim (`(GitSectionKey | undefined)[]`), and `parseGitSectionOrder`
+/// already validates it element by element.
+type PersistedPrefs = Omit<Partial<UiPrefs>, "panels" | "gitSections" | "sidebarSections"> & {
+  panels?: Partial<PanelWidths>;
+  gitSections?: Partial<GitSections>;
+  sidebarSections?: Partial<SidebarSections>;
+};
+
 /// Field-by-field so a blob written by an older (or newer) build cannot
 /// introduce a value the UI has no branch for — `diffMode: "sidebyside"` would
 /// render nothing at all.
-export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
-  if (!parsed || typeof parsed !== "object") return { ...DEFAULT_PREFS };
+///
+/// A missing blob takes the same path rather than a `{ ...DEFAULT_PREFS }`
+/// shortcut, because that spread was *shallow*: `panels`, `gitSections` and
+/// `sidebarSections` came back as the very objects hanging off the module-level
+/// `DEFAULT_PREFS`, and `createStore` mutates what it is given. A first run —
+/// exactly the case the shortcut existed for — therefore wrote every panel
+/// resize and every section toggle straight into the defaults, so "the default
+/// layout" became whatever the last store to touch it had done. One window
+/// hides it; two stores in one process (the render tests, and stacked mode's
+/// second store) do not.
+export function parsePrefs(parsed: PersistedPrefs | null): UiPrefs {
+  if (!parsed || typeof parsed !== "object") parsed = {};
   const d = DEFAULT_PREFS;
   return {
     panels: parsePanelWidths(parsed.panels),
@@ -141,6 +211,7 @@ export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
     leftSidebarCollapsed: parsed.leftSidebarCollapsed ?? d.leftSidebarCollapsed,
     sidebarsSwapped: parsed.sidebarsSwapped ?? d.sidebarsSwapped,
     diffMode: parsed.diffMode === "split" ? "split" : "inline",
+    diffLineNumbers: parsed.diffLineNumbers ?? d.diffLineNumbers,
     gitTab:
       parsed.gitTab === "branches" || parsed.gitTab === "history"
         ? parsed.gitTab
@@ -160,6 +231,7 @@ export function parsePrefs(parsed: Partial<UiPrefs> | null): UiPrefs {
     sidebarSections: {
       files: parsed.sidebarSections?.files ?? d.sidebarSections.files,
       terminals: parsed.sidebarSections?.terminals ?? d.sidebarSections.terminals,
+      agents: parsed.sidebarSections?.agents ?? d.sidebarSections.agents,
     },
   };
 }

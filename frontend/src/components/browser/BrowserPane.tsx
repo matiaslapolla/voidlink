@@ -2,6 +2,7 @@ import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { ArrowLeft, ArrowRight, Loader2, RotateCw, Wrench, ZoomIn, ZoomOut } from "lucide-solid";
 import { browserApi, type WebviewRect } from "@/api/webview";
 import { isOverlayOpen } from "@/commands/overlay";
+import { activeDrag } from "@/components/layout/dragDrop";
 import { pushToast } from "@/commands/toast";
 import type { BrowserTab } from "@/store/layout";
 import { readAddress, refusalMessage } from "@/components/browser/url";
@@ -242,8 +243,29 @@ export function BrowserPane(props: {
   /// Single source of truth for "should the page be on screen". Anything that
   /// paints over the tab — a modal, a menu, another tab being active — has to
   /// route through here, because nothing in the DOM can cover a child webview.
+  ///
+  /// A tab drag is in that list for the same reason `isOverlayOpen` is. It
+  /// draws its drop preview *over* the pane it would land in, and this page is
+  /// the one pane no DOM overlay can paint on top of — so a tab dragged across
+  /// a browser pane would cross a rectangle that stayed blank while every other
+  /// pane lit up. The drop itself would still land (the controller hit-tests by
+  /// rect, not by DOM), but a target that gives no feedback is one the user
+  /// will not aim at.
+  ///
+  /// Scoped to tab drags rather than `isDragging()`: a path dragged out of the
+  /// file tree can only land in a terminal, and blanking the page for it would
+  /// be a flash with nothing behind it.
+  const paneDragInFlight = () => {
+    const kind = activeDrag()?.kind;
+    return kind === "tab" || kind === "tabgroup";
+  };
+
   const shouldShow = () =>
-    props.active && (props.groupVisible ?? true) && !isOverlayOpen() && !error();
+    props.active &&
+    (props.groupVisible ?? true) &&
+    !isOverlayOpen() &&
+    !paneDragInFlight() &&
+    !error();
 
   createEffect(() => {
     if (!ready()) return;

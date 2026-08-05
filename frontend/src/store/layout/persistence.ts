@@ -62,6 +62,9 @@ export const STORAGE_KEYS = {
   /// state, and the events themselves are Rust's (`src-tauri/src/journal/`),
   /// which is the whole reason this key is one id and not a cache.
   timelineTabs: "voidlink-timeline-tabs",
+  /// `Record<worktreeId, CombinedDiffTab[]>` — the one-scroll view of every
+  /// change in the worktree.
+  combinedTabs: "voidlink-combined-tabs",
   /// `Record<worktreeId, MissionTab[]>` — Mission Control. One id per worktree,
   /// like the three singletons above, and for the same reason: what the surface
   /// shows lives in Rust, so the only thing worth persisting is that the tab was

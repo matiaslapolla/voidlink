@@ -11,7 +11,25 @@ import {
   on,
   type JSX,
 } from "solid-js";
-import { Check, Layers, Loader2, RefreshCw, RotateCcw, Search, Trash2, X } from "lucide-solid";
+import {
+  Check,
+  Layers,
+  Loader2,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-solid";
+import {
+  LABEL_INDENT,
+  Section,
+  SegmentedRow,
+  SliderRow,
+  TextRow,
+  ToggleRow,
+} from "./rows";
+import { AgentRosterSection } from "./AgentRosterPane";
 import { gitApi } from "@/api/git";
 import type { ConfigEntry, ConfigScope, ConfigSnapshot } from "@/types/git";
 import {
@@ -23,11 +41,7 @@ import {
   type ConfigField,
 } from "./gitConfig";
 import {
-  AI_KEY_PRESETS,
-  aiKeyBindings,
   useSettings,
-  type AgentRosterEntry,
-  type AiKeyBinding,
   type CursorStyle,
   type EditorCoreSettings,
   type EditorSettings,
@@ -55,6 +69,7 @@ import {
 } from "@/store/settingsSearch";
 import { withLanguageOverride, withoutLanguageOverride } from "@/store/settingsJson";
 import { NotificationsPane } from "@/components/settings/NotificationsPane";
+import { ExperimentalPane } from "@/components/settings/ExperimentalPane";
 // `void tooltip` keeps the import: Solid erases a `use:` directive whose symbol
 // it cannot see referenced as a value.
 import { tooltip } from "@/components/ui/Tooltip";
@@ -67,7 +82,6 @@ import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
 import { resetLayoutStorage } from "@/store/layout";
 import { stackApi } from "@/api/stack";
-import { secretsApi, type SecretStatus } from "@/api/secrets";
 import { pushToast } from "@/commands/toast";
 import { getAction } from "@/commands/registry";
 import { shortcutLabel, shortcutLabels } from "@/commands/shortcuts";
@@ -98,6 +112,7 @@ type Tab =
   | "ai"
   | "git"
   | "stack"
+  | "experimental"
   | "help";
 
 export function SettingsDialog(props: SettingsDialogProps) {
@@ -194,21 +209,15 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</TabButton>
             <TabButton active={tab() === "notifications"} onClick={() => setTab("notifications")}>Notifications</TabButton>
-            {/* AI is parked, not deleted. `AiPane` and everything under it is
-                still mounted below on a branch `tab()` can no longer reach, so
-                turning it back on is deleting `disabledReason` here — not
-                resurrecting a pane from git. §7.6: a disabled control that does
-                not say why is a dead end, so the reason is on the face of the
-                tab as well as in its tooltip. */}
-            <TabButton
-              active={false}
-              onClick={() => {}}
-              disabledReason="The AI pane is being reworked — provider keys, the agent roster and the commit command are all moving. Nothing here is configurable in this build."
-            >
-              AI <span class="text-micro opacity-70">— coming soon</span>
-            </TabButton>
+            {/* Parked for one release while the roster was reworked; the note
+                that used to sit here said "the agent roster is moving", and
+                this is where it moved to. Agents are now built from a form
+                rather than typed as a shell command, so the pane the tab was
+                disabled *for* is the pane it now opens. */}
+            <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
             <TabButton active={tab() === "git"} onClick={() => setTab("git")}>Git</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
+            <TabButton active={tab() === "experimental"} onClick={() => setTab("experimental")}>Experimental</TabButton>
             <TabButton active={tab() === "help"} onClick={() => setTab("help")}>Help</TabButton>
           </div>
 
@@ -222,6 +231,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <Show when={tab() === "ai"}><AiPane /></Show>
             <Show when={tab() === "git"}><GitPane /></Show>
             <Show when={tab() === "stack"}><StackPane /></Show>
+            <Show when={tab() === "experimental"}><ExperimentalPane /></Show>
             <Show when={tab() === "help"}><HelpPane /></Show>
           </div>
 
@@ -1334,619 +1344,74 @@ function ShortcutRow(props: { entry: KeymapEntry }) {
 /// colour transition is the pane's whole motion budget — at 0ms a
 /// simultaneous recolour of five headers reads as a repaint glitch rather than
 /// a change of mode.
-/// The label column, and the indent that has to line up with it.
-///
-/// Every row in this dialog is `flex gap-3` with a fixed-width label cell, and
-/// two places in the AI pane annotate a row by indenting a sibling to match.
-/// Those were hand-written as `pl-28` against a `w-28` label — which is short
-/// by exactly the `gap-3` between them, so the commit-preset buttons and the
-/// fallback-command hint sat 12px to the left of the input they belong to.
-/// Deriving the indent from the column is what stops the two drifting again.
-///
-/// `break-words` rather than `truncate`: the label is the only thing telling a
-/// user what a control does, and silently clipping it at the `xl` text size is
-/// worse than a row that grows a line. `shrink-0` is what keeps a long label
-/// from taking width from the control instead.
-const LABEL_COL = "w-28 shrink-0 break-words";
-/// `w-28` + `gap-3`, as a value rather than as a number to remember.
-const LABEL_INDENT = "pl-[calc(7rem+0.75rem)]";
-
-function Section(props: { title: string; tone?: "warning"; children: JSX.Element }) {
-  return (
-    <section>
-      <h3
-        class={`ui-section-label mb-2 ${props.tone === "warning" ? "text-warning" : ""}`}
-        style={{ transition: "color var(--dur-short) var(--ease-in-out)" }}
-      >
-        {props.title}
-      </h3>
-      <div class="space-y-3">{props.children}</div>
-    </section>
-  );
-}
-
-/// `labelCell` replaces the whole label column rather than its text.
-///
-/// The schema-driven editor pane needs a modified dot, a highlighted match and
-/// a per-setting reset in that column; every other pane passes a plain string
-/// and gets exactly what it always got. One set of controls, two callers.
-function SliderRow(props: {
-  label: string;
-  labelCell?: JSX.Element;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  format: (v: number) => string;
-  onInput: (v: number) => void;
-}) {
-  return (
-    <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
-      <input
-        type="range"
-        min={props.min}
-        max={props.max}
-        step={props.step}
-        value={props.value}
-        onInput={(e) => props.onInput(Number(e.currentTarget.value))}
-        class="flex-1 accent-primary"
-      />
-      <span class="w-24 text-right tabular-nums text-foreground/80 shrink-0">
-        {props.format(props.value)}
-      </span>
-    </div>
-  );
-}
-
-function ToggleRow(props: {
-  label: string;
-  labelCell?: JSX.Element;
-  value: boolean;
-  hint?: string;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div class="flex items-center gap-3">
-      {props.labelCell ?? (
-        <div class={LABEL_COL} title={props.label}>
-          <div class="text-muted-foreground">{props.label}</div>
-          <Show when={props.hint}>
-            <div class="text-micro text-muted-foreground/70 leading-tight">{props.hint}</div>
-          </Show>
-        </div>
-      )}
-      <button
-        onClick={() => props.onChange(!props.value)}
-        class={`px-3 py-1 rounded-full border text-label transition-colors ${
-          props.value
-            ? "bg-primary/15 border-primary/40 text-primary"
-            : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
-        }`}
-      >
-        {props.value ? "On" : "Off"}
-      </button>
-    </div>
-  );
-}
-
-function TextRow(props: {
-  label: string;
-  labelCell?: JSX.Element;
-  value: string;
-  placeholder?: string;
-  onInput: (v: string) => void;
-}) {
-  return (
-    <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
-      <input
-        type="text"
-        value={props.value}
-        placeholder={props.placeholder}
-        onInput={(e) => props.onInput(e.currentTarget.value)}
-        class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-      />
-    </div>
-  );
-}
-
-function SegmentedRow<T extends string>(props: {
-  label: string;
-  labelCell?: JSX.Element;
-  value: T;
-  options: { id: T; label: string }[];
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
-      <div class="flex-1 flex gap-1">
-        <For each={props.options}>
-          {(opt) => (
-            <button
-              onClick={() => props.onChange(opt.id)}
-              class={`flex-1 px-2 py-1 rounded border text-label transition-colors ${
-                props.value === opt.id
-                  ? "bg-primary/15 border-primary/40 text-primary"
-                  : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
-              }`}
-            >
-              {opt.label}
-            </button>
-          )}
-        </For>
-      </div>
-    </div>
-  );
-}
-
 // ─── AI Pane ────────────────────────────────────────────────────────────────
 
-const AI_COMMAND_PRESETS: { label: string; command: string }[] = [
-  {
-    label: "Claude CLI",
-    command:
-      'claude --no-tools -p "You are a senior engineer. Write a concise, imperative-mood git commit message (50-char title, optional body) for the following staged diff. Output ONLY the message."',
-  },
-  {
-    label: "Ollama (llama3.2)",
-    command:
-      'ollama run llama3.2 "Write a concise imperative-mood git commit message for this diff. Output ONLY the message:"',
-  },
-  {
-    label: "OpenAI Codex CLI",
-    command:
-      'codex exec -m gpt-5 "Write a concise imperative-mood git commit message (50-char title, optional body) for this staged diff. Output ONLY the message."',
-  },
-];
-
+/// Settings → AI: one vendor, no keys, and a form for the agents.
+///
+/// This pane used to be three text boxes and a keychain manager, on the premise
+/// that AI here is BYO-CLI: type any command, store any provider's key, point
+/// it at `ollama` or `codex` or whatever you have. That premise is still true
+/// of the *code* — `run_cli` will spawn anything, and a stored `commitCommand`
+/// still wins — and it was a bad thing to put in front of a user. Three
+/// consequences drove pulling it:
+///
+///   1. **Nothing worked out of the box.** Every AI action in the app was a
+///      no-op behind a "no AI command configured" toast until the user pasted a
+///      command they had to compose themselves. The presets it offered were
+///      also drifting: the shipped Claude one passed `--no-tools`, a flag the
+///      CLI has not had for some time, so the one-click option was broken.
+///   2. **The key rows were a bill.** Claude Code resolves `ANTHROPIC_API_KEY`
+///      *before* a subscription, so storing one silently moved a signed-in user
+///      onto per-token billing — a footgun the pane could only warn about, and
+///      the warning was three lines long. With only `claude` supported the
+///      whole question disappears: auth is whatever the CLI already has.
+///   3. **Two contracts, one box.** A pasted command could be a filter or a
+///      session and the box could not tell you which it needed to be.
+///
+/// So the surface is now exactly one thing: named `claude` agents, built in the
+/// form below. The escape hatches survive without a UI — `commitCommand`,
+/// `agentCommand` and stored keys are all still read, and Settings → JSON still
+/// edits the first two — because deleting them would silently unconfigure
+/// everyone who had set one. Same reasoning as the hidden command agent in
+/// `AgentRosterPane`: hide the surface, keep the contract.
 function AiPane() {
-  const { settings, updateAi } = useSettings();
+  const { activeRepoPath } = useAppStore();
   return (
     <div class="space-y-4">
       <p class="text-label text-muted-foreground leading-relaxed">
         VoidLink runs no model of its own and talks to no service on your
-        behalf. Configure any local CLI you already have installed; the staged
-        diff is piped to its stdin and stdout becomes the commit-message draft.
-        If that CLI needs a key or a token, store it under Provider keys below —
-        it goes to your OS keychain, never to voidlink's settings.
+        behalf. It spawns the <code class="font-mono">claude</code> CLI you
+        already have installed, in this folder, on your machine.
       </p>
-      <Section title="Commit messages">
-        <TextRow
-          label="Commit command"
-          value={settings.ai.commitCommand}
-          placeholder={'e.g. claude --no-tools -p "Write a git commit message:"'}
-          onInput={(v) => updateAi({ commitCommand: v })}
-        />
-        <div class={`flex flex-wrap gap-1 ${LABEL_INDENT}`}>
-          <For each={AI_COMMAND_PRESETS}>
-            {(p) => (
-              <button
-                onClick={() => updateAi({ commitCommand: p.command })}
-                class="px-2 py-0.5 text-micro rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
-                title={p.command}
-              >
-                {p.label}
-              </button>
-            )}
-          </For>
-        </div>
-      </Section>
-      <AgentRosterSection />
-      <Section title="Agent fallback command">
-        <TextRow
-          label="Fallback command"
-          value={settings.ai.agentCommand}
-          placeholder={'optional — defaults to the commit command'}
-          onInput={(v) => updateAi({ agentCommand: v })}
-        />
-        <p class={`text-label text-muted-foreground leading-relaxed ${LABEL_INDENT}`}>
-          Used by any agent above that leaves its own command blank — and, if
-          this is blank too, the commit command. A prompt grounded in your live
-          workspace state — branch, status, recent log, staged diff, open files —
-          is piped to stdin; stdout is the answer ({shortcutLabel("agent.toggle")}).
+      {/* The scope note. It is a limitation, so it says so plainly and says
+          what it buys — a user who wants Ollama should learn that here and not
+          from a settings box that accepted the command and then did nothing
+          useful with it. */}
+      <div class="rounded border border-border/60 bg-muted/30 p-2.5 space-y-1.5">
+        <p class="text-label text-foreground/90 leading-relaxed">
+          For now, Claude Code only.
         </p>
-      </Section>
-      <ProviderKeysSection />
-    </div>
-  );
-}
-
-// ─── Agent roster ───────────────────────────────────────────────────────────
-
-const AGENT_INPUT_CLASS =
-  "min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono outline-2 outline-transparent transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring";
-
-/// The workspace's named agents. An agent tab is bound to one of these rows, so
-/// two rows pointing at differently-configured CLIs can answer side by side.
-///
-/// Edits are written straight through on every keystroke, like every other row
-/// in this dialog — there is no Save button to be out of sync with, and a
-/// half-typed command is only ever spawned when the user asks the agent to run.
-///
-/// The last row's remove button stays *present* and disabled rather than
-/// disappearing (§7.6): a control that vanishes teaches nothing, and the reason
-/// a roster can't be emptied is exactly what the user needs told.
-function AgentRosterSection() {
-  const { settings, addAgent, updateAgent, removeAgent } = useSettings();
-  const soleEntry = () => settings.ai.agents.length <= 1;
-
-  return (
-    <Section title="Agents">
-      <p class="text-label text-muted-foreground leading-relaxed">
-        Each agent is a name plus the CLI command its prompt is piped to. Bind an
-        agent tab to one of these; leave a command blank to use the fallback
-        below.
+        <p class="text-label text-muted-foreground leading-relaxed">
+          Commit messages and the agent thread run{" "}
+          <code class="font-mono">claude -p</code>, and the agents below run{" "}
+          <code class="font-mono">claude</code> in a real terminal. Both use{" "}
+          <b>your own already-authenticated Claude Code CLI</b> — whatever{" "}
+          <code class="font-mono">claude</code> is signed in as when you run it
+          in a terminal. VoidLink stores no API key and asks you for none; if
+          the CLI works in your shell, it works here. Support for other CLIs is
+          not gone from the code, only from this pane.
+        </p>
+      </div>
+      <AgentRosterSection repoPath={activeRepoPath()} />
+      <p class="text-label text-muted-foreground/70 leading-relaxed">
+        The agent <em>thread</em> — the slide-over at{" "}
+        {shortcutLabel("agent.toggle")} — is a different thing from the agents
+        above: a prompt grounded in your live workspace state (branch, status,
+        recent log, staged diff, open files) is piped to{" "}
+        <code class="font-mono">claude -p</code> and stdout is the answer, with
+        no session and nothing to answer a permission prompt with. It needs no
+        configuration.
       </p>
-      {/* Column headings, because two bare inputs side by side told a sighted
-          user nothing about which was which — the `aria-label`s below were the
-          only labelling this section had, so it read correctly to a screen
-          reader and not at all to everyone else (MASTER §10.6 asks for a real
-          label, not a placeholder). `aria-hidden` because each input already
-          carries its own name; announcing the heading too would say it twice.
-          The spacer matches the remove button's box so the headings stay over
-          the fields they name. */}
-      <div
-        aria-hidden="true"
-        class="flex items-center gap-1.5 text-micro text-muted-foreground/70"
-      >
-        <span class="w-28 shrink-0">Name</span>
-        <span class="flex-1 min-w-0">Command</span>
-        <span class="w-[26px] shrink-0" />
-      </div>
-      <For each={settings.ai.agents}>
-        {(entry: AgentRosterEntry) => (
-          <div class="flex items-center gap-1.5">
-            <input
-              type="text"
-              value={entry.name}
-              placeholder="Repo agent"
-              aria-label="Agent name"
-              onInput={(e) => updateAgent(entry.id, { name: e.currentTarget.value })}
-              class={`w-28 shrink-0 ${AGENT_INPUT_CLASS}`}
-            />
-            <input
-              type="text"
-              value={entry.commandTemplate}
-              placeholder="optional — falls back to the command below"
-              aria-label={`Command for ${entry.name || "this agent"}`}
-              onInput={(e) => updateAgent(entry.id, { commandTemplate: e.currentTarget.value })}
-              class={`flex-1 ${AGENT_INPUT_CLASS}`}
-            />
-            <button
-              onClick={() => {
-                if (soleEntry()) return;
-                removeAgent(entry.id);
-              }}
-              aria-disabled={soleEntry()}
-              title={
-                soleEntry()
-                  ? "A roster needs at least one agent"
-                  : `Remove ${entry.name || "this agent"} from the roster`
-              }
-              aria-label={`Remove ${entry.name || "this agent"} from the roster`}
-              class={`p-1 rounded text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
-                soleEntry()
-                  ? "opacity-40 cursor-not-allowed"
-                  : "hover:text-destructive hover:bg-destructive/10"
-              }`}
-            >
-              <X class="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-      </For>
-      <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
-        <button
-          onClick={() => addAgent("New agent", "")}
-          class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Add agent
-        </button>
-      </div>
-    </Section>
-  );
-}
-
-// ─── Provider keys ──────────────────────────────────────────────────────────
-
-/// Manage AI provider keys held in the OS credential store.
-///
-/// The value is write-only from here: it is sent to Rust once, stored in the
-/// keychain, and never comes back. All this pane can learn is presence plus a
-/// four-character tail, which is exactly what `secret_status` returns. Presence
-/// is always re-read from the keychain rather than tracked locally, so the UI
-/// can't show "saved" for something that isn't there.
-function ProviderKeysSection() {
-  const { removeAiKey } = useSettings();
-  const [keychainError, setKeychainError] = createSignal<string | null>(null);
-
-  const [statuses, { refetch }] = createResource(
-    () => aiKeyBindings().map((b) => b.id),
-    async (ids): Promise<SecretStatus[]> => {
-      // Caught here rather than left to reject: reading a resource accessor
-      // in a failed state rethrows into render, and there is no ErrorBoundary
-      // inside the dialog. A locked or denied keychain has to be *reported* —
-      // never flattened into an empty list that would read as "no keys set".
-      try {
-        const result = await secretsApi.status(ids);
-        setKeychainError(null);
-        return result;
-      } catch (e) {
-        setKeychainError(String(e));
-        return [];
-      }
-    },
-  );
-
-  createEffect(() => {
-    const err = keychainError();
-    if (err) pushToast(`Couldn't read the OS keychain: ${err}`, "error", 7000);
-  });
-
-  const statusFor = (id: string) => statuses()?.find((s) => s.id === id);
-
-  const forget = async (binding: AiKeyBinding) => {
-    try {
-      // Delete the stored value before dropping the mapping, otherwise the
-      // credential is orphaned in the keychain with nothing pointing at it.
-      await secretsApi.delete(binding.id);
-      removeAiKey(binding.id);
-      pushToast(`Removed ${binding.envVar}`, "success");
-      void refetch();
-    } catch (e) {
-      pushToast(`Couldn't remove ${binding.envVar}: ${String(e)}`, "error", 7000);
-    }
-  };
-
-  return (
-    <Section title="Provider keys">
-      <p class="text-label text-muted-foreground leading-relaxed">
-        Optional. Keys go to your OS credential store (macOS Keychain, Windows
-        Credential Manager, Linux secret-service) — never to voidlink's settings
-        or localStorage — and are exported into the environment of the commands
-        above. VoidLink itself never sends them anywhere. Injection is additive:
-        if your shell already exports the same variable, yours wins.
-      </p>
-      {/* The precedence note above is true of *VoidLink's* injection. This one
-          is about what the CLI does with what it receives, and it is the more
-          expensive surprise: Claude Code resolves an API key before a
-          subscription, so a stored `ANTHROPIC_API_KEY` silently bills per
-          token even when the machine is signed in to a paid plan. The pane
-          previously showed both rows and said nothing about which would win.
-          Rendered as a plain note rather than a warning tone because both
-          states are legitimate — this is a fact about ordering, not a
-          misconfiguration. */}
-      <p class="text-label text-muted-foreground leading-relaxed">
-        Two of these are alternatives, not additions. A Claude CLI or the agent
-        SDK will use <span class="font-mono">ANTHROPIC_API_KEY</span> if it is
-        set and fall back to{" "}
-        <span class="font-mono">CLAUDE_CODE_OAUTH_TOKEN</span> — or to a{" "}
-        <span class="font-mono">claude</span> already signed in on this machine
-        — only when it isn't. Store the API key and you are billed per token
-        even on a paid plan; leave it empty to use the plan.
-      </p>
-      <Show when={keychainError()}>
-        {(err) => (
-          <p class="text-label text-destructive leading-relaxed" title={err()}>
-            Can't reach the OS credential store, so which keys are stored is
-            unknown. Saving will report the same error.
-          </p>
-        )}
-      </Show>
-      <For each={aiKeyBindings()}>
-        {(binding) => (
-          <KeyRow
-            binding={binding}
-            status={statusFor(binding.id)}
-            loading={statuses.loading}
-            unknown={keychainError() !== null}
-            onChanged={() => void refetch()}
-            removable={!AI_KEY_PRESETS.some((p) => p.id === binding.id)}
-            onForget={() => void forget(binding)}
-          />
-        )}
-      </For>
-      <AddCustomKey onAdded={() => void refetch()} />
-    </Section>
-  );
-}
-
-function KeyRow(props: {
-  binding: AiKeyBinding;
-  status: SecretStatus | undefined;
-  loading: boolean;
-  /// The keychain couldn't be read at all — presence is genuinely unknown,
-  /// which is not the same thing as "not set".
-  unknown: boolean;
-  onChanged: () => void;
-  removable: boolean;
-  onForget: () => void;
-}) {
-  const [value, setValue] = createSignal("");
-  const [busy, setBusy] = createSignal(false);
-  const present = () => props.status?.present ?? false;
-
-  const statusText = () => {
-    if (props.unknown) return "Unknown";
-    if (props.loading && !props.status) return "Checking…";
-    if (!present()) return "Not set";
-    const hint = props.status?.hint ?? "";
-    return hint ? `Set · ••••${hint}` : "Set";
-  };
-
-  const save = async () => {
-    const v = value().trim();
-    if (!v) {
-      pushToast("Paste a key value first.", "warning");
-      return;
-    }
-    setBusy(true);
-    try {
-      await secretsApi.set(props.binding.id, props.binding.envVar, v);
-      pushToast(`${props.binding.label} key saved to the OS keychain`, "success");
-      props.onChanged();
-    } catch (e) {
-      pushToast(`Couldn't save the ${props.binding.label} key: ${String(e)}`, "error", 7000);
-    } finally {
-      // Never leave a secret sitting in a DOM input, success or failure.
-      setValue("");
-      setBusy(false);
-    }
-  };
-
-  const remove = async () => {
-    setBusy(true);
-    try {
-      await secretsApi.delete(props.binding.id);
-      pushToast(`${props.binding.label} key deleted from the OS keychain`, "success");
-      props.onChanged();
-    } catch (e) {
-      pushToast(`Couldn't delete the ${props.binding.label} key: ${String(e)}`, "error", 7000);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div class="flex items-start gap-2">
-      <div class="w-28 shrink-0 pt-1">
-        <div class="truncate text-foreground/90" title={props.binding.label}>
-          {props.binding.label}
-        </div>
-        <div
-          class="truncate font-mono text-micro text-muted-foreground/70"
-          title={props.binding.envVar}
-        >
-          {props.binding.envVar}
-        </div>
-      </div>
-      <div class="flex-1 min-w-0 space-y-1">
-        <div class="flex items-center gap-1.5">
-          <input
-            type="password"
-            autocomplete="off"
-            spellcheck={false}
-            value={value()}
-            disabled={busy()}
-            placeholder={present() ? "Replace key…" : "Paste key…"}
-            onInput={(e) => setValue(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void save();
-            }}
-            class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
-          />
-          <button
-            onClick={() => void save()}
-            disabled={busy()}
-            class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
-          >
-            Save
-          </button>
-          <Show when={present()}>
-            <button
-              onClick={() => void remove()}
-              disabled={busy()}
-              title={`Delete the stored ${props.binding.label} key`}
-              aria-label={`Delete the stored ${props.binding.label} key`}
-              class="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 disabled:opacity-50 transition-colors"
-            >
-              <Trash2 class="w-3.5 h-3.5" />
-            </button>
-          </Show>
-          <Show when={props.removable}>
-            <button
-              onClick={props.onForget}
-              disabled={busy()}
-              title={`Remove ${props.binding.envVar} from this list`}
-              aria-label={`Remove ${props.binding.envVar} from this list`}
-              class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
-            >
-              <X class="w-3.5 h-3.5" />
-            </button>
-          </Show>
-        </div>
-        <div
-          class={`text-micro ${present() ? "text-primary/80" : "text-muted-foreground/70"}`}
-        >
-          {statusText()}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AddCustomKey(props: { onAdded: () => void }) {
-  const { addAiKey } = useSettings();
-  const [envVar, setEnvVar] = createSignal("");
-  const [value, setValue] = createSignal("");
-  const [busy, setBusy] = createSignal(false);
-
-  const add = async () => {
-    const name = envVar().trim();
-    const v = value().trim();
-    if (!name) {
-      pushToast("Enter the environment variable name your CLI expects.", "warning");
-      return;
-    }
-    if (!v) {
-      pushToast("Paste a key value first.", "warning");
-      return;
-    }
-    const id = `custom.${name}`;
-    setBusy(true);
-    try {
-      // Store first: Rust owns the one implementation of the env-var name
-      // rule, so a rejected name never leaves a dangling binding behind.
-      await secretsApi.set(id, name, v);
-      const added = addAiKey({ id, envVar: name, label: name });
-      pushToast(
-        added ? `${name} saved to the OS keychain` : `${name} was already listed — value updated`,
-        "success",
-      );
-      setEnvVar("");
-      props.onAdded();
-    } catch (e) {
-      pushToast(`Couldn't save ${name}: ${String(e)}`, "error", 7000);
-    } finally {
-      setValue("");
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
-      <input
-        type="text"
-        value={envVar()}
-        disabled={busy()}
-        placeholder="MY_PROVIDER_API_KEY"
-        onInput={(e) => setEnvVar(e.currentTarget.value)}
-        aria-label="Custom environment variable name"
-        class="w-28 shrink-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
-      />
-      <input
-        type="password"
-        autocomplete="off"
-        spellcheck={false}
-        value={value()}
-        disabled={busy()}
-        placeholder="Paste key…"
-        aria-label="Custom key value"
-        onInput={(e) => setValue(e.currentTarget.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") void add();
-        }}
-        class="flex-1 min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
-      />
-      <button
-        onClick={() => void add()}
-        disabled={busy()}
-        class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 disabled:opacity-50 transition-colors"
-      >
-        Add
-      </button>
     </div>
   );
 }

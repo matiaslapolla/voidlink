@@ -36,6 +36,11 @@ import { createSignal, onCleanup, type JSX } from "solid-js";
 const STEP = 8;
 const BIG_STEP = 32;
 
+/// Half the 8px hit strip (`w-2` / `h-2`), in px. The strip's own width is a
+/// Tailwind class and this is the arithmetic half of it — the two have to move
+/// together, so the class names it in a comment and this names the class.
+const HALF_HANDLE_PX = 4;
+
 /// The island gap in px, read from the `--island-gap` token.
 ///
 /// Under Direction D1 a splitter no longer sits on a seam — it sits in the
@@ -44,7 +49,19 @@ const BIG_STEP = 32;
 /// with the token; this is the only place JavaScript asks the cascade for it.
 /// Cached because it is read on every splitter drag frame and the token is not
 /// theme-dependent (no theme redefines it — see `index.css`).
+///
+/// **The cache has no invalidation, and that is a constraint on the token, not
+/// an oversight.** Anything that makes `--island-gap` vary at runtime — a
+/// density mode, a per-theme override — has to call `forgetIslandGap` when it
+/// changes, or splitter drags will keep dividing by the old value and drift by
+/// the difference across the pane.
 let cachedGap: number | null = null;
+
+/// Drop the cached token value. For a caller that has just changed it.
+export function forgetIslandGap(): void {
+  cachedGap = null;
+}
+
 export function islandGapPx(): number {
   if (cachedGap !== null) return cachedGap;
   // `node` has no cascade to compute; unit tests that reach here want the
@@ -81,6 +98,15 @@ export interface SplitterProps {
   /// A splitter whose pane is collapsed has nothing to resize. Pass the reason
   /// so the `title` can state it (§7.6 forbids a silent disabled control).
   disabledReason?: string;
+  /// Fires `true` when a pointer drag starts and `false` when it ends.
+  ///
+  /// For hosts that animate their own width. A collapse animates because it
+  /// carries information — where the panel went — but the same transition on a
+  /// pane the user is *holding* would make it trail the pointer, which §7.3.10
+  /// forbids. The host suppresses its transition for the duration rather than
+  /// guessing from the value, because a width change tells you nothing about
+  /// which gesture produced it.
+  onDragStateChange?: (dragging: boolean) => void;
   /// The handle sits in the canvas gap *between* two islands rather than
   /// inside one of them (Direction D1). Shifts the 8px strip outward by half
   /// the gap so it straddles the seam the user actually sees, and centres the
@@ -108,6 +134,24 @@ export function Splitter(props: SplitterProps) {
   /// the window) grow it as the pointer moves back.
   const sign = () => (props.side === "end" ? 1 : -1);
 
+  /// One place the drag flag is written, so the host can never be told the drag
+  /// started and not that it ended.
+  function setDrag(value: boolean) {
+    setDragging(value);
+    props.onDragStateChange?.(value);
+  }
+
+  /// Tears down whatever drag is in flight, or `null` when there is none.
+  ///
+  /// It exists because the obvious spelling does not work: `onCleanup` called
+  /// from inside a pointer handler runs with no owner — Solid warns and drops
+  /// it — so a splitter unmounted mid-drag (a tab closing collapses its group
+  /// while the handle is held) never restored `document.body`'s cursor and
+  /// `user-select`. The window was left with a `col-resize` cursor and no
+  /// selectable text until the next drag happened to end properly.
+  let endDrag: (() => void) | null = null;
+  onCleanup(() => endDrag?.());
+
   function onPointerDown(e: PointerEvent) {
     if (disabled() || e.button !== 0) return;
     e.preventDefault();
@@ -117,7 +161,7 @@ export function Splitter(props: SplitterProps) {
     // where the pointer went down, not against the handle's centre.
     const origin = axis() === "x" ? e.clientX : e.clientY;
     const startValue = props.value;
-    setDragging(true);
+    setDrag(true);
     // Hold the resize cursor for the whole drag, not just while the pointer
     // happens to be over the 8px strip.
     const priorCursor = document.body.style.cursor;
@@ -131,7 +175,9 @@ export function Splitter(props: SplitterProps) {
       props.onResize(clamp(startValue + sign() * (now - origin)));
     };
     const onUp = () => {
-      setDragging(false);
+      if (endDrag === null) return; // Already torn down — this is idempotent.
+      endDrag = null;
+      setDrag(false);
       document.body.style.cursor = priorCursor;
       document.body.style.userSelect = priorSelect;
       handle.removeEventListener("pointermove", onMove);
@@ -141,7 +187,7 @@ export function Splitter(props: SplitterProps) {
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onUp);
-    onCleanup(onUp);
+    endDrag = onUp;
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -168,12 +214,24 @@ export function Splitter(props: SplitterProps) {
   /// Where the 8px strip sits along the resize axis.
   ///
   /// Flush (`inGap` unset) it hugs the pane's own edge, as it did when panes
-  /// shared a 1px seam. In a gap it is pushed outward by half the gap so its
-  /// centre lands on the middle of the canvas channel: the strip spans
-  /// `[-gap/2 - 4px, -gap/2 + 4px]` from the pane edge, which is an offset of
-  /// `gap/2 - 4px` — negative for a 6px gap, i.e. outward.
+  /// shared a 1px seam: `right: 0` puts the strip's outer edge on the pane's,
+  /// so it lies entirely *inside* the pane and its centre is 4px in.
+  ///
+  /// In a gap the centre has to land on the middle of the canvas channel,
+  /// which is `gap/2` **outward** from the pane edge. Getting there means
+  /// moving the strip's outer edge from 0 to `gap/2 + HALF_HANDLE` outward —
+  /// an inset of `-(gap/2 + 4px)`, which for a 6px gap is `-7px`.
+  ///
+  /// It used to be `gap/2 - 4px`. That is `-1px` for a 6px gap: the strip
+  /// reached exactly one pixel into the channel and kept the other seven over
+  /// the pane, putting its centre — and the visible rule, which `rule()`
+  /// centres in the strip — 3px *inside* the island instead of in the gap
+  /// between two of them. The rule was drawn a whole gap away from the seam it
+  /// names, and the hit area the user aims at was not on the seam either.
   const offset = (): JSX.CSSProperties => {
-    const v = props.inGap ? "calc(var(--island-gap) / 2 - 4px)" : "0px";
+    const v = props.inGap
+      ? `calc(-1 * (var(--island-gap) / 2 + ${HALF_HANDLE_PX}px))`
+      : "0px";
     if (axis() === "x") return props.side === "end" ? { right: v } : { left: v };
     return props.side === "end" ? { bottom: v } : { top: v };
   };
@@ -202,7 +260,7 @@ export function Splitter(props: SplitterProps) {
       aria-disabled={disabled() ? "true" : undefined}
       title={
         props.disabledReason ??
-        `${props.label} — drag or use arrow keys (Shift for larger steps); double-click to reset`
+        `${props.label} — drag or use arrow keys (Shift for larger steps); Home/End for the bounds; double-click or Enter to reset`
       }
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}

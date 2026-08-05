@@ -13,6 +13,7 @@ import { emptyNavHistory, type GroupMru, type NavHistory } from "./navigation";
 import type {
   ActiveItem,
   AgentTab,
+  CombinedDiffTab,
   TimelineTab,
   MissionTab,
   BrowserTab,
@@ -53,6 +54,7 @@ export interface AppStoreState {
   historyTabsByWorktree: Record<string, HistoryTab[]>;
   previewTabsByWorktree: Record<string, PreviewTab[]>;
   timelineTabsByWorktree: Record<string, TimelineTab[]>;
+  combinedTabsByWorktree: Record<string, CombinedDiffTab[]>;
   missionTabsByWorktree: Record<string, MissionTab[]>;
   browserTabsByWorktree: Record<string, BrowserTab[]>;
   /// AI agent threads, several per worktree. The tabs only; each thread's
@@ -102,6 +104,7 @@ export interface AppStoreState {
   leftSidebarCollapsed: boolean;
   sidebarsSwapped: boolean;
   diffMode: DiffMode;
+  diffLineNumbers: boolean;
   gitTab: GitTab;
   ignoreWhitespace: boolean;
   sidebarTab: SidebarTab;

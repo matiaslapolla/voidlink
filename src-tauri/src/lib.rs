@@ -14,6 +14,7 @@ mod journal;
 mod notify;
 mod lsp;
 mod brain;
+mod board;
 mod menu;
 mod secrets;
 mod watch;
@@ -1304,6 +1305,7 @@ pub fn run() {
             git::git_ls_files,
             git::git_safe_checkout,
             git::git_apply_hunk,
+            git::git_binary_sides,
             git::git_ai_generate_commit,
             git::git_blame_file,
             git::git_list_conflicts,
@@ -1384,6 +1386,9 @@ pub fn run() {
             brain::brain_list_entries,
             brain::brain_read_entry,
             brain::brain_save_entry,
+            board::board_list_cards,
+            board::board_read_card,
+            board::board_save_card,
             secrets::secret_set,
             secrets::secret_delete,
             secrets::secret_status,

@@ -91,9 +91,11 @@ import {
 import { DiffTabView } from "@/components/editor/DiffTabView";
 import { MergeEditor } from "@/components/editor/MergeEditor";
 import { FileTree } from "@/components/files/FileTree";
+import { FilesRail } from "@/components/files/FilesPanel";
 import { FindPanel } from "@/components/search/FindPanel";
 import { MarkdownPreview } from "@/components/preview/MarkdownPreview";
 import {
+  DragGhost,
   TabStrip,
   VERTICAL_TAB_WIDTH,
   type TabDescriptor,
@@ -110,7 +112,7 @@ import { registerActions, type Action } from "@/commands/registry";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { pushToast } from "@/commands/toast";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
-import { createAppStore } from "@/store/layout";
+import { createAppStore, SIDEBAR_RAIL_WIDTH } from "@/store/layout";
 import { useSettings } from "@/store/settings";
 import type { EditorReorderableKind, EditorTabKind } from "@/api/windows";
 
@@ -215,6 +217,25 @@ export function EditorSurface(props: {
   const { state, actions } = useAppStore();
   const context = () => props.context();
   const snapshot = () => props.tabs();
+  /// Whether the file tree is expanded, or collapsed to its icon rail.
+  ///
+  /// **Window-local, deliberately.** The workbench's collapse is a persisted
+  /// global preference (`sidebarSections.files`); this one is a signal that dies
+  /// with the window. The broadcast model is one-directional by design — the
+  /// workbench publishes a snapshot and this window sends *requests* back (see
+  /// `api/windows.ts`) — so sharing the flag would mean a new request kind, a
+  /// new field on the snapshot, and a round trip on every click, to make two
+  /// windows that are side by side on the same screen agree about how much of
+  /// each one the user wants to see. That is the opposite of what a second
+  /// window is for: the workbench's explorer and this one's are looking at the
+  /// same tree for different reasons, and collapsing one is not a statement
+  /// about the other.
+  ///
+  /// It is also why this stays a `createSignal` rather than moving into the
+  /// local `createAppStore({ persist: false })`: that store hydrates from the
+  /// workbench's keys and never writes back, so a flag put there would silently
+  /// inherit the workbench's collapse on every window open and then diverge —
+  /// the worst of both models.
   const [treeVisible, setTreeVisible] = createSignal(true);
   /// The left rail shows either the file tree or find-in-files, never both —
   /// two scrolling trees in a 240px column is a worse answer than a swap.
@@ -851,11 +872,16 @@ export function EditorSurface(props: {
         </span>
 
         <div class="flex items-stretch gap-1 shrink-0">
+          {/* The keyboard route to the collapse. The rail's own icon is the
+              pointer route back, and both drive one signal — `aria-expanded`
+              rather than `aria-pressed` because what it controls is a panel
+              that is still there when collapsed, not a mode. */}
           <HeaderToggle
+            disclosure
             active={treeVisible()}
             onClick={() => setTreeVisible((v) => !v)}
-            title={treeVisible() ? "Hide the file tree" : "Show the file tree"}
-            label={treeVisible() ? "Hide file tree" : "Show file tree"}
+            title={treeVisible() ? "Collapse the file tree" : "Show the file tree"}
+            label={treeVisible() ? "Collapse file tree" : "Show file tree"}
           >
             <FolderTree class="w-3.5 h-3.5" />
           </HeaderToggle>
@@ -954,9 +980,26 @@ export function EditorSurface(props: {
               gap: "var(--island-gap)",
             }}
           >
-            {/* File tree rail */}
-            <Show when={treeVisible()}>
-              <aside class="island w-60 shrink-0 bg-sidebar flex flex-col min-h-0">
+            {/* File tree rail.
+                Collapsing swaps the column's contents for `FilesRail` and
+                takes it down to `SIDEBAR_RAIL_WIDTH` rather than removing it:
+                the width goes to the editor either way, but a rail leaves a
+                way back that is where the panel was, instead of only in the
+                title bar. Same component and same idiom as the workbench's
+                sidebar — the explorer collapses to one thing in this app.
+                The width transition is the one animation here: it says where
+                the panel went (§7.1's information exemption). Nothing drags
+                this column, so unlike the workbench's there is no gesture to
+                suppress it for. */}
+            <aside
+              class="island shrink-0 bg-sidebar flex flex-col min-h-0 overflow-hidden transition-[width] duration-[var(--dur-short)] ease-[var(--ease-in-out)]"
+              style={{ width: treeVisible() ? "15rem" : `${SIDEBAR_RAIL_WIDTH}px` }}
+              data-motion="editor-tree-collapse"
+            >
+              <Show
+                when={treeVisible()}
+                fallback={<FilesRail onExpand={() => setTreeVisible(true)} />}
+              >
                 <Show when={searchVisible()}>
                   <FindPanel
                     root={() => repoPath()}
@@ -993,8 +1036,8 @@ export function EditorSurface(props: {
                   }}
                 />
                 </Show>
-              </aside>
-            </Show>
+              </Show>
+            </aside>
 
             {/* Tabs + surfaces */}
             {/* Same fork the workbench's pane groups take — see `renderGroup`
@@ -1008,6 +1051,11 @@ export function EditorSurface(props: {
                 "flex-row": verticalTabs(),
               }}
             >
+              {/* The app draws its own drag image (see `beginDragTracking` in
+                  `TabStrip.tsx`), which means a window that mounts a strip and
+                  no ghost has an *invisible* drag. This window has no pane
+                  groups, so its hint says the only thing a drag can do here. */}
+              <DragGhost hint="Release to reorder" />
               <TabStrip
                 orientation={appSettings.ui.tabOrientation}
                 width={verticalTabWidth()}
@@ -1248,13 +1296,20 @@ function HeaderToggle(props: {
   onClick: () => void;
   title: string;
   label: string;
+  /// Set on a toggle that shows and hides a *panel* rather than switching a
+  /// mode. `aria-expanded` is the disclosure contract — it names the collapsed
+  /// panel as still being there — where `aria-pressed` would only say the
+  /// button is on. Both would be two answers to one question, so it is one or
+  /// the other and this prop picks.
+  disclosure?: boolean;
   children: JSX.Element;
 }) {
   return (
     <button
       onClick={props.onClick}
       aria-label={props.label}
-      aria-pressed={props.active}
+      aria-expanded={props.disclosure ? props.active : undefined}
+      aria-pressed={props.disclosure ? undefined : props.active}
       title={props.title}
       class={`self-center w-7 h-[22px] flex items-center justify-center rounded hover:bg-accent/60 hover:text-foreground transition-colors ${
         props.active ? "text-foreground" : "text-muted-foreground"

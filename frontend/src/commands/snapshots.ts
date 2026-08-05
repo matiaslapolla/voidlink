@@ -72,6 +72,9 @@ export interface SnapshotTabs {
   browsers: SnapshotBrowser[];
   history: boolean;
   timeline: boolean;
+  /// The one-scroll "all changes" tab. Absent from every snapshot saved before
+  /// it existed, so it parses as `false` rather than rejecting the blob.
+  combined: boolean;
   mission: boolean;
   agents: SnapshotAgent[];
 }
@@ -118,6 +121,7 @@ export function emptySnapshotTabs(): SnapshotTabs {
     browsers: [],
     history: false,
     timeline: false,
+    combined: false,
     mission: false,
     agents: [],
   };
@@ -190,6 +194,7 @@ function migrateTabs(raw: Record<string, unknown>): SnapshotTabs {
     browsers: migrateBrowsers(raw.browsers),
     history: raw.history === true,
     timeline: raw.timeline === true,
+    combined: raw.combined === true,
     mission: raw.mission === true,
     // Absent from every snapshot saved before agent tabs existed, which is why a
     // missing list defaults to empty rather than rejecting the whole blob.
@@ -357,6 +362,7 @@ export function snapshotTabCount(snap: WorkspaceSnapshot): number {
     t.agents.length +
     (t.history ? 1 : 0) +
     (t.timeline ? 1 : 0) +
+    (t.combined ? 1 : 0) +
     (t.mission ? 1 : 0)
   );
 }

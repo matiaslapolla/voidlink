@@ -7,11 +7,11 @@
 /// rather than sitting on a pane edge. Every one of those is a measurement, and
 /// in jsdom every one of them measures zero.
 ///
-/// The gap offset is the sharpest case: `inGap` positions the strip at
-/// `calc(var(--island-gap) / 2 - 4px)`, a value with a custom property inside a
-/// `calc()`. Nothing resolves that but a real cascade — jsdom hands back the
-/// `calc(…)` string unevaluated — and `islandGapPx()` exists precisely because
-/// the app asks the stylesheet for the same number at runtime.
+/// The gap offset is the sharpest case: `inGap` positions the strip with a
+/// custom property inside a `calc()`. Nothing resolves that but a real cascade
+/// — jsdom hands back the `calc(…)` string unevaluated — and `islandGapPx()`
+/// exists precisely because the app asks the stylesheet for the same number at
+/// runtime.
 import { describe, expect, it, vi } from "vitest";
 import { render, within } from "@solidjs/testing-library";
 import { userEvent } from "vitest/browser";
@@ -143,14 +143,23 @@ describe("straddling the canvas gap (Direction D1)", () => {
   });
 
   /// Flush, the strip hugs the pane's own edge — where the 1px border used to
-  /// be. In the gap it is shifted so its 8px span straddles the channel
-  /// instead, and `Splitter.tsx` states the target exactly: the strip spans
-  /// `[-gap/2 - 4px, -gap/2 + 4px]` from the pane edge, i.e. an offset of
-  /// `gap/2 - 4px`, which is negative for a 6px gap.
+  /// be. In the gap it is shifted so its 8px span straddles the channel.
   ///
-  /// Asserted as those two edges rather than as "1px past the border",
-  /// because the arithmetic is the specification and a test that restated it
-  /// loosely would survive the `calc()` losing its `var()`.
+  /// **Which direction that shift goes was wrong here, in the same direction
+  /// as the implementation, until it was measured against the layout instead
+  /// of against the comment.** In `MainSurface`, the canvas gap is `gap` on the
+  /// flex *parent* and the splitter's containing block is the child wrapper —
+  /// so the channel lies immediately **outside** the wrapper's end edge,
+  /// spanning `[edge, edge + gap]` with its centre at `edge + gap/2`. The old
+  /// offset of `gap/2 - 4px` (`-1px` at a 6px gap) put the strip at
+  /// `[edge - 7, edge + 1]`: seven of its eight pixels over the pane, one in
+  /// the channel, and its centre — and the rule, which is centred in the strip
+  /// — 3px *inside* the island. The rule was drawn a whole gap away from the
+  /// seam it names.
+  ///
+  /// Asserted as the two edges rather than as "1px past the border", because
+  /// the arithmetic is the specification and a test that restated it loosely
+  /// would survive the `calc()` losing its `var()`.
   it("straddles the seam instead of hugging the pane edge", () => {
     const { handle: flush, host } = mount();
     const hostRight = host.getBoundingClientRect().right;
@@ -160,12 +169,23 @@ describe("straddling the canvas gap (Direction D1)", () => {
     const edge = host2.getBoundingClientRect().right;
     const strip = inGap.getBoundingClientRect();
 
-    expect(strip.left - edge).toBeCloseTo(-GAP / 2 - 4, 0);
-    expect(strip.right - edge).toBeCloseTo(-GAP / 2 + 4, 0);
-    // Which puts its centre half a gap off the edge — the middle of the
+    expect(strip.left - edge).toBeCloseTo(GAP / 2 - 4, 0);
+    expect(strip.right - edge).toBeCloseTo(GAP / 2 + 4, 0);
+    // Which puts its centre half a gap *past* the edge — the middle of the
     // channel — and leaves the 8px hit area intact.
-    expect(strip.left + strip.width / 2 - edge).toBeCloseTo(-GAP / 2, 0);
+    expect(strip.left + strip.width / 2 - edge).toBeCloseTo(GAP / 2, 0);
     expect(strip.width).toBeCloseTo(8, 1);
+  });
+
+  /// The reason the sign matters, stated as the thing the user sees: the 1px
+  /// rule has to land in the channel between two islands, not on top of one.
+  it("puts the rule in the channel, not inside the pane", () => {
+    const { handle, host } = mount({ inGap: true });
+    const edge = host.getBoundingClientRect().right;
+    const rule = ruleOf(handle).getBoundingClientRect();
+    const centre = rule.left + rule.width / 2;
+    expect(centre).toBeGreaterThan(edge);
+    expect(centre).toBeLessThan(edge + GAP);
   });
 
   /// Flush, the rule lines up with the pane border it replaced. In a gap there

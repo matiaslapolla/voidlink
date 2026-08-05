@@ -114,36 +114,24 @@ Graphite-style stacked branches, built in:
 - Pick any two refs and inspect the full changed-file tree
 - Per-file diff pane with the same split renderer used everywhere
 
-### 🤖 AI — bring your own CLI
-No embedded model, no provider API calls, no telemetry. Configure a shell
-command in **Settings → AI** and VoidLink pipes context to it:
-- **Commit drafting** — the staged diff is piped to stdin; the suggested message
-  comes back on stdout
+### 🤖 AI — your own Claude Code CLI
+No embedded model, no provider API calls, no telemetry. VoidLink spawns the
+`claude` CLI you already have installed and pipes context to it:
+- **Commit drafting** — the staged diff is piped to `claude -p`; the suggested
+  message comes back on stdout
 - **Repo agent** — a prompt grounded in *live workspace state* (current branch,
-  status, recent log, staged diff, open files) is piped to your CLI; the UI
+  status, recent log, staged diff, open files) is piped to `claude -p`; the UI
   shows exactly which sources went into the prompt
+- **Named agents** — a `claude` session built from a form in **Settings → AI**
+  (model, system prompt, permission mode, effort, tool lists) and opened in a
+  real terminal pane, with a **Test agent** button that runs the same flags once
+  through `-p` and reports what came back
 
-```
-# example Settings → AI commands
-claude --no-tools -p "Write a concise git commit message for this diff:"
-ollama run llama3.2
-```
-
-**Provider keys (optional).** If your CLI authenticates with an API key,
-**Settings → AI → Provider keys** stores it in the OS credential store and
-exports it into the environment of the commands above. Presets ship for
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, and
-`OPENROUTER_API_KEY`; any other variable name can be added.
-
-- The value never returns to the UI. There is no read path to the frontend —
-  the settings row shows presence and at most the last four characters, and the
-  value is read only in Rust, at the moment the subprocess is spawned.
-- Nothing is written to `localStorage` or to VoidLink's settings JSON; only the
-  non-secret "which variable maps to which keychain entry" mapping is stored.
-- Injection is additive. A variable your shell already exports wins, so an
-  existing setup keeps working and VoidLink is only a fallback.
-- If the keychain is locked or you deny the OS prompt, the action fails with an
-  error rather than silently running unauthenticated.
+**For now, Claude Code only, and no API key.** Auth is whatever your `claude` is
+already signed in as — VoidLink stores no key and asks for none. There is
+nothing to configure before the AI actions work: if the CLI runs in your shell,
+it runs here. Other CLIs still work through the settings JSON (`ai.commitCommand`,
+`ai.agentCommand`), but they are no longer offered in the dialog.
 
 ### ⌘ Command-driven workflow
 - **Command palette** (`⌘K`) for every action
@@ -182,7 +170,7 @@ exports it into the environment of the commands above. Presets ship for
 | Terminal | **portable-pty** (Rust) + **xterm.js** | Real PTY, canvas terminal |
 | Git | **git2** (vendored `libgit2`) | Git ops without a system `git` binary |
 | HTTP | **reqwest** (blocking, rustls) | GitHub REST for stacked-PR submit |
-| AI | **BYO-CLI bridge** | Shells out to your local generative-text CLI |
+| AI | **Claude Code CLI bridge** | Shells out to your own authenticated `claude` |
 
 No embedded LLM client. No database. No backend service.
 

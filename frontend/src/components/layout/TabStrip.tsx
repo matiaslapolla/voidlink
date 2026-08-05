@@ -25,8 +25,12 @@ import {
   onMount,
   type JSX,
 } from "solid-js";
-import { Portal } from "solid-js/web";
+import { Dynamic, Portal } from "solid-js/web";
 import {
+  ArrowDownToLine,
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  ArrowUpToLine,
   ChevronDown,
   ChevronRight,
   ChevronsRight,
@@ -34,6 +38,7 @@ import {
   FolderPlus,
   Pin,
   PinOff,
+  SquareDashed,
   X,
 } from "lucide-solid";
 import type { TerminalSession } from "@/types/workspace";
@@ -49,7 +54,25 @@ import { watchTerminal, type TerminalWatch } from "@/store/terminalWatch";
 // symbol it cannot see referenced as a value.
 import { tooltip } from "@/components/ui/Tooltip";
 void tooltip;
-import { dropIntentAt, type DropIntent } from "@/components/layout/paneDrop";
+import {
+  describeDropIntent,
+  dropIntentAt,
+  edgeDirection,
+  residualRect,
+  splitLineRect,
+  type DropIntent,
+  type Rect,
+} from "@/components/layout/paneDrop";
+import {
+  activeDrag,
+  beginDrag,
+  dragPointer,
+  dropActionLabel,
+  insertionIndex,
+  registerDropZone,
+  type DragPayload,
+  type Point,
+} from "@/components/layout/dragDrop";
 import type { SplitOrientation, TabGroup, TabGroupColor } from "@/store/layout";
 import type { TabOrientation } from "@/store/settings";
 // Values come straight from the reducer module rather than through the store's
@@ -70,6 +93,7 @@ export type TabKind =
   | "history"
   | "preview"
   | "timeline"
+  | "combined"
   | "mission"
   | "browser"
   | "agent";
@@ -198,45 +222,32 @@ const isReorderable = (t: TabDescriptor) => t.draggable !== false;
 // ── Cross-group drag ───────────────────────────────────────────────────────
 // One drag is in flight at a time, and every strip and every pane drop target
 // in the window has to see it — the strip a tab is dropped on is usually not
-// the strip it came from. This is module state rather than a store because it
-// is transient gesture state, and because the strip has to keep working in the
-// editor window, which has no store to put it in.
+// the strip it came from. The gesture itself lives in `dragDrop.ts` (see that
+// module's header for why it is pointer events and not HTML5 DnD); what is
+// here is only the tab-shaped reading of its payload.
 
-export interface TabDragPayload {
-  kind: TabKind;
-  id: string;
-  /// Shown in the drag ghost when a drop is refused, so the refusal names the
-  /// tab it is about.
-  label: string;
-  /// The pane group the drag started in, or `null` in a window with no groups
-  /// (the editor). `null` on both ends means "reorder only", which is exactly
-  /// the pre-groups behaviour.
-  groupId: string | null;
-  /// Set when the thing being dragged is a whole **tab group** rather than one
-  /// tab; `id` and `kind` then describe its first member, so every existing
-  /// drop target keeps working without knowing about groups.
-  ///
-  /// One payload rather than a second drag mechanism beside it: two module-level
-  /// drags in flight is how a drop target ends up honouring the wrong one.
-  tabGroupId?: string;
-}
+/// A tab (or a whole tab group) in flight.
+///
+/// A narrowing of `DragPayload` rather than a type of its own: one controller
+/// carries every drag in the app, and a second payload shape beside it is how a
+/// drop target ends up honouring the wrong one.
+export type TabDragPayload = DragPayload;
 
-const [tabDrag, setTabDrag] = createSignal<TabDragPayload | null>(null);
+/// The tab currently being dragged, or `null`. Pane drop targets subscribe to
+/// it so their previews exist only during a drag.
+export const draggingTab = () => {
+  const p = activeDrag();
+  return p && (p.kind === "tab" || p.kind === "tabgroup") ? p : null;
+};
 
-/// The tab currently being dragged. Pane drop targets subscribe to it so they
-/// only exist during a drag — a permanently mounted overlay would eat every
-/// click in the pane underneath.
-export const draggingTab = tabDrag;
+/// The tab kind a payload carries. Tab drags always set it; the field is
+/// optional on `DragPayload` because a workspace or a path has no such thing.
+const payloadKind = (p: DragPayload) => (p.tabKind ?? "") as TabKind;
 
-/// The ghost is a single element for the whole window; `owner` is whichever
-/// drop target last had the pointer, so two overlapping targets can't both
-/// render one.
-const [dragGhost, setDragGhost] = createSignal<{
-  owner: string;
-  x: number;
-  y: number;
-  reason: string;
-} | null>(null);
+/// Distinguishes two mounted strips that share a pane group id — or share the
+/// absence of one, which every strip in the editor window does. Drop zone ids
+/// have to be unique per *mounted component*, and a pane group id is not.
+let stripSeq = 0;
 
 export interface TabStripProps {
   tabs: TabDescriptor[];
@@ -336,6 +347,8 @@ const GROUP_DOT: Record<TabGroupColor, string> = {
 };
 
 export function TabStrip(props: TabStripProps) {
+  stripSeq += 1;
+  const stripInstanceId = stripSeq;
   /// The one predicate the whole orientation fork hangs off. Everything below
   /// that differs between a row of tabs and a column of them reads this rather
   /// than re-deriving it, so there is exactly one place the default (absent
@@ -421,177 +434,255 @@ export function TabStrip(props: TabStripProps) {
   };
 
   // ── Drag state ───────────────────────────────────────────────────────────
-  // Two different gestures share one drag. *Within* a strip a drag reorders,
-  // and tabs of different kinds cannot cross each other because they live in
-  // separate arrays in the store. *Between* groups a drag moves the tab, which
-  // touches no store array at all — only the group's claim list — so it has
-  // neither of those constraints.
-  const [dropRef, setDropRef] = createSignal<string | null>(null);
-  /// Insertion caret past the last tab, for a drop on the strip's empty space.
+  // The whole strip is **one** drop zone, not one per tab. That is the change
+  // that made mixed-kind ordering expressible: a zone answers "where in this
+  // strip would a release land" by measuring the rows it already rendered, so
+  // the answer is a *position*, and a position knows nothing about kinds. It
+  // also means the strip can never be left holding an insertion caret for a
+  // drag that has moved on — the controller guarantees exactly one live zone
+  // and calls `leave` on the one before it.
+  //
+  // Three outcomes come out of one drop, and none of them implies another:
+  //   • the pane claim (which strip shows the tab) — `onMoveTab`,
+  //   • the position within the kind's own store array — `onReorder`,
+  //   • membership and position within a tab group — `onAssignTab`.
+
+  /// The tab an insertion would land in front of, and whether it would land
+  /// past the last row. Both drive the caret only; the drop re-measures.
+  const [dropBefore, setDropBefore] = createSignal<string | null>(null);
   const [dropAtEnd, setDropAtEnd] = createSignal(false);
+  /// The tab group the slot under the pointer is inside, for the chip's own
+  /// "this is where it lands" tint.
+  const [dropGroup, setDropGroup] = createSignal<string | null>(null);
 
-  /// True when the in-flight drag came from another group and would therefore
-  /// *move* rather than reorder.
-  const incoming = () => {
-    const drag = tabDrag();
-    return !!drag && !!props.groupId && drag.groupId !== props.groupId;
-  };
+  /// True when the in-flight drag came from another pane group and would
+  /// therefore *move* rather than reorder.
+  const incoming = (p: DragPayload) =>
+    !!props.groupId && (p.paneGroupId ?? null) !== props.groupId;
 
-  function resetDrag() {
-    setTabDrag(null);
-    setDropRef(null);
+  function clearDropMarks() {
+    setDropBefore(null);
     setDropAtEnd(false);
-    setDragGhost(null);
+    setDropGroup(null);
   }
 
-  function onDragStart(e: DragEvent, tab: TabDescriptor) {
-    if (!e.dataTransfer) return;
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/voidlink-item", `${tab.kind}:${tab.id}`);
-    setTabDrag({
-      kind: tab.kind,
+  const kindOfTabId = createMemo(() => {
+    const out = new Map<string, TabKind>();
+    for (const t of props.tabs) out.set(t.id, t.kind);
+    return out;
+  });
+  const reorderableIds = createMemo(
+    () => new Set(props.tabs.filter(isReorderable).map((t) => t.id)),
+  );
+
+  function startTabDrag(e: PointerEvent, tab: TabDescriptor) {
+    if (!canDrag(tab)) return;
+    beginDrag(e, {
+      kind: "tab",
       id: tab.id,
       label: tab.label,
-      groupId: props.groupId ?? null,
+      tabKind: tab.kind,
+      paneGroupId: props.groupId ?? null,
     });
   }
 
-  /// Start dragging a whole tab group. Same payload as a tab drag with
-  /// `tabGroupId` set, so every drop target that only knows about tabs keeps
-  /// behaving — it sees the group's first member and moves the lot.
-  function onGroupDragStart(e: DragEvent, group: TabGroup, memberIds: string[]) {
-    if (!e.dataTransfer) return;
+  /// Drag a whole tab group. `id` is its first member so a target that only
+  /// understands tabs still behaves; `tabGroupId` is what makes it move as one.
+  function startGroupDrag(e: PointerEvent, group: TabGroup, memberIds: string[]) {
     const first = props.tabs.find((t) => t.id === memberIds[0]);
     if (!first) return;
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/voidlink-item", `tabgroup:${group.id}`);
-    setTabDrag({
-      kind: first.kind,
+    beginDrag(e, {
+      kind: "tabgroup",
       id: first.id,
       label: group.label,
-      groupId: props.groupId ?? null,
+      tabKind: first.kind,
+      paneGroupId: props.groupId ?? null,
       tabGroupId: group.id,
     });
   }
 
-  /// Can the in-flight drag land on `tab`? Either as a move from another group
-  /// (any kind), as a reorder within this strip (same kind, reorderable, not
-  /// onto itself), or as a membership change — joining or leaving a tab group,
-  /// which is possible across kinds because it touches no store array.
-  function canLandOn(tab: TabDescriptor): boolean {
-    const drag = tabDrag();
-    if (!drag) return false;
-    if (incoming()) return true;
-    if (drag.id === tab.id) return false;
-    // A whole group cannot be dropped onto a tab inside its own strip; it is
-    // reordered against other *groups*, not slotted between tabs.
-    if (drag.tabGroupId) return false;
-    if (drag.kind === tab.kind && isReorderable(tab)) return true;
-    return (
-      !!props.onAssignTab &&
-      groupOfTabId().get(tab.id) !== groupOfTabId().get(drag.id)
+  // ── Where a release would land ───────────────────────────────────────────
+
+  interface MeasuredRow {
+    kind: "tab" | "chip";
+    /// A tab id, or a tab-group id for a chip.
+    id: string;
+    /// For a tab: the group holding it, if any.
+    tabGroupId: string | null;
+    rect: DOMRect;
+  }
+
+  /// The strip's rendered rows, measured, in visual order. Read from the DOM
+  /// rather than derived from `rows()` because the question is geometric and
+  /// the DOM is the only thing that knows where a row actually ended up —
+  /// including after the scroller has been scrolled.
+  function measureRows(): MeasuredRow[] {
+    const host = scrollRef;
+    if (!host) return [];
+    const groups = groupOfTabId();
+    const out: MeasuredRow[] = [];
+    for (const el of host.querySelectorAll<HTMLElement>(
+      "[data-tab-id],[data-tab-group-id]",
+    )) {
+      const groupId = el.dataset.tabGroupId;
+      if (groupId) {
+        out.push({ kind: "chip", id: groupId, tabGroupId: groupId, rect: el.getBoundingClientRect() });
+        continue;
+      }
+      const id = el.dataset.tabId;
+      if (!id) continue;
+      out.push({
+        kind: "tab",
+        id,
+        tabGroupId: groups.get(id) ?? null,
+        rect: el.getBoundingClientRect(),
+      });
+    }
+    return out;
+  }
+
+  interface StripTarget {
+    /// The tab the dropped tab lands in front of, or `null` for the end.
+    beforeTabId: string | null;
+    /// The tab group the slot is inside, or `null` for "outside every group".
+    tabGroupId: string | null;
+    /// For a group drag: the group it lands in front of, or `null` for the end.
+    beforeGroupId: string | null;
+  }
+
+  /// Resolve a point to a slot in this strip.
+  ///
+  /// The rule for group membership is positional and has one deliberate
+  /// asymmetry: a slot immediately after a chip, or between two members, is
+  /// *inside* that group — but the slot past the very last row is outside every
+  /// group. That last one is what gives a tab a way out of a group by drag, so
+  /// the gesture that puts it in has an inverse (§7.6).
+  function targetAt(at: Point): StripTarget {
+    const rows = measureRows();
+    const i = insertionIndex(
+      rows.map((r) => r.rect),
+      at,
+      vertical() ? "y" : "x",
     );
+    const next = rows[i] ?? null;
+    const prev = rows[i - 1] ?? null;
+
+    // A chip is never the anchor tab: an insertion in front of a group header
+    // is an insertion in front of the whole group, not into it.
+    const beforeTabId = next?.kind === "tab" ? next.id : null;
+
+    let tabGroupId: string | null = null;
+    if (prev?.kind === "chip") tabGroupId = prev.id;
+    else if (prev?.kind === "tab" && prev.tabGroupId && next) tabGroupId = prev.tabGroupId;
+
+    const beforeGroupId = rows.slice(i).find((r) => r.kind === "chip")?.id ?? null;
+    return { beforeTabId, tabGroupId, beforeGroupId };
   }
 
-  function onDragOver(e: DragEvent, tab: TabDescriptor) {
-    if (!canLandOn(tab)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    setDropRef(tab.id);
-    setDropAtEnd(false);
+  /// The label for a tab landing at `target`. Says what changes, and names the
+  /// group when membership is what changes — "Add to Review" tells the user
+  /// something "Move here" does not.
+  function describeTabDrop(p: DragPayload, target: StripTarget): string {
+    const groups = props.tabGroups ?? [];
+    const nameOf = (id: string) => groups.find((g) => g.id === id)?.label ?? "group";
+    const from = groupOfTabId().get(p.id) ?? null;
+    const to = target.tabGroupId;
+    if (incoming(p)) {
+      return to ? `Move into “${nameOf(to)}”` : "Move to this pane";
+    }
+    if (to !== from) {
+      if (to) return `Add to “${nameOf(to)}”`;
+      if (from) return `Remove from “${nameOf(from)}”`;
+    }
+    return target.beforeTabId ? "Reorder" : "Move to the end";
   }
 
-  function onDrop(e: DragEvent, tab: TabDescriptor) {
-    const drag = tabDrag();
-    if (!drag || !canLandOn(tab)) {
-      resetDrag();
+  function stripOver(p: DragPayload, at: Point): string | null {
+    if (p.kind === "tabgroup") {
+      const target = targetAt(at);
+      // A group is reordered against other groups, never slotted between
+      // tabs — so no tab caret, and the chip is the only affordance.
+      clearDropMarks();
+      if (incoming(p)) return "Move this group to the pane";
+      if (p.tabGroupId === target.beforeGroupId) return null;
+      return target.beforeGroupId ? "Reorder group" : "Move group to the end";
+    }
+    const target = targetAt(at);
+    // Dropping a tab exactly where it already is changes nothing, and a ghost
+    // that promises "Reorder" for a no-op is a ghost that lies.
+    if (
+      !incoming(p) &&
+      target.beforeTabId === p.id &&
+      (groupOfTabId().get(p.id) ?? null) === target.tabGroupId
+    ) {
+      clearDropMarks();
+      return null;
+    }
+    setDropBefore(target.beforeTabId);
+    setDropAtEnd(target.beforeTabId === null);
+    setDropGroup(target.tabGroupId);
+    return describeTabDrop(p, target);
+  }
+
+  function stripDrop(p: DragPayload, at: Point) {
+    const target = targetAt(at);
+    clearDropMarks();
+
+    if (p.kind === "tabgroup") {
+      if (!p.tabGroupId) return;
+      if (incoming(p)) props.onMoveTab?.(p, null);
+      else props.onReorderTabGroup?.(p.tabGroupId, target.beforeGroupId);
       return;
     }
-    e.preventDefault();
-    e.stopPropagation();
-    if (incoming()) {
-      props.onMoveTab?.(drag, tab.id);
-      // A tab dragged into another pane lands wherever it was dropped, which
-      // means joining the group it was dropped into (or none).
-      if (!drag.tabGroupId) {
-        const target = groupOfTabId().get(tab.id) ?? null;
-        if (target) props.onAssignTab?.(drag.id, target, tab.id);
+
+    if (incoming(p)) props.onMoveTab?.(p, target.beforeTabId);
+    else {
+      // Position within the kind's own store array. Only a *same-kind* anchor
+      // means anything there — the arrays are per kind — so the anchor is the
+      // first same-kind tab at or after the slot, and "none" means the end.
+      const kind = payloadKind(p);
+      if (reorderableIds().has(p.id) && props.tabs.some((t) => t.kind === kind)) {
+        props.onReorder(kind, p.id, sameKindAnchor(target.beforeTabId, kind, p.id));
       }
-    } else {
-      // Two independent outcomes of one drop: position within the kind's own
-      // array, and membership of a tab group. Neither implies the other.
-      if (drag.kind === tab.kind && isReorderable(tab)) {
-        props.onReorder(tab.kind, drag.id, tab.id);
-      }
-      const target = groupOfTabId().get(tab.id) ?? null;
-      const source = groupOfTabId().get(drag.id) ?? null;
-      if (target !== source) props.onAssignTab?.(drag.id, target, tab.id);
     }
-    resetDrag();
+    // Membership *and* position inside the group, always: this is the only
+    // order that can hold tabs of different kinds, because it is the only one
+    // that is not a per-kind array.
+    props.onAssignTab?.(p.id, target.tabGroupId, target.beforeTabId);
   }
 
-  /// A drop on a group's chip. A tab joins the group; another group reorders
-  /// in front of it, or moves in from another strip.
-  function onChipDrop(e: DragEvent, group: TabGroup) {
-    const drag = tabDrag();
-    if (!drag) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (drag.tabGroupId) {
-      if (drag.tabGroupId !== group.id) {
-        if (incoming()) props.onMoveTab?.(drag, null);
-        else props.onReorderTabGroup?.(drag.tabGroupId, group.id);
-      }
-    } else if (incoming()) {
-      props.onMoveTab?.(drag, null);
-      props.onAssignTab?.(drag.id, group.id, null);
-    } else {
-      props.onAssignTab?.(drag.id, group.id, null);
+  /// The first tab of `kind` at or after the slot anchored by `beforeTabId`.
+  /// `null` means "append", which is what a slot past the last tab of that kind
+  /// means for that kind's array.
+  function sameKindAnchor(
+    beforeTabId: string | null,
+    kind: TabKind,
+    dragId: string,
+  ): string | null {
+    if (!beforeTabId) return null;
+    const order = rows().flatMap((r) => (r.kind === "tab" ? [r.tab.id] : []));
+    const from = order.indexOf(beforeTabId);
+    if (from < 0) return null;
+    for (let i = from; i < order.length; i++) {
+      const id = order[i];
+      if (id !== dragId && kindOfTabId().get(id) === kind) return id;
     }
-    resetDrag();
+    return null;
   }
 
-  /// A drop on the strip's empty space appends. Reached only when the event
-  /// did not come from a tab row — those stop propagation above.
-  function onStripDragOver(e: DragEvent) {
-    const drag = tabDrag();
-    if (!drag) return;
-    if (!incoming() && !drag.tabGroupId && !canLeaveGroupHere(drag) && !isReorderableKindHere(drag))
-      return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    setDropRef(null);
-    setDropAtEnd(true);
-  }
-
-  function onStripDrop(e: DragEvent) {
-    const drag = tabDrag();
-    if (!drag) return;
-    e.preventDefault();
-    if (drag.tabGroupId) {
-      if (incoming()) props.onMoveTab?.(drag, null);
-      else props.onReorderTabGroup?.(drag.tabGroupId, null);
-    } else if (incoming()) {
-      props.onMoveTab?.(drag, null);
-    } else {
-      if (isReorderableKindHere(drag)) props.onReorder(drag.kind, drag.id, null);
-      // The strip's empty space is *outside* every group, so a drop there is
-      // how a tab leaves one. Without this the only way out of a group would
-      // be a menu, and the drag that put it in would have no inverse.
-      if (canLeaveGroupHere(drag)) props.onAssignTab?.(drag.id, null, null);
-    }
-    resetDrag();
-  }
-
-  const canLeaveGroupHere = (drag: TabDragPayload) =>
-    !!props.onAssignTab && groupOfTabId().has(drag.id);
-
-  /// Appending within the same strip only makes sense for a kind this strip
-  /// actually holds — otherwise "move to the end" would target another kind's
-  /// array.
-  const isReorderableKindHere = (drag: TabDragPayload) =>
-    props.tabs.some((t) => t.kind === drag.kind && isReorderable(t));
+  registerDropZone({
+    // One per mounted strip. The pane group is not enough on its own — the
+    // editor window has strips with no pane group at all.
+    id: `strip:${props.groupId ?? "solo"}:${stripInstanceId}`,
+    el: () => scrollRef,
+    // Above the pane body it sits on: a drop on the strip is about tab order,
+    // and a drop on the body is about panes.
+    priority: 2,
+    accepts: (p) => p.kind === "tab" || p.kind === "tabgroup",
+    over: stripOver,
+    leave: clearDropMarks,
+    drop: stripDrop,
+  });
 
   /// The insertion caret: 2px `--primary` on the edge the tab would land on.
   /// It is an inset shadow rather than an element, so the row it marks does not
@@ -646,9 +737,9 @@ export function TabStrip(props: TabStripProps) {
     const tone = active
       ? "bg-background text-foreground border-border"
       : "border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60";
-    const drag = tabDrag();
-    const dim = drag && drag.id === tab.id ? "opacity-50" : "";
-    const indicator = dropRef() === tab.id
+    const drag = draggingTab();
+    const dim = drag && drag.kind === "tab" && drag.id === tab.id ? "opacity-50" : "";
+    const indicator = dropBefore() === tab.id
       ? caretBefore()
       : dropAtEnd() && lastTabId() === tab.id
         ? caretAfter()
@@ -822,8 +913,9 @@ export function TabStrip(props: TabStripProps) {
     >
       <div
         ref={(el) => (scrollRef = el)}
-        onDragOver={onStripDragOver}
-        onDrop={onStripDrop}
+        // No drag handlers: the scroller *is* the strip's drop zone, registered
+        // with the controller above and hit-tested by rect.
+        //
         // `relative` is load-bearing twice over: it makes the scroller the
         // cards' `offsetParent` (so `measureIndicator` needs no coordinate
         // arithmetic) and it is what the shared indicator is positioned
@@ -855,16 +947,12 @@ export function TabStrip(props: TabStripProps) {
                   tab={(row() as { tab: TabDescriptor }).tab}
                   activeId={props.activeId}
                   isPinned={props.isPinned}
-                  canDrag={canDrag}
                   vertical={vertical()}
                   tabClasses={tabClasses}
                   onSelect={props.onSelect}
                   onClose={props.onClose}
                   onContextMenu={openCtx}
-                  onDragStart={onDragStart}
-                  onDragOver={onDragOver}
-                  onDrop={onDrop}
-                  onDragEnd={resetDrag}
+                  onPointerDown={startTabDrag}
                 />
               }
             >
@@ -873,24 +961,18 @@ export function TabStrip(props: TabStripProps) {
                   group={chip().group}
                   count={chip().count}
                   activity={props.tabGroupActivity?.(chip().group.id)}
-                  dragging={tabDrag()?.tabGroupId === chip().group.id}
+                  dragging={draggingTab()?.tabGroupId === chip().group.id}
+                  /// The chip lights up when the slot under the pointer is
+                  /// inside its group — the only signal that says "this is the
+                  /// group it joins" when the caret is between two members.
+                  targeted={dropGroup() === chip().group.id}
                   vertical={vertical()}
                   onToggle={() => props.onToggleTabGroup?.(chip().group.id)}
                   onRename={(label) => props.onRenameTabGroup?.(chip().group.id, label)}
                   onContextMenu={(e) => openGroupCtx(e, chip().group)}
-                  onDragStart={(e) =>
-                    onGroupDragStart(e, chip().group, chip().group.tabIds)
+                  onPointerDown={(e) =>
+                    startGroupDrag(e, chip().group, chip().group.tabIds)
                   }
-                  onDragOver={(e) => {
-                    if (!tabDrag()) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                    setDropRef(null);
-                    setDropAtEnd(false);
-                  }}
-                  onDrop={(e) => onChipDrop(e, chip().group)}
-                  onDragEnd={resetDrag}
                 />
               )}
             </Show>
@@ -1001,7 +1083,6 @@ function TabRow(props: {
   tab: TabDescriptor;
   activeId: string | null;
   isPinned: (id: string) => boolean;
-  canDrag: (tab: TabDescriptor) => boolean;
   /// Only reaches the label: a vertical card has the column's whole width, so
   /// the fixed `max-w` truncation that a row needs is exactly wrong there.
   vertical: boolean;
@@ -1009,10 +1090,7 @@ function TabRow(props: {
   onSelect: (tab: TabDescriptor) => void;
   onClose: (tab: TabDescriptor) => void;
   onContextMenu: (e: MouseEvent, tab: TabDescriptor) => void;
-  onDragStart: (e: DragEvent, tab: TabDescriptor) => void;
-  onDragOver: (e: DragEvent, tab: TabDescriptor) => void;
-  onDrop: (e: DragEvent, tab: TabDescriptor) => void;
-  onDragEnd: () => void;
+  onPointerDown: (e: PointerEvent, tab: TabDescriptor) => void;
 }) {
   const active = () => props.tab.id === props.activeId;
   return (
@@ -1024,15 +1102,11 @@ function TabRow(props: {
           active={active()}
           pinned={props.isPinned(props.tab.id)}
           vertical={props.vertical}
-          draggable={props.canDrag(props.tab)}
           class={props.tabClasses(props.tab, active())}
           onSelect={() => props.onSelect(props.tab)}
           onClose={() => props.onClose(props.tab)}
           onContextMenu={(e) => props.onContextMenu(e, props.tab)}
-          onDragStart={(e) => props.onDragStart(e, props.tab)}
-          onDragOver={(e) => props.onDragOver(e, props.tab)}
-          onDrop={(e) => props.onDrop(e, props.tab)}
-          onDragEnd={props.onDragEnd}
+          onPointerDown={(e) => props.onPointerDown(e, props.tab)}
         />
       }
     >
@@ -1042,15 +1116,11 @@ function TabRow(props: {
           tab={props.tab}
           active={active()}
           vertical={props.vertical}
-          draggable={props.canDrag(props.tab)}
           class={props.tabClasses(props.tab, active())}
           onSelect={() => props.onSelect(props.tab)}
           onClose={() => props.onClose(props.tab)}
           onContextMenu={(e) => props.onContextMenu(e, props.tab)}
-          onDragStart={(e) => props.onDragStart(e, props.tab)}
-          onDragOver={(e) => props.onDragOver(e, props.tab)}
-          onDrop={(e) => props.onDrop(e, props.tab)}
-          onDragEnd={props.onDragEnd}
+          onPointerDown={(e) => props.onPointerDown(e, props.tab)}
         />
       )}
     </Show>
@@ -1072,14 +1142,13 @@ function TabGroupChip(props: {
   count: number;
   activity?: ActivitySignal;
   dragging: boolean;
+  /// The slot under the pointer is inside this group.
+  targeted: boolean;
   vertical: boolean;
   onToggle: () => void;
   onRename: (label: string) => void;
   onContextMenu: (e: MouseEvent) => void;
-  onDragStart: (e: DragEvent) => void;
-  onDragOver: (e: DragEvent) => void;
-  onDrop: (e: DragEvent) => void;
-  onDragEnd: () => void;
+  onPointerDown: (e: PointerEvent) => void;
 }) {
   const [editing, setEditing] = createSignal(false);
   let inputRef: HTMLInputElement | undefined;
@@ -1101,11 +1170,12 @@ function TabGroupChip(props: {
 
   return (
     <div
-      draggable={!editing()}
-      onDragStart={props.onDragStart}
-      onDragOver={props.onDragOver}
-      onDrop={props.onDrop}
-      onDragEnd={props.onDragEnd}
+      // What the strip's drop zone measures to find group boundaries.
+      data-tab-group-id={props.group.id}
+      onPointerDown={(e) => {
+        // A chip being renamed is a text field, not a grip.
+        if (!editing()) props.onPointerDown(e);
+      }}
       onContextMenu={props.onContextMenu}
       // A chip is a tab card that happens to hold a group rather than a
       // document, so it takes the same geometry: `h-7` inside the `h-9` strip,
@@ -1117,6 +1187,10 @@ function TabGroupChip(props: {
       class="flex items-center gap-1.5 pl-2 pr-1.5 h-7 rounded-[var(--island-radius-inner)] border border-transparent shrink-0 text-body select-none cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-border/60 transition-colors"
       classList={{
         "opacity-50": props.dragging,
+        // The one affordance that says "the tab lands in *this* group". It
+        // moves `border-color` and `background-color` only — never
+        // `border-width` — so a chip lighting up cannot reflow the strip.
+        "!border-primary bg-primary/10 text-foreground": props.targeted,
         "mx-[var(--space-3xs)]": !props.vertical,
         "my-[var(--space-3xs)] mx-[var(--space-2xs)]": props.vertical,
       }}
@@ -1279,17 +1353,14 @@ interface TabChromeProps {
   active: boolean;
   /// See `TabRow.vertical`.
   vertical: boolean;
-  /// Resolved by the strip, because it depends on whether the strip has a pane
-  /// group as well as on the descriptor.
-  draggable: boolean;
   class: string;
   onSelect: () => void;
   onClose: () => void;
   onContextMenu: (e: MouseEvent) => void;
-  onDragStart: (e: DragEvent) => void;
-  onDragOver: (e: DragEvent) => void;
-  onDrop: (e: DragEvent) => void;
-  onDragEnd: () => void;
+  /// Offers the press to the drag controller. Nothing happens until the pointer
+  /// has actually moved, so this never competes with `onSelect` — and the strip
+  /// decides whether this tab may be dragged at all.
+  onPointerDown: (e: PointerEvent) => void;
 }
 
 function PlainTab(props: TabChromeProps & { pinned: boolean }) {
@@ -1299,17 +1370,14 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
   /// per caller.
   return (
     <div
-      draggable={props.draggable}
-      // What the shared active indicator measures against. `data-active` is
-      // not read by the indicator (the strip already knows which id is
-      // active) — it is there so the card's own state is legible in the
-      // inspector now that the rule inside it is gone.
+      // What the shared active indicator measures against, *and* what the
+      // strip's drop zone measures to find the slot under the pointer.
+      // `data-active` is not read by the indicator (the strip already knows
+      // which id is active) — it is there so the card's own state is legible in
+      // the inspector now that the rule inside it is gone.
       data-tab-id={props.tab.id}
       data-active={props.active ? "" : undefined}
-      onDragStart={props.onDragStart}
-      onDragOver={props.onDragOver}
-      onDrop={props.onDrop}
-      onDragEnd={props.onDragEnd}
+      onPointerDown={props.onPointerDown}
       class={props.class}
       onClick={props.onSelect}
       onContextMenu={props.onContextMenu}
@@ -1441,6 +1509,11 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
   /// TUI, so it is the label's business (below) and not the LED's.
   const working = () => watch()?.working() ?? false;
   const processName = () => watch()?.processName() ?? null;
+  /// Whether the foreground process is a recognised agent CLI, and whether it
+  /// has gone quiet on the user. Both come off the same shared poll — the strip
+  /// adds no second `processInfo` loop for them.
+  const agent = () => watch()?.agent() ?? false;
+  const waiting = () => watch()?.waiting() ?? false;
 
   /// While a foreground command runs, the tab wears its name. The static label
   /// ("Terminal 2") stays in the tooltip and comes back when the process exits.
@@ -1448,17 +1521,10 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
 
   return (
     <div
-      draggable={props.draggable}
-      // What the shared active indicator measures against. `data-active` is
-      // not read by the indicator (the strip already knows which id is
-      // active) — it is there so the card's own state is legible in the
-      // inspector now that the rule inside it is gone.
+      // See `PlainTab` for what these two attributes are read by.
       data-tab-id={props.tab.id}
       data-active={props.active ? "" : undefined}
-      onDragStart={props.onDragStart}
-      onDragOver={props.onDragOver}
-      onDrop={props.onDrop}
-      onDragEnd={props.onDragEnd}
+      onPointerDown={props.onPointerDown}
       class={props.class}
       onClick={props.onSelect}
       onContextMenu={props.onContextMenu}
@@ -1497,7 +1563,12 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
       </span>
       <TabTrailing
         tab={props.tab}
-        signal={terminalSignal({ working: working(), focused: props.active })}
+        signal={terminalSignal({
+          working: working(),
+          agent: agent(),
+          waiting: waiting(),
+          focused: props.active,
+        })}
         closable
         closeLabel={`Kill ${props.session.label}`}
         onClose={props.onClose}
@@ -1509,6 +1580,10 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
 function CloseButton(props: { label: string; onClose: () => void }) {
   return (
     <button
+      // The × is a button, not a grip. Without this the press would reach the
+      // card's `onPointerDown` and a 4px wobble on the way to clicking it would
+      // start dragging the tab instead of closing it.
+      onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         props.onClose();
@@ -1643,6 +1718,7 @@ const KIND_LABELS: Record<TabKind, string> = {
   history: "Commit graph",
   preview: "Previews",
   timeline: "Timeline",
+  combined: "All changes",
   mission: "Mission Control",
   browser: "Browser",
   agent: "Agents",
@@ -1768,31 +1844,61 @@ function TabContextMenu(props: {
   );
 }
 
+/// A rect from `paneDrop` as absolute-position CSS, in the overlay's own box.
+function overlayRectStyle(rect: Rect): JSX.CSSProperties {
+  return {
+    left: `${rect.x}px`,
+    top: `${rect.y}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+  };
+}
+
+const EDGE_ARROWS = {
+  left: ArrowLeftToLine,
+  right: ArrowRightToLine,
+  up: ArrowUpToLine,
+  down: ArrowDownToLine,
+};
+
 /// The drop target covering one pane group's body.
 ///
 /// It exists only while a tab is being dragged — the rest of the time there is
-/// nothing between the user and the pane. Three outcomes, and each one has to
-/// be *visible before release*, because a drag whose result you can only
-/// discover by committing to it is not an affordance:
+/// nothing between the user and the pane. Every outcome has to be *visible
+/// before release*, because a drag whose result you can only discover by
+/// committing to it is not an affordance. Three layers of that, from weakest to
+/// strongest:
 ///
-///   • Centre 60% — "drop into this group". `bg-primary/10` plus a 1px inset
-///     `--primary` border.
-///   • Outer 20% of any edge — a split. The prospective new group is filled
-///     `bg-primary/15` **at the exact geometry it would occupy**, which is
-///     computable because `splitGroup` always halves the group it splits. A
-///     generic edge glow would tell the user something is about to happen but
-///     not what.
-///   • The same edge at the four-group cap — refused: `cursor: no-drop`, no
-///     preview, and the reason in the ghost following the pointer. Not a toast:
-///     a toast about a gesture arrives after the gesture.
+///   • **Armed.** The moment any drag starts, every pane in the window takes a
+///     dashed `--primary/40` inset outline. Nothing else in the app says "there
+///     are N places this can land"; without it a user who has never split a pane
+///     has no reason to believe the pane beside the one they grabbed from is a
+///     target at all. It is the one state that is not about the pointer.
+///   • **Centre 60%** — "move into this pane". `bg-primary/10` plus a 1px inset
+///     `--primary` ring, and the ring goes solid so the armed dashes are
+///     visibly *resolved* rather than merely recoloured.
+///   • **Outer 20% of any edge** — a split, drawn as the whole resulting layout:
+///     the new pane filled at the exact geometry it would occupy, the pane being
+///     split shown at what it shrinks to, and the seam between them where the
+///     splitter would appear. `splitGroup` always halves the group it splits,
+///     which is what makes all three honest. A generic edge glow would say
+///     something is about to happen but not what.
+///
+/// There is no refused outcome: the group cap is gone, so every edge always
+/// splits. What used to be unreachable-by-count is now unreachable-by-pixels,
+/// and a pane too narrow to be worth splitting is a judgement the user makes by
+/// looking at it.
 ///
 /// Only `background` and `opacity` move. The preview's geometry is never
 /// animated — it jumps between edges as the pointer crosses zones, which is
-/// what makes it readable at drag speed.
+/// what makes it readable at drag speed, and §7.3.10 forbids running a
+/// fixed-duration animation for something the user is still holding.
 export function PaneDropOverlay(props: {
   groupId: string;
-  /// From `canSplit(paneLayout())`. False at the cap.
-  canSplit: boolean;
+  /// How many panes the worktree has right now. Feeds the ghost's sentence —
+  /// "Split right — 3 panes" — which is the count *after* the drop, so the
+  /// arithmetic lives in `describeDropIntent` and not here.
+  paneCount: number;
   onMoveTab: (payload: TabDragPayload, beforeTabId: string | null) => void;
   onSplitDrop: (
     payload: TabDragPayload,
@@ -1802,91 +1908,189 @@ export function PaneDropOverlay(props: {
 }) {
   let ref: HTMLDivElement | undefined;
   const [intent, setIntent] = createSignal<DropIntent | null>(null);
+  /// The body's measured size, kept beside the intent because the residual and
+  /// the seam are computed from the whole box and `DropIntent` only carries the
+  /// new pane's rect.
+  const [box, setBox] = createSignal<{ width: number; height: number }>({ width: 0, height: 0 });
 
-  function clear() {
-    setIntent(null);
-    setDragGhost((g) => (g?.owner === props.groupId ? null : g));
-  }
-
-  function onDragOver(e: DragEvent) {
-    if (!ref || !tabDrag()) return;
-    e.preventDefault();
-    const box = ref.getBoundingClientRect();
-    const next = dropIntentAt(
-      { width: box.width, height: box.height },
-      { x: e.clientX - box.left, y: e.clientY - box.top },
-      { canSplit: props.canSplit },
-    );
-    setIntent(next);
-    if (e.dataTransfer) e.dataTransfer.dropEffect = next.kind === "refused" ? "none" : "move";
-    if (next.kind === "refused") {
-      setDragGhost({ owner: props.groupId, x: e.clientX, y: e.clientY, reason: next.reason });
-    } else {
-      setDragGhost((g) => (g?.owner === props.groupId ? null : g));
-    }
-  }
-
-  function onDrop(e: DragEvent) {
-    const drag = tabDrag();
-    const target = intent();
-    e.preventDefault();
-    clear();
-    setTabDrag(null);
-    if (!drag || !target) return;
-    if (target.kind === "body") props.onMoveTab(drag, null);
-    else if (target.kind === "edge") {
-      props.onSplitDrop(drag, target.orientation, target.placement);
-    }
-  }
+  registerDropZone({
+    id: `pane:${props.groupId}`,
+    el: () => ref,
+    // Below the tab strips that sit on top of this pane: a drop on a strip is
+    // about tab order, a drop on the body is about panes.
+    priority: 1,
+    accepts: (p) => p.kind === "tab" || p.kind === "tabgroup",
+    over: (_p, at) => {
+      if (!ref) return null;
+      const rect = ref.getBoundingClientRect();
+      const size = { width: rect.width, height: rect.height };
+      const next = dropIntentAt(size, { x: at.x - rect.left, y: at.y - rect.top });
+      setBox(size);
+      setIntent(next);
+      return describeDropIntent(next, props.paneCount);
+    },
+    // The controller calls this the moment the pointer belongs to someone else,
+    // so a pane cannot be left drawing a preview for a drag that has moved on.
+    leave: () => setIntent(null),
+    drop: (p) => {
+      const target = intent();
+      setIntent(null);
+      if (!target) return;
+      if (target.kind === "body") props.onMoveTab(p, null);
+      else props.onSplitDrop(p, target.orientation, target.placement);
+    },
+  });
 
   const edge = () => {
     const i = intent();
-    return i?.kind === "edge" ? i.preview : null;
+    return i?.kind === "edge" ? i : null;
   };
 
   return (
-    <Show when={draggingTab()}>
-      <div
-        ref={(el) => (ref = el)}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
-        onDragLeave={(e) => {
-          if (!ref || (e.relatedTarget instanceof Node && ref.contains(e.relatedTarget))) return;
-          clear();
-        }}
-        class="absolute inset-0 z-30 pointer-events-auto"
-        classList={{ "cursor-no-drop": intent()?.kind === "refused" }}
-        aria-hidden="true"
-      >
+    // Always mounted, always `pointer-events-none`: the zone is hit-tested by
+    // rect, so this element never has to be under the pointer to receive the
+    // drop — which is the whole reason a browser tab's child webview can no
+    // longer swallow it. What is conditional is only what it *draws*.
+    <div ref={(el) => (ref = el)} class="absolute inset-0 pointer-events-none" aria-hidden="true">
+      {/* `draggingTab`, not `isDragging`: a path dragged out of the file tree
+          cannot land in a pane, and arming every pane for it would promise a
+          drop that does not exist. */}
+      <Show when={draggingTab()}>
+        {/* The armed outline. Dashed and inset: a solid ring here would be
+            indistinguishable from the "move into this pane" state it has to be
+            weaker than. */}
+        <div class="absolute inset-0 outline-dashed outline-1 -outline-offset-1 outline-primary/40" />
         <Show when={intent()?.kind === "body"}>
           <div class="absolute inset-0 bg-primary/10 ring-1 ring-inset ring-primary" />
         </Show>
         <Show when={edge()}>
-          {(rect) => (
-            <div
-              class="absolute bg-primary/15 ring-1 ring-inset ring-primary"
-              style={{
-                left: `${rect().x}px`,
-                top: `${rect().y}px`,
-                width: `${rect().width}px`,
-                height: `${rect().height}px`,
-              }}
-            />
+          {(hit) => (
+            <>
+              {/* What is left of the pane being split. Tinted the other way —
+                  a wash of the surface rather than of `--primary` — so the two
+                  halves read as "new" and "existing" rather than as two
+                  equally-new things. */}
+              <div
+                class="absolute bg-background/70"
+                style={overlayRectStyle(residualRect(box(), hit().orientation, hit().placement))}
+              />
+              {/* The new pane. */}
+              <div
+                class="absolute bg-primary/15 ring-1 ring-inset ring-primary"
+                style={overlayRectStyle(hit().preview)}
+              />
+              {/* The seam: where the splitter this drop creates will be. */}
+              <div
+                class="absolute bg-primary"
+                style={overlayRectStyle(splitLineRect(box(), hit().orientation, hit().placement))}
+              />
+              <SplitPreviewBadge
+                rect={hit().preview}
+                direction={edgeDirection(hit().orientation, hit().placement)}
+              />
+            </>
           )}
         </Show>
-      </div>
-      <Show when={dragGhost()?.owner === props.groupId ? dragGhost() : null}>
-        {(g) => (
-          <Portal>
-            <div
-              class="fixed z-[var(--z-drag)] pointer-events-none rounded-md border border-destructive/60 material-chrome px-2 py-1 text-label text-destructive shadow-lg"
-              style={{ left: `${g().x + 14}px`, top: `${g().y + 14}px` }}
-            >
-              {g().reason}
-            </div>
-          </Portal>
-        )}
       </Show>
+    </div>
+  );
+}
+
+/// The arrow sitting in the middle of the prospective new pane.
+///
+/// Deliberately wordless. The sentence is the ghost's job and the ghost is
+/// already under the user's eye at the pointer; repeating it here would be two
+/// controls saying one thing (§7.6), and in a pane a few hundred pixels wide
+/// there is no room to say it twice anyway. What the badge adds that the ghost
+/// cannot is *location* — it marks which half of this pane the tab lands in,
+/// at the place it lands.
+///
+/// Hidden below `MIN_BADGE_PX` on either axis rather than scaled down: a glyph
+/// squeezed into a sliver of a pane is decoration that obscures the preview it
+/// is annotating.
+function SplitPreviewBadge(props: { rect: Rect; direction: "left" | "right" | "up" | "down" }) {
+  const MIN_BADGE_PX = 64;
+  const fits = () => props.rect.width >= MIN_BADGE_PX && props.rect.height >= MIN_BADGE_PX;
+  return (
+    <Show when={fits()}>
+      <div
+        class="absolute flex items-center justify-center pointer-events-none"
+        style={overlayRectStyle(props.rect)}
+      >
+        <span class="flex items-center justify-center rounded-[var(--island-radius-inner)] bg-primary text-primary-foreground p-1.5">
+          <Dynamic component={EDGE_ARROWS[props.direction]} class="w-4 h-4" />
+        </span>
+      </div>
+    </Show>
+  );
+}
+
+/// The thing that follows the cursor while a tab is in flight.
+///
+/// VoidLink draws its own drag image (see `beginDragTracking`) for one reason:
+/// the browser's is a snapshot of the tab card, which names what the user picked
+/// up — something they already know — and can never name what releasing would
+/// do, which is the only thing they cannot see. So the ghost carries both, and
+/// the second line changes live as the pointer crosses panes and edges.
+///
+/// Mounted once per window, at `--z-drag`, which the token table describes as
+/// "the drag ghost, above everything it explains" — this is the component that
+/// name was reserved for.
+///
+/// `pointer-events-none` is not a nicety: an element under the cursor during an
+/// HTML5 drag that accepted events would swallow the `dragover` of every drop
+/// target it covered, and the ghost covers whichever one the user is aiming at.
+///
+/// It tracks the pointer 1:1 with no transition (§7.3.10) — a ghost that eased
+/// toward the cursor would lag exactly when the user is aiming at a 20% edge
+/// zone.
+export function DragGhost(props: {
+  /// What the second line says while the pointer is over nothing that would
+  /// accept the drop. It is per window because the two windows offer different
+  /// gestures: the workbench has pane groups to land in, the editor window has
+  /// none and its drag can only ever reorder. A single sentence would be wrong
+  /// in one of them, and "Release over a pane" in a window that has no panes is
+  /// the worse of the two errors.
+  hint?: string;
+}) {
+  const drag = () => activeDrag();
+  const at = () => dragPointer();
+  const action = () => dropActionLabel();
+
+  /// Offset from the pointer, in px. Below and right, so the ghost never covers
+  /// the edge zone the pointer is currently in — a label sitting *on* the strip
+  /// of pane the user is aiming at is a label hiding its own answer.
+  const OFFSET = 14;
+
+  return (
+    <Show when={drag() && at()}>
+      <Portal>
+        <div
+          class="fixed pointer-events-none z-[var(--z-drag)]"
+          style={{ left: `${(at()?.x ?? 0) + OFFSET}px`, top: `${(at()?.y ?? 0) + OFFSET}px` }}
+          // `aria-hidden` because a screen reader gets nothing from a thing
+          // trailing a pointer it cannot see; the test id is because the ghost
+          // repeats the dragged tab's label by design, so "the label appears
+          // twice on the page" is the correct state and a bare text query
+          // cannot tell the two copies apart.
+          aria-hidden="true"
+          data-testid="drag-ghost"
+        >
+          <div class="material-chrome flex flex-col gap-0.5 rounded-[var(--island-radius-inner)] border border-border px-2 py-1.5 shadow-lg max-w-[240px]">
+            <span class="flex items-center gap-1.5 text-body text-foreground truncate">
+              <SquareDashed class="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+              {drag()?.label}
+            </span>
+            {/* The sentence, and the em dash when there isn't one. §9.7 asks
+                for a specific sentence rather than a blank: a ghost with an
+                empty second line reads as a string that failed to load, where
+                "Release over a pane" reads as instruction. */}
+            <span class="text-label text-muted-foreground truncate">
+              {action() ?? props.hint ?? "Release over a pane"}
+            </span>
+          </div>
+        </div>
+      </Portal>
     </Show>
   );
 }

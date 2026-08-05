@@ -178,6 +178,7 @@ const ITEM_TYPES = new Set([
   "history",
   "preview",
   "timeline",
+  "combined",
   "mission",
   "browser",
   "agent",

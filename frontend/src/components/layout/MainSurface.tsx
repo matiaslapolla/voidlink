@@ -20,7 +20,9 @@ import {
   FilePlus2,
   GitCommitHorizontal,
   Brain,
+  Columns3 as BoardIcon,
   History as TimelineIcon,
+  Layers as CombinedIcon,
   Radar as MissionIcon,
   Globe,
   Bot,
@@ -29,6 +31,7 @@ import { TerminalPane } from "@/components/terminal/TerminalPane";
 import { CompareTab as CompareTabView } from "@/components/git/compare/CompareTab";
 import { StackTab as StackTabView } from "@/components/git/stack/StackTab";
 import { CommitGraph } from "@/components/git/history/CommitGraph";
+import { CombinedDiffView } from "@/components/git/shared/CombinedDiffView";
 import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { commitDiffBase, resolveCommitDiffBase } from "@/commands/commitDiff";
 import { TimelineSurface } from "@/components/timeline/TimelineSurface";
@@ -36,8 +39,16 @@ import { MissionSurface } from "@/components/mission/MissionSurface";
 import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
 import { AgentThreadView } from "@/components/agent/AgentThreadView";
 import { agentThread, dropAgentThread } from "@/commands/agent";
-import { agentById, defaultAgentId, useSettings } from "@/store/settings";
 import {
+  agentById,
+  defaultAgentId,
+  useSettings,
+  type AgentRosterEntry,
+} from "@/store/settings";
+import { describeClaudeSpec } from "@/store/claudeAgent";
+import { launchAgentTerminal } from "@/commands/agentTerminal";
+import {
+  DragGhost,
   MenuItem,
   PaneDropOverlay,
   TabStrip,
@@ -47,7 +58,12 @@ import {
 } from "@/components/layout/TabStrip";
 import { Splitter, islandGapPx } from "@/components/layout/Splitter";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
-import { ratiosAfterDrag, resolveActiveTabId, type Rect } from "@/components/layout/paneDrop";
+import {
+  MIN_PANE_PX,
+  ratiosAfterDrag,
+  resolveActiveTabId,
+  type Rect,
+} from "@/components/layout/paneDrop";
 import { isZen, visibleGroupIds } from "@/store/focusMode";
 import {
   clearTabActivity,
@@ -71,8 +87,6 @@ import { notifyTerminal } from "@/commands/terminalNotify";
 import { watchTerminal } from "@/store/terminalWatch";
 import type { ActivitySignal } from "@/components/layout/StatusLed";
 import {
-  MIN_RATIO,
-  canSplit,
   groupList,
   resolveGroupTabs,
   type PaneNode,
@@ -83,7 +97,7 @@ import { fsApi } from "@/api/fs";
 import { gitApi } from "@/api/git";
 import { recordBranchUse } from "@/commands/branchMru";
 import { pushToast } from "@/commands/toast";
-import { openBrain } from "@/commands/registry";
+import { openBoard, openBrain } from "@/commands/registry";
 
 interface MainSurfaceProps {
   /// Hand a file to the editor window. The workbench has no editor of its own
@@ -130,6 +144,7 @@ export function MainSurface(props: MainSurfaceProps) {
     activeStackTabs,
     activeHistoryTabs,
     activeTimelineTabs,
+    activeCombinedTabs,
     activeMissionTabs,
     activeBrowserTabs,
     activeAgentTabs,
@@ -140,7 +155,15 @@ export function MainSurface(props: MainSurfaceProps) {
     focusedGroupId,
     actions,
   } = useAppStore();
+  // The whole store as well as its parts: `launchAgentTerminal` takes it,
+  // because spawning a terminal and then writing into it is two store calls
+  // that have to agree about which session they mean.
+  const store = useAppStore();
   const { settings } = useSettings();
+
+  /// The roster's composed agents. Only these can open as a terminal — a
+  /// command agent is a stdin filter and would hang on an empty pipe.
+  const claudeAgents = createMemo(() => settings.ai.agents.filter((a) => a.claude));
 
   const isPinned = (id: string) => activePinnedTabs().includes(id);
 
@@ -225,6 +248,18 @@ export function MainSurface(props: MainSurfaceProps) {
         label: "timeline",
         icon: <TimelineIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: "Timeline",
+        activity: tabMark(tab.id),
+        pinnable: false,
+        draggable: false,
+      });
+    }
+    for (const tab of activeCombinedTabs()) {
+      out.push({
+        kind: "combined",
+        id: tab.id,
+        label: "all changes",
+        icon: <CombinedIcon class="w-3.5 h-3.5 shrink-0 text-info opacity-90" />,
+        title: "All changes",
         activity: tabMark(tab.id),
         pinnable: false,
         draggable: false,
@@ -625,8 +660,17 @@ export function MainSurface(props: MainSurfaceProps) {
   }
 
   /// A tab dropped on a group's edge: split that group and land the tab in the
-  /// new one. `splitPaneGroup` returns `null` at the cap — the drop target has
-  /// already refused by then, so this is only the belt to its braces.
+  /// new one. Returns `null` only if the group has vanished between the drag
+  /// starting and the drop landing.
+  ///
+  /// The split and the move are one store write. As two, the prune effect ran
+  /// in between, saw a group with nothing in it, and collapsed the pane before
+  /// the tab could reach it — so the drop did nothing at all.
+  ///
+  /// A whole tab *group* still takes two steps: it moves through the tab-group
+  /// reducer, which re-claims each member one at a time. That is safe because
+  /// the new pane is no longer collapsed for being empty — only for having
+  /// been emptied.
   function splitWithTab(
     payload: TabDragPayload,
     groupId: string,
@@ -634,9 +678,12 @@ export function MainSurface(props: MainSurfaceProps) {
     placement: "before" | "after",
   ) {
     const wtId = state.activeWorktreeId;
-    const newGroupId = actions.splitPaneGroup(wtId, orientation, placement, groupId);
-    if (!newGroupId) return;
-    moveTabHere(payload, newGroupId, null);
+    if (payload.tabGroupId) {
+      const newGroupId = actions.splitPaneGroupWithTab(wtId, orientation, placement, groupId, null);
+      if (newGroupId) moveTabHere(payload, newGroupId, null);
+      return;
+    }
+    actions.splitPaneGroupWithTab(wtId, orientation, placement, groupId, payload.id);
   }
 
   function selectTab(tab: TabDescriptor, groupId: string) {
@@ -649,6 +696,7 @@ export function MainSurface(props: MainSurfaceProps) {
       case "stack": actions.selectStackTab(wtId, tab.id); break;
       case "history": actions.selectHistoryTab(wtId, tab.id); break;
       case "timeline": actions.selectTimelineTab(wtId, tab.id); break;
+      case "combined": actions.selectCombinedTab(wtId, tab.id); break;
       case "mission": actions.selectMissionTab(wtId, tab.id); break;
       case "browser": actions.selectBrowserTab(wtId, tab.id); break;
       case "agent": actions.selectAgentTab(wtId, tab.id); break;
@@ -666,6 +714,7 @@ export function MainSurface(props: MainSurfaceProps) {
       case "stack": actions.closeStackTab(wtId, tab.id); break;
       case "history": actions.closeHistoryTab(wtId, tab.id); break;
       case "timeline": actions.closeTimelineTab(wtId, tab.id); break;
+      case "combined": actions.closeCombinedTab(wtId, tab.id); break;
       case "mission": actions.closeMissionTab(wtId, tab.id); break;
       case "browser": actions.closeBrowserTab(wtId, tab.id); break;
       case "agent":
@@ -956,6 +1005,13 @@ export function MainSurface(props: MainSurfaceProps) {
                   openBrain();
                   closeMenu();
                 }}
+                onOpenBoard={() => {
+                  // An overlay for the same reason the brain is one — see
+                  // `BoardOverlay.tsx` — and in the same menu for the same
+                  // reason: this is where somebody looks for it.
+                  openBoard();
+                  closeMenu();
+                }}
                 onOpenTimeline={() => {
                   actions.openTimelineTab(state.activeWorktreeId);
                   closeMenu();
@@ -971,6 +1027,11 @@ export function MainSurface(props: MainSurfaceProps) {
                     defaultAgentId(),
                     agentById(defaultAgentId())?.name,
                   );
+                  closeMenu();
+                }}
+                claudeAgents={claudeAgents()}
+                onLaunchAgentTerminal={(agentId) => {
+                  void launchAgentTerminal(store, state.activeWorktreeId, agentId);
                   closeMenu();
                 }}
               />
@@ -1013,6 +1074,23 @@ export function MainSurface(props: MainSurfaceProps) {
     /// in ratios; feeding it the raw extent would make a drag drift by the
     /// gap's width across the pane.
     const usable = () => Math.max(0, extent() - (node.children.length - 1) * islandGapPx());
+    /// The px span the handle between `i` and `i + 1` may move within: the two
+    /// panes either side keep their combined width, so the handle's range is
+    /// that pair, inset by the minimum each pane is allowed to be.
+    ///
+    /// **This is where the group cap went.** The reducer no longer counts
+    /// groups; what stops a worktree from splitting into unusable slivers is
+    /// this floor plus the size of the window, which is the honest limit — a
+    /// 3840px display holds many more usable panes than a laptop, and a
+    /// constant in the store cannot know which one it is looking at.
+    ///
+    /// `floor` degrades rather than inverting: with enough panes in a narrow
+    /// window the pair may be under `2 × MIN_PANE_PX`, and half the pair is
+    /// then the most either side can be promised. Without that, `min` would
+    /// exceed `max` and `Splitter`'s clamp would pin the handle, which reads as
+    /// a broken control rather than a tight one.
+    const pairPx = (i: number) => (ratioAt(node.id, i) + ratioAt(node.id, i + 1)) * usable();
+    const floorPx = (i: number) => Math.min(MIN_PANE_PX, pairPx(i) / 2);
     return (
       <div
         ref={(el) => {
@@ -1044,9 +1122,9 @@ export function MainSurface(props: MainSurfaceProps) {
                   inGap
                   label={orientation === "row" ? "Pane width" : "Pane height"}
                   value={ratioAt(node.id, i) * usable()}
-                  min={MIN_RATIO * usable()}
-                  max={(ratioAt(node.id, i) + ratioAt(node.id, i + 1) - MIN_RATIO) * usable()}
-                  defaultValue={((ratioAt(node.id, i) + ratioAt(node.id, i + 1)) / 2) * usable()}
+                  min={floorPx(i)}
+                  max={pairPx(i) - floorPx(i)}
+                  defaultValue={pairPx(i) / 2}
                   onResize={(px) => {
                     actions.setPaneSplitRatios(
                       state.activeWorktreeId,
@@ -1197,6 +1275,15 @@ export function MainSurface(props: MainSurfaceProps) {
         )}
       </For>
 
+      {/* Every staged, unstaged and untracked change in one scroll */}
+      <For each={activeCombinedTabs()}>
+        {(tab) => (
+          <div class={paneClass()} style={paneStyle(tab.id)}>
+            <CombinedDiffView repoPath={activeRepoPath() ?? ""} />
+          </div>
+        )}
+      </For>
+
       {/* Mission Control (the lineup, the check-in and the hills) */}
       <For each={activeMissionTabs()}>
         {(tab) => (
@@ -1337,7 +1424,11 @@ export function MainSurface(props: MainSurfaceProps) {
                 >
                   <PaneDropOverlay
                     groupId={group.id}
-                    canSplit={canSplit(paneLayout())}
+                    // The count before the drop. `visibleGroups()` rather than
+                    // `groups()`: in zen mode the others are not on screen, and
+                    // a ghost promising "4 panes" while three of them are
+                    // hidden is describing a layout the user cannot see.
+                    paneCount={visibleGroups().size}
                     onMoveTab={(payload, before) => moveTabHere(payload, group.id, before)}
                     onSplitDrop={(payload, orientation, placement) =>
                       splitWithTab(payload, group.id, orientation, placement)
@@ -1358,6 +1449,12 @@ export function MainSurface(props: MainSurfaceProps) {
           <p class="text-ui">Open a folder from the workspace rail to start working.</p>
         </div>
       </Show>
+
+      {/* One per window, portalled to `--z-drag`. It is mounted here rather
+          than in `AppShell` because the workbench is the only surface a tab can
+          be dragged *within*; the editor window's strip has no pane groups and
+          so nothing for a ghost to describe. */}
+      <DragGhost />
     </div>
   );
 }
@@ -1386,10 +1483,17 @@ function NewTabMenu(props: {
   onNewTerminal: () => void;
   onNewCompare: () => void;
   onOpenBrain: () => void;
+  onOpenBoard: () => void;
   onOpenTimeline: () => void;
   onOpenMission: () => void;
   onNewBrowser: () => void;
   onNewAgent: () => void;
+  /// The composed agents from the roster, in roster order. A row per agent
+  /// rather than one "New agent terminal…" row that opens a picker: the whole
+  /// point of naming and colouring them is that the user picks the one they
+  /// mean by its name, and a second dialog to get there would undo that.
+  claudeAgents: AgentRosterEntry[];
+  onLaunchAgentTerminal: (agentId: string) => void;
 }) {
   // The parent tab bar uses `overflow-x-auto`, which clips any descendant
   // absolutely-positioned dropdown. Render the menu in a Portal and anchor
@@ -1564,6 +1668,13 @@ function NewTabMenu(props: {
                 Brain
               </MenuItem>
               <MenuItem
+                onClick={props.onOpenBoard}
+                icon={<BoardIcon class="w-3.5 h-3.5" />}
+                tooltip="This repo's kanban board, kept as one markdown file per card in .voidlink/board/. Opens as an overlay, not a tab."
+              >
+                Board
+              </MenuItem>
+              <MenuItem
                 onClick={props.onNewBrowser}
                 icon={<Globe class="w-3.5 h-3.5" />}
                 tooltip="A real webview with its own cookie jar — a logged-in page stays logged in, and no site can refuse to be framed."
@@ -1577,6 +1688,30 @@ function NewTabMenu(props: {
               >
                 New agent thread
               </MenuItem>
+              {/* One row per Claude agent, under a rule rather than a submenu.
+                  A submenu would hide the names, and the names are the feature:
+                  this is where "which of my four agents do I want here" is
+                  answered. Absent entirely when the roster has none, because a
+                  heading over nothing is a section that looks broken. */}
+              <Show when={props.claudeAgents.length > 0}>
+                <div class="my-1 border-t border-border/60" />
+                <For each={props.claudeAgents}>
+                  {(agent) => (
+                    <MenuItem
+                      onClick={() => props.onLaunchAgentTerminal(agent.id)}
+                      icon={
+                        <span
+                          class="inline-block w-2.5 h-2.5 rounded-full"
+                          style={{ "background-color": `var(--${agent.color})` }}
+                        />
+                      }
+                      tooltip={`Open a terminal in this worktree running ${agent.name} — ${describeClaudeSpec(agent.claude!)}.`}
+                    >
+                      {agent.name}
+                    </MenuItem>
+                  )}
+                </For>
+              </Show>
             </Show>
           </div>
         </Portal>

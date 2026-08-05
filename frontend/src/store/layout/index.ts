@@ -113,6 +113,7 @@ import type {
   ActiveItem,
   TabRestoreContext,
   AgentTab,
+  CombinedDiffTab,
   TimelineTab,
   MissionTab,
   BrowserTab,
@@ -142,6 +143,7 @@ import {
 export type {
   ActiveItem,
   AgentTab,
+  CombinedDiffTab,
   TimelineTab,
   MissionTab,
   BrowserTab,
@@ -177,7 +179,7 @@ export type {
   SidebarTab,
   UiPrefs,
 } from "./prefs";
-export { GIT_SECTION_KEYS, PANEL_BOUNDS } from "./prefs";
+export { GIT_SECTION_KEYS, PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH } from "./prefs";
 export type { PaneGroup, PaneNode, SplitOrientation } from "./panes";
 export type {
   AutoGroupMode,
@@ -212,9 +214,6 @@ export {
   mruOrder,
 } from "./navigation";
 export {
-  MAX_GROUPS,
-  MIN_RATIO,
-  canSplit,
   groupCount,
   groupList,
   groupOwning,
@@ -358,6 +357,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     >,
     previewTabsByWorktree: editorTabs.previews,
     timelineTabsByWorktree: loadKindRecord("timeline", worktreeIds) as Record<string, TimelineTab[]>,
+    combinedTabsByWorktree: loadKindRecord("combined", worktreeIds) as Record<
+      string,
+      CombinedDiffTab[]
+    >,
     missionTabsByWorktree: loadKindRecord("mission", worktreeIds) as Record<string, MissionTab[]>,
     browserTabsByWorktree: loadKindRecord("browser", worktreeIds) as Record<
       string,
@@ -387,6 +390,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     leftSidebarCollapsed: prefs.leftSidebarCollapsed,
     sidebarsSwapped: prefs.sidebarsSwapped,
     diffMode: prefs.diffMode,
+    diffLineNumbers: prefs.diffLineNumbers,
     gitTab: prefs.gitTab,
     ignoreWhitespace: prefs.ignoreWhitespace,
     sidebarTab: prefs.sidebarTab,
@@ -476,6 +480,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       leftSidebarCollapsed: state.leftSidebarCollapsed,
       sidebarsSwapped: state.sidebarsSwapped,
       diffMode: state.diffMode,
+      diffLineNumbers: state.diffLineNumbers,
       gitTab: state.gitTab,
       ignoreWhitespace: state.ignoreWhitespace,
       sidebarTab: state.sidebarTab,
@@ -519,6 +524,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activeHistoryTabs = activeOf<HistoryTab>("history");
   const activePreviewTabs = activeOf<PreviewTab>("preview");
   const activeTimelineTabs = activeOf<TimelineTab>("timeline");
+  const activeCombinedTabs = activeOf<CombinedDiffTab>("combined");
   const activeMissionTabs = activeOf<MissionTab>("mission");
   const activeBrowserTabs = activeOf<BrowserTab>("browser");
   const activeAgentTabs = activeOf<AgentTab>("agent");
@@ -552,17 +558,45 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   /// longer exists is dropped. Both are structural, so they run here rather
   /// than in each of the six per-kind close actions.
   ///
-  /// The stringify guard is what makes this terminate: `pruneClosedTabs`
-  /// rebuilds split nodes unconditionally, so writing its result back
-  /// unconditionally would retrigger this effect forever.
+  /// The identity guard is what makes this terminate. It used to be a
+  /// `JSON.stringify` of the whole tree on both sides, because `pruneClosedTabs`
+  /// rebuilt every split node whether or not anything was stale — so this ran
+  /// two full serialisations of the pane tree on every write to it, and a
+  /// splitter drag writes on every frame. `pruneClosedTabs` now returns its
+  /// input by reference when there is nothing to prune, which is the common
+  /// case and is checkable in a scan.
+  /// Which groups held at least one tab the last time this ran, per worktree.
+  ///
+  /// The collapse rule is "a group that *lost* its last tab goes away", and
+  /// that is a statement about two points in time. Judging it from the current
+  /// layout alone reads any empty group as one that lost something — including
+  /// the one a split created a moment ago, which is empty precisely because the
+  /// caller has not filled it yet.
+  const groupsThatHeldTabs = new Map<string, Set<string>>();
+
   createEffect(() => {
     const wtId = state.activeWorktreeId;
     const current = state.paneLayoutByWorktree[wtId];
     if (!current) return;
-    const next = pruneClosedTabs(current, workbenchTabIds());
-    if (JSON.stringify(next) !== JSON.stringify(current)) {
-      setState("paneLayoutByWorktree", wtId, next);
+    const ids = workbenchTabIds();
+
+    const held = groupsThatHeldTabs.get(wtId) ?? new Set<string>();
+    const resolved = resolveGroupTabs(current, ids);
+    // Only a group that was holding something and now holds nothing.
+    const collapsible = new Set<string>();
+    for (const [groupId, tabs] of resolved) {
+      if (tabs.length === 0 && held.has(groupId)) collapsible.add(groupId);
     }
+
+    const next = pruneClosedTabs(current, ids, collapsible);
+
+    const after = resolveGroupTabs(next, ids);
+    groupsThatHeldTabs.set(
+      wtId,
+      new Set([...after].filter(([, tabs]) => tabs.length > 0).map(([groupId]) => groupId)),
+    );
+
+    if (next !== current) setState("paneLayoutByWorktree", wtId, next);
   });
 
   // ── Tab groups ────────────────────────────────────────────────────────────
@@ -857,6 +891,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       case "conflict": return { type: "conflict", id };
       case "history": return { type: "history", id };
       case "timeline": return { type: "timeline", id };
+      case "combined": return { type: "combined", id };
       case "mission": return { type: "mission", id };
       case "browser": return { type: "browser", id };
       case "agent": return { type: "agent", id };
@@ -880,7 +915,13 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     /// Spawn a PTY rooted at the worktree's own directory — not the
     /// workspace's repo root — so a terminal in a linked worktree lands on
     /// that worktree's branch.
-    async spawnTerminal(wtId: string) {
+    ///
+    /// `label` overrides the `Terminal N` numbering. It exists for the shells
+    /// that are *about* something — an agent launched from the roster wears
+    /// that agent's name — and it stays a parameter rather than a lookup here
+    /// because this store deliberately cannot reach settings (see
+    /// `openAgentTab`); the caller that knows the name passes it.
+    async spawnTerminal(wtId: string, label?: string) {
       const found = locateWorktree(wtId);
       const cwd = found?.worktree.path;
       if (!cwd) return null;
@@ -889,7 +930,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const term: TerminalSession = {
         id: crypto.randomUUID(),
         ptyId,
-        label: `Terminal ${count}`,
+        label: label?.trim() || `Terminal ${count}`,
         cwd,
       };
       setState(produce((s) => {
@@ -1249,28 +1290,60 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     setDiffMode(mode: AppStoreState["diffMode"]) {
       setState("diffMode", mode);
     },
+    /// Line numbers on both diff gutters. A preference about reading, not about
+    /// this file — so it lives beside `diffMode` rather than in a tab.
+    toggleDiffLineNumbers() {
+      setState("diffLineNumbers", (v) => !v);
+    },
     toggleIgnoreWhitespace() {
       setState("ignoreWhitespace", (v) => !v);
     },
 
     // ── Pane groups ──────────────────────────────────────────────────────
     /// Split `groupId` (default: the focused group), returning the new group's
-    /// id or `null` when the four-group cap refused. The caller decides what
-    /// to put in it — a drag drops the dragged tab there, the keybinding moves
-    /// the active one.
+    /// id, or `null` when there is no such group to split. There is no cap:
+    /// how many panes fit is a question of pixels, answered by the splitter's
+    /// `MIN_PANE_PX` clamp, not by a count here. The caller decides what to put
+    /// in the new group — a drag drops the dragged tab there, the keybinding
+    /// moves the active one.
     splitPaneGroup(
       wtId: string,
       orientation: SplitOrientation,
       placement: "before" | "after" = "after",
       groupId?: string,
     ): string | null {
+      return this.splitPaneGroupWithTab(wtId, orientation, placement, groupId, null);
+    },
+
+    /// Split, and put `tabId` in the new group — as **one** write.
+    ///
+    /// Two writes is what it used to be, and the gap between them was long
+    /// enough to lose the pane: a store write flushes effects, the prune effect
+    /// saw a brand-new group with no tabs in it, and collapsed it. The move
+    /// that followed then addressed a group that no longer existed and did
+    /// nothing at all, so a drag onto a pane edge produced no split and no
+    /// move — intermittently, depending on what else was scheduled. The prune
+    /// no longer collapses a group that never held anything, and this does not
+    /// give it the chance either.
+    splitPaneGroupWithTab(
+      wtId: string,
+      orientation: SplitOrientation,
+      placement: "before" | "after" = "after",
+      groupId?: string,
+      tabId?: string | null,
+    ): string | null {
       const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
       const target = groupId ?? focusedGroupId() ?? groupList(current)[0]?.id;
       if (!target) return null;
-      const { layout, newGroupId } = splitGroup(current, target, orientation, placement);
+      const ids = worktreeTabIds(wtId);
+      // The registry makes the claims explicit before the tree is restructured
+      // — see `splitGroup`, where a "before" placement would otherwise hand
+      // every unclaimed tab to the group it just created.
+      const { layout, newGroupId } = splitGroup(current, target, orientation, placement, ids);
       if (!newGroupId) return null;
+      const filled = tabId ? moveTabToGroup(layout, tabId, newGroupId, null, ids) : layout;
       setState(produce((s) => {
-        s.paneLayoutByWorktree[wtId] = layout;
+        s.paneLayoutByWorktree[wtId] = filled;
         s.focusedGroupByWorktree[wtId] = newGroupId;
       }));
       return newGroupId;
@@ -1301,7 +1374,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       beforeTabId: string | null = null,
     ) {
       const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
-      const next = moveTabToGroup(current, tabId, groupId, beforeTabId);
+      // The registry is what lets a drop into the *first* group land where the
+      // user pointed rather than at the end — see `moveTabToGroup`.
+      const next = moveTabToGroup(current, tabId, groupId, beforeTabId, worktreeTabIds(wtId));
       if (next === current) return;
       setState(produce((s) => {
         s.paneLayoutByWorktree[wtId] = next;
@@ -1736,6 +1811,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         case "history":
           actions.openHistoryTab(wtId);
           break;
+        case "combined":
+          actions.openCombinedTab(wtId);
+          break;
         case "timeline":
           actions.openTimelineTab(wtId);
           break;
@@ -1866,6 +1944,45 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
 
     selectHistoryTab(wtId: string, tabId: string) {
       setState("activeItemByWorktree", wtId, { type: "history", id: tabId });
+    },
+
+    // ── Combined-diff tab ───────────────────────────────────────────────
+    /// Open the worktree's one "all changes" tab, focusing the existing one
+    /// if it is already open. Repo-wide, so a second one would show the same
+    /// thing twice.
+    openCombinedTab(wtId: string) {
+      const existing = (state.combinedTabsByWorktree[wtId] ?? [])[0];
+      if (existing) {
+        setState("activeItemByWorktree", wtId, { type: "combined", id: existing.id });
+        return existing.id;
+      }
+      const tab: CombinedDiffTab = { id: crypto.randomUUID() };
+      setState(produce((s) => {
+        s.combinedTabsByWorktree[wtId] = [...(s.combinedTabsByWorktree[wtId] ?? []), tab];
+        s.activeItemByWorktree[wtId] = { type: "combined", id: tab.id };
+      }));
+      return tab.id;
+    },
+
+    closeCombinedTab(wtId: string, tabId: string) {
+      setState(produce((s) => {
+        const arr = s.combinedTabsByWorktree[wtId] ?? [];
+        const idx = arr.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        recordClose(s, wtId, "combined", arr[idx]);
+        arr.splice(idx, 1);
+        const active = s.activeItemByWorktree[wtId];
+        if (active?.type === "combined" && active.id === tabId) {
+          const terms = s.terminalsByWorktree[wtId] ?? [];
+          s.activeItemByWorktree[wtId] = terms[0]
+            ? { type: "terminal", id: terms[0].id }
+            : null;
+        }
+      }));
+    },
+
+    selectCombinedTab(wtId: string, tabId: string) {
+      setState("activeItemByWorktree", wtId, { type: "combined", id: tabId });
     },
 
     // ── Timeline (event log) tab ────────────────────────────────────────
@@ -2151,6 +2268,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       for (const c of conflicts) keyByTabId.set(c.id, `conflict:${c.filePath}`);
       for (const p of previews) keyByTabId.set(p.id, `preview:${p.filePath}`);
       browsers.forEach((b, i) => keyByTabId.set(b.id, `browser:${i}`));
+      for (const c of state.combinedTabsByWorktree[wtId] ?? []) keyByTabId.set(c.id, "combined:");
       for (const h of histories) keyByTabId.set(h.id, "history:");
       agents.forEach((a, i) => keyByTabId.set(a.id, `agent:${i}`));
 
@@ -2193,6 +2311,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           browsers: browsers.map((b) => ({ url: b.url, title: b.title })),
           history: histories.length > 0,
           timeline: timelines.length > 0,
+          combined: (state.combinedTabsByWorktree[wtId] ?? []).length > 0,
           mission: missions.length > 0,
           // The tab, not the conversation: a snapshot is a named arrangement of
           // panes, and restoring one into a transcript from another day would be
@@ -2311,6 +2430,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           const tab: HistoryTab = { id: crypto.randomUUID() };
           s.historyTabsByWorktree[wtId].push(tab);
           idByKey.set("history:", tab.id);
+        }
+        if (snap.tabs.combined) {
+          const tab: CombinedDiffTab = { id: crypto.randomUUID() };
+          s.combinedTabsByWorktree[wtId].push(tab);
+          idByKey.set("combined:", tab.id);
         }
         if (snap.tabs.timeline) {
           const tab: TimelineTab = { id: crypto.randomUUID() };
@@ -2510,6 +2634,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     activeHistoryTabs,
     activePreviewTabs,
     activeTimelineTabs,
+    activeCombinedTabs,
     activeMissionTabs,
     activeBrowserTabs,
     activeAgentTabs,

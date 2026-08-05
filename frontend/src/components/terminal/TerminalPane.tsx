@@ -7,6 +7,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
+import { registerDropZone } from "@/components/layout/dragDrop";
 import { useSettings } from "@/store/settings";
 import { useTheme } from "@/store/theme";
 import { markActive, recordKeystroke } from "@/commands/terminalHistory";
@@ -176,7 +177,14 @@ const LIGHT_THEME = {
   brightWhite: "#fdf6e3",           // base3
 } as const;
 
+/// Distinguishes two mounted panes on the same PTY, which the workbench and the
+/// editor window can genuinely have at once. Drop zone ids are per mounted
+/// component, and a PTY id is not.
+let paneSeq = 0;
+
 export function TerminalPane(props: TerminalPaneProps) {
+  paneSeq += 1;
+  const paneInstanceId = paneSeq;
   let container!: HTMLDivElement;
   const { settings } = useSettings();
   const { mode } = useTheme();
@@ -896,31 +904,33 @@ export function TerminalPane(props: TerminalPaneProps) {
     });
   });
 
+  // In-app path drags (from the file tree). A registered zone rather than DOM
+  // drop handlers, for the reason in `dragDrop.ts` — and it earns the same ring
+  // the OS drop path above already draws, so both kinds of drop look the same
+  // to the user even though they arrive by completely different routes.
+  registerDropZone({
+    id: `terminal:${paneInstanceId}`,
+    el: () => container,
+    // Above the pane body's own zone: a path dropped on a terminal is a path
+    // for that shell, not a request to move a tab.
+    priority: 3,
+    accepts: (p) => p.kind === "path",
+    over: () => {
+      setDragOver(true);
+      return "Insert the path here";
+    },
+    leave: () => setDragOver(false),
+    drop: (p) => {
+      setDragOver(false);
+      if (p.path) injectPaths([p.path]);
+    },
+  });
+
   return (
     <div
       ref={container}
       class={`${props.class ?? "w-full h-full"} ${dragOver() ? "ring-2 ring-inset ring-primary/70" : ""}`}
       style={{ "background-color": paneBg() }}
-      onDragOver={(e) => {
-        // In-app drags (from the file tree) arrive as HTML5 DnD. Allow the
-        // drop and show the same ring as OS drops.
-        if (e.dataTransfer?.types.includes("application/x-voidlink-path") ||
-            e.dataTransfer?.types.includes("text/plain")) {
-          e.preventDefault();
-          setDragOver(true);
-        }
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        const dt = e.dataTransfer;
-        if (!dt) return;
-        const path =
-          dt.getData("application/x-voidlink-path") || dt.getData("text/plain");
-        if (!path) return;
-        e.preventDefault();
-        setDragOver(false);
-        injectPaths([path]);
-      }}
     />
   );
 }

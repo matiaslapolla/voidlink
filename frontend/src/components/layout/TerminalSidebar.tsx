@@ -1,18 +1,20 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import { Plus, X, FolderOpen, TerminalSquare, ChevronRight, ChevronDown, GitBranchPlus } from "lucide-solid";
+import { Plus, X, FolderOpen, TerminalSquare, ChevronRight, ChevronDown, GitBranchPlus, Bot } from "lucide-solid";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "@/store/LayoutContext";
 import { terminalApi } from "@/api/terminal";
 import type { TerminalSession } from "@/types/workspace";
-import { FilesPanel } from "@/components/files/FilesPanel";
+import { FilesPanel, FilesRail } from "@/components/files/FilesPanel";
 import { pickWorkspaceFolder } from "@/commands/openFolder";
 import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
 import { LedSlot, ledLabel, terminalSignal } from "@/components/layout/StatusLed";
 import { Splitter } from "@/components/layout/Splitter";
-import { PANEL_BOUNDS } from "@/store/layout";
+import { PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH } from "@/store/layout";
 import { tabMark } from "@/store/activity";
 import { watchTerminal } from "@/store/terminalWatch";
+import { useSettings } from "@/store/settings";
+import { AgentDashboard } from "@/components/agent/AgentDashboard";
 
 export function TerminalSidebar(props: {
   onOpenFile?: (path: string) => void;
@@ -21,6 +23,7 @@ export function TerminalSidebar(props: {
   files?: boolean;
 }) {
   const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
+  const { settings } = useSettings();
 
   async function chooseRepo() {
     const ws = activeWorkspace();
@@ -35,13 +38,42 @@ export function TerminalSidebar(props: {
   };
 
   const terminalsOpen = () => state.sidebarSections.terminals;
+  const agentsOpen = () => state.sidebarSections.agents;
+
+  /// Collapsed to the icon rail. The explorer's own flag, because in this
+  /// placement the explorer *is* what the column is for: the terminals list is
+  /// a second rendering of tabs the strip already shows with better labels, and
+  /// "Compare branches" is a palette action and a row in the `+` menu. A
+  /// collapse that reclaimed the width but left those two behind would reclaim
+  /// nothing (see `FilesPanel`'s header for the two placements).
+  ///
+  /// Never under vertical tabs: there the explorer lives in the right column
+  /// and this sidebar is not rendered at all, but `props.files === false` is
+  /// the contract that says so and a rail with no explorer in it would be a
+  /// control for a panel that is somewhere else.
+  const railed = () => props.files !== false && !state.sidebarSections.files;
+
+  /// Suppress the width transition for the duration of a splitter drag.
+  ///
+  /// The collapse animates because it carries information — where the panel
+  /// went — which is what earns it an exemption from §7.1's frequency gate. The
+  /// same transition on a pane the user is holding would make it trail the
+  /// pointer instead (§7.3.10), so the one gesture that must not animate says
+  /// so directly rather than being inferred from the width changing.
+  const [resizing, setResizing] = createSignal(false);
 
   return (
     <aside
       /* Island (D1): no border — the canvas gap around it is the separator. */
       class="flex flex-col bg-sidebar overflow-hidden relative"
-      style={{ width: `${state.panels.sidebar}px` }}
+      classList={{
+        "transition-[width] duration-[var(--dur-short)] ease-[var(--ease-in-out)]":
+          !resizing(),
+      }}
+      style={{ width: `${railed() ? SIDEBAR_RAIL_WIDTH : state.panels.sidebar}px` }}
+      data-motion="sidebar-collapse"
     >
+      <Show when={!railed()} fallback={<FilesRail onExpand={() => actions.toggleSidebarSection("files")} />}>
       {/* Repo picker — h-9 to match center column tab bar */}
       <div class="h-9 px-3 border-b border-border flex items-center shrink-0">
         <Show
@@ -141,6 +173,31 @@ export function TerminalSidebar(props: {
         </Show>
       </div>
 
+      {/* Agent Dashboard — experimental.
+          Absent, not hidden, when the flag is off: the `<Show>` is what keeps
+          `AgentDashboard` from mounting, and `useAgentSessions` is the only
+          caller that subscribes a poll to terminals outside the active
+          worktree. With the flag off, none of that exists. */}
+      <Show when={settings.experimental.agentDashboard}>
+        <div class="flex flex-col shrink-0 border-t border-border/50">
+          <button
+            onClick={() => actions.toggleSidebarSection("agents")}
+            class="flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-accent/30 transition-colors w-full"
+          >
+            <span class="w-3 h-3 shrink-0 text-muted-foreground">
+              {agentsOpen() ? <ChevronDown class="w-3 h-3" /> : <ChevronRight class="w-3 h-3" />}
+            </span>
+            <Bot class="w-3 h-3 text-muted-foreground" />
+            <span class="flex-1 tracking-wide text-body text-muted-foreground font-semibold">
+              Agent Dashboard
+            </span>
+          </button>
+          <Show when={agentsOpen()}>
+            <AgentDashboard class="max-h-64" />
+          </Show>
+        </div>
+      </Show>
+
       {/* Compare branches — quick action */}
       <div class="border-t border-border/50 px-2 py-1.5 shrink-0">
         <button
@@ -160,7 +217,14 @@ export function TerminalSidebar(props: {
           Compare branches
         </button>
       </div>
+      </Show>
 
+      {/* Rendered while collapsed too, disabled rather than absent: §7.6 wants
+          the reason stated, and a handle that vanishes leaves the user with no
+          evidence the column is still resizable at all. `value` stays the
+          pre-collapse width — the rail's 32px is a render-time width and is
+          never written to the store, which is exactly what makes expanding
+          restore the user's width instead of the default. */}
       <Splitter
         side="end"
         label="Files and terminals sidebar width"
@@ -168,6 +232,12 @@ export function TerminalSidebar(props: {
         min={PANEL_BOUNDS.sidebar.min}
         max={PANEL_BOUNDS.sidebar.max}
         defaultValue={PANEL_BOUNDS.sidebar.default}
+        disabledReason={
+          railed()
+            ? "The file explorer is collapsed — expand it to resize the sidebar"
+            : undefined
+        }
+        onDragStateChange={setResizing}
         onResize={(w) => actions.setPanelWidth("sidebar", w)}
       />
     </aside>
@@ -229,7 +299,12 @@ function TerminalRow(props: {
   const mark = () =>
     tabMark(
       props.term.id,
-      terminalSignal({ working: watch.working(), focused: props.active }),
+      terminalSignal({
+        working: watch.working(),
+        agent: watch.agent(),
+        waiting: watch.waiting(),
+        focused: props.active,
+      }),
     );
 
   return (

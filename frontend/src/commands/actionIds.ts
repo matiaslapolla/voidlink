@@ -73,6 +73,16 @@ export const ACTION_IDS = [
   "ui.toggle-diff-mode",
   "ui.toggle-ignore-ws",
   "ui.maximize-pane",
+  // Panes. Splitting used to be reachable only by dragging a tab onto a pane
+  // edge, and closing a pane or undoing a split was reachable by nothing at
+  // all — `closePaneGroup` and `resetPaneLayout` existed in the store with no
+  // caller, so the only way out of a split was Settings → Reset layout, which
+  // also throws away every open tab.
+  "ui.split-pane-right",
+  "ui.split-pane-down",
+  "ui.close-pane",
+  "ui.focus-next-pane",
+  "ui.reset-pane-layout",
   "ui.zen",
   "ui.navigate-back",
   "ui.navigate-forward",

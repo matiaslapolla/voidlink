@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import {
   ChevronDown,
   ChevronRight,
@@ -28,6 +28,13 @@ import { worktreeLabel, type Workspace, type Worktree } from "@/types/workspace"
 import { LedSlot, ledLabel } from "@/components/layout/StatusLed";
 import { worktreeMark } from "@/store/activity";
 import { Splitter } from "@/components/layout/Splitter";
+import {
+  activeDrag,
+  beginDrag,
+  insertionIndex,
+  registerDropZone,
+  type Point,
+} from "@/components/layout/dragDrop";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { PANEL_BOUNDS } from "@/store/layout";
 
@@ -79,46 +86,63 @@ export function WorkspaceRail() {
     setRenaming(null);
   };
 
-  function onDragStart(e: DragEvent, id: string) {
-    if (!e.dataTransfer) return;
-    e.dataTransfer.effectAllowed = "move";
-    // Some browsers ignore a drag with no payload — set a benign string.
-    e.dataTransfer.setData("text/voidlink-workspace", id);
-    setDragId(id);
+  // ── Reordering workspaces ─────────────────────────────────────────────────
+  // Pointer events through the shared controller (see `dragDrop.ts`), and one
+  // zone for the whole rail rather than one per row: the question a drop asks
+  // is "which row would it land in front of", which the rail answers by
+  // measuring the rows it already laid out.
+
+  let railRef: HTMLElement | undefined;
+  const rowEls = new Map<string, HTMLElement>();
+  function registerRow(id: string, el: HTMLElement) {
+    rowEls.set(id, el);
+    onCleanup(() => rowEls.delete(id));
   }
 
-  function onDragOverGroup(e: DragEvent, id: string) {
-    if (!dragId() || dragId() === id) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    setDropTarget(id);
+  function startDrag(e: PointerEvent, ws: Workspace) {
+    if (renaming() === ws.id) return;
+    setDragId(ws.id);
+    beginDrag(e, { kind: "workspace", id: ws.id, label: ws.name });
   }
 
-  function onDropOnGroup(e: DragEvent, id: string) {
-    const from = dragId();
-    if (!from || from === id) {
+  /// The workspace a drop would land in front of, or `null` for the end.
+  function targetAt(at: Point): string | null {
+    const rows = state.workspaces
+      .map((ws) => ({ id: ws.id, el: rowEls.get(ws.id) }))
+      .filter((r): r is { id: string; el: HTMLElement } => !!r.el);
+    const i = insertionIndex(
+      rows.map((r) => r.el.getBoundingClientRect()),
+      at,
+      "y",
+    );
+    return rows[i]?.id ?? null;
+  }
+
+  registerDropZone({
+    id: "workspace-rail",
+    el: () => railRef,
+    accepts: (p) => p.kind === "workspace",
+    over: (p, at) => {
+      const before = targetAt(at);
+      setDropTarget(before ?? "end");
+      // Landing immediately in front of itself moves nothing, and a label
+      // promising a reorder that will not happen is worse than no label.
+      if (before === p.id) return null;
+      return before ? "Reorder" : "Move to the end";
+    },
+    leave: () => setDropTarget(null),
+    drop: (p, at) => {
+      const before = targetAt(at);
+      if (before !== p.id) actions.reorderWorkspace(p.id, before);
       resetDrag();
-      return;
-    }
-    e.preventDefault();
-    actions.reorderWorkspace(from, id);
-    resetDrag();
-  }
+    },
+  });
 
-  function onDragOverEnd(e: DragEvent) {
-    if (!dragId()) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    setDropTarget("end");
-  }
-
-  function onDropAtEnd(e: DragEvent) {
-    const from = dragId();
-    if (!from) return;
-    e.preventDefault();
-    actions.reorderWorkspace(from, null);
-    resetDrag();
-  }
+  /// The gesture ended, however it ended. Watching the controller rather than
+  /// each exit is what keeps a cancelled drag from leaving a row dimmed.
+  createEffect(() => {
+    if (!activeDrag() && dragId()) resetDrag();
+  });
 
   function resetDrag() {
     setDragId(null);
@@ -204,10 +228,9 @@ export function WorkspaceRail() {
       aria-label="Workspaces"
       /* Island (D1): no border. The edge is the canvas gap `AppShell` puts
          around it; the radius and the clipping belong to the slot. */
+      ref={(el) => (railRef = el)}
       class="flex flex-col bg-sidebar overflow-hidden relative shrink-0"
       style={{ width: `${state.panels.rail}px` }}
-      onDragOver={onDragOverEnd}
-      onDrop={onDropAtEnd}
     >
       <div class="h-9 px-3 border-b border-border flex items-center shrink-0">
         <span class="text-body font-semibold text-muted-foreground truncate">Workspaces</span>
@@ -220,11 +243,8 @@ export function WorkspaceRail() {
             const blocked = () => newWorktreeBlockedReason(ws);
             return (
               <div
-                draggable={renaming() !== ws.id}
-                onDragStart={(e) => onDragStart(e, ws.id)}
-                onDragEnd={resetDrag}
-                onDragOver={(e) => onDragOverGroup(e, ws.id)}
-                onDrop={(e) => onDropOnGroup(e, ws.id)}
+                ref={(el) => registerRow(ws.id, el)}
+                onPointerDown={(e) => startDrag(e, ws)}
                 class={`mb-0.5 ${dragId() === ws.id ? "opacity-50" : ""} ${
                   dropTarget() === ws.id ? "border-t border-t-primary" : ""
                 }`}
