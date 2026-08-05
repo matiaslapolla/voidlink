@@ -146,6 +146,8 @@ Usage:
   brain search <query>                               Search the local vault
   brain index                                        Regenerate projects/ labels/ tickets/
   brain review                                       Report stale entries and dropped threads
+  brain slice --project <name>                       Print a project's brain slice
+  brain log-session --body "<line>"                  Append a line to today's raw log
 
 Types: decision, shipped, note, discovery, content, training
 

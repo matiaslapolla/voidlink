@@ -7,8 +7,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { parseEntry, TYPE_FOLDER } from "./core/index.js";
 import type { ParsedEntry } from "./core/index.js";
 
@@ -103,6 +103,25 @@ export function readLastTouched(vaultPath: string): Map<string, string> {
   }
 
   return out;
+}
+
+/**
+ * Append one line to `vault/log/YYYY-MM-DD.md`, creating the file with a
+ * heading on the day's first write. Returns the vault-relative path.
+ *
+ * Deliberately append-only and commit-free: the SessionEnd hook fires as the
+ * process is going away, and a git commit there would race every other session
+ * ending at the same time. A scheduled task commits the day's log once.
+ */
+export function appendSessionLog(vaultPath: string, dateKey: string, line: string): string {
+  const relative = `vault/log/${dateKey}.md`;
+  const full = join(vaultPath, relative);
+  mkdirSync(dirname(full), { recursive: true });
+  if (!existsSync(full)) {
+    writeFileSync(full, `# ${dateKey}\n\nRaw session log. Append-only, written by the SessionEnd hook.\n\n`, "utf8");
+  }
+  appendFileSync(full, `${line.replace(/\n/g, " ")}\n`, "utf8");
+  return relative;
 }
 
 /**

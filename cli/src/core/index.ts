@@ -45,6 +45,13 @@ export {
 } from "./index-notes.js";
 
 export {
+  buildSlice,
+  renderSlice,
+  type Slice,
+  type SliceOptions,
+} from "./slice.js";
+
+export {
   review,
   DEFAULT_THRESHOLDS,
   type Finding,

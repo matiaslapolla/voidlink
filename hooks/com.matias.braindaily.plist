@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.matias.braindaily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/matiaslapolla/Developer/personal/voidlink/hooks/daily-push.sh</string>
+  </array>
+
+  <!-- 23:30 local. RunAtLoad is deliberately false: loading the agent should
+       not fire a push, and a missed night is caught by the next run. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>23</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/matiaslapolla/Library/pnpm:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>BRAIN_VAULT_PATH</key>
+    <string>/Users/matiaslapolla/Developer/personal/brain-kb</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/braindaily.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/braindaily.err.log</string>
+</dict>
+</plist>

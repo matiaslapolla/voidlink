@@ -29,9 +29,17 @@ import { requireVaultPath, resolveConfig } from "./config.js";
 import { renderPreview } from "./preview.js";
 import { validateInput } from "./validate.js";
 import { runLocalRegister } from "./local-register.js";
-import { buildIndexNotes, orphanedIndexNotes, review, TYPE_FOLDER } from "./core/index.js";
+import {
+  buildIndexNotes,
+  buildSlice,
+  orphanedIndexNotes,
+  renderSlice,
+  review,
+  TYPE_FOLDER,
+} from "./core/index.js";
 import type { Finding, ReviewThresholds } from "./core/index.js";
 import {
+  appendSessionLog,
   readEntries,
   readExistingCreated,
   readIndexNotePaths,
@@ -66,6 +74,16 @@ async function main(): Promise<void> {
 
   if (args.command === "review") {
     runReview(args, config);
+    return;
+  }
+
+  if (args.command === "slice") {
+    runSlice(args, config);
+    return;
+  }
+
+  if (args.command === "log-session") {
+    runLogSession(args, config);
     return;
   }
 
@@ -348,6 +366,59 @@ function runReview(
       console.log(`        ${f.detail}`);
     }
     console.log("");
+  }
+}
+
+/**
+ * `brain slice --project <name>` — what this project's history says, for
+ * injection into a session by the SessionStart hook.
+ *
+ * Exits 0 and prints nothing when the project has no entries. The hook wraps
+ * whatever comes out, and an empty slice must be silent rather than injecting
+ * a heading with nothing under it.
+ */
+function runSlice(
+  args: ReturnType<typeof parseArgs>,
+  config: ReturnType<typeof resolveConfig>,
+): void {
+  const project = args.project ?? args.positionals[0];
+  if (!project) {
+    console.error("Error: provide a project, e.g. `brain slice --project voidlink`.");
+    process.exit(1);
+  }
+
+  const vaultPath = requireVaultPath(config);
+  const rendered = renderSlice(buildSlice(readEntries(vaultPath), project, new Date()));
+  if (rendered) console.log(rendered);
+}
+
+/**
+ * `brain log-session --body "<line>"` — append one line to today's raw log.
+ *
+ * Append-only and commit-free by design: this runs from the SessionEnd hook as
+ * the process exits, and committing there would race every other session
+ * ending at the same moment. A scheduled task commits the day's log once.
+ */
+function runLogSession(
+  args: ReturnType<typeof parseArgs>,
+  config: ReturnType<typeof resolveConfig>,
+): void {
+  const line = args.body ?? args.positionals.join(" ");
+  if (!line.trim()) {
+    console.error("Error: provide the line to log, e.g. `brain log-session --body \"...\"`.");
+    process.exit(1);
+  }
+
+  const vaultPath = requireVaultPath(config);
+  // Local calendar date in -03:00, matching how entry ids are stamped.
+  const dateKey = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  try {
+    console.log(appendSessionLog(vaultPath, dateKey, line.trim()));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Log failed: ${msg}`);
+    process.exit(1);
   }
 }
 
