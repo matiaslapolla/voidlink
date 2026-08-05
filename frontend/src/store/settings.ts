@@ -2,6 +2,19 @@ import { createStore } from "solid-js/store";
 import { createEffect } from "solid-js";
 import type { CommitIdentity } from "@/types/git";
 import { defaultEditorSettings, parseEditorSettings } from "./settingsSchema";
+import {
+  composeClaudeCommand,
+  parseClaudeSpec,
+  type ClaudeAgentSpec,
+} from "./claudeAgent";
+// Imported from the leaf module rather than from `store/layout`, which reaches
+// back into this file — the palette is a five-string constant and nothing here
+// wants the store that happens to be exported beside it.
+import {
+  DEFAULT_TAB_GROUP_COLOR,
+  TAB_GROUP_COLORS,
+  type TabGroupColor,
+} from "./layout/tabGroups";
 
 export type CursorStyle = "block" | "underline" | "bar";
 export type UiTextSize = "sm" | "base" | "xl";
@@ -237,17 +250,36 @@ export const AI_KEY_PRESETS: readonly AiKeyBinding[] = [
   { id: "openrouter", envVar: "OPENROUTER_API_KEY", label: "OpenRouter" },
 ];
 
-/// One named agent in the workspace roster. `commandTemplate` is a shell
-/// command the grounded prompt is piped to on stdin — same BYO-CLI contract
-/// as `commitCommand`.
+/// One named agent in the workspace roster.
 ///
 /// The name exists so two entries pointing at differently-configured CLIs are
 /// distinguishable in a tab title. Anonymity was the whole limitation of the
 /// single-command agent: there was exactly one, so it never needed a label.
+///
+/// **An entry is one of two things, and `claude` is which.** With no spec it is
+/// the original BYO-CLI contract: `commandTemplate` is a shell command a
+/// grounded prompt is piped to on stdin, and it can point at anything the user
+/// has installed. With a spec it is a *composed* `claude` invocation — the
+/// fields are the form in Settings → AI and the command is derived from them by
+/// `composeClaudeCommand`.
+///
+/// The two are not a union type, because the migration between them has to be
+/// lossless in both directions: switching a composed agent back to a
+/// hand-written command must not throw the spec away, or the switch is a
+/// one-way door the user finds out about afterwards. So both fields are always
+/// present and `claude` being set is the whole of the discriminator.
 export interface AgentRosterEntry {
   id: string;
   name: string;
   commandTemplate: string;
+  /// The chip colour in the roster and on the terminal this agent launches.
+  ///
+  /// The five chart tokens, reused from tab groups rather than a new palette —
+  /// the app already has one set of "distinguishable hues every theme defines"
+  /// and a second would drift from it.
+  color: TabGroupColor;
+  /// Set when this agent is built from the form rather than typed as a command.
+  claude?: ClaudeAgentSpec;
 }
 
 /// The id the silent migration gives the entry built from `ai.agentCommand`.
@@ -396,7 +428,14 @@ const DEFAULTS: AppSettings = {
     agentCommand: "",
     // Not `[]`. A fresh install and a migrated one land on the same shape, so
     // no caller anywhere has to handle an empty roster.
-    agents: [{ id: DEFAULT_AGENT_ID, name: "Repo agent", commandTemplate: "" }],
+    agents: [
+      {
+        id: DEFAULT_AGENT_ID,
+        name: "Repo agent",
+        commandTemplate: "",
+        color: DEFAULT_TAB_GROUP_COLOR,
+      },
+    ],
     customKeys: [],
   },
   git: {
@@ -433,12 +472,26 @@ function parseAgentRoster(raw: unknown, agentCommand: string): AgentRosterEntry[
   if (Array.isArray(raw)) {
     for (const row of raw) {
       if (!row || typeof row !== "object") continue;
-      const { id, name, commandTemplate } = row as Record<string, unknown>;
+      const { id, name, commandTemplate, color, claude } = row as Record<string, unknown>;
       if (typeof id !== "string" || typeof name !== "string") continue;
       if (typeof commandTemplate !== "string") continue;
       if (!id.trim() || seen.has(id)) continue;
       seen.add(id);
-      entries.push({ id, name, commandTemplate });
+      entries.push({
+        id,
+        name,
+        commandTemplate,
+        // Absent in every roster written before agents had a colour, which is
+        // every roster on disk today — and an unknown token would render as no
+        // colour at all rather than as a wrong one, so it is repaired here.
+        color: (TAB_GROUP_COLORS as readonly string[]).includes(color as string)
+          ? (color as TabGroupColor)
+          : DEFAULT_TAB_GROUP_COLOR,
+        // `undefined` rather than a default spec: an entry with no spec is a
+        // hand-written command, and filling one in would silently convert every
+        // existing agent into a `claude` invocation.
+        ...(parseClaudeSpec(claude) ? { claude: parseClaudeSpec(claude) } : {}),
+      });
     }
   }
   if (entries.length > 0) return entries;
@@ -446,7 +499,14 @@ function parseAgentRoster(raw: unknown, agentCommand: string): AgentRosterEntry[
   // `agentCommand` boots into a roster of exactly that command, under the name
   // the slide-over header already showed, so nothing about its behaviour or
   // vocabulary changes.
-  return [{ id: DEFAULT_AGENT_ID, name: "Repo agent", commandTemplate: agentCommand.trim() }];
+  return [
+    {
+      id: DEFAULT_AGENT_ID,
+      name: "Repo agent",
+      commandTemplate: agentCommand.trim(),
+      color: DEFAULT_TAB_GROUP_COLOR,
+    },
+  ];
 }
 
 function parseAiSettings(partial: Partial<AiSettings> | undefined): AiSettings {
@@ -559,15 +619,75 @@ export function useSettings() {
     },
     /// Append a roster entry and return its id, so the caller can bind a tab to
     /// the agent it just created without re-reading the roster to find it.
-    addAgent(name: string, commandTemplate: string): string {
+    /// Append an agent. `claude` present means it is built from the form;
+    /// absent means it is a hand-written command, and the two entry points in
+    /// the UI say which rather than leaving it to be inferred.
+    ///
+    /// The colour rotates through the palette by position rather than being
+    /// picked, so three agents added in a row are three distinguishable chips
+    /// with nothing for the user to decide.
+    addAgent(name: string, commandTemplate: string, claude?: ClaudeAgentSpec): string {
       const id = crypto.randomUUID();
-      setSettings("ai", "agents", (agents) => [...agents, { id, name, commandTemplate }]);
+      setSettings("ai", "agents", (agents) => [
+        ...agents,
+        {
+          id,
+          name,
+          commandTemplate,
+          color: TAB_GROUP_COLORS[agents.length % TAB_GROUP_COLORS.length] ?? DEFAULT_TAB_GROUP_COLOR,
+          ...(claude ? { claude } : {}),
+        },
+      ]);
       return id;
     },
+    /// Patch one field of a composed agent's spec.
+    ///
+    /// Separate from `updateAgent` because the spec is nested: a caller
+    /// spreading a partial spec into `updateAgent` would replace the whole
+    /// object and blank every field it did not mention, which is exactly what
+    /// a per-keystroke settings form does on every keystroke.
+    ///
+    /// A no-op on a hand-written entry. Turning one into a composed agent is
+    /// `setAgentClaudeSpec`, and it is a deliberate act with a control of its
+    /// own — not something a stray patch should accomplish by accident.
+    updateAgentClaude(id: string, patch: Partial<ClaudeAgentSpec>) {
+      const index = settings.ai.agents.findIndex((entry) => entry.id === id);
+      if (index === -1 || !settings.ai.agents[index]?.claude) return;
+      setSettings("ai", "agents", index, "claude", patch);
+    },
+    /// Switch an entry between composed and hand-written.
+    ///
+    /// Passing `null` drops the spec and the entry falls back to its
+    /// `commandTemplate` — which is why nothing here touches that field: a
+    /// composed agent keeps whatever command it had before, so switching away
+    /// lands on that rather than on a blank input.
+    ///
+    /// Dropping the spec **discards the form**, and there is no undo. That is a
+    /// deliberate simplification over keeping a shadow copy nothing reads, and
+    /// it is only defensible because the control that calls it says so on its
+    /// face (§7.6) rather than in a tooltip nobody opens.
+    setAgentClaudeSpec(id: string, spec: ClaudeAgentSpec | null) {
+      const index = settings.ai.agents.findIndex((entry) => entry.id === id);
+      if (index === -1) return;
+      // `undefined` rather than deleting the key. It reads as absent everywhere
+      // that matters — `entry.claude` is falsy, and `JSON.stringify` omits the
+      // key entirely, so the reload agrees with the live store instead of
+      // disagreeing with it.
+      setSettings("ai", "agents", index, "claude", spec ?? undefined);
+    },
+    /// Patch one entry, by path rather than by rebuilding the array.
+    ///
+    /// `agents.map(...)` would be equivalent as *data* and is not equivalent as
+    /// *reactivity*: it hands `setSettings` a new array of new objects, so every
+    /// row's identity changes on every keystroke. `<For>` is keyed by reference,
+    /// so every row in the roster unmounts and remounts — which in a pane made
+    /// of text inputs means the input you are typing into is destroyed after the
+    /// first character and the rest of the word goes nowhere. Solid's path
+    /// syntax touches only the leaf.
     updateAgent(id: string, patch: Partial<Omit<AgentRosterEntry, "id">>) {
-      setSettings("ai", "agents", (agents) =>
-        agents.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
-      );
+      const index = settings.ai.agents.findIndex((entry) => entry.id === id);
+      if (index === -1) return;
+      setSettings("ai", "agents", index, patch);
     },
     /// Remove an entry. Refuses to remove the last one — a roster of zero would
     /// leave every agent tab bound to nothing, and there is no UI state that
@@ -651,11 +771,37 @@ export function defaultAgentId(): string {
   return settings.ai.agents[0]?.id ?? DEFAULT_AGENT_ID;
 }
 
-/// The shell template to actually run for `entry`: its own template, else the
-/// shared `ai.agentCommand`, else `ai.commitCommand` — the same two fallbacks
-/// the single-command agent already had, with the per-entry template layered on
-/// top. Returns `""` when nothing is configured, which callers render as the
-/// "no AI command configured" notice rather than spawning an empty shell.
+/// The shell command that launches `entry` in a terminal.
+///
+/// Only defined for a composed agent. A hand-written entry has no launch
+/// command by design: its `commandTemplate` is a *filter* — a grounded prompt
+/// goes in on stdin and an answer comes out — and running one in a PTY with no
+/// stdin would hang on an empty pipe rather than start a session.
+///
+/// The agent's name is passed through to `--name`, so the session labels itself
+/// in its own prompt box and in the terminal title. That is the difference
+/// between four panes of `claude` and four panes of *named* agents, and it is
+/// why the name is not merely decoration in the roster.
+export function agentLaunchCommand(entry: AgentRosterEntry | null): string | null {
+  if (!entry?.claude) return null;
+  return composeClaudeCommand(entry.claude, entry.name);
+}
+
+/// The shell template to pipe a grounded prompt to for `entry`: its own
+/// template, else the shared `ai.agentCommand`, else `ai.commitCommand` — the
+/// same two fallbacks the single-command agent already had, with the per-entry
+/// template layered on top. Returns `""` when nothing is configured, which
+/// callers render as the "no AI command configured" notice rather than spawning
+/// an empty shell.
+///
+/// **Deliberately blind to `entry.claude`.** A composed agent describes an
+/// *interactive session* — no `-p`, a real PTY, a permission prompt it can
+/// actually answer — and this is the other contract entirely: one prompt in on
+/// stdin, one answer out on stdout, no session and nothing to answer with.
+/// Running a composed command here would be running the right binary under the
+/// wrong assumption. The two live side by side because they are two products of
+/// the same roster entry, not two spellings of one; `agentLaunchCommand` is the
+/// other.
 export function resolveAgentCommand(entry: AgentRosterEntry | null): string {
   const own = entry?.commandTemplate.trim() ?? "";
   if (own) return own;

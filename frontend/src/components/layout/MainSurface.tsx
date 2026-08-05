@@ -39,7 +39,14 @@ import { MissionSurface } from "@/components/mission/MissionSurface";
 import { BrowserPane, browserTabLabel, normalizeUrl } from "@/components/browser/BrowserPane";
 import { AgentThreadView } from "@/components/agent/AgentThreadView";
 import { agentThread, dropAgentThread } from "@/commands/agent";
-import { agentById, defaultAgentId, useSettings } from "@/store/settings";
+import {
+  agentById,
+  defaultAgentId,
+  useSettings,
+  type AgentRosterEntry,
+} from "@/store/settings";
+import { describeClaudeSpec } from "@/store/claudeAgent";
+import { launchAgentTerminal } from "@/commands/agentTerminal";
 import {
   DragGhost,
   MenuItem,
@@ -148,7 +155,15 @@ export function MainSurface(props: MainSurfaceProps) {
     focusedGroupId,
     actions,
   } = useAppStore();
+  // The whole store as well as its parts: `launchAgentTerminal` takes it,
+  // because spawning a terminal and then writing into it is two store calls
+  // that have to agree about which session they mean.
+  const store = useAppStore();
   const { settings } = useSettings();
+
+  /// The roster's composed agents. Only these can open as a terminal — a
+  /// command agent is a stdin filter and would hang on an empty pipe.
+  const claudeAgents = createMemo(() => settings.ai.agents.filter((a) => a.claude));
 
   const isPinned = (id: string) => activePinnedTabs().includes(id);
 
@@ -1002,6 +1017,11 @@ export function MainSurface(props: MainSurfaceProps) {
                   );
                   closeMenu();
                 }}
+                claudeAgents={claudeAgents()}
+                onLaunchAgentTerminal={(agentId) => {
+                  void launchAgentTerminal(store, state.activeWorktreeId, agentId);
+                  closeMenu();
+                }}
               />
             }
           />
@@ -1456,6 +1476,12 @@ function NewTabMenu(props: {
   onOpenMission: () => void;
   onNewBrowser: () => void;
   onNewAgent: () => void;
+  /// The composed agents from the roster, in roster order. A row per agent
+  /// rather than one "New agent terminal…" row that opens a picker: the whole
+  /// point of naming and colouring them is that the user picks the one they
+  /// mean by its name, and a second dialog to get there would undo that.
+  claudeAgents: AgentRosterEntry[];
+  onLaunchAgentTerminal: (agentId: string) => void;
 }) {
   // The parent tab bar uses `overflow-x-auto`, which clips any descendant
   // absolutely-positioned dropdown. Render the menu in a Portal and anchor
@@ -1650,6 +1676,30 @@ function NewTabMenu(props: {
               >
                 New agent thread
               </MenuItem>
+              {/* One row per Claude agent, under a rule rather than a submenu.
+                  A submenu would hide the names, and the names are the feature:
+                  this is where "which of my four agents do I want here" is
+                  answered. Absent entirely when the roster has none, because a
+                  heading over nothing is a section that looks broken. */}
+              <Show when={props.claudeAgents.length > 0}>
+                <div class="my-1 border-t border-border/60" />
+                <For each={props.claudeAgents}>
+                  {(agent) => (
+                    <MenuItem
+                      onClick={() => props.onLaunchAgentTerminal(agent.id)}
+                      icon={
+                        <span
+                          class="inline-block w-2.5 h-2.5 rounded-full"
+                          style={{ "background-color": `var(--${agent.color})` }}
+                        />
+                      }
+                      tooltip={`Open a terminal in this worktree running ${agent.name} — ${describeClaudeSpec(agent.claude!)}.`}
+                    >
+                      {agent.name}
+                    </MenuItem>
+                  )}
+                </For>
+              </Show>
             </Show>
           </div>
         </Portal>

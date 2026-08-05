@@ -887,7 +887,13 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     /// Spawn a PTY rooted at the worktree's own directory — not the
     /// workspace's repo root — so a terminal in a linked worktree lands on
     /// that worktree's branch.
-    async spawnTerminal(wtId: string) {
+    ///
+    /// `label` overrides the `Terminal N` numbering. It exists for the shells
+    /// that are *about* something — an agent launched from the roster wears
+    /// that agent's name — and it stays a parameter rather than a lookup here
+    /// because this store deliberately cannot reach settings (see
+    /// `openAgentTab`); the caller that knows the name passes it.
+    async spawnTerminal(wtId: string, label?: string) {
       const found = locateWorktree(wtId);
       const cwd = found?.worktree.path;
       if (!cwd) return null;
@@ -896,7 +902,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       const term: TerminalSession = {
         id: crypto.randomUUID(),
         ptyId,
-        label: `Terminal ${count}`,
+        label: label?.trim() || `Terminal ${count}`,
         cwd,
       };
       setState(produce((s) => {

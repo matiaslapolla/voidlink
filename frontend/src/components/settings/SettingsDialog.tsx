@@ -11,7 +11,25 @@ import {
   on,
   type JSX,
 } from "solid-js";
-import { Check, Layers, Loader2, RefreshCw, RotateCcw, Search, Trash2, X } from "lucide-solid";
+import {
+  Check,
+  Layers,
+  Loader2,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-solid";
+import {
+  LABEL_INDENT,
+  Section,
+  SegmentedRow,
+  SliderRow,
+  TextRow,
+  ToggleRow,
+} from "./rows";
+import { AgentRosterSection } from "./AgentRosterPane";
 import { gitApi } from "@/api/git";
 import type { ConfigEntry, ConfigScope, ConfigSnapshot } from "@/types/git";
 import {
@@ -26,7 +44,6 @@ import {
   AI_KEY_PRESETS,
   aiKeyBindings,
   useSettings,
-  type AgentRosterEntry,
   type AiKeyBinding,
   type CursorStyle,
   type EditorCoreSettings,
@@ -196,19 +213,12 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <TabButton active={tab() === "terminal"} onClick={() => setTab("terminal")}>Terminal</TabButton>
             <TabButton active={tab() === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</TabButton>
             <TabButton active={tab() === "notifications"} onClick={() => setTab("notifications")}>Notifications</TabButton>
-            {/* AI is parked, not deleted. `AiPane` and everything under it is
-                still mounted below on a branch `tab()` can no longer reach, so
-                turning it back on is deleting `disabledReason` here — not
-                resurrecting a pane from git. §7.6: a disabled control that does
-                not say why is a dead end, so the reason is on the face of the
-                tab as well as in its tooltip. */}
-            <TabButton
-              active={false}
-              onClick={() => {}}
-              disabledReason="The AI pane is being reworked — provider keys, the agent roster and the commit command are all moving. Nothing here is configurable in this build."
-            >
-              AI <span class="text-micro opacity-70">— coming soon</span>
-            </TabButton>
+            {/* Parked for one release while the roster was reworked; the note
+                that used to sit here said "the agent roster is moving", and
+                this is where it moved to. Agents are now built from a form
+                rather than typed as a shell command, so the pane the tab was
+                disabled *for* is the pane it now opens. */}
+            <TabButton active={tab() === "ai"} onClick={() => setTab("ai")}>AI</TabButton>
             <TabButton active={tab() === "git"} onClick={() => setTab("git")}>Git</TabButton>
             <TabButton active={tab() === "stack"} onClick={() => setTab("stack")}>Stack</TabButton>
             <TabButton active={tab() === "experimental"} onClick={() => setTab("experimental")}>Experimental</TabButton>
@@ -1338,153 +1348,6 @@ function ShortcutRow(props: { entry: KeymapEntry }) {
 /// colour transition is the pane's whole motion budget — at 0ms a
 /// simultaneous recolour of five headers reads as a repaint glitch rather than
 /// a change of mode.
-/// The label column, and the indent that has to line up with it.
-///
-/// Every row in this dialog is `flex gap-3` with a fixed-width label cell, and
-/// two places in the AI pane annotate a row by indenting a sibling to match.
-/// Those were hand-written as `pl-28` against a `w-28` label — which is short
-/// by exactly the `gap-3` between them, so the commit-preset buttons and the
-/// fallback-command hint sat 12px to the left of the input they belong to.
-/// Deriving the indent from the column is what stops the two drifting again.
-///
-/// `break-words` rather than `truncate`: the label is the only thing telling a
-/// user what a control does, and silently clipping it at the `xl` text size is
-/// worse than a row that grows a line. `shrink-0` is what keeps a long label
-/// from taking width from the control instead.
-const LABEL_COL = "w-28 shrink-0 break-words";
-/// `w-28` + `gap-3`, as a value rather than as a number to remember.
-const LABEL_INDENT = "pl-[calc(7rem+0.75rem)]";
-
-function Section(props: { title: string; tone?: "warning"; children: JSX.Element }) {
-  return (
-    <section>
-      <h3
-        class={`ui-section-label mb-2 ${props.tone === "warning" ? "text-warning" : ""}`}
-        style={{ transition: "color var(--dur-short) var(--ease-in-out)" }}
-      >
-        {props.title}
-      </h3>
-      <div class="space-y-3">{props.children}</div>
-    </section>
-  );
-}
-
-/// `labelCell` replaces the whole label column rather than its text.
-///
-/// The schema-driven editor pane needs a modified dot, a highlighted match and
-/// a per-setting reset in that column; every other pane passes a plain string
-/// and gets exactly what it always got. One set of controls, two callers.
-function SliderRow(props: {
-  label: string;
-  labelCell?: JSX.Element;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  format: (v: number) => string;
-  onInput: (v: number) => void;
-}) {
-  return (
-    <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
-      <input
-        type="range"
-        min={props.min}
-        max={props.max}
-        step={props.step}
-        value={props.value}
-        onInput={(e) => props.onInput(Number(e.currentTarget.value))}
-        class="flex-1 accent-primary"
-      />
-      <span class="w-24 text-right tabular-nums text-foreground/80 shrink-0">
-        {props.format(props.value)}
-      </span>
-    </div>
-  );
-}
-
-function ToggleRow(props: {
-  label: string;
-  labelCell?: JSX.Element;
-  value: boolean;
-  hint?: string;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div class="flex items-center gap-3">
-      {props.labelCell ?? (
-        <div class={LABEL_COL} title={props.label}>
-          <div class="text-muted-foreground">{props.label}</div>
-          <Show when={props.hint}>
-            <div class="text-micro text-muted-foreground/70 leading-tight">{props.hint}</div>
-          </Show>
-        </div>
-      )}
-      <button
-        onClick={() => props.onChange(!props.value)}
-        class={`px-3 py-1 rounded-full border text-label transition-colors ${
-          props.value
-            ? "bg-primary/15 border-primary/40 text-primary"
-            : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
-        }`}
-      >
-        {props.value ? "On" : "Off"}
-      </button>
-    </div>
-  );
-}
-
-function TextRow(props: {
-  label: string;
-  labelCell?: JSX.Element;
-  value: string;
-  placeholder?: string;
-  onInput: (v: string) => void;
-}) {
-  return (
-    <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
-      <input
-        type="text"
-        value={props.value}
-        placeholder={props.placeholder}
-        onInput={(e) => props.onInput(e.currentTarget.value)}
-        class="flex-1 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-      />
-    </div>
-  );
-}
-
-function SegmentedRow<T extends string>(props: {
-  label: string;
-  labelCell?: JSX.Element;
-  value: T;
-  options: { id: T; label: string }[];
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
-      <div class="flex-1 flex gap-1">
-        <For each={props.options}>
-          {(opt) => (
-            <button
-              onClick={() => props.onChange(opt.id)}
-              class={`flex-1 px-2 py-1 rounded border text-label transition-colors ${
-                props.value === opt.id
-                  ? "bg-primary/15 border-primary/40 text-primary"
-                  : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:bg-accent/40"
-              }`}
-            >
-              {opt.label}
-            </button>
-          )}
-        </For>
-      </div>
-    </div>
-  );
-}
-
 // ─── AI Pane ────────────────────────────────────────────────────────────────
 
 const AI_COMMAND_PRESETS: { label: string; command: string }[] = [
@@ -1511,10 +1374,12 @@ function AiPane() {
     <div class="space-y-4">
       <p class="text-label text-muted-foreground leading-relaxed">
         VoidLink runs no model of its own and talks to no service on your
-        behalf. Configure any local CLI you already have installed; the staged
-        diff is piped to its stdin and stdout becomes the commit-message draft.
-        If that CLI needs a key or a token, store it under Provider keys below —
-        it goes to your OS keychain, never to voidlink's settings.
+        behalf. Everything here is a CLI you already have installed, spawned on
+        your machine: the staged diff is piped to one for commit messages, and
+        the agents below are <code class="font-mono">claude</code> invocations
+        built from a form and run in a real terminal. If a CLI needs a key or a
+        token, store it under Provider keys below — it goes to your OS keychain,
+        never to voidlink's settings.
       </p>
       <Section title="Commit messages">
         <TextRow
@@ -1554,102 +1419,6 @@ function AiPane() {
       </Section>
       <ProviderKeysSection />
     </div>
-  );
-}
-
-// ─── Agent roster ───────────────────────────────────────────────────────────
-
-const AGENT_INPUT_CLASS =
-  "min-w-0 rounded border border-border bg-muted/40 px-2 py-1 text-label font-mono outline-2 outline-transparent transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring";
-
-/// The workspace's named agents. An agent tab is bound to one of these rows, so
-/// two rows pointing at differently-configured CLIs can answer side by side.
-///
-/// Edits are written straight through on every keystroke, like every other row
-/// in this dialog — there is no Save button to be out of sync with, and a
-/// half-typed command is only ever spawned when the user asks the agent to run.
-///
-/// The last row's remove button stays *present* and disabled rather than
-/// disappearing (§7.6): a control that vanishes teaches nothing, and the reason
-/// a roster can't be emptied is exactly what the user needs told.
-function AgentRosterSection() {
-  const { settings, addAgent, updateAgent, removeAgent } = useSettings();
-  const soleEntry = () => settings.ai.agents.length <= 1;
-
-  return (
-    <Section title="Agents">
-      <p class="text-label text-muted-foreground leading-relaxed">
-        Each agent is a name plus the CLI command its prompt is piped to. Bind an
-        agent tab to one of these; leave a command blank to use the fallback
-        below.
-      </p>
-      {/* Column headings, because two bare inputs side by side told a sighted
-          user nothing about which was which — the `aria-label`s below were the
-          only labelling this section had, so it read correctly to a screen
-          reader and not at all to everyone else (MASTER §10.6 asks for a real
-          label, not a placeholder). `aria-hidden` because each input already
-          carries its own name; announcing the heading too would say it twice.
-          The spacer matches the remove button's box so the headings stay over
-          the fields they name. */}
-      <div
-        aria-hidden="true"
-        class="flex items-center gap-1.5 text-micro text-muted-foreground/70"
-      >
-        <span class="w-28 shrink-0">Name</span>
-        <span class="flex-1 min-w-0">Command</span>
-        <span class="w-[26px] shrink-0" />
-      </div>
-      <For each={settings.ai.agents}>
-        {(entry: AgentRosterEntry) => (
-          <div class="flex items-center gap-1.5">
-            <input
-              type="text"
-              value={entry.name}
-              placeholder="Repo agent"
-              aria-label="Agent name"
-              onInput={(e) => updateAgent(entry.id, { name: e.currentTarget.value })}
-              class={`w-28 shrink-0 ${AGENT_INPUT_CLASS}`}
-            />
-            <input
-              type="text"
-              value={entry.commandTemplate}
-              placeholder="optional — falls back to the command below"
-              aria-label={`Command for ${entry.name || "this agent"}`}
-              onInput={(e) => updateAgent(entry.id, { commandTemplate: e.currentTarget.value })}
-              class={`flex-1 ${AGENT_INPUT_CLASS}`}
-            />
-            <button
-              onClick={() => {
-                if (soleEntry()) return;
-                removeAgent(entry.id);
-              }}
-              aria-disabled={soleEntry()}
-              title={
-                soleEntry()
-                  ? "A roster needs at least one agent"
-                  : `Remove ${entry.name || "this agent"} from the roster`
-              }
-              aria-label={`Remove ${entry.name || "this agent"} from the roster`}
-              class={`p-1 rounded text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
-                soleEntry()
-                  ? "opacity-40 cursor-not-allowed"
-                  : "hover:text-destructive hover:bg-destructive/10"
-              }`}
-            >
-              <X class="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-      </For>
-      <div class="flex items-center gap-1.5 pt-1 border-t border-border/50">
-        <button
-          onClick={() => addAgent("New agent", "")}
-          class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Add agent
-        </button>
-      </div>
-    </Section>
   );
 }
 

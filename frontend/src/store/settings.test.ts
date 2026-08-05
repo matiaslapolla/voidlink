@@ -132,7 +132,7 @@ describe("agent roster migration", () => {
     const parsed = parseSettings(legacy);
 
     expect(parsed.ai.agents).toEqual([
-      { id: "default", name: "Repo agent", commandTemplate: "llm run" },
+      { id: "default", name: "Repo agent", commandTemplate: "llm run", color: "chart-1" },
     ]);
     // The fallback field survives the migration — it is what a roster entry
     // with a blank template resolves through.
@@ -142,7 +142,7 @@ describe("agent roster migration", () => {
   it("synthesizes a blank entry when no agent was ever configured", () => {
     const parsed = parseSettings(JSON.stringify({ ai: { commitCommand: "cc" } }));
     expect(parsed.ai.agents).toEqual([
-      { id: "default", name: "Repo agent", commandTemplate: "" },
+      { id: "default", name: "Repo agent", commandTemplate: "", color: "chart-1" },
     ]);
   });
 
@@ -150,9 +150,15 @@ describe("agent roster migration", () => {
     const saved = JSON.stringify({
       ai: { agentCommand: "shared", agents: [{ id: "a", name: "Reviewer", commandTemplate: "x" }] },
     });
-    expect(parseSettings(saved).ai.agents).toEqual([
+    // `toMatchObject`: the colour is repaired in rather than persisted here,
+    // and it has its own test below. What "verbatim" claims is that the three
+    // fields the user set come back untouched.
+    expect(parseSettings(saved).ai.agents).toMatchObject([
       { id: "a", name: "Reviewer", commandTemplate: "x" },
     ]);
+    // A roster written before agents had a spec stays hand-written. Filling one
+    // in would silently convert every existing agent into a `claude` command.
+    expect(parseSettings(saved).ai.agents[0].claude).toBeUndefined();
   });
 
   it("drops malformed rows instead of throwing, and dedupes ids keeping the first", () => {
@@ -169,18 +175,62 @@ describe("agent roster migration", () => {
         ],
       },
     });
-    expect(parseSettings(saved).ai.agents).toEqual([
+    expect(parseSettings(saved).ai.agents).toMatchObject([
       { id: "a", name: "Good", commandTemplate: "x" },
     ]);
+    expect(parseSettings(saved).ai.agents).toHaveLength(1);
   });
 
   it("falls back to the synthesized entry when every persisted row is malformed", () => {
     const saved = JSON.stringify({ ai: { agentCommand: "llm", agents: [{ nope: true }] } });
     expect(parseSettings(saved).ai.agents).toEqual([
-      { id: "default", name: "Repo agent", commandTemplate: "llm" },
+      { id: "default", name: "Repo agent", commandTemplate: "llm", color: "chart-1" },
     ]);
     // …and for a roster that is not an array at all.
     expect(parseSettings(JSON.stringify({ ai: { agents: {} } })).ai.agents).toHaveLength(1);
+  });
+
+  /// The colour is not a preference the user has ever set on any roster on
+  /// disk, so every one of them arrives without it. An absent or unknown token
+  /// renders as *no* colour rather than as a wrong one — a chip with no fill —
+  /// which is why it is repaired rather than passed through.
+  it("gives every persisted agent a colour, repairing a token it does not know", () => {
+    const saved = JSON.stringify({
+      ai: {
+        agents: [
+          { id: "a", name: "A", commandTemplate: "" },
+          { id: "b", name: "B", commandTemplate: "", color: "chart-4" },
+          { id: "c", name: "C", commandTemplate: "", color: "puce" },
+        ],
+      },
+    });
+    const agents = parseSettings(saved).ai.agents;
+    expect(agents.map((a) => a.color)).toEqual(["chart-1", "chart-4", "chart-1"]);
+  });
+
+  /// A spec on disk is what makes an entry a *composed* agent rather than a
+  /// hand-written command, so it has to survive the round trip — and a spec
+  /// with a bad field has to survive it too, minus that field. Anything else
+  /// turns one hand-edited character in Settings → JSON into a lost agent.
+  it("revives a composed agent, and only drops the fields it cannot vouch for", () => {
+    const saved = JSON.stringify({
+      ai: {
+        agents: [
+          {
+            id: "a",
+            name: "Reviewer",
+            commandTemplate: "",
+            claude: { model: "opus", permissionMode: "plan", effort: "nope" },
+          },
+        ],
+      },
+    });
+    const spec = parseSettings(saved).ai.agents[0].claude;
+    expect(spec).toMatchObject({ model: "opus", permissionMode: "plan", effort: "" });
+    // And the fields the payload never mentioned come back at their defaults
+    // rather than as `undefined`, which is what every form control binds to.
+    expect(spec?.systemPromptMode).toBe("append");
+    expect(spec?.continueSession).toBe(false);
   });
 
   it("never hands the store a reference to the defaults array", () => {
