@@ -170,7 +170,18 @@ export const KEYMAP: readonly KeymapEntry[] = [
   // ── View ──────────────────────────────────────────────────────────────
   { actionId: "ui.toggle-left-sidebar", group: "View", binding: { meta: true, key: "b" } },
   { actionId: "ui.toggle-git-sidebar", group: "View", binding: { meta: true, key: "j" } },
-  { actionId: "ui.swap-sidebars", group: "View", binding: { meta: true, key: "\\" } },
+  {
+    actionId: "ui.swap-sidebars",
+    group: "View",
+    binding: { meta: true, key: "\\" },
+    note: "Mirrors the whole arrangement now rather than flipping one boolean, which is what the chord always looked like it did. Unchanged chord on purpose.",
+  },
+  {
+    actionId: "ui.toggle-workspace-rail",
+    group: "View",
+    binding: { meta: true, shift: true, key: "b" },
+    note: "Beside ⌘B (the file explorer) and ⌘J (the git panel), because it is the third sidebar of the same family. ⌘⇧B is unclaimed; ⌘⌥B is the editor's blame toggle.",
+  },
   {
     actionId: "view.toggle-blame",
     group: "View",

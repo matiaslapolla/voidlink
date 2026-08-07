@@ -35,9 +35,11 @@ import { isMac } from "@/api/platform";
 import {
   bridgeGitRefsAcrossWindows,
   onWindowContext,
+  requestSidebarDockBack,
   requestWindowContext,
   type WindowContext,
 } from "@/api/windows";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   BranchesPane,
   ChangesPane,
@@ -92,9 +94,26 @@ export default function GitApp() {
     // Mirror refs pulses in both directions, so a commit here refreshes the
     // workbench and a rebase there refreshes us.
     const disposeBridge = bridgeGitRefsAcrossWindows();
+    let disposed = false;
+
+    // This window is also where the git *sidebar* goes when it is detached —
+    // there is one window that can hold the git panel, not two (see
+    // `SIDEBAR_WINDOW_LABEL`). So closing it docks the panel back. The
+    // workbench ignores the request when the sidebar was never detached, which
+    // is what keeps "open the git client beside my sidebar" working unchanged.
+    let unlistenClose: (() => void) | null = null;
+    try {
+      void getCurrentWindow()
+        .onCloseRequested(() => void requestSidebarDockBack("git"))
+        .then((fn) => {
+          if (disposed) void fn();
+          else unlistenClose = fn;
+        });
+    } catch {
+      // Not running under Tauri. Nothing to close, nothing to dock back.
+    }
 
     let unlistenContext: (() => void) | null = null;
-    let disposed = false;
     void onWindowContext((ctx) => {
       setContext(ctx);
     }).then((fn) => {
@@ -113,6 +132,7 @@ export default function GitApp() {
       disposed = true;
       disposeBridge();
       if (unlistenContext) unlistenContext();
+      if (unlistenClose) unlistenClose();
     });
   });
 

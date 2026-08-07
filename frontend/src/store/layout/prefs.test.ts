@@ -214,3 +214,77 @@ describe("collapsed workspaces", () => {
     );
   });
 });
+
+/// The dock arrangement, through the parser every hydration goes through.
+///
+/// `dock.test.ts` covers `parseDockSide` itself; this is the same migration
+/// asserted where it actually runs — a persisted blob turning into `UiPrefs` —
+/// because that is the path a user's storage takes on the build that lands this.
+describe("sidebar docking", () => {
+  it("ships with the layout the shell has always had", () => {
+    expect(DEFAULT_PREFS.dockSide).toEqual({
+      workspaces: "left",
+      files: "left",
+      git: "right",
+    });
+    expect(DEFAULT_PREFS.dockOrder).toEqual(["workspaces", "files", "git"]);
+    expect(DEFAULT_PREFS.detachedSidebars).toEqual([]);
+    expect(DEFAULT_PREFS.workspaceRailCollapsed).toBe(false);
+  });
+
+  it("migrates a blob with sidebarsSwapped:true to the arrangement it produced", () => {
+    expect(parsePrefs({ sidebarsSwapped: true } as never).dockSide).toEqual({
+      workspaces: "left",
+      files: "right",
+      git: "left",
+    });
+  });
+
+  it("migrates sidebarsSwapped:false to the default", () => {
+    expect(parsePrefs({ sidebarsSwapped: false } as never).dockSide).toEqual(
+      DEFAULT_PREFS.dockSide,
+    );
+  });
+
+  it("leaves a blob already in the new shape alone, however often it is parsed", () => {
+    const saved = {
+      dockSide: { workspaces: "right", files: "left", git: "left" },
+      dockOrder: ["git", "files", "workspaces"],
+      detachedSidebars: ["git"],
+    } as never;
+    const once = parsePrefs(saved);
+    expect(once.dockSide).toEqual({ workspaces: "right", files: "left", git: "left" });
+    expect(once.dockOrder).toEqual(["git", "files", "workspaces"]);
+    expect(once.detachedSidebars).toEqual(["git"]);
+    const twice = parsePrefs(once as never);
+    expect(twice.dockSide).toEqual(once.dockSide);
+    expect(twice.dockOrder).toEqual(once.dockOrder);
+    expect(twice.detachedSidebars).toEqual(once.detachedSidebars);
+  });
+
+  it("drops a sidebar id this build does not know, rather than throwing", () => {
+    expect(() =>
+      parsePrefs({
+        dockSide: { files: "right", outline: "left" },
+        dockOrder: ["outline", "git"],
+        detachedSidebars: ["outline"],
+      } as never),
+    ).not.toThrow();
+    const prefs = parsePrefs({
+      dockSide: { files: "right", outline: "left" },
+      dockOrder: ["outline", "git"],
+      detachedSidebars: ["outline"],
+    } as never);
+    expect(prefs.dockSide).toEqual({ ...DEFAULT_PREFS.dockSide, files: "right" });
+    expect(prefs.dockOrder).toEqual(["git", "workspaces", "files"]);
+    expect(prefs.detachedSidebars).toEqual([]);
+  });
+
+  it("does not hand out the module-level defaults to be mutated", () => {
+    const prefs = parsePrefs(null);
+    expect(prefs.dockSide).not.toBe(DEFAULT_PREFS.dockSide);
+    expect(prefs.dockOrder).not.toBe(DEFAULT_PREFS.dockOrder);
+    prefs.dockSide.git = "left";
+    expect(DEFAULT_PREFS.dockSide.git).toBe("right");
+  });
+});

@@ -422,3 +422,99 @@ describe("compare tree width", () => {
     });
   });
 });
+
+/// The docking arrangement is geometry, not view state, so it belongs to the
+/// same durability contract as the panel widths: a reload — and, in stacked
+/// mode, a switch away from the workbench and back — must come back to the
+/// layout the user built rather than to the defaults.
+///
+/// Asserted from the *storage* side, like `session restore` above: this project
+/// has no DOM, so the store's persist effects never run here (see
+/// `vitest.config.ts` — the unit project deliberately skips Solid's browser
+/// build). Seeding the blob and hydrating it is the half of the round trip this
+/// harness can prove; `prefs.test.ts` proves the parse, and the write is the
+/// same effect every other preference in this file rides on.
+describe("sidebar docking", () => {
+  it("comes back to the edges and the order the user left", () => {
+    backing.set(
+      STORAGE_KEYS.gitPrefs,
+      JSON.stringify({
+        dockSide: { workspaces: "left", files: "right", git: "left" },
+        dockOrder: ["git", "workspaces", "files"],
+        workspaceRailCollapsed: true,
+        panels: { rail: 212, sidebar: 256, gitSidebar: 420 },
+      }),
+    );
+
+    withStore((store) => {
+      expect(store.state.dockSide).toEqual({
+        workspaces: "left",
+        files: "right",
+        git: "left",
+      });
+      expect(store.state.dockOrder).toEqual(["git", "workspaces", "files"]);
+      expect(store.state.workspaceRailCollapsed).toBe(true);
+      // The width belongs to the panel, not to the edge it was on.
+      expect(store.state.panels.gitSidebar).toBe(420);
+    });
+  });
+
+  it("remembers which panels are in a window of their own", () => {
+    backing.set(STORAGE_KEYS.gitPrefs, JSON.stringify({ detachedSidebars: ["git"] }));
+    // Persisted so a relaunch can *reopen* the window rather than silently
+    // pulling the panel back into a shell the user had already emptied.
+    withStore((store) => expect(store.state.detachedSidebars).toEqual(["git"]));
+  });
+
+  it("hydrates a pre-dock blob into the arrangement its flag produced", () => {
+    backing.set(STORAGE_KEYS.gitPrefs, JSON.stringify({ sidebarsSwapped: true }));
+    withStore((store) =>
+      expect(store.state.dockSide).toEqual({
+        workspaces: "left",
+        files: "right",
+        git: "left",
+      }),
+    );
+  });
+
+  it("moves a panel's edge and its position in one write", () => {
+    withStore((store) => {
+      store.actions.dockSidebar("git", "left", "workspaces");
+      expect(store.state.dockSide.git).toBe("left");
+      expect(store.state.dockOrder).toEqual(["git", "workspaces", "files"]);
+    }, false);
+  });
+
+  it("mirrors the whole arrangement, and mirroring twice is the identity", () => {
+    withStore((store) => {
+      const before = { ...store.state.dockSide };
+      const order = [...store.state.dockOrder];
+
+      store.actions.mirrorSidebars();
+      expect(store.state.dockSide.git).toBe("left");
+      expect(store.state.dockSide.files).toBe("right");
+
+      store.actions.mirrorSidebars();
+      expect(store.state.dockSide).toEqual(before);
+      expect(store.state.dockOrder).toEqual(order);
+    }, false);
+  });
+
+  it("keeps a moved panel's width — the width belongs to the panel, not the edge", () => {
+    withStore((store) => {
+      store.actions.setPanelWidth("gitSidebar", 420);
+      store.actions.dockSidebar("git", "left");
+      expect(store.state.panels.gitSidebar).toBe(420);
+    }, false);
+  });
+
+  it("detaching and docking back is one flag, and is idempotent either way", () => {
+    withStore((store) => {
+      store.actions.setSidebarDetached("git", true);
+      store.actions.setSidebarDetached("git", true);
+      expect(store.state.detachedSidebars).toEqual(["git"]);
+      store.actions.setSidebarDetached("git", false);
+      expect(store.state.detachedSidebars).toEqual([]);
+    }, false);
+  });
+});

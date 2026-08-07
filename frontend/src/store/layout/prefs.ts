@@ -5,6 +5,15 @@
 /// having it spring back when you switch is the behaviour nobody wants, so they
 /// live at the top of the store and in one storage key.
 import { STORAGE_KEYS, readJson, writeJson } from "./persistence";
+import {
+  parseDetachedSidebars,
+  parseDockOrder,
+  parseDockSide,
+  DEFAULT_DOCK_ORDER,
+  DEFAULT_DOCK_SIDE,
+  type DockSide,
+  type SidebarId,
+} from "./dock";
 
 export type DiffMode = "inline" | "split";
 export type GitTab = "changes" | "branches" | "history";
@@ -98,11 +107,33 @@ export const PANEL_BOUNDS: Record<PanelId, { min: number; max: number; default: 
 /// out of view.
 export const SIDEBAR_RAIL_WIDTH = 32;
 
+/// Which `PanelWidths` key each sidebar's width lives in. The widths predate
+/// the dock model and are keyed by what the panel *is*, not by where it sits —
+/// which is the point: moving a panel across the window must not lose the width
+/// the user dragged it to.
+export const SIDEBAR_PANEL: Record<SidebarId, PanelId> = {
+  workspaces: "rail",
+  files: "sidebar",
+  git: "gitSidebar",
+};
+
 export interface UiPrefs {
   panels: PanelWidths;
   gitSidebarCollapsed: boolean;
   leftSidebarCollapsed: boolean;
-  sidebarsSwapped: boolean;
+  /// The workspace rail's collapse, beside the other two sidebars' rather than
+  /// inside `collapsedWorkspaces` — that list is which *workspaces* have their
+  /// worktrees folded away, and this is whether the panel listing them is a
+  /// `SIDEBAR_RAIL_WIDTH` icon rail.
+  workspaceRailCollapsed: boolean;
+  /// Which edge each sidebar is docked to. Replaces `sidebarsSwapped`; see
+  /// `dock.ts` for the model and the migration.
+  dockSide: Record<SidebarId, DockSide>;
+  /// Every sidebar in screen order, left to right, across both edges.
+  dockOrder: SidebarId[];
+  /// The sidebars living in their own window right now. Persisted so a relaunch
+  /// reopens them rather than silently pulling them back into the shell.
+  detachedSidebars: SidebarId[];
   diffMode: DiffMode;
   /// Whether the hunk renderer prints old/new line numbers in its gutters.
   ///
@@ -148,7 +179,10 @@ export const DEFAULT_PREFS: UiPrefs = {
   },
   gitSidebarCollapsed: false,
   leftSidebarCollapsed: false,
-  sidebarsSwapped: false,
+  workspaceRailCollapsed: false,
+  dockSide: { ...DEFAULT_DOCK_SIDE },
+  dockOrder: [...DEFAULT_DOCK_ORDER],
+  detachedSidebars: [],
   diffMode: "inline",
   diffLineNumbers: true,
   gitTab: "changes",
@@ -200,10 +234,19 @@ export function parseGitSectionOrder(raw: unknown): GitSectionKey[] {
 /// `gitSectionOrder` stays a whole array. A partial array is a different and
 /// worse claim (`(GitSectionKey | undefined)[]`), and `parseGitSectionOrder`
 /// already validates it element by element.
-type PersistedPrefs = Omit<Partial<UiPrefs>, "panels" | "gitSections" | "sidebarSections"> & {
+type PersistedPrefs = Omit<
+  Partial<UiPrefs>,
+  "panels" | "gitSections" | "sidebarSections" | "dockSide"
+> & {
   panels?: Partial<PanelWidths>;
   gitSections?: Partial<GitSections>;
   sidebarSections?: Partial<SidebarSections>;
+  dockSide?: Partial<Record<SidebarId, DockSide>>;
+  /// Gone from `UiPrefs` since the dock model landed, and still declared here
+  /// because every blob written before it has one. `parseDockSide` reads it as
+  /// the fallback arrangement and nothing writes it again, so it ages out of a
+  /// user's storage on their first layout change.
+  sidebarsSwapped?: boolean;
 };
 
 /// Field-by-field so a blob written by an older (or newer) build cannot
@@ -226,7 +269,13 @@ export function parsePrefs(parsed: PersistedPrefs | null): UiPrefs {
     panels: parsePanelWidths(parsed.panels),
     gitSidebarCollapsed: parsed.gitSidebarCollapsed ?? d.gitSidebarCollapsed,
     leftSidebarCollapsed: parsed.leftSidebarCollapsed ?? d.leftSidebarCollapsed,
-    sidebarsSwapped: parsed.sidebarsSwapped ?? d.sidebarsSwapped,
+    workspaceRailCollapsed: parsed.workspaceRailCollapsed ?? d.workspaceRailCollapsed,
+    // The one migration: `sidebarsSwapped` is consulted only when there is no
+    // `dockSide` to read, so hydrating a blob this build wrote is a no-op no
+    // matter how many times it happens.
+    dockSide: parseDockSide(parsed.dockSide, parsed.sidebarsSwapped),
+    dockOrder: parseDockOrder(parsed.dockOrder),
+    detachedSidebars: parseDetachedSidebars(parsed.detachedSidebars),
     diffMode: parsed.diffMode === "split" ? "split" : "inline",
     diffLineNumbers: parsed.diffLineNumbers ?? d.diffLineNumbers,
     gitTab:

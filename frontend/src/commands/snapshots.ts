@@ -14,7 +14,15 @@
 ///      `migrateSnapshot` upgrades a v1 blob in memory on the way in, so a
 ///      user's saved snapshots survive the upgrade without a write.
 import { createSignal } from "solid-js";
-import type { CompareTreeMode, DiffMode, GitTab, SidebarTab } from "@/store/layout";
+import type {
+  CompareTreeMode,
+  DiffMode,
+  DockSide,
+  GitTab,
+  SidebarId,
+  SidebarTab,
+} from "@/store/layout";
+import { parseDockSide } from "@/store/layout";
 import { STORAGE_KEYS, readJson, writeJson } from "@/store/layout/persistence";
 
 export const SNAPSHOT_VERSION = 2;
@@ -82,7 +90,11 @@ export interface SnapshotTabs {
 export interface SnapshotUi {
   gitSidebarCollapsed: boolean;
   leftSidebarCollapsed: boolean;
-  sidebarsSwapped: boolean;
+  /// Which edge each sidebar sat on. A snapshot saved before the dock model
+  /// carries `sidebarsSwapped` instead, and `migrateUi` hands both to the one
+  /// migration in `store/layout/dock.ts` rather than keeping a second copy of
+  /// the rule here.
+  dockSide: Record<SidebarId, DockSide>;
   diffMode: DiffMode;
   gitTab: GitTab;
   ignoreWhitespace: boolean;
@@ -270,7 +282,7 @@ function migrateUi(raw: unknown): SnapshotUi {
   return {
     gitSidebarCollapsed: r.gitSidebarCollapsed === true,
     leftSidebarCollapsed: r.leftSidebarCollapsed === true,
-    sidebarsSwapped: r.sidebarsSwapped === true,
+    dockSide: parseDockSide(r.dockSide, r.sidebarsSwapped),
     diffMode: (r.diffMode === "split" ? "split" : "unified") as DiffMode,
     gitTab: (typeof r.gitTab === "string" ? r.gitTab : "changes") as GitTab,
     ignoreWhitespace: r.ignoreWhitespace === true,

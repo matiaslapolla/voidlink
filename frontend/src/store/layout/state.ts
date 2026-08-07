@@ -27,6 +27,7 @@ import type {
   StackTab,
   TabCollectionKey,
 } from "./tabs";
+import type { DockSide, SidebarId } from "./dock";
 import type {
   GitSectionKey,
   GitSections,
@@ -102,7 +103,12 @@ export interface AppStoreState {
   panels: PanelWidths;
   gitSidebarCollapsed: boolean;
   leftSidebarCollapsed: boolean;
-  sidebarsSwapped: boolean;
+  workspaceRailCollapsed: boolean;
+  /// Which edge each sidebar is docked to, the screen order they render in, and
+  /// which of them are in a window of their own. See `store/layout/dock.ts`.
+  dockSide: Record<SidebarId, DockSide>;
+  dockOrder: SidebarId[];
+  detachedSidebars: SidebarId[];
   diffMode: DiffMode;
   diffLineNumbers: boolean;
   gitTab: GitTab;

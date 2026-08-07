@@ -69,7 +69,17 @@ export const ACTION_IDS = [
   // View
   "ui.toggle-git-sidebar",
   "ui.toggle-left-sidebar",
+  // The ⌘\ mirror. Kept its id through the dock rework: from the user's side
+  // the gesture is unchanged — every panel moves to the opposite edge — and a
+  // rename would take the chord away from everyone who already has it.
   "ui.swap-sidebars",
+  "ui.toggle-workspace-rail",
+  // Detach, per sidebar. Palette-only: which panel you want in a window is a
+  // choice, and three more chords for three rare choices is how a keymap stops
+  // being learnable. `ui.detach-workspaces` is deliberately absent — the rail
+  // is not detachable (see `SIDEBAR_WINDOW_LABEL`).
+  "ui.detach-files",
+  "ui.detach-git",
   "ui.toggle-diff-mode",
   "ui.toggle-ignore-ws",
   "ui.maximize-pane",

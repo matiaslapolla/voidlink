@@ -10,7 +10,7 @@ import {
   untrack,
   type JSX,
 } from "solid-js";
-import { AppShell } from "@/components/layout/AppShell";
+import { AppShell, type AppShellSidebar } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
 import { WorkspaceRail } from "@/components/layout/WorkspaceRail";
@@ -76,7 +76,7 @@ import { pushToast } from "@/commands/toast";
 import { askAgent, registerAgentActions } from "@/commands/agent";
 import { agentById, resolveAgentCommand, useSettings } from "@/store/settings";
 import { AgentBoardBroadcast } from "@/components/agent/AgentBoardBroadcast";
-import { FilesPanel } from "@/components/files/FilesPanel";
+import { FilesSidebar } from "@/components/files/FilesSidebar";
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { BoardOverlayHost } from "@/components/board/BoardOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
@@ -115,11 +115,22 @@ import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import { samePath } from "@/store/layout/tabs";
 import {
+  SIDEBAR_IDS,
   groupList,
   resolveGroupTabs,
+  slotOrder,
   type ActiveItem,
+  type SidebarId,
   type SplitOrientation,
 } from "@/store/layout";
+import { SidebarDockOverlay } from "@/components/layout/SidebarDock";
+import {
+  canDetachSidebar,
+  detachSidebar,
+  dockSidebarBack,
+  useSidebarWindows,
+} from "@/commands/sidebarWindows";
+import { SIDEBAR_LABEL } from "@/components/layout/SidebarDock";
 import { browserTabLabel } from "@/components/browser/BrowserPane";
 
 /// The other two surfaces, loaded only if stacked mode actually renders them.
@@ -432,6 +443,11 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // the whole app — the title bar, the git sidebar's file rows, the file tree,
   // the palette and the terminal deep-links included.
   const store = useAppStore();
+
+  // Detached sidebars: reopen the windows a previous session left detached, and
+  // dock a panel back when its window closes. See `commands/sidebarWindows.ts`.
+  useSidebarWindows(store);
+
   createEffect(() => {
     if (!isStackedMode()) {
       setStackedViewRouter(null);
@@ -616,11 +632,37 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       run: () => actions.toggleLeftSidebar(),
     },
     {
+      // Kept its id and its ⌘\ chord: the gesture is unchanged from the user's
+      // side — everything swaps sides — and only its implementation moved from
+      // a two-state boolean to mirroring a per-sidebar arrangement. Renaming it
+      // would have taken a chord out of the hands of everyone who has it.
       id: "ui.swap-sidebars",
-      label: "Swap left/right sidebars",
+      label: "Mirror the sidebar layout",
+      description: "Every docked panel moves to the opposite edge",
       group: "View",
-      run: () => actions.toggleSidebarsSwapped(),
+      run: () => actions.mirrorSidebars(),
     },
+    {
+      id: "ui.toggle-workspace-rail",
+      label: "Toggle the workspace rail",
+      description: "Collapse the workspace rail to its icon rail, or bring it back",
+      group: "View",
+      run: () => actions.toggleWorkspaceRail(),
+    },
+    ...SIDEBAR_IDS.filter(canDetachSidebar).map((id): Action => ({
+      id: `ui.detach-${id}`,
+      label: state.detachedSidebars.includes(id)
+        ? `Dock the ${SIDEBAR_LABEL[id].toLowerCase()} panel back`
+        : `Detach the ${SIDEBAR_LABEL[id].toLowerCase()} panel into its own window`,
+      group: "View",
+      // Stacked mode has no satellite windows to detach into — it shows the
+      // other surfaces as views. A row that says why beats one that no-ops.
+      enabled: () => !isStackedMode() || state.detachedSidebars.includes(id),
+      run: () =>
+        state.detachedSidebars.includes(id)
+          ? void dockSidebarBack(store, id)
+          : void detachSidebar(store, id),
+    })),
     {
       id: "ui.toggle-diff-mode",
       label: "Toggle inline / split diff",
@@ -1233,80 +1275,115 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // Under horizontal tabs, exactly where it always has: the first section of
   // the left sidebar, above the terminals list.
   //
-  // Under **vertical** tabs it moves to the right column, above the git panel,
-  // and the left sidebar goes away entirely. That is not decoration; it is the
-  // consequence of the preference. A vertical tab strip is a third navigation
-  // column at the left edge, behind the workspace rail and the file tree, and
-  // three parallel vertical lists at one edge is one more than the eye scans.
-  // Splitting them by *kind* is what the window has room for: the left edge
-  // answers "which thing am I looking at" (workspaces, then tabs) and the
-  // right edge answers "what is in this repo" (its files, then its changes).
+  // Under **vertical** tabs it is a sidebar of its own (`FilesSidebar`), with
+  // its own edge, its own width and its own splitter, and the terminals column
+  // goes away. That split is not decoration; it is the consequence of the
+  // preference. A vertical tab strip is a third navigation column at the left
+  // edge, behind the workspace rail and the file tree, and three parallel
+  // vertical lists at one edge is one more than the eye scans. Splitting them
+  // by *kind* is what the window has room for: one edge answers "which thing am
+  // I looking at" (workspaces, then tabs) and the other answers "what is in
+  // this repo" (its files, then its changes).
   //
-  // The left sidebar's other two sections survive the move because neither is
-  // lost. The terminals list is a second rendering of the terminal *tabs*, and
-  // a vertical strip shows those with their full labels — better than the list
-  // it duplicates. "Compare branches" is a row in the "+" menu and an action
-  // in the palette. The repo picker is on the workspace rail.
+  // It used to be *stacked inside the git panel's column* — one column, two
+  // panels, one shared width — and the reason was a limitation, not a design:
+  // the shell had a single global `sidebarsSwapped` boolean, so two panels that
+  // both wanted the right edge had to share a column to get there. With a
+  // per-sidebar dock side they do not. The explorer and the git panel are two
+  // ordinary sidebars now: independent widths, independent collapse, either
+  // edge, and neither nested in the other.
+  //
+  // The terminals sidebar's other two sections survive its absence because
+  // neither is lost. The terminals list is a second rendering of the terminal
+  // *tabs*, and a vertical strip shows those with their full labels — better
+  // than the list it duplicates. "Compare branches" is a row in the "+" menu
+  // and an action in the palette. The repo picker is on the workspace rail.
   //
   // `Mod+B` keeps meaning "show or hide the file explorer" in both layouts,
-  // which is why `leftSidebarCollapsed` gates the right-column placement too:
-  // the binding names an intent, not a screen edge.
+  // which is why `leftSidebarCollapsed` gates both placements: the binding
+  // names an intent, not a screen edge.
   const verticalTabs = () => settings.ui.tabOrientation === "vertical";
 
-  const leftPane = () =>
-    verticalTabs() || state.leftSidebarCollapsed ? null : (
-      <TerminalSidebar onOpenFile={(path) => void openInEditorWindow(path)} />
-    );
+  /// Whether a sidebar renders in the shell at all. Zen takes every panel away;
+  /// a detached panel is in a window of its own and its slot collapses.
+  const shows = (id: SidebarId) =>
+    !isZen() && !state.detachedSidebars.includes(id);
+
+  const filesPane = () => (
+    <Show when={shows("files") && !state.leftSidebarCollapsed}>
+      <Show
+        when={verticalTabs()}
+        fallback={
+          <TerminalSidebar
+            dock={state.dockSide.files}
+            onOpenFile={(path) => void openInEditorWindow(path)}
+          />
+        }
+      >
+        <FilesSidebar
+          dock={state.dockSide.files}
+          onOpenFile={(path) => void openInEditorWindow(path)}
+        />
+      </Show>
+    </Show>
+  );
 
   const gitPane = () => (
-    <Show when={activeRepoPath()}>
+    <Show when={shows("git") && activeRepoPath()}>
       {(repo) => (
         <Show
           when={!state.gitSidebarCollapsed}
-          fallback={<GitSidebarCollapsed onExpand={actions.toggleGitSidebar} />}
+          fallback={
+            <GitSidebarCollapsed
+              dock={state.dockSide.git}
+              onExpand={actions.toggleGitSidebar}
+            />
+          }
         >
-          <GitSidebar repoPath={repo()} worktreeId={state.activeWorktreeId} />
+          <GitSidebar
+            repoPath={repo()}
+            worktreeId={state.activeWorktreeId}
+            dock={state.dockSide.git}
+          />
         </Show>
       )}
     </Show>
   );
 
-  const rightPane = () => (
-    <Show when={verticalTabs()} fallback={gitPane()}>
-      {/* One column, two stacked panels. It takes its width from whichever
-          child declares one — `GitSidebar` does, off `panels.gitSidebar`, and
-          its splitter therefore resizes the column as a whole. `FilesPanel`
-          is `w-full` inside it rather than carrying a width of its own, so
-          the two can never disagree about how wide the column is. */}
-      <div class="flex flex-col min-h-0 bg-sidebar">
-        <Show when={!state.leftSidebarCollapsed}>
-          {/* `flex-1` only while the explorer is open. The column's *width*
-              belongs to the git panel here, so what a collapse gives back is
-              vertical space — and a wrapper that stayed `flex-1` around a
-              collapsed `FilesPanel` would hold half the column open for a
-              header row, which is the disclosure-that-buys-you-nothing this
-              feature exists to remove. */}
-          <div
-            class="min-h-0 flex flex-col border-b border-border/60 w-full"
-            classList={{
-              "flex-1": state.sidebarSections.files,
-              "shrink-0": !state.sidebarSections.files,
-            }}
-          >
-            <FilesPanel onOpenFile={(path) => void openInEditorWindow(path)} />
-          </div>
-        </Show>
-        {/* `flex` rather than `contents`: the git panel is an `<aside>` with
-            its own width and expects to be laid out as a flex child. */}
-        <div class="flex-1 min-h-0 flex">{gitPane()}</div>
-      </div>
+  const railPane = () => (
+    <Show when={shows("workspaces")}>
+      <WorkspaceRail dock={state.dockSide.workspaces} />
     </Show>
   );
+
+  /// The shell's slots, built **once**.
+  ///
+  /// The array is a constant and every panel below it is created here exactly
+  /// once; what changes when a sidebar is docked elsewhere is the `order`
+  /// accessor `AppShell` reads. That is the whole no-remount story: a dock
+  /// change rewrites one CSS property on elements that are already in the DOM,
+  /// so nothing beside them — least of all `MainSurface` and the PTYs hanging
+  /// off it — is torn down and rebuilt because the user moved a panel.
+  const shellSidebars: AppShellSidebar[] = [
+    { id: "workspaces", content: railPane() },
+    { id: "files", content: filesPane() },
+    { id: "git", content: gitPane() },
+  ].map(({ id, content }) => ({
+    id,
+    content,
+    side: () => state.dockSide[id as SidebarId],
+    order: () =>
+      slotOrder(
+        state.dockSide[id as SidebarId],
+        state.dockOrder.indexOf(id as SidebarId),
+      ),
+  }));
 
   /// The workbench body. Note what is *not* conditional here: this tree is
   /// rendered exactly once, in both modes, because flipping the environment mode
   /// must not remount it — the terminals hanging off it own live PTYs that do
-  /// not come back.
+  /// not come back. A sidebar changing edge must not either; see
+  /// `shellSidebars` and `AppShellSidebar`.
   const workbench = (
     <>
     {/* The agent board's one writer. Outside `AppShell` because it renders
@@ -1325,17 +1402,18 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       // Zen removes the panels rather than sliding them away — a
       // keyboard-initiated geometry change never animates (MASTER §7.1), and
       // the pane tree underneath is untouched, so the way back is exact.
-      rail={isZen() ? null : <WorkspaceRail />}
-      sidebar={isZen() ? null : state.sidebarsSwapped ? rightPane() : leftPane()}
+      sidebars={shellSidebars}
       main={
         <MainSurface
           onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
           onOpenSettings={props.onOpenSettings}
         />
       }
-      rightSidebar={isZen() ? null : state.sidebarsSwapped ? leftPane() : rightPane()}
       statusBar={<StatusBar />}
     />
+    {/* The drop zone for a sidebar drag, over the whole workbench. Draws only
+        while a panel is in flight and never captures the pointer. */}
+    <SidebarDockOverlay />
     </>
   );
 

@@ -55,6 +55,36 @@ const EDITOR_SPEC: SatelliteSpec = SatelliteSpec {
     min_height: 600.0,
 };
 
+/// Window label for the detached file-explorer panel.
+///
+/// A *panel* window, not a satellite app: it hosts one sidebar that the
+/// workbench would otherwise draw in a column, at roughly a column's width. The
+/// git sidebar has no entry here on purpose — it detaches into the git window
+/// above, because that window already *is* the git panel with a whole window
+/// around it (see `SIDEBAR_WINDOW_LABEL` in `frontend/src/api/windows.ts`).
+pub(crate) const FILES_PANEL_WINDOW_LABEL: &str = "panel-files";
+
+const FILES_PANEL_SPEC: SatelliteSpec = SatelliteSpec {
+    label: FILES_PANEL_WINDOW_LABEL,
+    title: "Voidlink Files",
+    width: 360.0,
+    height: 820.0,
+    min_width: 240.0,
+    min_height: 400.0,
+};
+
+/// Every window a sidebar may be detached into, by label.
+///
+/// An allowlist rather than a label passed straight through from the frontend:
+/// `open_panel_window` is a command any webview in this app can invoke, and a
+/// free-form label would let it build windows this app has no capability entry
+/// for — which is to say, windows with no permissions and no way to say so.
+const PANEL_SPECS: &[&SatelliteSpec] = &[&FILES_PANEL_SPEC];
+
+fn panel_spec(label: &str) -> Option<&'static SatelliteSpec> {
+    PANEL_SPECS.iter().copied().find(|spec| spec.label == label)
+}
+
 /// Window title, with a dev marker appended when this is a `cargo tauri dev`
 /// run.
 ///
@@ -170,6 +200,40 @@ pub async fn is_editor_window_open<R: Runtime>(app: AppHandle<R>) -> Result<bool
 #[tauri::command]
 pub async fn focus_editor_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     focus_window(&app, EDITOR_WINDOW_LABEL)
+}
+
+// ─── Detached sidebar panels ─────────────────────────────────────────────────
+
+/// Open (or focus) the window a detached sidebar lives in.
+///
+/// An unknown label is an error rather than a silently-built window: the label
+/// decides which capability entry applies, and a window outside `PANEL_SPECS`
+/// would come up with none.
+#[tauri::command]
+pub async fn open_panel_window<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+) -> Result<bool, String> {
+    let spec = panel_spec(&label).ok_or_else(|| format!("unknown panel window: {label}"))?;
+    open_satellite(&app, spec)
+}
+
+#[tauri::command]
+pub async fn close_panel_window<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+) -> Result<(), String> {
+    let spec = panel_spec(&label).ok_or_else(|| format!("unknown panel window: {label}"))?;
+    close_satellite(&app, spec.label)
+}
+
+#[tauri::command]
+pub async fn is_panel_window_open<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+) -> Result<bool, String> {
+    let spec = panel_spec(&label).ok_or_else(|| format!("unknown panel window: {label}"))?;
+    Ok(app.get_webview_window(spec.label).is_some())
 }
 
 // ─── Workbench ───────────────────────────────────────────────────────────────

@@ -31,6 +31,12 @@ import {
 import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
 import type { DiffMode, GitSectionKey, PanelId } from "./prefs";
 import {
+  mirrorArrangement,
+  moveInDockOrder,
+  type DockSide,
+  type SidebarId,
+} from "./dock";
+import {
   findGroup,
   groupList,
   groupOwning,
@@ -180,7 +186,21 @@ export type {
   SidebarTab,
   UiPrefs,
 } from "./prefs";
-export { GIT_SECTION_KEYS, PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH } from "./prefs";
+export { GIT_SECTION_KEYS, PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH, SIDEBAR_PANEL } from "./prefs";
+export type { DockSide, SidebarId } from "./dock";
+export {
+  DEFAULT_DOCK_ORDER,
+  DEFAULT_DOCK_SIDE,
+  SIDEBAR_IDS,
+  SWAPPED_DOCK_SIDE,
+  mirrorArrangement,
+  moveInDockOrder,
+  parseDetachedSidebars,
+  parseDockOrder,
+  parseDockSide,
+  sidebarsOnSide,
+  slotOrder,
+} from "./dock";
 export type { PaneGroup, PaneNode, SplitOrientation } from "./panes";
 export type {
   AutoGroupMode,
@@ -389,7 +409,10 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     panels: prefs.panels,
     gitSidebarCollapsed: prefs.gitSidebarCollapsed,
     leftSidebarCollapsed: prefs.leftSidebarCollapsed,
-    sidebarsSwapped: prefs.sidebarsSwapped,
+    workspaceRailCollapsed: prefs.workspaceRailCollapsed,
+    dockSide: prefs.dockSide,
+    dockOrder: prefs.dockOrder,
+    detachedSidebars: prefs.detachedSidebars,
     diffMode: prefs.diffMode,
     diffLineNumbers: prefs.diffLineNumbers,
     gitTab: prefs.gitTab,
@@ -480,7 +503,14 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       panels: state.panels,
       gitSidebarCollapsed: state.gitSidebarCollapsed,
       leftSidebarCollapsed: state.leftSidebarCollapsed,
-      sidebarsSwapped: state.sidebarsSwapped,
+      workspaceRailCollapsed: state.workspaceRailCollapsed,
+      // Copied for the same reason `gitSectionOrder` is: handing the store's
+      // own array (or its own record) to `writeJson` makes the persisted blob
+      // alias live state, and the debounce means it would be serialised after
+      // the next mutation rather than at the value this effect ran on.
+      dockSide: { ...state.dockSide },
+      dockOrder: [...state.dockOrder],
+      detachedSidebars: [...state.detachedSidebars],
       diffMode: state.diffMode,
       diffLineNumbers: state.diffLineNumbers,
       gitTab: state.gitTab,
@@ -1311,8 +1341,55 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     toggleLeftSidebar() {
       setState("leftSidebarCollapsed", (v) => !v);
     },
-    toggleSidebarsSwapped() {
-      setState("sidebarsSwapped", (v) => !v);
+    /// The workspace rail's collapse, which it did not have until the rail
+    /// became a sidebar like the other two. Collapsing takes it to the icon
+    /// rail, not to nothing — `panels.rail` is deliberately left alone so
+    /// expanding comes back to the width the user dragged to.
+    toggleWorkspaceRail() {
+      setState("workspaceRailCollapsed", (v) => !v);
+    },
+
+    // ── Docking ─────────────────────────────────────────────────────────
+    /// Dock `id` to `side`, landing immediately before `beforeId` (or last).
+    ///
+    /// One write for both halves of the move: the edge and the position within
+    /// it are one user intent — "put it there" — and splitting them would let a
+    /// render happen between them, with the panel on its new edge in its old
+    /// neighbour's position.
+    dockSidebar(id: SidebarId, side: DockSide, beforeId: SidebarId | null = null) {
+      setState(
+        produce((s) => {
+          s.dockSide[id] = side;
+          s.dockOrder = moveInDockOrder(s.dockOrder, id, beforeId);
+        }),
+      );
+    },
+
+    /// Flip the arrangement across the window's axis. What `toggleSidebarsSwapped`
+    /// became — see `mirrorArrangement`.
+    mirrorSidebars() {
+      setState(
+        produce((s) => {
+          const next = mirrorArrangement({ sides: s.dockSide, order: s.dockOrder });
+          s.dockSide = next.sides;
+          s.dockOrder = next.order;
+        }),
+      );
+    },
+
+    /// Mark a sidebar as living in its own window. The shell renders nothing
+    /// for it and its slot collapses; opening the window is the caller's job
+    /// (`commands/sidebarWindows.ts`), because the store must stay free of IPC.
+    setSidebarDetached(id: SidebarId, detached: boolean) {
+      setState(
+        produce((s) => {
+          const has = s.detachedSidebars.includes(id);
+          if (detached === has) return;
+          s.detachedSidebars = detached
+            ? [...s.detachedSidebars, id]
+            : s.detachedSidebars.filter((x) => x !== id);
+        }),
+      );
     },
     setGitTab(tab: AppStoreState["gitTab"]) {
       setState("gitTab", tab);
@@ -2363,7 +2440,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         ui: {
           gitSidebarCollapsed: state.gitSidebarCollapsed,
           leftSidebarCollapsed: state.leftSidebarCollapsed,
-          sidebarsSwapped: state.sidebarsSwapped,
+          dockSide: { ...state.dockSide },
           diffMode: state.diffMode,
           gitTab: state.gitTab,
           ignoreWhitespace: state.ignoreWhitespace,
@@ -2401,7 +2478,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       setState({
         gitSidebarCollapsed: snap.ui.gitSidebarCollapsed,
         leftSidebarCollapsed: snap.ui.leftSidebarCollapsed,
-        sidebarsSwapped: snap.ui.sidebarsSwapped,
+        dockSide: { ...snap.ui.dockSide },
         diffMode: snap.ui.diffMode,
         gitTab: snap.ui.gitTab,
         ignoreWhitespace: snap.ui.ignoreWhitespace,

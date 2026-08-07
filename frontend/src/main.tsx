@@ -2,8 +2,9 @@ import { render } from "solid-js/web";
 import App from "./App.tsx";
 import GitApp from "./GitApp.tsx";
 import EditorApp from "./EditorApp.tsx";
+import PanelApp from "./PanelApp.tsx";
 import { initPlatform } from "@/api/platform";
-import { isEditorWindow, isGitWindow } from "@/api/windows";
+import { currentPanelSidebar, isEditorWindow, isGitWindow } from "@/api/windows";
 import { bridgeThemeAcrossWindows } from "@/store/theme";
 import "./index.css";
 
@@ -28,6 +29,13 @@ void initPlatform().then(() => {
   } else if (isEditorWindow()) {
     document.title = "Voidlink Editor";
     render(() => <EditorApp />, root);
+  } else if (currentPanelSidebar()) {
+    // A detached sidebar. Same branch-on-the-label arrangement as the two
+    // above; the label also says *which* panel, so there is one root rather
+    // than one per sidebar.
+    const sidebarId = currentPanelSidebar()!;
+    document.title = "Voidlink Files";
+    render(() => <PanelApp sidebarId={sidebarId} />, root);
   } else {
     render(() => <App />, root);
   }
