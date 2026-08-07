@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-solid";
 import {
+  LABEL_COL,
   LABEL_INDENT,
   Section,
   SegmentedRow,
@@ -42,6 +43,9 @@ import {
 } from "./gitConfig";
 import {
   useSettings,
+  SURFACE_OPACITY_MAX,
+  SURFACE_OPACITY_MIN,
+  type BackgroundFit,
   type CursorStyle,
   type EditorCoreSettings,
   type EditorSettings,
@@ -317,6 +321,66 @@ const DENSITIES: { id: UiDensity; label: string }[] = [
   { id: "normal", label: "Normal" },
   { id: "comfortable", label: "Comfortable" },
 ];
+const BACKGROUND_FIT_OPTIONS: { id: BackgroundFit; label: string }[] = [
+  { id: "cover", label: "Cover" },
+  { id: "contain", label: "Contain" },
+  { id: "tile", label: "Tile" },
+];
+
+/// "Choose image…" / "Change…" plus the current file's name and a clear
+/// button. No existing row shape fits a file picker, so this is the one place
+/// that chrome lives — everything else in this pane reuses `rows.tsx`.
+function BackgroundImageRow() {
+  const { settings, pickBackgroundImage, clearBackgroundImage } = useSettings();
+  const [busy, setBusy] = createSignal(false);
+  const fileName = () => {
+    const path = settings.ui.backgroundImage;
+    return path ? (path.split(/[\\/]/).pop() ?? path) : null;
+  };
+  async function pick() {
+    setBusy(true);
+    try {
+      await pickBackgroundImage();
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div class="flex items-center gap-3">
+      <span class={`${LABEL_COL} text-muted-foreground`} title="Background image">
+        Background
+      </span>
+      <div class="flex-1 flex items-center gap-2 min-w-0">
+        <button
+          onClick={() => void pick()}
+          disabled={busy()}
+          aria-label={
+            fileName() ? `Change background image (current: ${fileName()})` : "Choose a background image"
+          }
+          class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-50 shrink-0"
+        >
+          {busy() ? "Choosing…" : fileName() ? "Change…" : "Choose image…"}
+        </button>
+        <span
+          class="truncate text-label text-muted-foreground/80 flex-1 min-w-0"
+          title={settings.ui.backgroundImage ?? undefined}
+        >
+          {fileName() ?? "None — plain themed background"}
+        </span>
+        <Show when={settings.ui.backgroundImage}>
+          <button
+            onClick={() => clearBackgroundImage()}
+            aria-label="Remove background image"
+            title="Remove background image"
+            class="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0"
+          >
+            <Trash2 class="w-3 h-3" />
+          </button>
+        </Show>
+      </div>
+    </div>
+  );
+}
 
 function UiPane() {
   const { settings, updateUi } = useSettings();
@@ -391,6 +455,32 @@ function UiPane() {
           Stacked keeps all three in this window, switched from the title bar —
           switching to it closes any satellite window already open.
         </p>
+      </div>
+      <div>
+        <BackgroundImageRow />
+        <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
+          Painted behind the shell in all three windows. A path that no longer
+          resolves falls back to the plain themed background.
+        </p>
+        <Show when={settings.ui.backgroundImage}>
+          <div class="mt-2 space-y-2">
+            <SliderRow
+              label="Opacity"
+              value={settings.ui.surfaceOpacity}
+              min={SURFACE_OPACITY_MIN}
+              max={SURFACE_OPACITY_MAX}
+              step={1}
+              format={(v) => `${v}%`}
+              onInput={(v) => updateUi({ surfaceOpacity: v })}
+            />
+            <SegmentedRow
+              label="Fit"
+              value={settings.ui.backgroundFit}
+              options={BACKGROUND_FIT_OPTIONS}
+              onChange={(v) => updateUi({ backgroundFit: v })}
+            />
+          </div>
+        </Show>
       </div>
       <ResetLayoutRow />
     </div>

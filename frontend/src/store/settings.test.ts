@@ -316,3 +316,49 @@ describe("the built-in claude -p fallbacks", () => {
     expect(mod.resolveAgentCommand({ ...entry, commandTemplate: "own-cli" })).toBe("own-cli");
   });
 });
+
+/// Background image, opacity and fit (Stream E) — validated field by field
+/// like `experimental` above, not merged, because a hand-edited or stale
+/// `surfaceOpacity` has to be clamped rather than handed to `color-mix()` as
+/// `150%` or `-4%`, and a stale `backgroundFit` has to fall back rather than
+/// reach `index.css` as a value no `data-bg-fit` selector matches.
+describe("background image + opacity settings", () => {
+  it("defaults to no image, full opacity, cover fit when the key is absent", () => {
+    const parsed = parseSettings(JSON.stringify({ terminal: { fontSize: 15 } }));
+    expect(parsed.ui.backgroundImage).toBeNull();
+    expect(parsed.ui.surfaceOpacity).toBe(100);
+    expect(parsed.ui.backgroundFit).toBe("cover");
+  });
+
+  it("round-trips a saved path, opacity and fit", () => {
+    const saved = {
+      ...DEFAULT_SETTINGS,
+      ui: { ...DEFAULT_SETTINGS.ui, backgroundImage: "/Users/me/wallpaper.jpg", surfaceOpacity: 55, backgroundFit: "tile" as const },
+    };
+    const revived = parseSettings(JSON.stringify(saved));
+    expect(revived.ui.backgroundImage).toBe("/Users/me/wallpaper.jpg");
+    expect(revived.ui.surfaceOpacity).toBe(55);
+    expect(revived.ui.backgroundFit).toBe("tile");
+  });
+
+  it("clamps an out-of-range opacity into the slider's bounds", () => {
+    expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: 150 } })).ui.surfaceOpacity).toBe(100);
+    // Below the floor (`SURFACE_OPACITY_MIN`), not below zero — the scrim's
+    // AA guarantee only holds down to that floor. See `index.css`.
+    expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: -4 } })).ui.surfaceOpacity).toBe(20);
+    expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: "62" } })).ui.surfaceOpacity).toBe(100);
+  });
+
+  it("falls back to null for a non-string or blank image path", () => {
+    expect(parseSettings(JSON.stringify({ ui: { backgroundImage: 42 } })).ui.backgroundImage).toBeNull();
+    expect(parseSettings(JSON.stringify({ ui: { backgroundImage: "" } })).ui.backgroundImage).toBeNull();
+    expect(parseSettings(JSON.stringify({ ui: { backgroundImage: "  " } })).ui.backgroundImage).toBeNull();
+  });
+
+  it("falls back to the default fit for an unknown value", () => {
+    expect(parseSettings(JSON.stringify({ ui: { backgroundFit: "stretch" } })).ui.backgroundFit).toBe(
+      "cover",
+    );
+    expect(parseSettings(JSON.stringify({ ui: { backgroundFit: 1 } })).ui.backgroundFit).toBe("cover");
+  });
+});

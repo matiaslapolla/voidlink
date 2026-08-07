@@ -3,6 +3,8 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Eye,
+  EyeOff,
   FolderGit2,
   FolderOpen,
   GitBranch,
@@ -66,6 +68,9 @@ export function WorkspaceRail(props: {
   /// on every render. The list itself is persisted state (`prefs.ts`), not a
   /// component signal — this is only the shape that answers `has` in O(1).
   const collapsed = createMemo(() => new Set(state.collapsedWorkspaces));
+  /// Blurred workspace ids, same shape and reason as `collapsed` above —
+  /// screencast privacy (`toggleWorkspaceBlurred`, `prefs.ts`).
+  const blurred = createMemo(() => new Set(state.blurredWorkspaces));
   /// Drag state stays in component-local signals — no need to round-trip
   /// through the store. `dragId` is the workspace being dragged; `dropTarget`
   /// is the workspace it would land *before* (or "end" for the trailing slot).
@@ -85,6 +90,8 @@ export function WorkspaceRail(props: {
 
   const isCollapsed = (id: string) => collapsed().has(id);
   const toggleCollapsed = (id: string) => actions.toggleWorkspaceCollapsed(id);
+  const isBlurred = (id: string) => blurred().has(id);
+  const toggleBlurred = (id: string) => actions.toggleWorkspaceBlurred(id);
 
   const startRename = (id: string, name: string) => {
     setRenaming(id);
@@ -312,10 +319,23 @@ export function WorkspaceRail(props: {
                       <button
                         onClick={() => actions.selectWorkspace(ws.id)}
                         onDblClick={() => startRename(ws.id, ws.name)}
-                        use:tooltip={`${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`}
+                        use:tooltip={
+                          isBlurred(ws.id)
+                            ? "Blurred for screen recording\nDouble-click to rename, drag to reorder"
+                            : `${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`
+                        }
+                        aria-label={isBlurred(ws.id) ? "Workspace name hidden for screen recording" : undefined}
                         class="flex-1 min-w-0 text-left truncate font-medium hover:text-foreground"
                       >
-                        {ws.name}
+                        <span
+                          aria-hidden={isBlurred(ws.id) || undefined}
+                          class={isBlurred(ws.id) ? "blur-[6px] select-none" : ""}
+                        >
+                          {ws.name}
+                        </span>
+                        <Show when={isBlurred(ws.id)}>
+                          <span class="sr-only">Workspace name hidden for screen recording</span>
+                        </Show>
                       </button>
                     }
                   >
@@ -333,6 +353,29 @@ export function WorkspaceRail(props: {
                       class="flex-1 min-w-0 bg-background/60 rounded px-1 text-body outline-none"
                     />
                   </Show>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleBlurred(ws.id);
+                    }}
+                    aria-label={
+                      isBlurred(ws.id) ? `Reveal ${ws.name}` : `Blur ${ws.name} for screen recording`
+                    }
+                    title={
+                      isBlurred(ws.id)
+                        ? "Reveal name and worktrees"
+                        : "Blur name and worktrees for screen recording"
+                    }
+                    class={`p-0.5 rounded shrink-0 transition-colors ${
+                      isBlurred(ws.id)
+                        ? "text-primary opacity-100 hover:bg-accent/60"
+                        : "opacity-60 group-hover:opacity-100 hover:bg-accent/60 hover:text-foreground"
+                    }`}
+                  >
+                    <Show when={isBlurred(ws.id)} fallback={<Eye class="w-3 h-3" />}>
+                      <EyeOff class="w-3 h-3" />
+                    </Show>
+                  </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -410,14 +453,18 @@ export function WorkspaceRail(props: {
                             setMenu({ x: e.clientX, y: e.clientY, workspace: ws, worktree: wt });
                           }}
                           title={
-                            worktreeMark(wt.id)
-                              ? `${wt.path || "No folder selected"} — ${ledLabel(worktreeMark(wt.id)!)}`
-                              : wt.path || "No folder selected"
+                            isBlurred(ws.id)
+                              ? "Blurred for screen recording"
+                              : worktreeMark(wt.id)
+                                ? `${wt.path || "No folder selected"} — ${ledLabel(worktreeMark(wt.id)!)}`
+                                : wt.path || "No folder selected"
                           }
                           aria-label={
-                            worktreeMark(wt.id)
-                              ? `${worktreeLabel(wt)} — ${ledLabel(worktreeMark(wt.id)!)}`
-                              : worktreeLabel(wt)
+                            isBlurred(ws.id)
+                              ? "Worktree hidden for screen recording"
+                              : worktreeMark(wt.id)
+                                ? `${worktreeLabel(wt)} — ${ledLabel(worktreeMark(wt.id)!)}`
+                                : worktreeLabel(wt)
                           }
                         >
                           <Show
@@ -426,7 +473,15 @@ export function WorkspaceRail(props: {
                           >
                             <FolderGit2 class="w-3 h-3 shrink-0 opacity-70" />
                           </Show>
-                          <span class="truncate flex-1">{worktreeLabel(wt)}</span>
+                          <span
+                            aria-hidden={isBlurred(ws.id) || undefined}
+                            class={`truncate flex-1 ${isBlurred(ws.id) ? "blur-[6px] select-none" : ""}`}
+                          >
+                            {worktreeLabel(wt)}
+                          </span>
+                          <Show when={isBlurred(ws.id)}>
+                            <span class="sr-only">Worktree hidden for screen recording</span>
+                          </Show>
                           {/* §7.5.3 rule 1, at the level the rule was missing.
                               A tab signalling in a worktree the user is not in
                               had nowhere to go: the pane tree only exists for

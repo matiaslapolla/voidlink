@@ -434,6 +434,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     gitSectionOrder: prefs.gitSectionOrder,
     sidebarSections: prefs.sidebarSections,
     collapsedWorkspaces: prefs.collapsedWorkspaces,
+    blurredWorkspaces: prefs.blurredWorkspaces,
   });
 
   createEffect(() => {
@@ -536,6 +537,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       // state, and the debounce means it would be serialised after the next
       // mutation rather than at the value this effect ran on.
       collapsedWorkspaces: [...state.collapsedWorkspaces],
+      blurredWorkspaces: [...state.blurredWorkspaces],
     });
   });
 
@@ -1875,6 +1877,15 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     /// `collapsedWorkspaces` there.
     toggleWorkspaceCollapsed(workspaceId: string) {
       setState("collapsedWorkspaces", (ids) =>
+        ids.includes(workspaceId) ? ids.filter((id) => id !== workspaceId) : [...ids, workspaceId],
+      );
+    },
+
+    /// Blur or unblur a workspace's name and worktree labels in the rail —
+    /// screencast privacy (Stream E). Persisted through `prefs`, same array
+    /// idiom as `toggleWorkspaceCollapsed` above.
+    toggleWorkspaceBlurred(workspaceId: string) {
+      setState("blurredWorkspaces", (ids) =>
         ids.includes(workspaceId) ? ids.filter((id) => id !== workspaceId) : [...ids, workspaceId],
       );
     },

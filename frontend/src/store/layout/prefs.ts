@@ -178,6 +178,13 @@ export interface UiPrefs {
   /// Keyed by workspace and global like the rest of this record — a workspace
   /// row is the same row whichever worktree is in front of it.
   collapsedWorkspaces: string[];
+  /// Workspace ids whose name and worktree labels are blurred in the rail —
+  /// the screencast-privacy toggle. Same shape as `collapsedWorkspaces` and for
+  /// the same reason: an array, not a `Set`, because `JSON.stringify` of a
+  /// `Set` is `{}` and would have silently dropped every blur on the next
+  /// write while looking like it worked. The rail rebuilds the `Set` it
+  /// queries.
+  blurredWorkspaces: string[];
 }
 
 /// Today's spacing is the default (MASTER §5 and the workbench prompt's
@@ -214,6 +221,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   gitSectionOrder: [...GIT_SECTION_KEYS],
   sidebarSections: { files: true, terminals: true, agents: true },
   collapsedWorkspaces: [],
+  blurredWorkspaces: [],
 };
 
 /// Repair a persisted section order: drop keys this build doesn't know, drop
@@ -322,6 +330,11 @@ export function parsePrefs(parsed: PersistedPrefs | null): UiPrefs {
     collapsedWorkspaces: Array.isArray(parsed.collapsedWorkspaces)
       ? [...new Set(parsed.collapsedWorkspaces.filter((id): id is string => typeof id === "string"))]
       : [...d.collapsedWorkspaces],
+    // Same filter, same "unknown ids are inert rather than dropped" rule as
+    // `collapsedWorkspaces` above.
+    blurredWorkspaces: Array.isArray(parsed.blurredWorkspaces)
+      ? [...new Set(parsed.blurredWorkspaces.filter((id): id is string => typeof id === "string"))]
+      : [...d.blurredWorkspaces],
   };
 }
 

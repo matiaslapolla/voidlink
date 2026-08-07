@@ -372,3 +372,25 @@ describe("sidebar docking", () => {
     expect(DEFAULT_PREFS.dockSide.git).toBe("right");
   });
 });
+
+/// The screencast-privacy blur (Stream E), persisted the same array-not-Set
+/// way as `collapsedWorkspaces` above and for the same reason.
+describe("blurred workspaces", () => {
+  it("starts with nothing blurred when the key is absent", () => {
+    expect(parsePrefs({}).blurredWorkspaces).toEqual([]);
+  });
+
+  it("round-trips ids and drops duplicates", () => {
+    expect(parsePrefs({ blurredWorkspaces: ["a", "b", "a"] }).blurredWorkspaces).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("drops entries that are not strings", () => {
+    expect(parsePrefs({ blurredWorkspaces: {} as never }).blurredWorkspaces).toEqual([]);
+    expect(parsePrefs({ blurredWorkspaces: [1, null, "a"] as never }).blurredWorkspaces).toEqual([
+      "a",
+    ]);
+  });
+});

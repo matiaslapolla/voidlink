@@ -54,6 +54,7 @@ const EXPECTED_IDS = [
   "workspace.new",
   "workspace.next",
   "workspace.prev",
+  "workspace.toggleBlur",
   "worktree.new",
   "worktree.next",
   "worktree.prev",

@@ -27,7 +27,7 @@ log = "0.4"
 # `devtools` is what makes `open_devtools` compile in release too — the
 # embedded browser exposes an inspector button in every build, and gating it on
 # `debug_assertions` would make that button a no-op in the shipped app.
-tauri = { version = "=2.11.2", features = ["unstable", "devtools"] }
+tauri = { version = "=2.11.2", features = ["unstable", "devtools", "protocol-asset"] }
 # Re-exported by tauri, but depended on directly: `Webview::navigate` takes a
 # `Url`, and parsing at the command boundary is what rejects a malformed
 # address before a webview is built around it.
