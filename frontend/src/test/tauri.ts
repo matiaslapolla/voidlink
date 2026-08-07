@@ -290,6 +290,22 @@ export async function fakeEmit(event: string, payload?: unknown): Promise<void> 
   emitTauriEvent(event, payload);
 }
 
+/// `convertFileSrc()`. The real one hands back an `asset://` (or
+/// `http://asset.localhost/`) URL the webview's asset protocol can fetch; there
+/// is no protocol handler in a test browser, so this returns a URL of the same
+/// *shape* rather than one that resolves. Callers assert on the mapping, never
+/// on the bytes.
+///
+/// It has to be here, and in both setup files' `@tauri-apps/api/core` factory,
+/// because a `vi.mock` factory *replaces* the module: an export the factory
+/// omits does not fall through to the real one. Under jsdom that surfaces as
+/// `undefined` at call time, but the browser project resolves the mock as real
+/// ESM, where a missing named export is a parse error that fails the whole file
+/// on import — which is how this was found.
+export function fakeConvertFileSrc(filePath: string, protocol = "asset"): string {
+  return `${protocol}://localhost/${encodeURIComponent(filePath)}`;
+}
+
 /// `getCurrentWindow()` / `getCurrentWebview()`. One object: the two differ in
 /// the real API by methods nothing in this app calls on both.
 export function fakeCurrentWindow() {

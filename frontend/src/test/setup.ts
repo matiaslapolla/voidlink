@@ -20,8 +20,8 @@ import { afterEach, vi } from "vitest";
 /// import in this file, so a top-level `import { fakeInvoke }` would not be
 /// initialised yet when the factory runs.
 vi.mock("@tauri-apps/api/core", async () => {
-  const { fakeInvoke, MockChannel } = await import("./tauri");
-  return { invoke: fakeInvoke, Channel: MockChannel };
+  const { fakeInvoke, MockChannel, fakeConvertFileSrc } = await import("./tauri");
+  return { invoke: fakeInvoke, Channel: MockChannel, convertFileSrc: fakeConvertFileSrc };
 });
 
 vi.mock("@tauri-apps/api/event", async () => {
