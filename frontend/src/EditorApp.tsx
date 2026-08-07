@@ -1040,166 +1040,172 @@ export function EditorSurface(props: {
             </aside>
 
             {/* Tabs + surfaces */}
-            {/* Same fork the workbench's pane groups take — see `renderGroup`
-                in `MainSurface.tsx`. The strip is one component and the
-                preference is one preference; a vertical strip in one window
-                and a horizontal one in the other would read as a bug. */}
-            <main
-              class="island flex-1 min-w-0 flex bg-background"
-              classList={{
-                "flex-col": !verticalTabs(),
-                "flex-row": verticalTabs(),
-              }}
-            >
+            {/* `<main>` itself stays a column always: `EditorStatusBar` below
+                is a full-width footer under the tab strip *and* the editor
+                surface, in both orientations. Only the strip-plus-editor row
+                forks — the same fork the workbench's pane groups take, see
+                `renderGroup` in `MainSurface.tsx` — because a vertical strip
+                folded the status bar into the same row used to squeeze it
+                into a slim third column beside the editor rather than
+                stretching it under both. */}
+            <main class="island flex-1 min-w-0 flex flex-col bg-background">
               {/* The app draws its own drag image (see `beginDragTracking` in
                   `TabStrip.tsx`), which means a window that mounts a strip and
                   no ghost has an *invisible* drag. This window has no pane
                   groups, so its hint says the only thing a drag can do here. */}
               <DragGhost hint="Release to reorder" />
-              <TabStrip
-                orientation={appSettings.ui.tabOrientation}
-                width={verticalTabWidth()}
-                tabs={tabs()}
-                activeId={activeItem()?.id ?? null}
-                isPinned={isPinned}
-                onSelect={(tab) => {
-                  const kind = asEditorKind(tab.kind);
-                  if (kind) send({ kind: "activate", tab: kind, id: tab.id });
+              <div
+                class="flex-1 flex min-w-0 min-h-0"
+                classList={{
+                  "flex-col": !verticalTabs(),
+                  "flex-row": verticalTabs(),
                 }}
-                onClose={(tab) => {
-                  const kind = asEditorKind(tab.kind);
-                  if (kind) send({ kind: "close", tab: kind, id: tab.id });
-                }}
-                onReorder={(kind, fromId, toId) => {
-                  // Conflict tabs are marked non-draggable, so anything that
-                  // reaches here is reorderable by construction.
-                  const editorKind = asEditorKind(kind);
-                  if (!editorKind || editorKind === "conflict") return;
-                  send({
-                    kind: "reorder",
-                    tab: editorKind satisfies EditorReorderableKind,
-                    fromId,
-                    toId,
-                  });
-                }}
-                onTogglePin={(id) => send({ kind: "toggle-pin", id })}
-                trailing={
-                  <Show when={activeMarkdownPath()}>
-                    {(md) => (
-                      <button
-                        onClick={() => send({ kind: "open-preview", filePath: md() })}
-                        title={`Preview markdown: ${baseName(md())}`}
-                        aria-label="Preview markdown"
-                        class="mx-0.5 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors shrink-0"
+              >
+                <TabStrip
+                  orientation={appSettings.ui.tabOrientation}
+                  width={verticalTabWidth()}
+                  tabs={tabs()}
+                  activeId={activeItem()?.id ?? null}
+                  isPinned={isPinned}
+                  onSelect={(tab) => {
+                    const kind = asEditorKind(tab.kind);
+                    if (kind) send({ kind: "activate", tab: kind, id: tab.id });
+                  }}
+                  onClose={(tab) => {
+                    const kind = asEditorKind(tab.kind);
+                    if (kind) send({ kind: "close", tab: kind, id: tab.id });
+                  }}
+                  onReorder={(kind, fromId, toId) => {
+                    // Conflict tabs are marked non-draggable, so anything that
+                    // reaches here is reorderable by construction.
+                    const editorKind = asEditorKind(kind);
+                    if (!editorKind || editorKind === "conflict") return;
+                    send({
+                      kind: "reorder",
+                      tab: editorKind satisfies EditorReorderableKind,
+                      fromId,
+                      toId,
+                    });
+                  }}
+                  onTogglePin={(id) => send({ kind: "toggle-pin", id })}
+                  trailing={
+                    <Show when={activeMarkdownPath()}>
+                      {(md) => (
+                        <button
+                          onClick={() => send({ kind: "open-preview", filePath: md() })}
+                          title={`Preview markdown: ${baseName(md())}`}
+                          aria-label="Preview markdown"
+                          class="mx-0.5 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors shrink-0"
+                        >
+                          <Eye class="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </Show>
+                  }
+                />
+
+                {/* `min-w-0 min-h-0`: this is a flex child on either axis now,
+                    and without it a wide editor would push past the island
+                    rather than being clipped by it. */}
+                <div class="flex-1 relative overflow-hidden min-w-0 min-h-0">
+                  {/* Always mounted so Monaco initialises on window load rather
+                      than on the first click. */}
+                  <div
+                    class="absolute inset-0"
+                    style={{ display: activeItem()?.type === "file" ? "block" : "none" }}
+                  >
+                    <EditorGroupsView
+                      layout={split}
+                      fraction={splitFraction}
+                      onFraction={setSplitFraction}
+                      onFocusGroup={focusEditorGroup}
+                      renderGroup={(groupId) => (
+                        <>
+                          {/* Per-buffer, inline, and it does not steal focus. A
+                              modal here would fire once per file during a rebase;
+                              a toast would scroll away before the user could
+                              choose. Per *group*, because a split can have a
+                              conflicted file in one pane and a clean one in the
+                              other, and a bar over the wrong buffer is a lie. */}
+                          <Show when={groupPath(groupId)}>
+                            {(path) => (
+                              <Show when={conflictedPaths().has(path())}>
+                                <ExternalChangeBar
+                                  path={path()}
+                                  onKeepMine={() => editorController.keepMine(path())}
+                                  onTakeTheirs={() => void editorController.takeTheirs(path())}
+                                  onShowDiff={() => send({ kind: "open-diff", filePath: path() })}
+                                />
+                              </Show>
+                            )}
+                          </Show>
+                          {/* Where you are, and what you are inside of. The app's
+                              own row idiom, not Monaco's breadcrumb widget —
+                              MASTER §11.5. */}
+                          <Breadcrumbs
+                            groupId={groupId}
+                            path={() => groupPath(groupId)}
+                            repoRoot={repoPath}
+                            onGoToSymbol={() => {
+                              focusEditorGroup(groupId);
+                              setSymbolPickerOpen(true);
+                            }}
+                          />
+                          <EditorHost
+                            class="w-full flex-1 min-h-0"
+                            groupId={groupId}
+                            seedPath={groupId === "primary" ? undefined : seedPath}
+                          />
+                        </>
+                      )}
+                    />
+                  </div>
+
+                  <For each={snapshot().diffs}>
+                    {(tab) => (
+                      <div
+                        class="absolute inset-0"
+                        style={{ display: tab.id === activeIdOf("diff") ? "block" : "none" }}
                       >
-                        <Eye class="w-3.5 h-3.5" />
-                      </button>
+                        <DiffTabView
+                          repoPath={path()}
+                          filePath={tab.filePath}
+                          staged={tab.staged}
+                        />
+                      </div>
                     )}
+                  </For>
+
+                  <For each={snapshot().conflicts}>
+                    {(tab) => (
+                      <div
+                        class="absolute inset-0"
+                        style={{ display: tab.id === activeIdOf("conflict") ? "block" : "none" }}
+                      >
+                        <MergeEditor
+                          repoPath={path()}
+                          filePath={tab.filePath}
+                          onResolved={() => send({ kind: "close", tab: "conflict", id: tab.id })}
+                        />
+                      </div>
+                    )}
+                  </For>
+
+                  <For each={snapshot().previews}>
+                    {(tab) => (
+                      <div
+                        class="absolute inset-0"
+                        style={{ display: tab.id === activeIdOf("preview") ? "block" : "none" }}
+                      >
+                        <MarkdownPreview filePath={tab.filePath} />
+                      </div>
+                    )}
+                  </For>
+
+                  <Show when={tabs().length === 0}>
+                    <EditorEmptyState />
                   </Show>
-                }
-              />
-
-              {/* `min-w-0 min-h-0`: this is a flex child on either axis now,
-                  and without it a wide editor would push past the island
-                  rather than being clipped by it. */}
-              <div class="flex-1 relative overflow-hidden min-w-0 min-h-0">
-                {/* Always mounted so Monaco initialises on window load rather
-                    than on the first click. */}
-                <div
-                  class="absolute inset-0"
-                  style={{ display: activeItem()?.type === "file" ? "block" : "none" }}
-                >
-                  <EditorGroupsView
-                    layout={split}
-                    fraction={splitFraction}
-                    onFraction={setSplitFraction}
-                    onFocusGroup={focusEditorGroup}
-                    renderGroup={(groupId) => (
-                      <>
-                        {/* Per-buffer, inline, and it does not steal focus. A
-                            modal here would fire once per file during a rebase;
-                            a toast would scroll away before the user could
-                            choose. Per *group*, because a split can have a
-                            conflicted file in one pane and a clean one in the
-                            other, and a bar over the wrong buffer is a lie. */}
-                        <Show when={groupPath(groupId)}>
-                          {(path) => (
-                            <Show when={conflictedPaths().has(path())}>
-                              <ExternalChangeBar
-                                path={path()}
-                                onKeepMine={() => editorController.keepMine(path())}
-                                onTakeTheirs={() => void editorController.takeTheirs(path())}
-                                onShowDiff={() => send({ kind: "open-diff", filePath: path() })}
-                              />
-                            </Show>
-                          )}
-                        </Show>
-                        {/* Where you are, and what you are inside of. The app's
-                            own row idiom, not Monaco's breadcrumb widget —
-                            MASTER §11.5. */}
-                        <Breadcrumbs
-                          groupId={groupId}
-                          path={() => groupPath(groupId)}
-                          repoRoot={repoPath}
-                          onGoToSymbol={() => {
-                            focusEditorGroup(groupId);
-                            setSymbolPickerOpen(true);
-                          }}
-                        />
-                        <EditorHost
-                          class="w-full flex-1 min-h-0"
-                          groupId={groupId}
-                          seedPath={groupId === "primary" ? undefined : seedPath}
-                        />
-                      </>
-                    )}
-                  />
                 </div>
-
-                <For each={snapshot().diffs}>
-                  {(tab) => (
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: tab.id === activeIdOf("diff") ? "block" : "none" }}
-                    >
-                      <DiffTabView
-                        repoPath={path()}
-                        filePath={tab.filePath}
-                        staged={tab.staged}
-                      />
-                    </div>
-                  )}
-                </For>
-
-                <For each={snapshot().conflicts}>
-                  {(tab) => (
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: tab.id === activeIdOf("conflict") ? "block" : "none" }}
-                    >
-                      <MergeEditor
-                        repoPath={path()}
-                        filePath={tab.filePath}
-                        onResolved={() => send({ kind: "close", tab: "conflict", id: tab.id })}
-                      />
-                    </div>
-                  )}
-                </For>
-
-                <For each={snapshot().previews}>
-                  {(tab) => (
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: tab.id === activeIdOf("preview") ? "block" : "none" }}
-                    >
-                      <MarkdownPreview filePath={tab.filePath} />
-                    </div>
-                  )}
-                </For>
-
-                <Show when={tabs().length === 0}>
-                  <EditorEmptyState />
-                </Show>
               </div>
 
               {/* What the buffer in front actually is. Below the surfaces, not

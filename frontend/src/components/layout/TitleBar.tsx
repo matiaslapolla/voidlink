@@ -247,7 +247,7 @@ export function TitleBar(props: TitleBarProps) {
             class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
             title="Maximize"
           >
-            <Square class="w-3 h-3" />
+            <Square class="w-3.5 h-3.5" />
           </button>
           <button
             onClick={withWindow((w) => void w.close())}
