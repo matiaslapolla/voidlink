@@ -80,6 +80,44 @@
   --elev-2: var(--popover); /* raised: palette, popovers, menus      */
   --elev-3: color-mix(in oklab, var(--popover) 94%, white); /* modal */
 
+  /* ── Region surfaces ─────────────────────────────────────────────────
+   * Before this, `--sidebar` meant three unrelated things at once — the
+   * rail, both docked panels, *and* the tab strip — so all three (plus the
+   * status bar, which also just borrowed `--sidebar`) painted the exact
+   * same lightness. Geometrically four separate regions; visually one grey
+   * field with `--island-gap` cut into it. `--sidebar` now means only what
+   * its name says (the docked panels — `TerminalSidebar`, `GitSidebar`),
+   * `--background` still means the editor/main surface (elev-1, unchanged),
+   * and these three take back the identity the rail, tab strip and status
+   * bar never should have shared.
+   *
+   * Derived from `--background`, same mechanism as `--canvas`: one
+   * `color-mix()` per mode in this file, never restated in `themes.css`, so
+   * every named theme inherits a coherent set for free the moment it
+   * redefines `--background` (`--canvas`'s header above explains why the
+   * `var()` indirection makes that true). Dark and light use different
+   * ratios for the reason `--canvas` does — the *available* headroom near
+   * `L=1.0` is a smaller absolute step than near `L=0.2` for the same
+   * percentage.
+   *
+   * Ratios are picked to keep every step >= 0.01 of lightness apart in the
+   * default themes (dark: canvas .170 / statusbar .180 / rail+tabstrip .190
+   * / background .200 / sidebar .213 — a clean ladder). Light mode has far
+   * less headroom between `--canvas` (96%) and `--background` (100%) to
+   * split three ways without crowding the hand-tuned `--sidebar` some
+   * themes place in that same narrow band; ratios here stay just above the
+   * canvas ratio so the ordering (canvas < statusbar < rail/tabstrip <
+   * background) holds for every theme, including `github-light`'s pure
+   * white, even where the resulting gap to that theme's own `--sidebar` is
+   * tighter than the dark-mode ladder. `canvasTokens.test.ts` checks the
+   * ordering invariant for all ten blocks; it does not (and structurally
+   * cannot) guard against every theme's independently hand-tuned
+   * `--sidebar` landing close to one of these — see MASTER.md §3 for the
+   * measured contrast and the themes where that gap is tightest. */
+  --surface-statusbar: color-mix(in oklab, var(--background) 90%, black);
+  --surface-rail: color-mix(in oklab, var(--background) 95%, black);
+  --surface-tabstrip: color-mix(in oklab, var(--background) 95%, black);
+
   /* ── Island geometry ──────────────────────────────────────────────────
    * These four are the *only* place D1's geometry is expressed as a number.
    * `AppShell.tsx` / `MainSurface.tsx` and the `.island` class below consume
@@ -191,6 +229,15 @@
    * white island — the same order of separation GitHub itself uses between
    * `#ffffff` and `#f6f8fa`. Still strictly darker, so the invariant holds. */
   --canvas: color-mix(in oklab, var(--background) 96%, black);
+
+  /* Region surfaces (see the `:root` block above for the full derivation
+   * rationale). Ratios sit just above `--canvas`'s 96% — 97.5% and 99% —
+   * because light mode's canvas-to-background span is only 4% of lightness
+   * to begin with, shared with whatever a theme's own `--sidebar` occupies
+   * in that band. */
+  --surface-statusbar: color-mix(in oklab, var(--background) 97.5%, black);
+  --surface-rail: color-mix(in oklab, var(--background) 99%, black);
+  --surface-tabstrip: color-mix(in oklab, var(--background) 99%, black);
 
   --background: oklch(0.980 0.006 270);
   --foreground: oklch(0.145 0.012 270);
@@ -307,6 +354,9 @@ body {
   --color-elev-1: var(--elev-1);
   --color-elev-2: var(--elev-2);
   --color-elev-3: var(--elev-3);
+  --color-surface-statusbar: var(--surface-statusbar);
+  --color-surface-rail: var(--surface-rail);
+  --color-surface-tabstrip: var(--surface-tabstrip);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);

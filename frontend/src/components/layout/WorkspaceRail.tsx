@@ -225,7 +225,7 @@ export function WorkspaceRail() {
       /* Island (D1): no border. The edge is the canvas gap `AppShell` puts
          around it; the radius and the clipping belong to the slot. */
       ref={(el) => (railRef = el)}
-      class="flex flex-col bg-sidebar overflow-hidden relative shrink-0"
+      class="flex flex-col bg-surface-rail overflow-hidden relative shrink-0"
       style={{ width: `${state.panels.rail}px` }}
     >
       <div class="h-9 px-3 border-b border-border flex items-center shrink-0">

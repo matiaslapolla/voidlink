@@ -76,7 +76,7 @@ export const STATUS_BAR_ROW =
   // No `border-t`: under D1 the status bar is its own island and the canvas
   // gap above it is the separator. The editor window's scoped bar reuses this
   // string, so both windows lose the rule together.
-  "flex items-center h-6 px-2 gap-3 text-label text-muted-foreground bg-sidebar shrink-0 select-none overflow-hidden";
+  "flex items-center h-6 px-2 gap-3 text-label text-muted-foreground bg-surface-statusbar shrink-0 select-none overflow-hidden";
 
 /// One chip. Every status-bar control is this shape: `text-micro`, an optional
 /// LED, an optional click action, and an accessible name whether or not the
