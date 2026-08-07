@@ -465,6 +465,37 @@ export function onBlameEnabled(handler: (enabled: boolean) => void): Promise<Unl
   return onSourced<boolean>(BLAME_EVENT, handler);
 }
 
+const UI_VISUAL_EVENT = "voidlink://ui-visual-changed";
+
+/// The background image, its opacity mix and its fit mode — one payload
+/// because they are set together from Settings → UI and there is no useful
+/// state in which one arrives without the other two. Typed here rather than
+/// imported from `store/settings.ts`: this module defines its own payload
+/// shapes for every channel above, and `store/settings.ts` is the one that
+/// depends on this file, not the other way round.
+export interface UiVisualSettings {
+  backgroundImage: string | null;
+  surfaceOpacity: number;
+  backgroundFit: "cover" | "contain" | "tile";
+}
+
+/// Tell every other window the background/opacity/fit changed. Symmetric like
+/// the theme and blame channels above — any window may open Settings → UI —
+/// and for the same reason: these live in `localStorage` (`voidlink-settings`)
+/// and each window's store hydrates once at module eval, so nothing but a
+/// broadcast reaches an already-open satellite.
+export async function publishUiVisualChange(value: UiVisualSettings): Promise<void> {
+  await publishSourced(UI_VISUAL_EVENT, value);
+}
+
+/// Subscribe to background/opacity/fit broadcasts. Same no-republish rule as
+/// `onThemeChange` / `onBlameEnabled`.
+export function onUiVisualChange(
+  handler: (value: UiVisualSettings) => void,
+): Promise<UnlistenFn> {
+  return onSourced<UiVisualSettings>(UI_VISUAL_EVENT, handler);
+}
+
 // ─── Editor tabs: main owns them, the editor window renders them ─────────────
 //
 // The editor window is the *view* over four tab collections that live in the

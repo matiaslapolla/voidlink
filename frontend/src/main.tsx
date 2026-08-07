@@ -5,6 +5,7 @@ import EditorApp from "./EditorApp.tsx";
 import { initPlatform } from "@/api/platform";
 import { isEditorWindow, isGitWindow } from "@/api/windows";
 import { bridgeThemeAcrossWindows } from "@/store/theme";
+import { bridgeUiVisualAcrossWindows } from "@/store/settings";
 import "./index.css";
 
 // One bundle serves all three windows; the Tauri window label decides which
@@ -22,6 +23,9 @@ void initPlatform().then(() => {
   // here rather than in a component because it is per *window*, and the roots
   // are the only per-window scope there is.
   bridgeThemeAcrossWindows();
+  // Same per-window scope as the theme bridge just above, for the background
+  // image / opacity / fit settings (`store/settings.ts`).
+  bridgeUiVisualAcrossWindows();
   if (isGitWindow()) {
     document.title = "Voidlink Git";
     render(() => <GitApp />, root);

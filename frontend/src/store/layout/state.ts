@@ -112,6 +112,9 @@ export interface AppStoreState {
   gitSectionOrder: GitSectionKey[];
   sidebarSections: SidebarSections;
   collapsedWorkspaces: string[];
+  /// Workspace ids whose rail labels are blurred for screencasts. See
+  /// `UiPrefs.blurredWorkspaces` in `prefs.ts`.
+  blurredWorkspaces: string[];
 }
 
 /// Compile-time proof that every `stateKey` a registry spec names is a real
