@@ -132,6 +132,14 @@ function parsePanels(raw: unknown): PanelWidths {
     rail: clampPanelWidth("rail", r.rail ?? PANEL_BOUNDS.rail.default),
     sidebar: clampPanelWidth("sidebar", r.sidebar ?? PANEL_BOUNDS.sidebar.default),
     gitSidebar: clampPanelWidth("gitSidebar", r.gitSidebar ?? PANEL_BOUNDS.gitSidebar.default),
+    sidebarTerminalsHeight: clampPanelWidth(
+      "sidebarTerminalsHeight",
+      r.sidebarTerminalsHeight ?? PANEL_BOUNDS.sidebarTerminalsHeight.default,
+    ),
+    sidebarAgentsHeight: clampPanelWidth(
+      "sidebarAgentsHeight",
+      r.sidebarAgentsHeight ?? PANEL_BOUNDS.sidebarAgentsHeight.default,
+    ),
   };
 }
 

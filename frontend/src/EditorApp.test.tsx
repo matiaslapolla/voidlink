@@ -85,7 +85,7 @@ describe("the editor window's file tree", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(toggle).not.toHaveAttribute("aria-pressed");
     expect(screen.getByText("Files")).toBeInTheDocument();
-    expect(widthOf(aside)).toBe("15rem");
+    expect(widthOf(aside)).toBe("240px");
   });
 
   it("collapses to the rail and gives the width to the editor", async () => {
@@ -109,7 +109,7 @@ describe("the editor window's file tree", () => {
     await user.click(railButton());
 
     expect(headerToggle()).toHaveAttribute("aria-expanded", "true");
-    expect(widthOf(aside)).toBe("15rem");
+    expect(widthOf(aside)).toBe("240px");
     expect(screen.queryByRole("button", { name: "Show the file explorer" })).toBeNull();
   });
 
@@ -122,5 +122,29 @@ describe("the editor window's file tree", () => {
     railButton().focus();
     await user.keyboard("{Enter}");
     expect(headerToggle()).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("offers a resize handle, disabled with a reason once collapsed", async () => {
+    const user = userEvent.setup();
+    mount();
+    const splitter = screen.getByRole("separator", { name: "File tree column width" });
+    expect(splitter).not.toHaveAttribute("aria-disabled");
+
+    await user.click(headerToggle());
+
+    expect(splitter).toHaveAttribute("aria-disabled", "true");
+    expect(splitter).toHaveAttribute(
+      "title",
+      "The file tree is collapsed — expand it to resize",
+    );
+  });
+
+  it("persists a dragged width across a fresh mount of the window", () => {
+    localStorage.setItem(
+      "voidlink-editor-prefs",
+      JSON.stringify({ panels: { tree: 320 }, splitFraction: 0.5 }),
+    );
+    const { aside } = mount();
+    expect(widthOf(aside)).toBe("320px");
   });
 });

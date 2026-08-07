@@ -58,7 +58,6 @@ import { EditorGroupsView } from "@/components/editor/EditorGroupsView";
 import { Breadcrumbs } from "@/components/editor/Breadcrumbs";
 import { GoToSymbol } from "@/components/editor/GoToSymbol";
 import {
-  DEFAULT_SPLIT_FRACTION,
   SINGLE_GROUP,
   cycleFocus,
   focusGroup,
@@ -112,7 +111,15 @@ import { registerActions, type Action } from "@/commands/registry";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { pushToast } from "@/commands/toast";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
-import { createAppStore, SIDEBAR_RAIL_WIDTH } from "@/store/layout";
+import {
+  EDITOR_PANEL_BOUNDS,
+  SIDEBAR_RAIL_WIDTH,
+  clampEditorPanelWidth,
+  createAppStore,
+  loadEditorPrefs,
+  persistEditorPrefs,
+} from "@/store/layout";
+import { Splitter } from "@/components/layout/Splitter";
 import { useSettings } from "@/store/settings";
 import type { EditorReorderableKind, EditorTabKind } from "@/api/windows";
 
@@ -237,6 +244,24 @@ export function EditorSurface(props: {
   /// inherit the workbench's collapse on every window open and then diverge —
   /// the worst of both models.
   const [treeVisible, setTreeVisible] = createSignal(true);
+
+  /// Width of the file-tree column and the editor split fraction, loaded once
+  /// from their own key. `EditorPrefs`'s header (`store/layout/prefs.ts`)
+  /// explains why these cannot ride in the workbench's `panels`/`gitPrefs`
+  /// blob the way `treeVisible` above deliberately does not either — but
+  /// unlike `treeVisible`, a width the user drags to *is* geometry worth
+  /// surviving a reload, so it gets a persisted key of its own rather than a
+  /// plain signal.
+  const initialEditorPrefs = loadEditorPrefs();
+  const [treeWidth, setTreeWidthRaw] = createSignal(initialEditorPrefs.panels.tree);
+  const setTreeWidth = (px: number) => setTreeWidthRaw(clampEditorPanelWidth("tree", px));
+  /// Suppresses the column's width transition for the duration of a splitter
+  /// drag, the same reason the workbench sidebars do (see `Splitter`'s header
+  /// and `TerminalSidebar`'s `resizing` signal) — the collapse transition
+  /// carries information (§7.1's exemption); the same transition on a pane
+  /// the user is holding would make it trail the pointer instead (§7.3.10).
+  const [treeResizing, setTreeResizing] = createSignal(false);
+
   /// The left rail shows either the file tree or find-in-files, never both —
   /// two scrolling trees in a 240px column is a worse answer than a swap.
   const [searchVisible, setSearchVisible] = createSignal(false);
@@ -291,12 +316,21 @@ export function EditorSurface(props: {
   // it was — split panes send no new requests and honour the same contract.
 
   const [split, setSplit] = createSignal<SplitLayout>(SINGLE_GROUP);
-  const [splitFraction, setSplitFraction] = createSignal(DEFAULT_SPLIT_FRACTION);
+  /// Persisted like `treeWidth` above — see that signal's comment for why this
+  /// is its own key rather than a workbench `panels` field. Reset-per-session
+  /// used to be the only option because nothing here survived a reload at
+  /// all; now that `treeWidth` does, leaving the split fraction behind would
+  /// be the one geometry in this window the user's drag still does not stick.
+  const [splitFraction, setSplitFraction] = createSignal(initialEditorPrefs.splitFraction);
   /// What the new pane opens on when a split is created: whatever the pane it
   /// was split off was showing. A blank second editor would make the user open
   /// the file twice to get the side-by-side they asked for.
   const [seedPath, setSeedPath] = createSignal<string | null>(null);
   const [symbolPickerOpen, setSymbolPickerOpen] = createSignal(false);
+
+  createEffect(() => {
+    persistEditorPrefs({ panels: { tree: treeWidth() }, splitFraction: splitFraction() });
+  });
 
   /// Focus is the controller's — Monaco reports it whenever the caret lands in
   /// a pane, including routes this component never sees (the find widget, a
@@ -987,13 +1021,19 @@ export function EditorSurface(props: {
                 way back that is where the panel was, instead of only in the
                 title bar. Same component and same idiom as the workbench's
                 sidebar — the explorer collapses to one thing in this app.
-                The width transition is the one animation here: it says where
-                the panel went (§7.1's information exemption). Nothing drags
-                this column, so unlike the workbench's there is no gesture to
-                suppress it for. */}
+                The width transition says where the panel went (§7.1's
+                information exemption); it is suppressed for the duration of a
+                splitter drag below, the same reason the workbench sidebars
+                suppress theirs (§7.3.10 — a transition on a pane the user is
+                holding would make it trail the pointer). `relative` anchors
+                the splitter to this column's own edge. */}
             <aside
-              class="island shrink-0 bg-sidebar flex flex-col min-h-0 overflow-hidden transition-[width] duration-[var(--dur-short)] ease-[var(--ease-in-out)]"
-              style={{ width: treeVisible() ? "15rem" : `${SIDEBAR_RAIL_WIDTH}px` }}
+              class="island relative shrink-0 bg-sidebar flex flex-col min-h-0 overflow-hidden"
+              classList={{
+                "transition-[width] duration-[var(--dur-short)] ease-[var(--ease-in-out)]":
+                  !treeResizing(),
+              }}
+              style={{ width: treeVisible() ? `${treeWidth()}px` : `${SIDEBAR_RAIL_WIDTH}px` }}
               data-motion="editor-tree-collapse"
             >
               <Show
@@ -1037,6 +1077,24 @@ export function EditorSurface(props: {
                 />
                 </Show>
               </Show>
+              {/* Rendered while collapsed too, disabled rather than absent —
+                  same reasoning as the workbench sidebar's own handle
+                  (`TerminalSidebar`'s width `<Splitter>`). `value` stays the
+                  pre-collapse width; the rail's `SIDEBAR_RAIL_WIDTH` is a
+                  render-time width only. */}
+              <Splitter
+                side="end"
+                label="File tree column width"
+                value={treeWidth()}
+                min={EDITOR_PANEL_BOUNDS.tree.min}
+                max={EDITOR_PANEL_BOUNDS.tree.max}
+                defaultValue={EDITOR_PANEL_BOUNDS.tree.default}
+                disabledReason={
+                  treeVisible() ? undefined : "The file tree is collapsed — expand it to resize"
+                }
+                onDragStateChange={setTreeResizing}
+                onResize={setTreeWidth}
+              />
             </aside>
 
             {/* Tabs + surfaces */}

@@ -49,7 +49,7 @@ function mount() {
 function fakeStore(): AppStore {
   return {
     state: {
-      panels: { sidebar: 256 },
+      panels: { sidebar: 256, sidebarTerminalsHeight: 208, sidebarAgentsHeight: 256 },
       sidebarSections: { files: true, terminals: true, agents: true },
       activeWorktreeId: "wt1",
       terminalsByWorktree: {},
@@ -175,6 +175,77 @@ describe("collapsing the file explorer", () => {
     railButton().focus();
     await user.keyboard("{Enter}");
     expect(filesToggle()).toHaveAttribute("aria-expanded", "true");
+  });
+});
+
+/// The Files/Terminals/Agents disclosures each grew a height handle on the
+/// seam above them, so the user can decide how much of the sidebar each one
+/// gets rather than living with Terminals' old fixed `max-h-52`. A collapsed
+/// section has nothing to resize — the handle renders disabled with a reason
+/// (MASTER §7.6) rather than vanishing, the same contract the sidebar's own
+/// width splitter already has.
+describe("stacked section height handles", () => {
+  const terminalsToggle = () => screen.getByRole("button", { name: /^terminals$/i });
+
+  it("enables the Files/Terminals handle while Terminals is open", () => {
+    mount();
+    const splitter = screen.getByRole("separator", { name: "Terminals section height" });
+    expect(splitter).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("disables the Files/Terminals handle once Terminals collapses, with the reason", async () => {
+    const user = userEvent.setup();
+    mount();
+    const splitter = screen.getByRole("separator", { name: "Terminals section height" });
+
+    await user.click(terminalsToggle());
+
+    expect(splitter).toHaveAttribute("aria-disabled", "true");
+    expect(splitter).toHaveAttribute(
+      "title",
+      "Terminals is collapsed — expand it to resize",
+    );
+    expect(splitter).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("survives a reload at the size the user dragged to", () => {
+    const { store } = mount();
+    store.actions.setPanelWidth("sidebarTerminalsHeight", 260);
+    expect(store.state.panels.sidebarTerminalsHeight).toBe(260);
+  });
+
+  it("omits the Files/Terminals handle when Files is not rendered here (vertical tabs)", () => {
+    render(() => (
+      <AppStoreContext.Provider value={fakeStore()}>
+        <TerminalSidebar files={false} />
+      </AppStoreContext.Provider>
+    ));
+    expect(
+      screen.queryByRole("separator", { name: "Terminals section height" }),
+    ).toBeNull();
+  });
+
+  it("enables the Terminals/Agent Dashboard handle only behind the experimental flag", () => {
+    useSettings().updateExperimental({ agentDashboard: true });
+    mount();
+    expect(
+      screen.getByRole("separator", { name: "Agent Dashboard section height" }),
+    ).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("disables the Terminals/Agent Dashboard handle once Agent Dashboard collapses", async () => {
+    const user = userEvent.setup();
+    useSettings().updateExperimental({ agentDashboard: true });
+    mount();
+    const splitter = screen.getByRole("separator", { name: "Agent Dashboard section height" });
+
+    await user.click(screen.getByRole("button", { name: /agent dashboard/i }));
+
+    expect(splitter).toHaveAttribute("aria-disabled", "true");
+    expect(splitter).toHaveAttribute(
+      "title",
+      "Agent Dashboard is collapsed — expand it to resize",
+    );
   });
 });
 
