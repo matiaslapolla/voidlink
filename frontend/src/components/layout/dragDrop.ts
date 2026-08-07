@@ -44,7 +44,10 @@ export interface Point {
 /// them mean.
 export interface DragPayload {
   /// Which family of drop target can accept this at all.
-  kind: "tab" | "tabgroup" | "workspace" | "card" | "path";
+  /// `sidebar` is a whole docked panel travelling to another edge; its `id` is
+  /// a `SidebarId`. It is a separate family from `workspace` (a row *inside*
+  /// the rail) precisely so the rail's own reorder zone cannot accept the rail.
+  kind: "tab" | "tabgroup" | "workspace" | "card" | "path" | "sidebar";
   /// The dragged thing's own id — a tab id, a workspace id, a card id.
   id: string;
   /// What the ghost calls it.

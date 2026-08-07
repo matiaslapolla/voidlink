@@ -72,7 +72,8 @@ import {
 import { FuzzyText } from "@/commands/QuickPick";
 import { fuzzyMatch, type FuzzyMatch, type MatchRange } from "@/commands/fuzzy";
 import { createRowIdentity } from "@/store/stableRows";
-import { PANEL_BOUNDS } from "@/store/layout";
+import { PANEL_BOUNDS, type DockSide } from "@/store/layout";
+import { SidebarGrip, SidebarMenuButton } from "@/components/layout/SidebarDock";
 
 import { useAppStore } from "@/store/LayoutContext";
 import { samePath, type GitSectionKey } from "@/store/layout";
@@ -182,6 +183,9 @@ function sectionIcon(key: GitSectionKey): JSX.Element {
 interface GitSidebarProps {
   repoPath: string;
   worktreeId: string;
+  /// Which edge this panel is docked to. Used for one thing: which side the
+  /// resize handle sits on — a panel docked left is resized by its right edge.
+  dock?: DockSide;
 }
 
 /// One collapsible section of the git sidebar.
@@ -586,7 +590,7 @@ export function GitSidebar(props: GitSidebarProps) {
       style={{ width: `${state.panels.gitSidebar}px` }}
     >
       <Splitter
-        side="start"
+        side={(props.dock ?? "right") === "left" ? "end" : "start"}
         label="Git sidebar width"
         value={state.panels.gitSidebar}
         min={PANEL_BOUNDS.gitSidebar.min}
@@ -595,8 +599,10 @@ export function GitSidebar(props: GitSidebarProps) {
         onResize={(w) => actions.setPanelWidth("gitSidebar", w)}
       />
 
-      {/* Header */}
-      <div class="px-3 h-9 border-b border-border flex items-center gap-2 text-body shrink-0">
+      {/* Header — also this panel's title row, so it carries the dock grip and
+          the panel menu (move to the other edge, detach into the git window). */}
+      <div class="pl-1.5 pr-1 h-9 border-b border-border flex items-center gap-1.5 text-body shrink-0">
+        <SidebarGrip id="git" />
         <GitBranch class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
         <span
           class={`font-medium truncate ${freshnessClass(freshness())}`}
@@ -677,6 +683,7 @@ export function GitSidebar(props: GitSidebarProps) {
           <IconBtn label="Refresh" onClick={() => void refreshAll()}>
             <RefreshCw class={`w-3 h-3 ${isRefreshing() ? "animate-spin" : ""}`} />
           </IconBtn>
+          <SidebarMenuButton id="git" />
           <IconBtn label="Collapse git panel" expanded onClick={() => actions.toggleGitSidebar()}>
             <ChevronRight class="w-3.5 h-3.5" />
           </IconBtn>
@@ -3921,7 +3928,7 @@ function FileRow(props: {
 }
 
 /** Collapsed rail */
-export function GitSidebarCollapsed(props: { onExpand: () => void }) {
+export function GitSidebarCollapsed(props: { onExpand: () => void; dock?: DockSide }) {
   const { state } = useAppStore();
   return (
     <div class="flex flex-col items-center w-8 bg-sidebar py-2 gap-2 h-full relative">
@@ -3935,7 +3942,7 @@ export function GitSidebarCollapsed(props: { onExpand: () => void }) {
           a render-time width that is never written to the store, which is what
           makes expanding come back to the width the user dragged to. */}
       <Splitter
-        side="start"
+        side={(props.dock ?? "right") === "left" ? "end" : "start"}
         label="Git sidebar width"
         value={state.panels.gitSidebar}
         min={PANEL_BOUNDS.gitSidebar.min}
@@ -3957,6 +3964,7 @@ export function GitSidebarCollapsed(props: { onExpand: () => void }) {
         <ChevronLeft class="w-3.5 h-3.5" />
       </button>
       <GitBranch class="w-4 h-4 text-muted-foreground" />
+      <SidebarGrip id="git" />
     </div>
   );
 }

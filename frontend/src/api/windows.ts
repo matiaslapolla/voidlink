@@ -59,6 +59,53 @@ export const EDITOR_WINDOW_LABEL = "editor";
 /// The workbench's own label. Not a satellite — the sole writer of state.
 export const MAIN_WINDOW_LABEL = "main";
 
+/// Window label for a detached sidebar panel. Must match `PANEL_SPECS` in
+/// `src-tauri/src/window.rs`, and must have an entry in
+/// `src-tauri/capabilities/` — a webview with no capability entry has *no*
+/// permissions at all, not even `core:event`, which is the failure the editor
+/// window's capability file documents.
+export const FILES_PANEL_WINDOW_LABEL = "panel-files";
+
+/// Which window hosts each sidebar when it is detached. `null` means "this one
+/// cannot be detached" and the affordance is absent rather than disabled.
+///
+/// **The git panel reuses the existing git window rather than getting a
+/// panel-scoped one of its own.** The standalone git client (`GitApp`, label
+/// `git`) is already the git surface with a whole window around it — the very
+/// same panes, laid out as nav plus detail instead of a 300px column. A second
+/// window that also showed the git panel would be two answers to "the git panel
+/// is in a window", with two labels, two capability entries and two things for
+/// a user to have open at once. So "detach git" opens *that* window and marks
+/// the sidebar detached, which is what collapses its slot in the shell.
+///
+/// The pre-existing "Open git window" button is left as it was: it opens the
+/// same one window without detaching. Opening the fuller surface beside the
+/// sidebar is a different intent from moving the sidebar out, and the panel
+/// still lives in exactly one window either way.
+///
+/// The workspace rail is deliberately not detachable. It is the workbench's own
+/// writer — creating a workspace or a worktree registers state and spawns a
+/// PTY — and a satellite's store is an unpersisted private copy, so every one
+/// of its buttons would be the silent no-op `requestOpenWorktreeOnMain` exists
+/// to fix. Making it work means mirroring the whole workspace model across the
+/// gap, which is a stream of its own.
+export const SIDEBAR_WINDOW_LABEL: Record<string, string | null> = {
+  workspaces: null,
+  files: FILES_PANEL_WINDOW_LABEL,
+  git: GIT_WINDOW_LABEL,
+};
+
+/// Which sidebar this window *is*, or `null` in the workbench and the two
+/// full-surface satellites. Read at render time by `main.tsx`, the same way the
+/// git and editor roots are chosen.
+export function currentPanelSidebar(): string | null {
+  const label = currentWindowLabel();
+  for (const [id, windowLabel] of Object.entries(SIDEBAR_WINDOW_LABEL)) {
+    if (windowLabel && windowLabel === label && label !== GIT_WINDOW_LABEL) return id;
+  }
+  return null;
+}
+
 const CONTEXT_EVENT = "voidlink://window-context";
 const CONTEXT_REQUEST_EVENT = "voidlink://window-context-request";
 const REFS_EVENT = "voidlink://git-refs-changed";
@@ -176,6 +223,71 @@ export async function closeEditorWindow(): Promise<void> {
 export async function isEditorWindowOpen(): Promise<boolean> {
   if (stackedRouter) return false;
   return invoke<boolean>("is_editor_window_open");
+}
+
+// ─── Detached sidebar panels ────────────────────────────────────────────────
+//
+// A detached panel is a fourth root off the same bundle, not a new
+// architecture: `main.tsx` picks it on the window label exactly as it picks
+// `GitApp` and `EditorApp`, and it consumes the same `WindowContext` broadcast
+// every other satellite does. Nothing new crosses the gap — which is why there
+// is one new event here (the panel saying "I am closing, dock me back") and not
+// a second channel.
+
+/// Open the window that hosts `sidebarId` while it is detached, or focus it if
+/// it is already open. Resolves to `true` when a window was actually created.
+///
+/// Rejects for a sidebar that has no window (see `SIDEBAR_WINDOW_LABEL`), and
+/// in stacked mode, where there are no satellite windows to detach *into* — the
+/// caller shows the reason rather than leaving a menu row that does nothing.
+export async function openSidebarWindow(sidebarId: string): Promise<boolean> {
+  const label = SIDEBAR_WINDOW_LABEL[sidebarId];
+  if (!label) throw new Error(`"${sidebarId}" cannot be detached`);
+  if (stackedRouter) {
+    throw new Error("This environment shows the other surfaces as views, not windows");
+  }
+  if (label === GIT_WINDOW_LABEL) return invoke<boolean>("open_git_window");
+  return invoke<boolean>("open_panel_window", { label });
+}
+
+/// Close a detached panel's window. Idempotent, and a no-op for a sidebar with
+/// no window of its own.
+export async function closeSidebarWindow(sidebarId: string): Promise<void> {
+  const label = SIDEBAR_WINDOW_LABEL[sidebarId];
+  if (!label || stackedRouter) return;
+  if (label === GIT_WINDOW_LABEL) {
+    await closeGitWindow();
+    return;
+  }
+  await invoke("close_panel_window", { label });
+}
+
+/// Whether a detached panel's window is currently open. Used on boot to decide
+/// whether a persisted detachment still has a window behind it.
+export async function isSidebarWindowOpen(sidebarId: string): Promise<boolean> {
+  const label = SIDEBAR_WINDOW_LABEL[sidebarId];
+  if (!label || stackedRouter) return false;
+  if (label === GIT_WINDOW_LABEL) return isGitWindowOpen();
+  return invoke<boolean>("is_panel_window_open", { label });
+}
+
+const PANEL_DOCK_BACK_EVENT = "voidlink://panel-dock-back";
+
+/// "Put me back in the shell." Emitted by a detached panel's own window as it
+/// closes, so that closing the window *is* re-docking — the panel comes back at
+/// the edge and width it had, because neither was ever thrown away.
+///
+/// Quiet, like every other broadcast here: a window on its way out cannot act
+/// on a rejected emit, and the workbench reconciles on its next boot anyway.
+export async function requestSidebarDockBack(sidebarId: string): Promise<void> {
+  await emitQuietly(PANEL_DOCK_BACK_EVENT, sidebarId);
+}
+
+/// Subscribe to dock-back requests. Workbench side.
+export function onSidebarDockBack(
+  handler: (sidebarId: string) => void,
+): Promise<UnlistenFn> {
+  return listenLoudly<string>(PANEL_DOCK_BACK_EVENT, handler);
 }
 
 /// Bring the workbench window to the front.

@@ -10,7 +10,8 @@ import { forget as forgetTerminalHistory } from "@/commands/terminalHistory";
 import { forgetPtySize } from "@/commands/terminalSize";
 import { LedSlot, ledLabel, terminalSignal } from "@/components/layout/StatusLed";
 import { Splitter } from "@/components/layout/Splitter";
-import { PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH } from "@/store/layout";
+import { PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH, type DockSide } from "@/store/layout";
+import { SidebarGrip, SidebarMenuButton } from "@/components/layout/SidebarDock";
 import { tabMark } from "@/store/activity";
 import { watchTerminal } from "@/store/terminalWatch";
 import { useSettings } from "@/store/settings";
@@ -18,9 +19,12 @@ import { AgentDashboard } from "@/components/agent/AgentDashboard";
 
 export function TerminalSidebar(props: {
   onOpenFile?: (path: string) => void;
-  /// Render the Files section. `false` under the vertical-tabs layout, where
-  /// the explorer lives in the right column instead — see `FilesPanel`.
+  /// Render the Files section. `false` where the explorer is docked as a
+  /// sidebar of its own — see `FilesSidebar`.
   files?: boolean;
+  /// Which edge this panel is docked to. Used for one thing: which side the
+  /// resize handle sits on.
+  dock?: DockSide;
 }) {
   const { state, activeWorkspace, activeRepoPath, activeTerminals, activeItem, actions } = useAppStore();
   const { settings } = useSettings();
@@ -47,10 +51,10 @@ export function TerminalSidebar(props: {
   /// collapse that reclaimed the width but left those two behind would reclaim
   /// nothing (see `FilesPanel`'s header for the two placements).
   ///
-  /// Never under vertical tabs: there the explorer lives in the right column
-  /// and this sidebar is not rendered at all, but `props.files === false` is
-  /// the contract that says so and a rail with no explorer in it would be a
-  /// control for a panel that is somewhere else.
+  /// Never under vertical tabs: there the explorer is a docked sidebar of its
+  /// own (`FilesSidebar`) and this one is not rendered at all, but
+  /// `props.files === false` is the contract that says so and a rail with no
+  /// explorer in it would be a control for a panel that is somewhere else.
   const railed = () => props.files !== false && !state.sidebarSections.files;
 
   /// Suppress the width transition for the duration of a splitter drag.
@@ -61,6 +65,8 @@ export function TerminalSidebar(props: {
   /// pointer instead (§7.3.10), so the one gesture that must not animate says
   /// so directly rather than being inferred from the width changing.
   const [resizing, setResizing] = createSignal(false);
+
+  const dock = (): DockSide => props.dock ?? "left";
 
   return (
     <aside
@@ -74,15 +80,17 @@ export function TerminalSidebar(props: {
       data-motion="sidebar-collapse"
     >
       <Show when={!railed()} fallback={<FilesRail onExpand={() => actions.toggleSidebarSection("files")} />}>
-      {/* Repo picker — h-9 to match center column tab bar */}
-      <div class="h-9 px-3 border-b border-border flex items-center shrink-0">
+      {/* Repo picker — h-9 to match center column tab bar. It doubles as this
+          panel's title row, so the dock grip and the panel menu live in it. */}
+      <div class="h-9 pl-1.5 pr-1 border-b border-border flex items-center gap-1 shrink-0">
+        <SidebarGrip id="files" />
         <Show
           when={activeRepoPath()}
           fallback={
             <button
               onClick={() => void chooseRepo()}
               title="Open a folder in this workspace"
-              class="w-full flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-2 py-1 text-body text-muted-foreground hover:text-foreground hover:bg-accent/40"
+              class="flex-1 min-w-0 flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-2 py-1 text-body text-muted-foreground hover:text-foreground hover:bg-accent/40"
             >
               <FolderOpen class="w-3.5 h-3.5" />
               Open folder
@@ -92,7 +100,7 @@ export function TerminalSidebar(props: {
           {(repo) => (
             <button
               onClick={() => void chooseRepo()}
-              class="w-full flex items-center gap-2 text-body truncate"
+              class="flex-1 min-w-0 flex items-center gap-2 text-body truncate"
               title={`${repo()}\nClick to open a different folder`}
             >
               <FolderOpen class="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
@@ -102,6 +110,7 @@ export function TerminalSidebar(props: {
             </button>
           )}
         </Show>
+        <SidebarMenuButton id="files" />
       </div>
 
       {/* Files section — fills remaining height when open.
@@ -270,7 +279,7 @@ export function TerminalSidebar(props: {
           never written to the store, which is exactly what makes expanding
           restore the user's width instead of the default. */}
       <Splitter
-        side="end"
+        side={dock() === "left" ? "end" : "start"}
         label="Files and terminals sidebar width"
         value={state.panels.sidebar}
         min={PANEL_BOUNDS.sidebar.min}
