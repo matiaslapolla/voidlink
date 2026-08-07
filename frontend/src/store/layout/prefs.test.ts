@@ -4,14 +4,19 @@
 /// drag back — the failure this file exists to prevent.
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_EDITOR_PREFS,
   DEFAULT_PREFS,
+  EDITOR_PANEL_BOUNDS,
   GIT_SECTION_KEYS,
   PANEL_BOUNDS,
   SIDEBAR_RAIL_WIDTH,
+  clampEditorPanelWidth,
   clampPanelWidth,
+  parseEditorPrefs,
   parseGitSectionOrder,
   parsePrefs,
 } from "./prefs";
+import { MIN_SPLIT_FRACTION, DEFAULT_SPLIT_FRACTION } from "@/components/editor/editorGroups";
 
 describe("panel widths", () => {
   it("defaults to today's layout", () => {
@@ -19,6 +24,8 @@ describe("panel widths", () => {
       rail: PANEL_BOUNDS.rail.default,
       sidebar: PANEL_BOUNDS.sidebar.default,
       gitSidebar: PANEL_BOUNDS.gitSidebar.default,
+      sidebarTerminalsHeight: PANEL_BOUNDS.sidebarTerminalsHeight.default,
+      sidebarAgentsHeight: PANEL_BOUNDS.sidebarAgentsHeight.default,
     });
   });
 
@@ -26,6 +33,46 @@ describe("panel widths", () => {
     expect(clampPanelWidth("rail", 10)).toBe(PANEL_BOUNDS.rail.min);
     expect(clampPanelWidth("rail", 4000)).toBe(PANEL_BOUNDS.rail.max);
     expect(clampPanelWidth("gitSidebar", 400)).toBe(400);
+  });
+
+  /// The sidebar's stacked disclosures (Files/Terminals/Agents) grew their own
+  /// resizable heights alongside the shell's three widths — same table, same
+  /// clamp, same hydration-repairs-rather-than-rejects discipline.
+  describe("sidebar section heights", () => {
+    it("clamps to their own bounds", () => {
+      expect(clampPanelWidth("sidebarTerminalsHeight", 10)).toBe(
+        PANEL_BOUNDS.sidebarTerminalsHeight.min,
+      );
+      expect(clampPanelWidth("sidebarTerminalsHeight", 9000)).toBe(
+        PANEL_BOUNDS.sidebarTerminalsHeight.max,
+      );
+      expect(clampPanelWidth("sidebarAgentsHeight", 10)).toBe(
+        PANEL_BOUNDS.sidebarAgentsHeight.min,
+      );
+      expect(clampPanelWidth("sidebarAgentsHeight", 9000)).toBe(
+        PANEL_BOUNDS.sidebarAgentsHeight.max,
+      );
+    });
+
+    it("default when absent from a persisted blob written before they existed", () => {
+      const prefs = parsePrefs({ panels: { rail: 200, sidebar: 300, gitSidebar: 400 } } as never);
+      expect(prefs.panels.sidebarTerminalsHeight).toBe(PANEL_BOUNDS.sidebarTerminalsHeight.default);
+      expect(prefs.panels.sidebarAgentsHeight).toBe(PANEL_BOUNDS.sidebarAgentsHeight.default);
+    });
+
+    it("clamps an out-of-range persisted value to the new bounds", () => {
+      const prefs = parsePrefs({
+        panels: {
+          rail: 200,
+          sidebar: 300,
+          gitSidebar: 400,
+          sidebarTerminalsHeight: 9000,
+          sidebarAgentsHeight: -5,
+        },
+      } as never);
+      expect(prefs.panels.sidebarTerminalsHeight).toBe(PANEL_BOUNDS.sidebarTerminalsHeight.max);
+      expect(prefs.panels.sidebarAgentsHeight).toBe(PANEL_BOUNDS.sidebarAgentsHeight.min);
+    });
   });
 
   it("falls back to the default rather than trusting a non-number", () => {
@@ -211,6 +258,43 @@ describe("collapsed workspaces", () => {
     expect(parsePrefs({ collapsedWorkspaces: {} as never }).collapsedWorkspaces).toEqual([]);
     expect(parsePrefs({ collapsedWorkspaces: [1, null, "a"] as never }).collapsedWorkspaces).toEqual(
       ["a"],
+    );
+  });
+});
+
+/// The editor window's own geometry (`EditorPrefs`) lives outside `gitPrefs`
+/// on purpose — see that interface's header — but is shaped and clamped the
+/// same way, and hydrates the same way: repaired, never rejected.
+describe("editor window geometry", () => {
+  it("defaults to the file tree's old constant width and an even split", () => {
+    expect(DEFAULT_EDITOR_PREFS).toEqual({
+      panels: { tree: EDITOR_PANEL_BOUNDS.tree.default },
+      splitFraction: DEFAULT_SPLIT_FRACTION,
+    });
+  });
+
+  it("clamps the tree width to its own bounds", () => {
+    expect(clampEditorPanelWidth("tree", 10)).toBe(EDITOR_PANEL_BOUNDS.tree.min);
+    expect(clampEditorPanelWidth("tree", 9000)).toBe(EDITOR_PANEL_BOUNDS.tree.max);
+    expect(clampEditorPanelWidth("tree", 300)).toBe(300);
+  });
+
+  it("defaults both keys when absent from a persisted blob", () => {
+    expect(parseEditorPrefs(null)).toEqual(DEFAULT_EDITOR_PREFS);
+    expect(parseEditorPrefs({})).toEqual(DEFAULT_EDITOR_PREFS);
+  });
+
+  it("clamps an out-of-range persisted tree width to the new bounds", () => {
+    const prefs = parseEditorPrefs({ panels: { tree: 9000 }, splitFraction: 0.5 });
+    expect(prefs.panels.tree).toBe(EDITOR_PANEL_BOUNDS.tree.max);
+  });
+
+  it("clamps an out-of-range persisted split fraction to editorGroups.ts's own bounds", () => {
+    expect(parseEditorPrefs({ panels: { tree: 240 }, splitFraction: 0 }).splitFraction).toBe(
+      MIN_SPLIT_FRACTION,
+    );
+    expect(parseEditorPrefs({ panels: { tree: 240 }, splitFraction: 1 }).splitFraction).toBe(
+      1 - MIN_SPLIT_FRACTION,
     );
   });
 });

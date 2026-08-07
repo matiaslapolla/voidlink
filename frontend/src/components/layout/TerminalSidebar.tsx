@@ -113,8 +113,28 @@ export function TerminalSidebar(props: {
         <FilesPanel class="border-b border-border/50" onOpenFile={props.onOpenFile} />
       </Show>
 
-      {/* Terminals section */}
-      <div class="flex flex-col shrink-0">
+      {/* Terminals section. `relative` so the height handle below can anchor
+          to this section's own top edge rather than the aside's (see
+          `MainSurface`'s per-pane splitter wrappers). The handle itself is
+          rendered only while Files is above it to divide space with — under
+          vertical tabs (`props.files === false`) there is nothing above this
+          section and nothing to resize against. */}
+      <div class="relative flex flex-col shrink-0">
+        <Show when={props.files !== false}>
+          <Splitter
+            axis="y"
+            side="start"
+            label="Terminals section height"
+            value={state.panels.sidebarTerminalsHeight}
+            min={PANEL_BOUNDS.sidebarTerminalsHeight.min}
+            max={PANEL_BOUNDS.sidebarTerminalsHeight.max}
+            defaultValue={PANEL_BOUNDS.sidebarTerminalsHeight.default}
+            disabledReason={
+              terminalsOpen() ? undefined : "Terminals is collapsed — expand it to resize"
+            }
+            onResize={(h) => actions.setPanelWidth("sidebarTerminalsHeight", h)}
+          />
+        </Show>
         <button
           onClick={() => actions.toggleSidebarSection("terminals")}
           // The chevron beside the label is the only thing reporting whether
@@ -149,7 +169,10 @@ export function TerminalSidebar(props: {
           </span>
         </button>
         <Show when={terminalsOpen()}>
-          <div class="overflow-y-auto scrollbar-thin p-1.5 density-gap max-h-52">
+          <div
+            class="overflow-y-auto scrollbar-thin p-1.5 density-gap"
+            style={{ height: `${state.panels.sidebarTerminalsHeight}px` }}
+          >
             <Show
               when={activeTerminals().length > 0}
               fallback={
@@ -182,7 +205,22 @@ export function TerminalSidebar(props: {
           caller that subscribes a poll to terminals outside the active
           worktree. With the flag off, none of that exists. */}
       <Show when={settings.experimental.agentDashboard}>
-        <div class="flex flex-col shrink-0 border-t border-border/50">
+        {/* `relative` for the same reason the Terminals wrapper above is: the
+            height handle on its top edge anchors here, not to the aside. */}
+        <div class="relative flex flex-col shrink-0 border-t border-border/50">
+          <Splitter
+            axis="y"
+            side="start"
+            label="Agent Dashboard section height"
+            value={state.panels.sidebarAgentsHeight}
+            min={PANEL_BOUNDS.sidebarAgentsHeight.min}
+            max={PANEL_BOUNDS.sidebarAgentsHeight.max}
+            defaultValue={PANEL_BOUNDS.sidebarAgentsHeight.default}
+            disabledReason={
+              agentsOpen() ? undefined : "Agent Dashboard is collapsed — expand it to resize"
+            }
+            onResize={(h) => actions.setPanelWidth("sidebarAgentsHeight", h)}
+          />
           <button
             onClick={() => actions.toggleSidebarSection("agents")}
             aria-expanded={agentsOpen()}
@@ -197,7 +235,9 @@ export function TerminalSidebar(props: {
             </span>
           </button>
           <Show when={agentsOpen()}>
-            <AgentDashboard class="max-h-64" />
+            <div class="overflow-hidden" style={{ height: `${state.panels.sidebarAgentsHeight}px` }}>
+              <AgentDashboard class="h-full" />
+            </div>
           </Show>
         </div>
       </Show>

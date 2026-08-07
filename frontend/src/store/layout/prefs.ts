@@ -5,6 +5,7 @@
 /// having it spring back when you switch is the behaviour nobody wants, so they
 /// live at the top of the store and in one storage key.
 import { STORAGE_KEYS, readJson, writeJson } from "./persistence";
+import { DEFAULT_SPLIT_FRACTION, clampFraction } from "@/components/editor/editorGroups";
 
 export type DiffMode = "inline" | "split";
 export type GitTab = "changes" | "branches" | "history";
@@ -69,6 +70,15 @@ export interface PanelWidths {
   rail: number;
   sidebar: number;
   gitSidebar: number;
+  /// Height of the left sidebar's Terminals disclosure, in px, while it and
+  /// the Files section above it are both open. The list's `max-h-52` used to
+  /// be a constant; it is now the same kind of persisted extent as the three
+  /// widths above, resized by the handle on the Files/Terminals seam.
+  sidebarTerminalsHeight: number;
+  /// Height of the left sidebar's Agent Dashboard disclosure, in px, while it
+  /// and Terminals are both open. Only ever read while
+  /// `experimental.agentDashboard` is on, like the section itself.
+  sidebarAgentsHeight: number;
 }
 
 export type PanelId = keyof PanelWidths;
@@ -79,6 +89,8 @@ export const PANEL_BOUNDS: Record<PanelId, { min: number; max: number; default: 
   rail: { min: 160, max: 380, default: 212 },
   sidebar: { min: 180, max: 520, default: 256 },
   gitSidebar: { min: 220, max: 600, default: 320 },
+  sidebarTerminalsHeight: { min: 80, max: 400, default: 208 }, // 208px = the old `max-h-52`.
+  sidebarAgentsHeight: { min: 100, max: 480, default: 256 }, // 256px = the old `max-h-64`.
 };
 
 /// Width of a sidebar that has been collapsed to its icon rail, in px.
@@ -145,6 +157,8 @@ export const DEFAULT_PREFS: UiPrefs = {
     rail: PANEL_BOUNDS.rail.default,
     sidebar: PANEL_BOUNDS.sidebar.default,
     gitSidebar: PANEL_BOUNDS.gitSidebar.default,
+    sidebarTerminalsHeight: PANEL_BOUNDS.sidebarTerminalsHeight.default,
+    sidebarAgentsHeight: PANEL_BOUNDS.sidebarAgentsHeight.default,
   },
   gitSidebarCollapsed: false,
   leftSidebarCollapsed: false,
@@ -279,7 +293,85 @@ function parsePanelWidths(raw: Partial<PanelWidths> | undefined): PanelWidths {
       "gitSidebar",
       raw?.gitSidebar ?? PANEL_BOUNDS.gitSidebar.default,
     ),
+    sidebarTerminalsHeight: clampPanelWidth(
+      "sidebarTerminalsHeight",
+      raw?.sidebarTerminalsHeight ?? PANEL_BOUNDS.sidebarTerminalsHeight.default,
+    ),
+    sidebarAgentsHeight: clampPanelWidth(
+      "sidebarAgentsHeight",
+      raw?.sidebarAgentsHeight ?? PANEL_BOUNDS.sidebarAgentsHeight.default,
+    ),
   };
+}
+
+// ── The editor window's own geometry ────────────────────────────────────────
+//
+// File-tree column width and split fraction are shaped exactly like
+// `PanelWidths`/`PANEL_BOUNDS` — a `{min,max,default}` bound and the same
+// clamp-on-the-way-in-and-out discipline — but kept out of that table on
+// purpose. `panels`/`gitPrefs` is written by exactly one window: the
+// workbench (see `CreateAppStoreOptions.persist`). Any unrelated pref change
+// there re-serialises the *whole* `panels` object from whatever it holds in
+// memory, which is the value it hydrated at boot and never touches again —
+// sharing the blob with a second writer would mean whichever window wrote
+// last silently reverted the other's resize the next time the first one
+// persisted anything at all. The editor window is exactly that second
+// writer (it opens as its own Tauri window, or is embedded in stacked mode
+// with its own non-persisting store either way — see `EditorApp.tsx`), so its
+// geometry gets a storage key of its own.
+
+export interface EditorPanelWidths {
+  /// Width of the file-tree column, in px. Replaces the `15rem` constant
+  /// `EditorApp`'s `<aside>` used to be pinned at.
+  tree: number;
+}
+
+export type EditorPanelId = keyof EditorPanelWidths;
+
+export const EDITOR_PANEL_BOUNDS: Record<EditorPanelId, { min: number; max: number; default: number }> = {
+  tree: { min: 180, max: 480, default: 240 }, // 240px = the old `15rem` (16px root).
+};
+
+export function clampEditorPanelWidth(panel: EditorPanelId, value: number): number {
+  const { min, max, default: fallback } = EDITOR_PANEL_BOUNDS[panel];
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+export interface EditorPrefs {
+  panels: EditorPanelWidths;
+  /// Size of the editor's first group as a fraction of the split container.
+  /// Bounds and default live in `editorGroups.ts` (`clampFraction`,
+  /// `DEFAULT_SPLIT_FRACTION`) rather than in a `{min,max,default}` entry
+  /// here — that module is already the one place the component and this
+  /// parser both call, and a second constant would be a second place for the
+  /// two to disagree.
+  splitFraction: number;
+}
+
+export const DEFAULT_EDITOR_PREFS: EditorPrefs = {
+  panels: { tree: EDITOR_PANEL_BOUNDS.tree.default },
+  splitFraction: DEFAULT_SPLIT_FRACTION,
+};
+
+export function parseEditorPrefs(raw: unknown): EditorPrefs {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Partial<EditorPrefs> & {
+    panels?: Partial<EditorPanelWidths>;
+  };
+  return {
+    panels: {
+      tree: clampEditorPanelWidth("tree", r.panels?.tree ?? EDITOR_PANEL_BOUNDS.tree.default),
+    },
+    splitFraction: clampFraction(r.splitFraction ?? DEFAULT_SPLIT_FRACTION),
+  };
+}
+
+export function loadEditorPrefs(): EditorPrefs {
+  return parseEditorPrefs(readJson<unknown>(STORAGE_KEYS.editorPrefs, null));
+}
+
+export function persistEditorPrefs(prefs: EditorPrefs): void {
+  writeJson(STORAGE_KEYS.editorPrefs, prefs);
 }
 
 export function loadPrefs(): UiPrefs {

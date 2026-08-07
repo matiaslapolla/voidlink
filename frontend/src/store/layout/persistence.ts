@@ -20,6 +20,11 @@ export const STORAGE_KEYS = {
   workspaces: WORKSPACES_KEY,
   activeWorkspace: "voidlink-active-workspace",
   gitPrefs: "voidlink-git-prefs",
+  /// The editor window's own geometry — file-tree column width, split
+  /// fraction. A separate key from `gitPrefs` on purpose: see `EditorPrefs`'s
+  /// header in `store/layout/prefs.ts` for why this window cannot share the
+  /// workbench's blob.
+  editorPrefs: "voidlink-editor-prefs",
   compareTabs: "voidlink-compare-tabs",
   stackTabs: "voidlink-stack-tabs",
   pinnedTabs: "voidlink-pinned-tabs",
