@@ -906,7 +906,7 @@ export function TabStrip(props: TabStripProps) {
       // still reads as the pane's own frame rather than as a divider between
       // the strip and the body. Same 2px either way, so focus moving between
       // groups still costs no layout.
-      class="flex bg-sidebar shrink-0"
+      class="flex bg-surface-tabstrip shrink-0"
       classList={{
         "items-center h-9": !vertical(),
         "flex-col h-full": vertical(),

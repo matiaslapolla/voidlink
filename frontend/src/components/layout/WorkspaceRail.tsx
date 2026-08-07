@@ -239,7 +239,7 @@ export function WorkspaceRail(props: {
       /* Island (D1): no border. The edge is the canvas gap `AppShell` puts
          around it; the radius and the clipping belong to the slot. */
       ref={(el) => (railRef = el)}
-      class="flex flex-col bg-sidebar overflow-hidden relative shrink-0"
+      class="flex flex-col bg-surface-rail overflow-hidden relative shrink-0"
       style={{ width: `${railed() ? SIDEBAR_RAIL_WIDTH : state.panels.rail}px` }}
       data-motion="sidebar-collapse"
     >
@@ -572,8 +572,12 @@ export function WorkspaceRail(props: {
 /// this panel is a different kind of thing than the two it sits beside.
 function WorkspaceRailCollapsed() {
   const { actions } = useAppStore();
+  // `bg-surface-rail`, not `bg-sidebar`: a collapsed rail is still the rail, and
+  // the region token is what says so. `GitSidebarCollapsed` keeps `bg-sidebar`
+  // because the git panel genuinely is a docked sidebar — the two rails look
+  // alike and are not the same region.
   return (
-    <div class="flex flex-col items-center w-full h-full bg-sidebar py-2 gap-2">
+    <div class="flex flex-col items-center w-full h-full bg-surface-rail py-2 gap-2">
       <button
         onClick={() => actions.toggleWorkspaceRail()}
         aria-label="Expand the workspace rail"
