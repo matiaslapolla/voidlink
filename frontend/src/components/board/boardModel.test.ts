@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { BoardCard, BoardSnapshot } from "@/types/board";
 import {
+  boardLabels,
   buildCardMarkdown,
+  dayOf,
+  editedCardMarkdown,
+  filterByLabels,
   groupIntoColumns,
   isMisfiled,
+  isOverdue,
+  labelTone,
+  LABEL_TONE_COUNT,
+  matchesLabels,
   mintCardId,
   movedCardMarkdown,
   planMove,
+  todayISO,
 } from "./boardModel";
 
 function card(id: string, column: string, order: number): BoardCard {
@@ -17,6 +26,7 @@ function card(id: string, column: string, order: number): BoardCard {
     order,
     labels: [],
     created: "2026-08-04T10:00:00.000-03:00",
+    due: null,
     path: `${id}.md`,
     rev: `rev-${id}`,
   };
@@ -216,5 +226,161 @@ describe("the on-disk format", () => {
     expect(md).toContain('column: "Done"');
     expect(md).toContain("order: 7.5");
     expect(md).toContain("The body, untouched.");
+  });
+});
+
+/// The `due` field, which is the one thing in this change that has to agree
+/// with a parser written in another language.
+describe("the due date on disk", () => {
+  /// The round trip, this half of it.
+  ///
+  /// `EVERY_FIELD_MARKDOWN` in `src-tauri/src/board/mod.rs` is the same string,
+  /// and that module's `parse_card_reads_back_every_field_the_frontend_serialises`
+  /// asserts the parser reads every field out of it. Change the serialised form
+  /// on either side without the other and one of the two tests fails.
+  it("serialises a card with every field set to the exact bytes the Rust parser reads", () => {
+    expect(
+      buildCardMarkdown({
+        id: "2026-08-04-wire-the-watcher",
+        title: "Wire the watcher",
+        column: "Doing",
+        order: 1.5,
+        labels: ["rust", "watch"],
+        created: "2026-08-04T10:00:00.000-03:00",
+        due: "2026-08-31",
+        body: "Why it matters.",
+      }),
+    ).toBe(
+      [
+        "---",
+        "id: 2026-08-04-wire-the-watcher",
+        "type: card",
+        'title: "Wire the watcher"',
+        'column: "Doing"',
+        "order: 1.5",
+        'labels: ["rust", "watch"]',
+        'created: "2026-08-04T10:00:00.000-03:00"',
+        'due: "2026-08-31"',
+        "---",
+        "Why it matters.",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  /// The compatibility claim in the direction that matters most: what this
+  /// build writes for a card with no due date is byte-identical to what the
+  /// build before it wrote, so an older VoidLink reads it unchanged.
+  it("omits the line entirely when there is no due date, however it is spelled", () => {
+    const base = {
+      id: "x",
+      title: "X",
+      column: "Todo",
+      order: 1,
+      labels: [],
+      created: "2026-08-04T10:00:00.000-03:00",
+      body: "",
+    };
+    const absent = buildCardMarkdown(base);
+    expect(absent).not.toContain("due:");
+    expect(buildCardMarkdown({ ...base, due: null })).toBe(absent);
+    expect(buildCardMarkdown({ ...base, due: "" })).toBe(absent);
+  });
+
+  /// The other direction: a card the app read with no `due` keeps having none
+  /// when something unrelated is written to it.
+  it("does not invent a due date for a card that was loaded without one", () => {
+    const md = movedCardMarkdown(card("a", "Todo", 1), { id: "a", column: "Done", order: 2 }, "b");
+    expect(md).not.toContain("due:");
+  });
+
+  it("sets, keeps and clears the due date through an edit", () => {
+    const dated = { ...card("a", "Todo", 1), due: "2026-08-31" };
+    expect(editedCardMarkdown(dated, "", { title: "Renamed" })).toContain('due: "2026-08-31"');
+    expect(editedCardMarkdown(dated, "", { due: "2026-09-01" })).toContain('due: "2026-09-01"');
+    // `null` clears it; `undefined` is "not part of this edit" and is the case
+    // above. Confusing the two is how a rename silently drops a deadline.
+    expect(editedCardMarkdown(dated, "", { due: null })).not.toContain("due:");
+  });
+
+  it("keeps the body and every untouched field", () => {
+    const original: BoardCard = {
+      ...card("a", "Todo", 1),
+      title: "A real title",
+      labels: ["ops"],
+      due: "2026-08-31",
+    };
+    const md = editedCardMarkdown(original, "The body, untouched.", { labels: ["ops", "rust"] });
+    expect(md).toContain('title: "A real title"');
+    expect(md).toContain('labels: ["ops", "rust"]');
+    expect(md).toContain('created: "2026-08-04T10:00:00.000-03:00"');
+    expect(md).toContain('due: "2026-08-31"');
+    expect(md).toContain("The body, untouched.");
+  });
+});
+
+describe("overdue", () => {
+  it("marks a date before today and leaves today alone", () => {
+    expect(isOverdue("2026-08-30", "2026-08-31")).toBe(true);
+    // A deadline is a day, not an instant.
+    expect(isOverdue("2026-08-31", "2026-08-31")).toBe(false);
+    expect(isOverdue("2026-09-01", "2026-08-31")).toBe(false);
+  });
+
+  it("says nothing about a card with no due date", () => {
+    expect(isOverdue(null, "2026-08-31")).toBe(false);
+    expect(isOverdue("", "2026-08-31")).toBe(false);
+    expect(isOverdue(undefined, "2026-08-31")).toBe(false);
+  });
+
+  it("compares the day of a full stamp, so `created` can be passed to it too", () => {
+    expect(dayOf("2026-08-04T10:00:00.000-03:00")).toBe("2026-08-04");
+    expect(dayOf(null)).toBe("");
+    // The clock the cards are stamped in is the clock "today" is read from.
+    expect(todayISO(Date.parse("2026-08-31T02:00:00.000Z"))).toBe("2026-08-30");
+  });
+});
+
+describe("labels", () => {
+  const labelled = (id: string, labels: string[]) => ({ ...card(id, "Todo", 1), labels });
+
+  it("lists every label on the board once, sorted", () => {
+    expect(
+      boardLabels(snapshot([labelled("a", ["rust", "ops"]), labelled("b", ["rust"])])),
+    ).toEqual(["ops", "rust"]);
+    expect(boardLabels(snapshot([card("a", "Todo", 1)]))).toEqual([]);
+  });
+
+  it("gives one label one colour, every time, within the palette that exists", () => {
+    expect(labelTone("rust")).toBe(labelTone("rust"));
+    for (const label of ["rust", "ops", "", "a much longer label than any of these"]) {
+      expect(labelTone(label)).toBeGreaterThanOrEqual(1);
+      expect(labelTone(label)).toBeLessThanOrEqual(LABEL_TONE_COUNT);
+    }
+  });
+
+  it("narrows the board, conjunctively, and passes everything through an empty filter", () => {
+    const board = snapshot([
+      labelled("a", ["rust", "ops"]),
+      labelled("b", ["rust"]),
+      labelled("c", []),
+    ]);
+
+    expect(ids(filterByLabels(board, []).cards)).toEqual(["a", "b", "c"]);
+    expect(ids(filterByLabels(board, ["rust"]).cards)).toEqual(["a", "b"]);
+    // A second label narrows further rather than widening.
+    expect(ids(filterByLabels(board, ["rust", "ops"]).cards)).toEqual(["a"]);
+    expect(ids(filterByLabels(board, ["nobody-uses-this"]).cards)).toEqual([]);
+
+    expect(matchesLabels(labelled("a", ["rust"]), ["rust"])).toBe(true);
+    expect(matchesLabels(labelled("a", ["rust"]), ["ops"])).toBe(false);
+  });
+
+  /// A column emptied by a filter still exists. Dropping it would make the
+  /// board look like it lost a column rather than like it is filtered.
+  it("keeps the declared columns whatever the filter hides", () => {
+    const filtered = filterByLabels(snapshot([labelled("a", ["rust"])]), ["nothing"]);
+    expect(filtered.columns).toEqual(COLUMNS);
+    expect(groupIntoColumns(filtered)).toHaveLength(3);
   });
 });

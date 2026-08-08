@@ -1497,6 +1497,10 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         open={isBoardOpen()}
         repoPath={activeWorkspace()?.repoRoot ?? ""}
         onClose={closeBoard}
+        // A card is a markdown file, so opening one is the same open as the
+        // file finder's and the tree's — through `openInEditorWindow`, which
+        // is where every "open a file" in the workbench already funnels.
+        onOpenCard={(path) => void openInEditorWindow(path)}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />

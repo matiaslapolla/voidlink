@@ -15,6 +15,7 @@
 /// sends, the external-edit refetch — stays in `BoardOverlay.test.tsx`.
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, waitFor } from "@solidjs/testing-library";
+import userEvent from "@testing-library/user-event";
 import { lastInvokeArgs, mockTauri, tauriCalls } from "@/test/tauri";
 import { cancelDrag } from "@/components/layout/dragDrop";
 import {
@@ -169,5 +170,81 @@ describe("dragging a card between columns", () => {
       (el) => el.getAttribute("data-card-id"),
     );
     expect(order).toEqual(["c", "a", "b"]);
+  });
+});
+
+/// §7.6's no-layout-shift rule, applied to the one state change this stream
+/// adds to a card: gaining a label.
+///
+/// It belongs here for the same reason the drag does — jsdom reports a zero
+/// rect for everything, so a tile that grew by 14px would measure as having
+/// grown by nothing and the test could only pass. A board is a list people aim
+/// a pointer at; a tile that grows under the cursor moves every drop target
+/// below it, and the user finds out by dropping a card in the wrong place.
+describe("a card gaining a label", () => {
+  it("does not move the cards below it", async () => {
+    installBoard([
+      { id: "a", title: "Gains a label", column: "Todo", order: 1, rev: 1, body: "" },
+      { id: "b", title: "Sits below it", column: "Todo", order: 2, rev: 1, body: "" },
+      { id: "c", title: "Sits below that", column: "Todo", order: 3, rev: 1, body: "" },
+    ]);
+    const user = userEvent.setup();
+    mountBoard();
+    await screen.findByLabelText("Gains a label");
+
+    const before = tile("Gains a label").getBoundingClientRect().height;
+    const belowBefore = tile("Sits below it").getBoundingClientRect().top;
+    const bottomBefore = tile("Sits below that").getBoundingClientRect().top;
+
+    await user.click(screen.getByRole("button", { name: "Add a label to Gains a label" }));
+    // The inline input is a *swap*, not an insertion: the row it lands in is
+    // the row the chips live in, so opening it must not move anything either.
+    expect(tile("Gains a label").getBoundingClientRect().height).toBe(before);
+    expect(tile("Sits below it").getBoundingClientRect().top).toBe(belowBefore);
+
+    await user.type(screen.getByLabelText("Add a label to Gains a label"), "rust{Enter}");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Remove label rust from Gains a label" }),
+      ).toBeInTheDocument(),
+    );
+
+    expect(tile("Gains a label").getBoundingClientRect().height).toBe(before);
+    expect(tile("Sits below it").getBoundingClientRect().top).toBe(belowBefore);
+    expect(tile("Sits below that").getBoundingClientRect().top).toBe(bottomBefore);
+  });
+
+  /// The same claim for a second chip, which is where a wrapping row would
+  /// finally give: two chips plus the dates is more than 260px of tile.
+  it("does not move them when a second label arrives either", async () => {
+    installBoard([
+      {
+        id: "a",
+        title: "Already labelled",
+        column: "Todo",
+        order: 1,
+        rev: 1,
+        body: "",
+        labels: ["infrastructure"],
+      },
+      { id: "b", title: "Sits below it", column: "Todo", order: 2, rev: 1, body: "" },
+    ]);
+    const user = userEvent.setup();
+    mountBoard();
+    await screen.findByLabelText("Already labelled");
+    const belowBefore = tile("Sits below it").getBoundingClientRect().top;
+
+    await user.click(screen.getByRole("button", { name: "Add a label to Already labelled" }));
+    await user.type(
+      screen.getByLabelText("Add a label to Already labelled"),
+      "another-long-one{Enter}",
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Remove label another-long-one from Already labelled" }),
+      ).toBeInTheDocument(),
+    );
+
+    expect(tile("Sits below it").getBoundingClientRect().top).toBe(belowBefore);
   });
 });
