@@ -11,10 +11,11 @@
 /// with `<SidebarGrip>` in it and take a `dock` prop so their splitter knows
 /// which edge it sits on; nothing else about docking is visible from inside a
 /// sidebar.
-import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
 import { GripVertical, MoreVertical } from "lucide-solid";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 import { useAppStore } from "@/store/LayoutContext";
+import type { AppStore } from "@/store/layout";
 import {
   SIDEBAR_COLLAPSE,
   SIDEBAR_PANEL,
@@ -80,55 +81,112 @@ export function SidebarGrip(props: { id: SidebarId; class?: string }) {
   );
 }
 
+/// The move/detach rows for one sidebar — move to the other edge, and detach
+/// or dock back. Shared by `SidebarMenuButton` (the ⋮ button) and, per Stream
+/// D, a right-click anywhere in the sidebar's own body: both are ways to ask
+/// for the same menu, so both build it by calling this, rather than the body's
+/// right-click keeping a parallel list that could drift from the button's.
+export function sidebarDockMenuItems(store: AppStore, id: SidebarId): ContextMenuItem[] {
+  const { state, actions } = store;
+  const side = state.dockSide[id];
+  const detached = state.detachedSidebars.includes(id);
+
+  const rows: ContextMenuItem[] = [
+    {
+      label: "Move to the left edge",
+      disabledReason: side === "left" ? "Already docked on the left" : undefined,
+      onSelect: () => actions.dockSidebar(id, "left"),
+    },
+    {
+      label: "Move to the right edge",
+      disabledReason: side === "right" ? "Already docked on the right" : undefined,
+      onSelect: () => actions.dockSidebar(id, "right"),
+    },
+  ];
+  if (canDetachSidebar(id)) {
+    rows.push(
+      detached
+        ? {
+            label: "Dock back into this window",
+            separatorBefore: true,
+            onSelect: () => void dockSidebarBack(store, id),
+          }
+        : {
+            label: "Detach into its own window…",
+            separatorBefore: true,
+            disabledReason: isStackedMode()
+              ? "This environment shows the other surfaces as views, not windows"
+              : undefined,
+            onSelect: () => void detachSidebar(store, id),
+          },
+    );
+  }
+  return rows;
+}
+
+/// A right-click anywhere in a sidebar's own body opens the same move/detach
+/// menu its ⋮ button (`SidebarMenuButton`) does — the item list a right-click
+/// should open is *that* list, not a parallel one, so both build it from
+/// `sidebarDockMenuItems`.
+///
+/// Wraps each of the five sidebar panels at the one call site that builds
+/// `AppShellSidebars` (`App.tsx`), rather than five copies inside
+/// `WorkspaceRail` / `FilesSidebar` / `TerminalsSidebar` / `AgentsSidebar` /
+/// `GitSidebar`. `AppShell.tsx` itself stays store-free on purpose (its own
+/// tests render it with no `AppStoreContext.Provider` at all — see
+/// `AppShell.test.tsx`), so this lives beside the store-aware panels instead.
+///
+/// `class="contents"` keeps the wrapper out of the box model entirely — the
+/// sidebar's own root element is still what `.island-slot` measures and what
+/// `[data-sidebar]` queries find — while still giving this `<div>` a DOM node
+/// to attach the listener to, since events dispatch on the DOM tree regardless
+/// of `display`.
+///
+/// Every one of the sidebar's own rows (a file, a workspace, a diff…) already
+/// calls `stopPropagation` on its own `onContextMenu`, so this only ever fires
+/// for the sidebar's bare chrome — the same place a click already does
+/// nothing.
+export function SidebarBodyMenuScope(props: { id: SidebarId; children: JSX.Element }) {
+  const store = useAppStore();
+  const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
+  let returnFocusTo: HTMLElement | null = null;
+
+  return (
+    <div
+      class="contents"
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        returnFocusTo = document.activeElement as HTMLElement | null;
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      {props.children}
+      <Show when={menu()}>
+        {(m) => (
+          <ContextMenu
+            x={m().x}
+            y={m().y}
+            items={sidebarDockMenuItems(store, props.id)}
+            onClose={() => setMenu(null)}
+            returnFocusTo={returnFocusTo}
+          />
+        )}
+      </Show>
+    </div>
+  );
+}
+
 /// The header menu: move to the other edge, and detach or dock back.
 ///
 /// Every row runs the same store action the drag and the palette do, so a
 /// sidebar has one way to be moved and three ways to ask.
 export function SidebarMenuButton(props: { id: SidebarId }) {
   const store = useAppStore();
-  const { state, actions } = store;
   const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
   let trigger: HTMLButtonElement | undefined;
 
   const label = () => SIDEBAR_LABEL[props.id];
-  const side = () => state.dockSide[props.id];
-  const detached = () => state.detachedSidebars.includes(props.id);
-
-  const items = (): ContextMenuItem[] => {
-    const rows: ContextMenuItem[] = [
-      {
-        label: "Move to the left edge",
-        disabledReason:
-          side() === "left" ? "Already docked on the left" : undefined,
-        onSelect: () => actions.dockSidebar(props.id, "left"),
-      },
-      {
-        label: "Move to the right edge",
-        disabledReason:
-          side() === "right" ? "Already docked on the right" : undefined,
-        onSelect: () => actions.dockSidebar(props.id, "right"),
-      },
-    ];
-    if (canDetachSidebar(props.id)) {
-      rows.push(
-        detached()
-          ? {
-              label: "Dock back into this window",
-              separatorBefore: true,
-              onSelect: () => void dockSidebarBack(store, props.id),
-            }
-          : {
-              label: "Detach into its own window…",
-              separatorBefore: true,
-              disabledReason: isStackedMode()
-                ? "This environment shows the other surfaces as views, not windows"
-                : undefined,
-              onSelect: () => void detachSidebar(store, props.id),
-            },
-      );
-    }
-    return rows;
-  };
 
   return (
     <>
@@ -150,7 +208,7 @@ export function SidebarMenuButton(props: { id: SidebarId }) {
           <ContextMenu
             x={m().x}
             y={m().y}
-            items={items()}
+            items={sidebarDockMenuItems(store, props.id)}
             onClose={() => setMenu(null)}
             returnFocusTo={trigger}
           />

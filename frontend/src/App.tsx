@@ -125,7 +125,7 @@ import {
   type SidebarId,
   type SplitOrientation,
 } from "@/store/layout";
-import { SidebarDockOverlay } from "@/components/layout/SidebarDock";
+import { SidebarDockOverlay, SidebarBodyMenuScope } from "@/components/layout/SidebarDock";
 import {
   canDetachSidebar,
   detachSidebar,
@@ -1450,7 +1450,9 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     { id: "git", content: gitPane() },
   ].map(({ id, content }) => ({
     id,
-    content,
+    // A right-click anywhere in the body opens the same move/detach menu the
+    // ⋮ button does — see `SidebarBodyMenuScope`.
+    content: <SidebarBodyMenuScope id={id as SidebarId}>{content}</SidebarBodyMenuScope>,
     side: () => state.dockSide[id as SidebarId],
     order: () =>
       slotOrder(

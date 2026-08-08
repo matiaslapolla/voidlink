@@ -57,6 +57,8 @@ import {
   type TabDescriptor,
   type TabDragPayload,
 } from "@/components/layout/TabStrip";
+import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
+import { paneMenuItems } from "@/components/layout/paneMenu";
 import { Splitter, islandGapPx } from "@/components/layout/Splitter";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
 import {
@@ -99,7 +101,7 @@ import { fsApi } from "@/api/fs";
 import { gitApi } from "@/api/git";
 import { recordBranchUse } from "@/commands/branchMru";
 import { pushToast } from "@/commands/toast";
-import { openBoard, openBrain } from "@/commands/registry";
+import { getAction, openBoard, openBrain, runAction } from "@/commands/registry";
 
 interface MainSurfaceProps {
   /// Hand a file to the editor window. The workbench has no editor of its own
@@ -162,7 +164,7 @@ export function MainSurface(props: MainSurfaceProps) {
   // because spawning a terminal and then writing into it is two store calls
   // that have to agree about which session they mean.
   const store = useAppStore();
-  const { settings } = useSettings();
+  const { settings, updateUi } = useSettings();
 
   /// The roster's composed agents. Only these can open as a terminal — a
   /// command agent is a stdin filter and would hang on an empty pipe.
@@ -895,6 +897,75 @@ export function MainSurface(props: MainSurfaceProps) {
     }
   }
 
+  /// The tab strip's empty-space menu (Stream D): new tab, reopen last
+  /// closed, tab orientation. Every row that has a registered action runs it
+  /// through `getAction`/`runAction`, the same path its chord and its palette
+  /// row use — "new terminal" is `terminal.new`, "reopen last closed" is
+  /// `tab.reopen-last`. Tab orientation has no registered action (it is a
+  /// settings toggle, not a command), so its two rows call `updateUi`
+  /// directly, the same setter `SettingsDialog`'s own toggle already calls.
+  function emptySpaceMenuItems(): ContextMenuItem[] {
+    const newTerminal = getAction("terminal.new");
+    const reopenLast = getAction("tab.reopen-last");
+    const orientation = settings.ui.tabOrientation;
+    const rows: ContextMenuItem[] = [];
+    if (newTerminal) {
+      rows.push({
+        label: "New terminal",
+        disabledReason: newTerminal.enabled?.() === false ? "Open a folder first" : undefined,
+        onSelect: () => void runAction(newTerminal),
+      });
+    }
+    if (reopenLast) {
+      rows.push({
+        label: "Reopen last closed tab",
+        disabledReason:
+          reopenLast.enabled?.() === false ? "Nothing to reopen" : undefined,
+        onSelect: () => void runAction(reopenLast),
+      });
+    }
+    rows.push(
+      {
+        label: "Horizontal tabs",
+        separatorBefore: true,
+        disabledReason: orientation === "horizontal" ? "Already horizontal" : undefined,
+        onSelect: () => updateUi({ tabOrientation: "horizontal" }),
+      },
+      {
+        label: "Vertical tabs",
+        disabledReason: orientation === "vertical" ? "Already vertical" : undefined,
+        onSelect: () => updateUi({ tabOrientation: "vertical" }),
+      },
+    );
+    return rows;
+  }
+
+  /// A pane's own menu (Stream D): split right, split down, close pane, reset
+  /// the layout. Every row is a registered action — `ui.split-pane-right`,
+  /// `ui.split-pane-down`, `ui.close-pane`, `ui.reset-pane-layout` — the same
+  /// four the palette lists under "View" and the keymap can bind. They act on
+  /// *the focused pane*, so right-clicking a pane focuses it first (the same
+  /// thing a left-click already does via `onFocusGroup`), then runs the
+  /// action — a right-click on an unfocused pane acts on the pane clicked, not
+  /// on whichever one had focus a moment before. Row shape is `paneMenuItems`
+  /// in `paneMenu.ts`, pure and unit-tested there; this is only the wiring
+  /// from the registry to that builder.
+  function buildPaneMenuItems(): ContextMenuItem[] {
+    const splitRight = getAction("ui.split-pane-right");
+    const splitDown = getAction("ui.split-pane-down");
+    const closePane = getAction("ui.close-pane");
+    const resetLayout = getAction("ui.reset-pane-layout");
+    if (!splitRight || !splitDown || !closePane || !resetLayout) return [];
+    return paneMenuItems({
+      onSplitRight: () => void runAction(splitRight),
+      onSplitDown: () => void runAction(splitDown),
+      onClosePane: () => void runAction(closePane),
+      canClosePane: closePane.enabled?.() !== false,
+      onResetLayout: () => void runAction(resetLayout),
+      canResetLayout: resetLayout.enabled?.() !== false,
+    });
+  }
+
   /// Local branch names for the active repo. Feeds the terminal's branch
   /// deep-link provider so only real branches get linkified. Refreshed on
   /// repo change and on the same `voidlink:refresh-git` pulse the sidebar
@@ -1135,6 +1206,15 @@ export function MainSurface(props: MainSurfaceProps) {
       return frontId ? (activePaneGroupTabs().find((t) => t.id === frontId) ?? null) : null;
     };
 
+    /// The pane's own menu (Stream D). Every nested surface that has more to
+    /// say about a right-click — a tab, a tab-group chip, a terminal — stops
+    /// propagation on its own `onContextMenu` before this island wrapper ever
+    /// sees the event (`TabStrip`'s `openCtx`/`openGroupCtx`,
+    /// `TerminalPane`'s own menu below), so this only fires for the pane's
+    /// bare chrome: its empty body, or a tab whose content offers no menu of
+    /// its own.
+    const [paneMenu, setPaneMenu] = createSignal<{ x: number; y: number } | null>(null);
+
     return (
       // One pane group = one island (D1). The radius and the clipping come
       // from `.island` in `index.css`; this component owns *where* islands sit
@@ -1151,11 +1231,21 @@ export function MainSurface(props: MainSurfaceProps) {
           "flex-row": verticalTabs(),
           "outline-2 -outline-offset-2 outline-primary": zenFocus(),
         }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          focusGroup();
+          setPaneMenu({ x: e.clientX, y: e.clientY });
+        }}
       >
         <Show when={showTabBar() && !isZen()}>
           <TabStrip
             orientation={settings.ui.tabOrientation}
             width={verticalTabWidth()}
+            // Root strips only, same rule as the "+" menu just below: a
+            // nested split's strip belongs to a `panegroup` tab's own tree,
+            // and "new terminal" / "reopen last closed" open in whichever
+            // *root* group has focus regardless of which strip is clicked.
+            emptySpaceMenuItems={scope === null ? emptySpaceMenuItems : undefined}
             tabs={tabsOf(groupId)}
             activeId={frontTabIds().get(groupId) ?? null}
             isPinned={isPinned}
@@ -1305,6 +1395,17 @@ export function MainSurface(props: MainSurfaceProps) {
             )}
           </Show>
         </div>
+
+        <Show when={paneMenu()}>
+          {(m) => (
+            <ContextMenu
+              x={m().x}
+              y={m().y}
+              items={buildPaneMenuItems()}
+              onClose={() => setPaneMenu(null)}
+            />
+          )}
+        </Show>
       </div>
     );
   }
@@ -1437,6 +1538,13 @@ export function MainSurface(props: MainSurfaceProps) {
               ptyId={term.ptyId}
               active={tabIsVisible(term.id)}
               class="w-full h-full"
+              // The context menu's "close terminal" row (Stream D) — the same
+              // two calls `closeTab` makes for a terminal tab, so the menu row
+              // and the tab-strip's own × close mean exactly the same thing.
+              onClose={() => {
+                clearTabActivity(term.id);
+                actions.removeTerminal(state.activeWorktreeId, term.id);
+              }}
               onBell={() => noteBell(term.id)}
               // A program inside the shell said it was done (OSC 9 / OSC 777).
               // Same mark as a bell, because to the user they are the same

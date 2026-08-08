@@ -178,6 +178,14 @@ export function BoardSurface(props: BoardSurfaceProps) {
     y: number;
     returnTo: HTMLElement | null;
   } | null>(null);
+  /// The menu for board space that is not a card — a column's empty area, or
+  /// the strip beside the last column. It offers the one thing there is to do
+  /// there, which is the composer the header's own "+ New card" opens.
+  ///
+  /// "Delete card" is deliberately absent from *both* menus: `boardApi` has
+  /// list / read / save and no delete, and inventing a backend command is a
+  /// new action rather than a new way to reach one.
+  const [spaceMenu, setSpaceMenu] = createSignal<{ x: number; y: number } | null>(null);
 
   /// Today, read at render rather than captured at module load — a board left
   /// open across midnight re-reads it on its next refetch, and the board
@@ -538,7 +546,15 @@ export function BoardSurface(props: BoardSurfaceProps) {
             />
           }
         >
-          <div class="flex-1 min-h-0 flex gap-2 p-2 overflow-x-auto scrollbar-thin">
+          <div
+            class="flex-1 min-h-0 flex gap-2 p-2 overflow-x-auto scrollbar-thin"
+            /* Only genuinely empty space reaches this: a column and a card
+               each stop propagation before it fires. */
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setSpaceMenu({ x: e.clientX, y: e.clientY });
+            }}
+          >
             <For each={columns()}>
               {(column) => (
                 <div
@@ -548,6 +564,11 @@ export function BoardSurface(props: BoardSurfaceProps) {
                   classList={{
                     "border-primary/60": dropColumn() === column.name,
                     "border-border/60": dropColumn() !== column.name,
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setSpaceMenu({ x: e.clientX, y: e.clientY });
                   }}
                 >
                   <div class="flex items-center gap-1.5 px-2 py-1 border-b border-border/50 shrink-0">
@@ -578,6 +599,9 @@ export function BoardSurface(props: BoardSurfaceProps) {
                           }
                           onContextMenu={(e, el) => {
                             e.preventDefault();
+                            // A card's menu is the card's; without this the
+                            // column underneath opens its own as well.
+                            e.stopPropagation();
                             setMenu({ card, x: e.clientX, y: e.clientY, returnTo: el });
                           }}
                         />
@@ -602,6 +626,17 @@ export function BoardSurface(props: BoardSurfaceProps) {
               label={`Card: ${m.card.title}`}
               returnFocusTo={m.returnTo}
               onClose={() => setMenu(null)}
+            />
+          )}
+        </Show>
+        <Show when={spaceMenu()} keyed>
+          {(m) => (
+            <Menu
+              x={m.x}
+              y={m.y}
+              items={[{ label: "New card", onSelect: () => setComposing(true) }]}
+              label="Board"
+              onClose={() => setSpaceMenu(null)}
             />
           )}
         </Show>

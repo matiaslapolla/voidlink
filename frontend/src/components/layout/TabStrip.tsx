@@ -76,6 +76,7 @@ import {
 } from "@/components/layout/dragDrop";
 import type { SplitOrientation, TabGroup, TabGroupColor } from "@/store/layout";
 import type { TabOrientation } from "@/store/settings";
+import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 // Values come straight from the reducer module rather than through the store's
 // barrel: the strip has to keep working in the editor window, which has no
 // store, and `tabGroups.ts` is pure and DOM-free.
@@ -280,6 +281,12 @@ export interface TabStripProps {
   /// The column's width in px while `orientation` is `vertical`; ignored
   /// otherwise. The caller owns it because the caller owns the preference.
   width?: number;
+  /// Rows for a right-click on the strip's own bare space — new tab, reopen
+  /// last closed, tab orientation. Absent (the editor window's strip, which
+  /// has none of these) means no menu opens there; the caller builds the list
+  /// because building it needs the registry and the settings store, and this
+  /// module takes neither.
+  emptySpaceMenuItems?: () => ContextMenuItem[];
 
   // ── Pane groups ────────────────────────────────────────────────────────
   // All optional: a window with one group (or none at all, like the editor)
@@ -898,6 +905,10 @@ export function TabStrip(props: TabStripProps) {
 
   function openCtx(e: MouseEvent, tab: TabDescriptor) {
     e.preventDefault();
+    // A tab sits inside the strip's own scroller, which — per Stream D — now
+    // has its own right-click menu for genuinely empty space. Stopping here
+    // is what keeps a right-click on a tab from opening both.
+    e.stopPropagation();
     setGroupCtx(null);
     setCtx({ x: e.clientX, y: e.clientY, tab });
   }
@@ -914,8 +925,22 @@ export function TabStrip(props: TabStripProps) {
 
   function openGroupCtx(e: MouseEvent, group: TabGroup) {
     e.preventDefault();
+    // Same reason `openCtx` stops here: the chip lives in the scroller too.
+    e.stopPropagation();
     setCtx(null);
     setGroupCtx({ x: e.clientX, y: e.clientY, group });
+  }
+
+  // ── Empty-space menu ──────────────────────────────────────────────────────
+  // New tab, reopen last closed, tab orientation — reached from the strip's
+  // own bare scroller. `ctx`/`groupCtx` above already stop propagation before
+  // this can fire, so this only ever answers a right-click that landed on
+  // nothing: the strip's per-element `onContextMenu` convention, one level up.
+  const [emptyCtx, setEmptyCtx] = createSignal<{ x: number; y: number } | null>(null);
+  function openEmptyCtx(e: MouseEvent) {
+    if (!props.emptySpaceMenuItems) return;
+    e.preventDefault();
+    setEmptyCtx({ x: e.clientX, y: e.clientY });
   }
 
   /// Close every unpinned tab of the same kind except `keep`. Derived from the
@@ -968,8 +993,14 @@ export function TabStrip(props: TabStripProps) {
     >
       <div
         ref={(el) => (scrollRef = el)}
+        data-testid="tab-strip-scroller"
         // No drag handlers: the scroller *is* the strip's drop zone, registered
         // with the controller above and hit-tested by rect.
+        //
+        // A right-click here that reaches this far is one `openCtx` /
+        // `openGroupCtx` already declined to stop — i.e. genuinely empty
+        // space, not a tab or a chip.
+        onContextMenu={openEmptyCtx}
         //
         // `relative` is load-bearing twice over: it makes the scroller the
         // cards' `offsetParent` (so `measureIndicator` needs no coordinate
@@ -1161,6 +1192,17 @@ export function TabStrip(props: TabStripProps) {
         addToSplitPaneDisabledReason={props.addToSplitPaneDisabledReason}
         onAddToSplitPane={props.onAddToSplitPane}
       />
+
+      <Show when={emptyCtx()}>
+        {(c) => (
+          <ContextMenu
+            x={c().x}
+            y={c().y}
+            items={props.emptySpaceMenuItems!()}
+            onClose={() => setEmptyCtx(null)}
+          />
+        )}
+      </Show>
     </div>
   );
 }
