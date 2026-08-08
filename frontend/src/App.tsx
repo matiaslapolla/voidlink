@@ -103,6 +103,7 @@ import {
   onOpenWorktreeRequest,
   closeEditorWindow,
   closeGitWindow,
+  openEditorTab,
   openEditorWindow,
   publishEditorTabs,
   publishWindowContext,
@@ -124,7 +125,7 @@ import {
   type SidebarId,
   type SplitOrientation,
 } from "@/store/layout";
-import { SidebarDockOverlay } from "@/components/layout/SidebarDock";
+import { SidebarDockOverlay, SidebarBodyMenuScope } from "@/components/layout/SidebarDock";
 import {
   canDetachSidebar,
   detachSidebar,
@@ -1367,7 +1368,9 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     { id: "git", content: gitPane() },
   ].map(({ id, content }) => ({
     id,
-    content,
+    // A right-click anywhere in the body opens the same move/detach menu the
+    // ⋮ button does — see `SidebarBodyMenuScope`.
+    content: <SidebarBodyMenuScope id={id as SidebarId}>{content}</SidebarBodyMenuScope>,
     side: () => state.dockSide[id as SidebarId],
     order: () =>
       slotOrder(
@@ -1497,6 +1500,13 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         open={isBoardOpen()}
         repoPath={activeWorkspace()?.repoRoot ?? ""}
         onClose={closeBoard}
+        // "Open card in editor" (Stream D). The workbench applies nothing
+        // locally — it does not render Monaco — so this is a pure request to
+        // the editor window, the same shape `PanelApp`'s file tree already
+        // sends for the same reason.
+        onOpenCard={(cardPath) =>
+          void openEditorTab({ kind: "open-file", path: `.voidlink/board/${cardPath}` }, () => {})
+        }
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />

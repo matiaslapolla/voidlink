@@ -90,9 +90,11 @@ export const THREE_CARDS: StoredCard[] = [
 
 export const onClose = vi.fn(() => {});
 
-export function mountBoard(repoPath = REPO) {
+export function mountBoard(repoPath = REPO, onOpenCard?: (path: string) => void) {
   onClose.mockClear();
-  return render(() => <BoardOverlay repoPath={repoPath} onClose={onClose} />);
+  return render(() => (
+    <BoardOverlay repoPath={repoPath} onClose={onClose} onOpenCard={onOpenCard} />
+  ));
 }
 
 export const tile = (title: string) => screen.getByLabelText(title);

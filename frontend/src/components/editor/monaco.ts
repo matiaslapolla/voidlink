@@ -65,6 +65,12 @@ const EDITOR_CHROME = {
   hideCursorInOverviewRuler: true,
   padding: { top: 8, bottom: 8 },
   automaticLayout: true,
+  // `contextmenu` is deliberately absent — Monaco defaults it to `true` and
+  // draws its own menu widget, not the browser's. `main.tsx`'s document-level
+  // suppression only calls `preventDefault`, never `stopPropagation`, so
+  // Monaco's own `contextmenu` listener on the editor DOM still runs and
+  // opens that widget same as always (verified against monaco-editor
+  // ^0.55.1's docs before this stream touched anything near the editor).
 } as const satisfies Monaco.editor.IEditorOptions;
 
 /// Monaco options derived from the store, shared by every surface in the

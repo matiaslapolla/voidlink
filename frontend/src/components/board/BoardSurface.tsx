@@ -36,6 +36,7 @@ import { boardApi, isBoardConflict, onBoardChanged } from "@/api/board";
 import type { BoardCard, BoardSnapshot } from "@/types/board";
 import { pushToast } from "@/commands/toast";
 import { EmptyState, EmptyStateAction } from "@/components/layout/EmptyState";
+import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 import {
   activeDrag,
   beginDrag,
@@ -61,6 +62,11 @@ interface BoardSurfaceProps {
   /// `.voidlink/board`; empty means no repo is open, which is the one state
   /// this surface cannot do anything useful in.
   repoPath: string;
+  /// Open a card's markdown file in the editor window. Absent means the
+  /// caller has no editor to open one in (there isn't one today — every real
+  /// caller passes it, via `openEditorTab`); optional only so a caller with
+  /// no editor is not forced to invent a no-op.
+  onOpenCard?: (repoRelativePath: string) => void;
 }
 
 export function BoardSurface(props: BoardSurfaceProps) {
@@ -97,6 +103,19 @@ export function BoardSurface(props: BoardSurfaceProps) {
   const [dropColumn, setDropColumn] = createSignal<string | null>(null);
   const [composing, setComposing] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
+
+  // ── Context menus (Stream D) ────────────────────────────────────────────
+  // Empty board space: "New card", the same flow the header's own "+ New
+  // card" button starts — both just show the composer, so there is nothing
+  // here to duplicate. Per-card: "Open card in editor", via `onOpenCard`.
+  // "Delete card" is deliberately absent: `boardApi` has no delete command —
+  // list/read/save only — and inventing one is a new backend action, out of
+  // scope for a stream that surfaces existing actions rather than adding
+  // them. See the stream's final report for the full reasoning.
+  const [emptyMenu, setEmptyMenu] = createSignal<{ x: number; y: number } | null>(null);
+  const [cardMenu, setCardMenu] = createSignal<{ x: number; y: number; card: BoardCard } | null>(
+    null,
+  );
 
   function resetDrag() {
     setDragging(null);
@@ -304,7 +323,15 @@ export function BoardSurface(props: BoardSurfaceProps) {
             />
           }
         >
-          <div class="flex-1 min-h-0 flex gap-2 p-2 overflow-x-auto scrollbar-thin">
+          <div
+            class="flex-1 min-h-0 flex gap-2 p-2 overflow-x-auto scrollbar-thin"
+            onContextMenu={(e) => {
+              // Only genuinely empty space: a column or a card's own handler
+              // (below) stops propagation before this can fire.
+              e.preventDefault();
+              setEmptyMenu({ x: e.clientX, y: e.clientY });
+            }}
+          >
             <For each={columns()}>
               {(column) => (
                 <div
@@ -314,6 +341,11 @@ export function BoardSurface(props: BoardSurfaceProps) {
                   classList={{
                     "border-primary/60": dropColumn() === column.name,
                     "border-border/60": dropColumn() !== column.name,
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setEmptyMenu({ x: e.clientX, y: e.clientY });
                   }}
                 >
                   <div class="flex items-center gap-1.5 px-2 py-1 border-b border-border/50 shrink-0">
@@ -329,6 +361,15 @@ export function BoardSurface(props: BoardSurfaceProps) {
                           card={card}
                           misfiled={isMisfiled(card, board())}
                           dragging={dragging() === card.id}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            // No `onOpenCard` means no row this menu could
+                            // show — right-click does nothing, per the
+                            // stream's own "no menu worth showing" rule,
+                            // rather than opening an empty popover.
+                            if (props.onOpenCard) setCardMenu({ x: e.clientX, y: e.clientY, card });
+                          }}
                           disabled={busy()}
                           onGrab={(e) => startCardDrag(e, card)}
                         />
@@ -340,9 +381,40 @@ export function BoardSurface(props: BoardSurfaceProps) {
             </For>
           </div>
         </Show>
+
+        <Show when={emptyMenu()}>
+          {(m) => (
+            <ContextMenu
+              x={m().x}
+              y={m().y}
+              items={[{ label: "New card", onSelect: () => setComposing(true) }]}
+              onClose={() => setEmptyMenu(null)}
+            />
+          )}
+        </Show>
+        <Show when={cardMenu()}>
+          {(m) => (
+            <ContextMenu
+              x={m().x}
+              y={m().y}
+              items={cardMenuItems(m().card)}
+              onClose={() => setCardMenu(null)}
+            />
+          )}
+        </Show>
       </div>
     </Show>
   );
+
+  /// The one row this menu has to offer today. `onOpenCard` is what
+  /// `openEditorTab` becomes at the call site (`App.tsx`) — the same
+  /// mechanism `PanelApp`'s file tree and `GitSidebar`'s diff rows already use
+  /// to put a file in the editor window from a window that isn't it.
+  function cardMenuItems(card: BoardCard): ContextMenuItem[] {
+    if (!props.onOpenCard) return [];
+    const path = card.path;
+    return [{ label: "Open card in editor", onSelect: () => props.onOpenCard?.(path) }];
+  }
 }
 
 /// One card. A `div` rather than a `button` because it is a drag handle first;
@@ -358,6 +430,7 @@ function CardTile(props: {
   dragging: boolean;
   disabled: boolean;
   onGrab: (e: PointerEvent) => void;
+  onContextMenu: (e: MouseEvent) => void;
 }) {
   return (
     <div
@@ -366,6 +439,7 @@ function CardTile(props: {
       onPointerDown={(e) => {
         if (!props.disabled) props.onGrab(e);
       }}
+      onContextMenu={props.onContextMenu}
       class="rounded border border-border/70 bg-background px-2 py-1.5 cursor-grab select-none hover:border-border transition-colors"
       classList={{ "opacity-50": props.dragging }}
     >

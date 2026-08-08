@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { orderSegments, planOverflow } from "./statusSegments";
+import { describe, expect, it, vi } from "vitest";
+import { orderSegments, planOverflow, statusBarMenuItems } from "./statusSegments";
 
 const seg = (id: string, priority: number, signal?: "failed" | "running") => ({
   id,
@@ -120,5 +120,28 @@ describe("planOverflow", () => {
   it("treats unmeasured segments as fitting", () => {
     const plan = planOverflow([w("a", 0), w("b", 0)], 0, 28);
     expect(plan.collapsed).toEqual([]);
+  });
+});
+
+describe("statusBarMenuItems", () => {
+  it("includes only segments with an onClick", () => {
+    const onClick = vi.fn();
+    const items = statusBarMenuItems([
+      { label: "Branch main", onClick: undefined },
+      { label: "3 panes — back to one", onClick },
+    ]);
+    expect(items.map((i) => i.label)).toEqual(["3 panes — back to one"]);
+  });
+
+  it("runs the segment's own onClick, not a copy of it", () => {
+    const onClick = vi.fn();
+    const items = statusBarMenuItems([{ label: "Zen mode", onClick }]);
+    items[0].onSelect();
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns nothing disabled — a segment either offers an action or is absent", () => {
+    const items = statusBarMenuItems([{ label: "Maximized", onClick: vi.fn() }]);
+    expect(items.every((i) => i.disabledReason === undefined)).toBe(true);
   });
 });

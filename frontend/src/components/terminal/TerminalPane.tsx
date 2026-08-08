@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onMount, onCleanup, getOwner, runWithOwner, untrack } from "solid-js";
+import { createEffect, createSignal, onMount, onCleanup, getOwner, runWithOwner, untrack, Show } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
@@ -7,6 +7,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
+import { ContextMenu } from "@/components/git/ContextMenu";
+import { terminalMenuItems } from "@/components/terminal/terminalMenu";
 import { registerDropZone } from "@/components/layout/dragDrop";
 import { useSettings } from "@/store/settings";
 import { useTheme } from "@/store/theme";
@@ -93,6 +95,10 @@ interface TerminalPaneProps {
   /// Live list of real branch names in the repo. Read at link-resolution
   /// time (per buffer line) so it stays current as branches come and go.
   branchNames?: () => string[];
+  /// Close this terminal's tab. Absent means the pane offers no "close
+  /// terminal" row — every real caller passes it; optional only so a future
+  /// caller (a preview, a test) is not forced to invent one.
+  onClose?: () => void;
 }
 
 // xterm canvas is always rendered opaque: canvas-transparency is unreliable
@@ -193,6 +199,14 @@ export function TerminalPane(props: TerminalPaneProps) {
   // Highlight ring while a file is dragged over the pane.
   const [dragOver, setDragOver] = createSignal(false);
 
+  // ── Context menu (Stream D) ────────────────────────────────────────────
+  // The live `Terminal` instance, for `getSelection()` / `clear()` /
+  // `focus()` from the menu below. A signal rather than a bare local: it is
+  // created inside the async `onMount` body, past the point a plain variable
+  // read during the synchronous render would still be `undefined`.
+  const [term, setTerm] = createSignal<Terminal | null>(null);
+  const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
+
   /// Type the dropped paths onto the shell input line. Each path is
   /// shell-quoted (so spaces / parens don't break the command) and a
   /// trailing space lets the user keep typing. We write straight to the
@@ -279,6 +293,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       scrollSensitivity: t.scrollSensitivity,
       scrollOnUserInput: t.scrollOnUserInput,
     });
+    setTerm(term);
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
@@ -901,6 +916,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       // May already be null if onContextLoss disposed it — never double-dispose.
       try { webglAddon?.dispose(); } catch { /* ignore */ }
       term.dispose();
+      setTerm(null);
     });
   });
 
@@ -926,12 +942,52 @@ export function TerminalPane(props: TerminalPaneProps) {
     },
   });
 
+  /// Copy / paste / clear / close. xterm has no context menu of its own — its
+  /// `SelectionService` only special-cases a right-click button-down to leave
+  /// an existing selection alone (`handleMouseDown`, checked against
+  /// `@xterm/xterm` ^6.0.0 docs before this was written) — so the browser's
+  /// `contextmenu` event reaches this handler untouched and a selection made
+  /// just before right-clicking survives to be copied. Row *presence* and
+  /// `disabledReason` are `terminalMenuItems` in `terminalMenu.ts`; this is
+  /// only the wiring from a live `Terminal` to that pure builder.
+  const menuItems = () =>
+    terminalMenuItems({
+      selection: term()?.getSelection() ?? "",
+      onCopy: (text) => void navigator.clipboard.writeText(text),
+      onPaste: () => {
+        void navigator.clipboard.readText().then((text) => {
+          if (text) void invoke("write_pty", { sessionId: props.ptyId, data: text });
+        });
+      },
+      onClear: () => term()?.clear(),
+      onClose: props.onClose,
+    });
+
   return (
     <div
       ref={container}
       class={`${props.class ?? "w-full h-full"} ${dragOver() ? "ring-2 ring-inset ring-primary/70" : ""}`}
       style={{ "background-color": paneBg() }}
-    />
+      onContextMenu={(e) => {
+        e.preventDefault();
+        // The pane island underneath (`MainSurface.renderGroup`) has its own
+        // menu for a pane's bare chrome — stopping here is what keeps a
+        // right-click on the terminal from opening both.
+        e.stopPropagation();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      <Show when={menu()}>
+        {(m) => (
+          <ContextMenu
+            x={m().x}
+            y={m().y}
+            items={menuItems()}
+            onClose={() => setMenu(null)}
+          />
+        )}
+      </Show>
+    </div>
   );
 }
 
