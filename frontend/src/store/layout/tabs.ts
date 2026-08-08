@@ -25,6 +25,16 @@
 import type { TerminalSession } from "@/types/workspace";
 import { STORAGE_KEYS } from "./persistence";
 import type { DiffMode } from "./prefs";
+import {
+  groupList,
+  newPaneId,
+  normalizeRatios,
+  parsePaneLayout,
+  serializePaneLayout,
+  singleGroupLayout,
+  type PaneNode,
+  type SplitOrientation,
+} from "./panes";
 
 // ── Tab shapes ────────────────────────────────────────────────────────────
 
@@ -88,6 +98,97 @@ export interface MissionTab {
 export interface OpenFileTab {
   id: string;
   path: string;
+}
+
+/// A split, as a tab: opening it renders a nested `PaneNode` whose leaves
+/// claim tab ids the same way the worktree's own top-level split does — this
+/// **is** `panes.ts`'s tree, one level deep, not a second claim model. See
+/// `store/layout/tabGroups.ts`'s header for the axis this sits on: a
+/// `panegroup` tab is *which rectangle a tab is in*, exactly like any other
+/// pane group, just addressed through a tab id instead of through the
+/// worktree's root.
+///
+/// One level of nesting only — a group inside `layout` may not itself claim
+/// another `panegroup` tab. Nothing in this type enforces that; the store
+/// does, at the point a tab is added to a split (`addTabToPaneGroup`).
+export interface PaneGroupTab {
+  id: string;
+  /// Assigned once at creation from a per-worktree running count, so
+  /// `label()` — a pure function of the tab alone, like every other kind's —
+  /// can call itself "Split 3" without reaching for the worktree's tab list.
+  /// Not renumbered when an earlier split closes: two tabs sharing a number
+  /// is the same trade `Terminal N` already makes.
+  seq: number;
+  layout: PaneNode;
+}
+
+/// The geometry of a closed `panegroup` tab, with every tab claim stripped.
+///
+/// Closing the tab does not close what was inside it (`closePaneGroup`
+/// already guarantees that at the pane-tree level), so by the time somebody
+/// reopens it every id it once claimed either belongs to another pane now or
+/// is gone — there is nothing left to resolve a claim against. What survives
+/// is *the shape*: how many panes, which way they split.
+export type PaneShape =
+  | { kind: "group" }
+  | { kind: "split"; orientation: SplitOrientation; ratios: number[]; children: PaneShape[] };
+
+function paneShapeOf(node: PaneNode): PaneShape {
+  if (node.kind === "group") return { kind: "group" };
+  return {
+    kind: "split",
+    orientation: node.orientation,
+    ratios: [...node.ratios],
+    children: node.children.map(paneShapeOf),
+  };
+}
+
+/// The inverse: a fresh, empty layout in the reopened shape. Every group gets
+/// a brand-new id — there is nothing left to address the old ones.
+export function paneNodeFromShape(shape: PaneShape): PaneNode {
+  if (shape.kind === "group") return singleGroupLayout();
+  return {
+    kind: "split",
+    id: newPaneId("split"),
+    orientation: shape.orientation,
+    ratios: normalizeRatios(shape.ratios, shape.children.length),
+    children: shape.children.map(paneNodeFromShape),
+  };
+}
+
+function parsePaneShape(raw: unknown): PaneShape | null {
+  if (!isRecord(raw)) return null;
+  if (raw.kind === "group") return { kind: "group" };
+  if (raw.kind === "split") {
+    if (raw.orientation !== "row" && raw.orientation !== "column") return null;
+    if (!Array.isArray(raw.children)) return null;
+    const children = raw.children.map(parsePaneShape);
+    if (children.some((c) => c === null) || children.length < 2) return null;
+    const kids = children as PaneShape[];
+    const ratios = Array.isArray(raw.ratios)
+      ? raw.ratios.map((r) => (typeof r === "number" ? r : Number.NaN))
+      : [];
+    return {
+      kind: "split",
+      orientation: raw.orientation,
+      ratios: normalizeRatios(ratios, kids.length),
+      children: kids,
+    };
+  }
+  return null;
+}
+
+function shapeEqual(a: PaneShape, b: PaneShape): boolean {
+  if (a.kind === "group" || b.kind === "group") return a.kind === b.kind;
+  if (a.orientation !== b.orientation) return false;
+  if (a.children.length !== b.children.length) return false;
+  return a.children.every((c, i) => shapeEqual(c, b.children[i]));
+}
+
+/// Every tab id claimed anywhere in a `panegroup`'s own tree — its whole
+/// membership, order-independent. What `equals` below dedupes on.
+function ownedTabIds(node: PaneNode): string[] {
+  return groupList(node).flatMap((g) => g.tabIds);
 }
 
 /// An embedded browser tab. The page itself lives in a real Tauri child
@@ -205,7 +306,8 @@ export type ActiveItem =
   | { type: "combined"; id: string }
   | { type: "mission"; id: string }
   | { type: "browser"; id: string }
-  | { type: "agent"; id: string };
+  | { type: "agent"; id: string }
+  | { type: "panegroup"; id: string };
 
 /// Snapshot of a closed tab kept so `reopenLastClosedTab` can recreate
 /// it. We capture *enough state* to reconstruct, not the original id —
@@ -244,7 +346,9 @@ export type ClosedTab =
   /// The thread's transcript is not in here. What a reopen brings back is a tab
   /// pointed at the same roster entry; the conversation itself lives under
   /// `STORAGE_KEYS.agentThreads`, keyed by the tab id that is gone by now.
-  | { type: "agent"; agentId: string; title?: string };
+  | { type: "agent"; agentId: string; title?: string }
+  /// The tabs `layout` claimed are not in here — see `PaneShape`'s header.
+  | { type: "panegroup"; shape: PaneShape };
 
 // ── The registry ──────────────────────────────────────────────────────────
 
@@ -261,7 +365,8 @@ export type TabKind =
   | "combined"
   | "mission"
   | "browser"
-  | "agent";
+  | "agent"
+  | "panegroup";
 
 /// Maps a kind to the tab type it holds. Keeps `TAB_SPECS` honest without eleven
 /// separate generic parameters at every call site.
@@ -279,6 +384,7 @@ export interface TabTypes {
   mission: MissionTab;
   browser: BrowserTab;
   agent: AgentTab;
+  panegroup: PaneGroupTab;
 }
 
 /// The `AppStoreState` fields that hold per-worktree tab collections. Declared
@@ -297,7 +403,8 @@ export type TabCollectionKey =
   | "combinedTabsByWorktree"
   | "missionTabsByWorktree"
   | "browserTabsByWorktree"
-  | "agentTabsByWorktree";
+  | "agentTabsByWorktree"
+  | "panegroupTabsByWorktree";
 
 /// Where a kind's tabs live on disk.
 ///
@@ -489,6 +596,19 @@ function deserializeAgent(raw: unknown): AgentTab | null {
     // back to "Agent".
     title: typeof raw.title === "string" ? raw.title : undefined,
   };
+}
+
+/// A corrupt nested payload — a split with one child, a group with no id, a
+/// dangling reference — costs this one tab, not the boot: `parsePaneLayout`
+/// already rejects rather than half-honours, so deferring to it is the whole
+/// implementation.
+function deserializePaneGroupTab(raw: unknown): PaneGroupTab | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.id !== "string" || raw.id.length === 0) return null;
+  if (typeof raw.seq !== "number" || !Number.isFinite(raw.seq)) return null;
+  const layout = parsePaneLayout(raw.layout);
+  if (!layout) return null;
+  return { id: raw.id, seq: raw.seq, layout };
 }
 
 export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
@@ -694,6 +814,28 @@ export const TAB_SPECS: { [K in TabKind]: TabKindSpec<K> } = {
     label: (t) => t.title?.trim() || "Agent",
     closedSnapshot: (t) => ({ type: "agent", agentId: t.agentId, title: t.title }),
   },
+
+  panegroup: {
+    kind: "panegroup",
+    stateKey: "panegroupTabsByWorktree",
+    storage: { key: STORAGE_KEYS.panegroupTabs },
+    serialize: (t) => ({ id: t.id, seq: t.seq, layout: serializePaneLayout(t.layout) }),
+    deserialize: (raw) => deserializePaneGroupTab(raw),
+    restore: async (raw) => deserializePaneGroupTab(raw),
+    // Two panegroups are "the same tab" when they claim the same set of
+    // member tabs — membership is the identity, not the split's shape or
+    // order, the same way a compare tab's identity is its refs and not its
+    // tree-panel width.
+    equals: (a, b) => {
+      const x = new Set(ownedTabIds(a.layout));
+      const y = new Set(ownedTabIds(b.layout));
+      if (x.size !== y.size) return false;
+      for (const id of x) if (!y.has(id)) return false;
+      return true;
+    },
+    label: (t) => `Split ${t.seq}`,
+    closedSnapshot: (t) => ({ type: "panegroup", shape: paneShapeOf(t.layout) }),
+  },
 };
 
 /// What an auto-derived tab group of one kind is called (Wave 4's `kind` mode).
@@ -715,6 +857,7 @@ export const TAB_KIND_GROUP_LABELS: Record<TabKind, string> = {
   mission: "Mission Control",
   browser: "Browser",
   agent: "Agents",
+  panegroup: "Splits",
 };
 
 /// Render/iteration order. Also the order the tab strip lays kinds out in, so
@@ -733,6 +876,7 @@ export const TAB_KINDS: TabKind[] = [
   "mission",
   "browser",
   "agent",
+  "panegroup",
 ];
 
 /// Deserialize one kind's `Record<worktreeId, T[]>`, seeding an empty list for
@@ -803,6 +947,11 @@ export function closedTabsEqual(a: ClosedTab, b: ClosedTab): boolean {
     // one entry in the LIFO, because reopening either produces the same tab.
     case "agent":
       return b.type === "agent" && a.agentId === b.agentId;
+    // Same shape is the same closed split — ratios excluded, like a compare
+    // tab's tree width: a near-identical re-close should not bury an older
+    // entry over pixels nobody will notice came back different.
+    case "panegroup":
+      return b.type === "panegroup" && shapeEqual(a.shape, b.shape);
     // Singletons: same type is same tab.
     case "history":
     case "timeline":
@@ -881,6 +1030,10 @@ export function deserializeClosedTab(raw: unknown): ClosedTab | null {
       return { type: "combined" };
     case "mission":
       return { type: "mission" };
+    case "panegroup": {
+      const shape = parsePaneShape(raw.shape);
+      return shape === null ? null : { type: "panegroup", shape };
+    }
     default:
       return null;
   }

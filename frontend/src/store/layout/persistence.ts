@@ -107,6 +107,23 @@ export const STORAGE_KEYS = {
   /// reset clearing it costs the scrollback, which is the same trade every other
   /// tab kind makes.
   agentThreads: "voidlink-agent-threads",
+  /// `Record<worktreeId, PaneGroupTab[]>` — split panes, as tabs. Its own key
+  /// like every other kind's, not folded into `paneLayout`: that blob is the
+  /// worktree's *root* tree, and a `panegroup` tab's nested one is a tab's
+  /// payload, read and written through the same one-effect-per-kind loop
+  /// every other kind's collection is.
+  panegroupTabs: "voidlink-panegroup-tabs",
+  /// `Record<worktreeId, Record<tabId, string>>` — a tab's custom label,
+  /// wherever it lives in whatever pane group claims it. Kept off the tab's
+  /// own kind-specific record so every kind gets renaming for free rather
+  /// than each carrying its own optional `label` field with its own merge
+  /// rules on restore.
+  tabLabels: "voidlink-tab-labels",
+  /// `Record<worktreeId, Record<tabId, TabGroupColor>>` — a tab's custom
+  /// label colour, the same shape and the same reasoning as `tabLabels`
+  /// above, and reusing `tabGroups.ts`'s five chart-token colours rather than
+  /// a second palette.
+  tabColors: "voidlink-tab-colors",
   /// `Record<workspaceId, HillScope[]>` — hill-chart scopes, keyed by
   /// *workspace* rather than by worktree like almost everything else here.
   ///

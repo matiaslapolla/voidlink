@@ -40,8 +40,10 @@ import {
   findGroup,
   groupList,
   groupOwning,
+  makeGroup,
   mapPaneTabIds,
   moveTabToGroup,
+  newPaneId,
   parsePaneLayout,
   parsePaneLayouts,
   pruneClosedTabs,
@@ -71,6 +73,7 @@ import {
   reorderTabGroups,
   serializeTabGroupState,
   setAutoGroupMode,
+  TAB_GROUP_COLORS,
   toggleTabGroupCollapsed,
   type AutoGroupMode,
   type TabGroup,
@@ -113,6 +116,7 @@ import {
   deserializeClosedTab,
   deserializeTabRecord,
   isEditorKind,
+  paneNodeFromShape,
   parseEditorTabs,
   serializeEditorTabs,
 } from "./tabs";
@@ -131,6 +135,8 @@ import type {
   DiffTab,
   HistoryTab,
   OpenFileTab,
+  PaneGroupTab,
+  PaneShape,
   PreviewTab,
   StackTab,
   TabKind,
@@ -161,12 +167,15 @@ export type {
   DiffTab,
   HistoryTab,
   OpenFileTab,
+  PaneGroupTab,
+  PaneShape,
   PersistedEditorTabs,
   PreviewTab,
   StackTab,
   TabKind,
   TabKindSpec,
 } from "./tabs";
+export { paneNodeFromShape } from "./tabs";
 export {
   COMPARE_TREE_WIDTH_MAX,
   COMPARE_TREE_WIDTH_MIN,
@@ -339,6 +348,33 @@ function loadClosedTabs(worktreeIds: string[]): Record<string, ClosedTab[]> {
   return out;
 }
 
+/// The shape `tabLabelByWorktree` and `tabColorByWorktree` share:
+/// `Record<worktreeId, Record<tabId, T>>`. `validate` decides what a legal
+/// value looks like — a rename accepts any non-blank string, a colour only
+/// one of the five chart tokens — and anything else is dropped for that one
+/// tab rather than the whole worktree's overrides.
+function loadTabOverrides<T>(
+  key: string,
+  worktreeIds: string[],
+  validate: (v: unknown) => T | null,
+): Record<string, Record<string, T>> {
+  const empty = Object.fromEntries(worktreeIds.map((id) => [id, {} as Record<string, T>]));
+  const parsed = readJson<Record<string, unknown> | null>(key, null);
+  if (!parsed || typeof parsed !== "object") return empty;
+  const out: Record<string, Record<string, T>> = { ...empty };
+  for (const wtId of worktreeIds) {
+    const record = parsed[wtId];
+    if (!record || typeof record !== "object") continue;
+    const bucket: Record<string, T> = {};
+    for (const [tabId, raw] of Object.entries(record as Record<string, unknown>)) {
+      const value = validate(raw);
+      if (value !== null) bucket[tabId] = value;
+    }
+    out[wtId] = bucket;
+  }
+  return out;
+}
+
 function loadPinnedTabs(worktreeIds: string[]): Record<string, string[]> {
   const empty = Object.fromEntries(worktreeIds.map((id) => [id, [] as string[]]));
   const parsed = readJson<Record<string, unknown> | null>(STORAGE_KEYS.pinnedTabs, null);
@@ -400,8 +436,20 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       BrowserTab[]
     >,
     agentTabsByWorktree: loadKindRecord("agent", worktreeIds) as Record<string, AgentTab[]>,
+    panegroupTabsByWorktree: loadKindRecord("panegroup", worktreeIds) as Record<
+      string,
+      PaneGroupTab[]
+    >,
     closedTabsByWorktree: loadClosedTabs(worktreeIds),
     pinnedTabsByWorktree: loadPinnedTabs(worktreeIds),
+    tabLabelByWorktree: loadTabOverrides(STORAGE_KEYS.tabLabels, worktreeIds, (v) =>
+      typeof v === "string" && v.trim().length > 0 ? v : null,
+    ),
+    tabColorByWorktree: loadTabOverrides(STORAGE_KEYS.tabColors, worktreeIds, (v) =>
+      typeof v === "string" && (TAB_GROUP_COLORS as readonly string[]).includes(v)
+        ? (v as TabGroupColor)
+        : null,
+    ),
     activeItemByWorktree: loadActiveItems(worktreeIds),
     editorActiveItemByWorktree: editorTabs.active,
     paneLayoutByWorktree: parsePaneLayouts(
@@ -465,6 +513,16 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   createEffect(() => {
     if (!persist) return;
     writeJson(STORAGE_KEYS.pinnedTabs, state.pinnedTabsByWorktree);
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    writeJson(STORAGE_KEYS.tabLabels, state.tabLabelByWorktree);
+  });
+
+  createEffect(() => {
+    if (!persist) return;
+    writeJson(STORAGE_KEYS.tabColors, state.tabColorByWorktree);
   });
 
   createEffect(() => {
@@ -579,6 +637,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   const activeMissionTabs = activeOf<MissionTab>("mission");
   const activeBrowserTabs = activeOf<BrowserTab>("browser");
   const activeAgentTabs = activeOf<AgentTab>("agent");
+  const activePaneGroupTabs = activeOf<PaneGroupTab>("panegroup");
 
   /// Every workbench tab id for the active worktree, in strip order. The pane
   /// tree stores claims by id, so this is what turns those claims into content
@@ -590,6 +649,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
   /// tabs claimable — a kind left out here has a tab strip entry and a pane
   /// body and still never appears.
   const workbenchTabIds = createMemo(() => worktreeTabIds(state.activeWorktreeId));
+
+  /// `workbenchTabIds`, minus whatever an open `panegroup` tab has already
+  /// claimed for its own nested tree — the root pane tree's actual universe.
+  /// See the "Panegroup scoping" section below for why the exclusion exists.
+  const topLevelWorkbenchTabIds = createMemo(() => topLevelTabIds(state.activeWorktreeId));
 
   /// The active worktree's split tree, defaulted rather than `undefined` so no
   /// render path has to branch on "no geometry yet".
@@ -652,7 +716,13 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     const wtId = state.activeWorktreeId;
     const current = state.paneLayoutByWorktree[wtId];
     if (!current) return;
-    const ids = workbenchTabIds();
+    // The root tree's own universe — every open tab *except* the ones some
+    // `panegroup` tab has already claimed. Without the exclusion, a tab moved
+    // into a split would still read as "unclaimed" here and fall straight
+    // back into the first root group in the same tick it left — the split
+    // would show the tab and the root strip would too.
+    void state.panegroupTabsByWorktree[wtId];
+    const ids = topLevelTabIds(wtId);
 
     const held = groupsThatHeldTabs.get(wtId) ?? new Set<string>();
     const resolved = resolveGroupTabs(current, ids);
@@ -673,6 +743,38 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     if (next !== current) writePaneLayout(wtId, next);
   });
 
+  /// Which pane groups, inside which `panegroup` tab, held tabs the last time
+  /// the effect below ran. The nested mirror of `groupsThatHeldTabs` above,
+  /// keyed by `${wtId} ${paneGroupTabId}` — one worktree can have several
+  /// open splits, each with its own collapse history.
+  const nestedGroupsThatHeldTabs = new Map<string, Set<string>>();
+
+  /// The nested twin of the effect above: forget tabs a `panegroup` tab's own
+  /// tree is holding that have since closed everywhere, and collapse any
+  /// inner pane that lost its last one. Runs over every `panegroup` tab open
+  /// in the *active* worktree, same scope as the root effect.
+  createEffect(() => {
+    const wtId = state.activeWorktreeId;
+    const panegroups = state.panegroupTabsByWorktree[wtId] ?? [];
+    for (const pg of panegroups) {
+      const key = `${wtId} ${pg.id}`;
+      const ids = paneGroupTabIds(wtId, pg.id);
+      const held = nestedGroupsThatHeldTabs.get(key) ?? new Set<string>();
+      const resolved = resolveGroupTabs(pg.layout, ids);
+      const collapsible = new Set<string>();
+      for (const [groupId, tabs] of resolved) {
+        if (tabs.length === 0 && held.has(groupId)) collapsible.add(groupId);
+      }
+      const next = pruneClosedTabs(pg.layout, ids, collapsible);
+      const after = resolveGroupTabs(next, ids);
+      nestedGroupsThatHeldTabs.set(
+        key,
+        new Set([...after].filter(([, tabs]) => tabs.length > 0).map(([groupId]) => groupId)),
+      );
+      if (next !== pg.layout) writeLayoutRef(wtId, pg.id, next);
+    }
+  });
+
   // ── Tab groups ────────────────────────────────────────────────────────────
   // A second axis over the pane tree: which *labelled set* a tab is in, inside
   // whatever strip its pane group resolved to. Everything structural lives in
@@ -689,6 +791,75 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       if (list) for (const tab of list) out.push(tab.id);
     }
     return out;
+  }
+
+  // ── Panegroup scoping ────────────────────────────────────────────────────
+  // A `panegroup` tab's payload is its own `PaneNode` — the same recursive
+  // type the worktree's root tree already is, one level deep (see
+  // `PaneGroupTab`'s header in `tabs.ts`). Everything below lets the pane-tree
+  // actions operate on either tree through one `scope` parameter — `null` for
+  // the root, a `panegroup` tab's id for its nested one — rather than this
+  // file growing a second copy of `splitPaneGroup`/`moveTabToPaneGroup`/etc.
+  // for the nested case. This is plumbing, not a new claim model: `panes.ts`
+  // still answers "which rectangle is a tab in" for exactly one tree at a
+  // time, and nothing here teaches it about `panegroup` tabs at all.
+
+  /// Ids claimed inside some worktree's open `panegroup` tabs, restricted to
+  /// tabs that are still open. A tab moved into a split leaves the root pane
+  /// tree's universe entirely — nothing there may claim it, and nothing there
+  /// may catch it as "unclaimed" either — which is what stops a split's
+  /// members from also rendering in the top-level strip.
+  function nestedClaimedTabIds(wtId: string): Set<string> {
+    const live = new Set(worktreeTabIds(wtId));
+    const out = new Set<string>();
+    for (const pg of state.panegroupTabsByWorktree[wtId] ?? []) {
+      for (const g of groupList(pg.layout)) {
+        for (const id of g.tabIds) if (live.has(id)) out.add(id);
+      }
+    }
+    return out;
+  }
+
+  /// The root pane tree's own universe: every open workbench tab id *except*
+  /// the ones a `panegroup` tab has already claimed for its own tree.
+  function topLevelTabIds(wtId: string): string[] {
+    const nested = nestedClaimedTabIds(wtId);
+    return worktreeTabIds(wtId).filter((id) => !nested.has(id));
+  }
+
+  /// One `panegroup` tab's own universe: exactly the ids it has already
+  /// claimed somewhere in its own tree, restricted to what is still open. A
+  /// split's "unclaimed" set is always empty by construction — nothing
+  /// outside it may fall in by default, only `addTabToSplitPane` adds to it —
+  /// so, unlike the root tree, every member here is already an explicit claim.
+  function paneGroupTabIds(wtId: string, paneGroupTabId: string): string[] {
+    const pg = (state.panegroupTabsByWorktree[wtId] ?? []).find((t) => t.id === paneGroupTabId);
+    if (!pg) return [];
+    const live = new Set(worktreeTabIds(wtId));
+    return groupList(pg.layout).flatMap((g) => g.tabIds.filter((id) => live.has(id)));
+  }
+
+  /// Which tree a pane-group action means, and its universe of tab ids.
+  function layoutRef(wtId: string, scope: string | null): PaneNode | null {
+    if (scope === null) return state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
+    return (state.panegroupTabsByWorktree[wtId] ?? []).find((t) => t.id === scope)?.layout ?? null;
+  }
+
+  function writeLayoutRef(wtId: string, scope: string | null, node: PaneNode) {
+    if (scope === null) {
+      writePaneLayout(wtId, node);
+      return;
+    }
+    setState(
+      produce((s) => {
+        const tab = (s.panegroupTabsByWorktree[wtId] ?? []).find((t) => t.id === scope);
+        if (tab) tab.layout = node;
+      }),
+    );
+  }
+
+  function scopeTabIds(wtId: string, scope: string | null): string[] {
+    return scope === null ? topLevelTabIds(wtId) : paneGroupTabIds(wtId, scope);
   }
 
   function tabKindMap(wtId: string): Map<string, TabKind> {
@@ -969,6 +1140,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       case "mission": return { type: "mission", id };
       case "browser": return { type: "browser", id };
       case "agent": return { type: "agent", id };
+      case "panegroup": return { type: "panegroup", id };
       default: return null;
     }
   }
@@ -1427,13 +1599,20 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     /// `MIN_PANE_PX` clamp, not by a count here. The caller decides what to put
     /// in the new group — a drag drops the dragged tab there, the keybinding
     /// moves the active one.
+    /// `scope`, on every action below, is `null` for the worktree's root tree
+    /// or a `panegroup` tab's id for its own nested one — see the "Panegroup
+    /// scoping" section above. Nested actions never touch
+    /// `focusedGroupByWorktree`: that pointer names a root group, and a
+    /// split's own front pane is `PaneGroup.activeTabId`, already carried by
+    /// the tree these actions write.
     splitPaneGroup(
       wtId: string,
       orientation: SplitOrientation,
       placement: "before" | "after" = "after",
       groupId?: string,
+      scope: string | null = null,
     ): string | null {
-      return this.splitPaneGroupWithTab(wtId, orientation, placement, groupId, null);
+      return this.splitPaneGroupWithTab(wtId, orientation, placement, groupId, null, scope);
     },
 
     /// Split, and put `tabId` in the new group — as **one** write.
@@ -1452,61 +1631,84 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       placement: "before" | "after" = "after",
       groupId?: string,
       tabId?: string | null,
+      scope: string | null = null,
     ): string | null {
-      const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
-      const target = groupId ?? focusedGroupId() ?? groupList(current)[0]?.id;
+      const current = layoutRef(wtId, scope) ?? singleGroupLayout();
+      const target = groupId ?? (scope === null ? focusedGroupId() : null) ?? groupList(current)[0]?.id;
       if (!target) return null;
-      const ids = worktreeTabIds(wtId);
+      const ids = scopeTabIds(wtId, scope);
       // The registry makes the claims explicit before the tree is restructured
       // — see `splitGroup`, where a "before" placement would otherwise hand
       // every unclaimed tab to the group it just created.
       const { layout, newGroupId } = splitGroup(current, target, orientation, placement, ids);
       if (!newGroupId) return null;
       const filled = tabId ? moveTabToGroup(layout, tabId, newGroupId, null, ids) : layout;
-      setState(produce((s) => {
-        s.paneLayoutByWorktree[wtId] = filled;
-        s.focusedGroupByWorktree[wtId] = newGroupId;
-      }));
+      if (scope === null) {
+        setState(produce((s) => {
+          s.paneLayoutByWorktree[wtId] = filled;
+          s.focusedGroupByWorktree[wtId] = newGroupId;
+        }));
+      } else {
+        writeLayoutRef(wtId, scope, filled);
+      }
       return newGroupId;
     },
 
-    /// Collapse a group. Its tabs are not closed — they fall back to the first
-    /// group, because a pane going away must never take a terminal with it.
-    closePaneGroup(wtId: string, groupId: string) {
-      const current = state.paneLayoutByWorktree[wtId];
+    /// Collapse a group. Its tabs are not closed — they fall back to the
+    /// tree's own first group, because a pane going away must never take a
+    /// terminal with it. For a nested tree that is still *inside* the same
+    /// `panegroup` tab — closing a `panegroup` tab itself is what sends its
+    /// tabs back out to the worktree's root strip, and that happens simply by
+    /// the tab no longer existing, not through this action.
+    closePaneGroup(wtId: string, groupId: string, scope: string | null = null) {
+      const current = layoutRef(wtId, scope);
       if (!current) return;
       const next = removeGroup(current, groupId);
       if (next === current) return;
-      setState(produce((s) => {
-        s.paneLayoutByWorktree[wtId] = next;
-        if (s.focusedGroupByWorktree[wtId] === groupId) {
-          s.focusedGroupByWorktree[wtId] = groupList(next)[0]?.id ?? null;
-        }
-      }));
+      if (scope === null) {
+        setState(produce((s) => {
+          s.paneLayoutByWorktree[wtId] = next;
+          if (s.focusedGroupByWorktree[wtId] === groupId) {
+            s.focusedGroupByWorktree[wtId] = groupList(next)[0]?.id ?? null;
+          }
+        }));
+      } else {
+        writeLayoutRef(wtId, scope, next);
+      }
     },
 
     /// Move a tab into a group, landing before `beforeTabId` or at the end.
     /// Focus follows the tab: a drop is a statement about where you want to be
-    /// looking.
+    /// looking. Only ever moves *within* one scope — see `addTabToSplitPane`
+    /// for crossing from the root tree into a split.
     moveTabToPaneGroup(
       wtId: string,
       tabId: string,
       groupId: string,
       beforeTabId: string | null = null,
+      scope: string | null = null,
     ) {
-      const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
+      const current = layoutRef(wtId, scope) ?? singleGroupLayout();
       // The registry is what lets a drop into the *first* group land where the
       // user pointed rather than at the end — see `moveTabToGroup`.
-      const next = moveTabToGroup(current, tabId, groupId, beforeTabId, worktreeTabIds(wtId));
+      const next = moveTabToGroup(current, tabId, groupId, beforeTabId, scopeTabIds(wtId, scope));
       if (next === current) return;
-      setState(produce((s) => {
-        s.paneLayoutByWorktree[wtId] = next;
-        s.focusedGroupByWorktree[wtId] = groupId;
-      }));
+      if (scope === null) {
+        setState(produce((s) => {
+          s.paneLayoutByWorktree[wtId] = next;
+          s.focusedGroupByWorktree[wtId] = groupId;
+        }));
+      } else {
+        writeLayoutRef(wtId, scope, next);
+      }
     },
 
-    /// Which group has keyboard focus. Split-aware navigation and the group
-    /// header's `--primary` rule both read it.
+    /// Which group has keyboard focus, in the worktree's root tree. Split-aware
+    /// navigation and the group header's `--primary` rule both read it. Nested
+    /// splits track their own focused pane locally in the component that
+    /// renders them — see `MainSurface` — rather than through the store: it is
+    /// UI state scoped to one open `panegroup` tab, not part of what a reload
+    /// has to bring back.
     focusPaneGroup(wtId: string, groupId: string) {
       setState("focusedGroupByWorktree", wtId, groupId);
     },
@@ -1514,20 +1716,33 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     /// Focus a tab *within* a group, without moving it. The worktree-wide
     /// active item follows only when the group is the focused one — otherwise
     /// clicking a tab in a background pane would steal the front pane's tab.
-    setPaneGroupActiveTab(wtId: string, groupId: string, tabId: string | null) {
-      const current = state.paneLayoutByWorktree[wtId] ?? singleGroupLayout();
-      writePaneLayout(wtId, setGroupActiveTab(current, groupId, tabId));
+    /// The caller decides that for a nested group; this only ever writes the
+    /// tree.
+    setPaneGroupActiveTab(
+      wtId: string,
+      groupId: string,
+      tabId: string | null,
+      scope: string | null = null,
+    ) {
+      const current = layoutRef(wtId, scope) ?? singleGroupLayout();
+      writeLayoutRef(wtId, scope, setGroupActiveTab(current, groupId, tabId));
     },
 
     /// Drag on a splitter between two groups.
-    setPaneSplitRatios(wtId: string, splitId: string, ratios: number[]) {
-      const current = state.paneLayoutByWorktree[wtId];
+    setPaneSplitRatios(
+      wtId: string,
+      splitId: string,
+      ratios: number[],
+      scope: string | null = null,
+    ) {
+      const current = layoutRef(wtId, scope);
       if (!current) return;
-      writePaneLayout(wtId, setSplitRatios(current, splitId, ratios));
+      writeLayoutRef(wtId, scope, setSplitRatios(current, splitId, ratios));
     },
 
     /// Back to one group holding everything. The escape hatch for a split the
-    /// user cannot undo by closing panes one at a time.
+    /// user cannot undo by closing panes one at a time. Root tree only — a
+    /// `panegroup` tab's nested tree is undone by closing the tab.
     resetPaneLayout(wtId: string) {
       setState(produce((s) => {
         s.paneLayoutByWorktree[wtId] = singleGroupLayout();
@@ -1536,10 +1751,145 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     },
 
     /// Which group is showing `tabId` right now, unclaimed tabs included.
-    paneGroupOwning(wtId: string, tabId: string): string | null {
-      const current = state.paneLayoutByWorktree[wtId];
+    paneGroupOwning(wtId: string, tabId: string, scope: string | null = null): string | null {
+      const current = layoutRef(wtId, scope);
       if (!current) return null;
-      return groupOwning(current, tabId, workbenchTabIds());
+      return groupOwning(current, tabId, scopeTabIds(wtId, scope));
+    },
+
+    /// Whether `tabId` is a `panegroup` tab. Read by the tab context menu to
+    /// disable "Add to split pane" for one — nesting is one level deep only.
+    isPaneGroupTab(wtId: string, tabId: string): boolean {
+      return (state.panegroupTabsByWorktree[wtId] ?? []).some((t) => t.id === tabId);
+    },
+
+    /// Every `panegroup` tab open in `wtId`, for the "Add to split pane"
+    /// submenu's "existing split" rows.
+    paneGroupTabsOf(wtId: string): PaneGroupTab[] {
+      return state.panegroupTabsByWorktree[wtId] ?? [];
+    },
+
+    /// "Add to split pane": move `tabId` into `targetId`'s nested tree — a new
+    /// `panegroup` tab if `targetId` is omitted or names one that no longer
+    /// exists — and focus it there. Refuses a `panegroup` tab itself: nesting
+    /// is one level deep (see `PaneGroupTab`'s header in `tabs.ts`), and the
+    /// context menu disables the row for the same reason rather than relying
+    /// on this silently doing nothing.
+    ///
+    /// Returns the target `panegroup` tab's id, or `null` when the move could
+    /// not happen. Deliberately does **not** touch the root tree's claim on
+    /// `tabId` itself: writing the nested claim is enough — the reactive
+    /// prune effect over the root tree (`topLevelTabIds`) sees the tab has
+    /// left its universe on the very next tick and drops the stale claim,
+    /// collapsing the pane it leaves behind exactly as a closed tab would.
+    addTabToSplitPane(wtId: string, tabId: string, targetId?: string): string | null {
+      if (this.isPaneGroupTab(wtId, tabId)) return null;
+      const existing = targetId
+        ? (state.panegroupTabsByWorktree[wtId] ?? []).find((t) => t.id === targetId)
+        : undefined;
+      if (existing) {
+        const ids = paneGroupTabIds(wtId, existing.id);
+        const target = groupList(existing.layout)[0]?.id;
+        if (!target) return null;
+        const next = moveTabToGroup(existing.layout, tabId, target, null, ids);
+        setState(
+          produce((s) => {
+            const tab = (s.panegroupTabsByWorktree[wtId] ?? []).find((t) => t.id === existing.id);
+            if (tab) tab.layout = next;
+            s.activeItemByWorktree[wtId] = { type: "panegroup", id: existing.id };
+          }),
+        );
+        return existing.id;
+      }
+      // A fresh split: one pane holding the tab, one empty beside it — so
+      // opening it always shows a real split, not a single strip pretending
+      // to be one.
+      const first = makeGroup();
+      const base: PaneNode = { kind: "group", id: first.id, group: first };
+      const { layout, newGroupId } = splitGroup(base, first.id, "row", "after");
+      if (!newGroupId) return null;
+      const filled = moveTabToGroup(layout, tabId, first.id, null, [tabId]);
+      const seq =
+        1 + Math.max(0, ...(state.panegroupTabsByWorktree[wtId] ?? []).map((t) => t.seq));
+      const created: PaneGroupTab = { id: newPaneId("panegroup"), seq, layout: filled };
+      setState(
+        produce((s) => {
+          s.panegroupTabsByWorktree[wtId] = [...(s.panegroupTabsByWorktree[wtId] ?? []), created];
+          s.activeItemByWorktree[wtId] = { type: "panegroup", id: created.id };
+        }),
+      );
+      return created.id;
+    },
+
+    closePaneGroupTab(wtId: string, tabId: string) {
+      setState(
+        produce((s) => {
+          const arr = s.panegroupTabsByWorktree[wtId] ?? [];
+          const idx = arr.findIndex((t) => t.id === tabId);
+          if (idx === -1) return;
+          recordClose(s, wtId, "panegroup", arr[idx]);
+          arr.splice(idx, 1);
+          const active = s.activeItemByWorktree[wtId];
+          if (active?.type === "panegroup" && active.id === tabId) {
+            s.activeItemByWorktree[wtId] = null;
+          }
+        }),
+      );
+    },
+
+    selectPaneGroupTab(wtId: string, tabId: string) {
+      setState("activeItemByWorktree", wtId, { type: "panegroup", id: tabId });
+    },
+
+    /// Recreate a closed `panegroup` tab as an empty split in the same shape.
+    /// What was inside it does not come back — see `PaneShape`'s header — so
+    /// this is reopen-closed's version of "the split is back", not "the split
+    /// group is back".
+    reopenPaneGroupTab(wtId: string, shape: PaneShape): string {
+      const layout = paneNodeFromShape(shape);
+      const seq =
+        1 + Math.max(0, ...(state.panegroupTabsByWorktree[wtId] ?? []).map((t) => t.seq));
+      const created: PaneGroupTab = { id: newPaneId("panegroup"), seq, layout };
+      setState(
+        produce((s) => {
+          s.panegroupTabsByWorktree[wtId] = [...(s.panegroupTabsByWorktree[wtId] ?? []), created];
+          s.activeItemByWorktree[wtId] = { type: "panegroup", id: created.id };
+        }),
+      );
+      return created.id;
+    },
+
+    /// Renamed labels and label colours, generic across every tab kind — see
+    /// `AppStoreState.tabLabelByWorktree`'s header. `label(null)` clears a
+    /// rename back to the kind's derived label; `color(null)` clears the
+    /// colour back to the tab's unstyled default.
+    renameTab(wtId: string, tabId: string, label: string | null) {
+      setState(
+        produce((s) => {
+          const trimmed = label?.trim();
+          const bucket = (s.tabLabelByWorktree[wtId] ??= {});
+          if (trimmed) bucket[tabId] = trimmed;
+          else delete bucket[tabId];
+        }),
+      );
+    },
+
+    setTabColor(wtId: string, tabId: string, color: TabGroupColor | null) {
+      setState(
+        produce((s) => {
+          const bucket = (s.tabColorByWorktree[wtId] ??= {});
+          if (color) bucket[tabId] = color;
+          else delete bucket[tabId];
+        }),
+      );
+    },
+
+    tabLabelOverride(wtId: string, tabId: string): string | null {
+      return state.tabLabelByWorktree[wtId]?.[tabId] ?? null;
+    },
+
+    tabColorOverride(wtId: string, tabId: string): TabGroupColor | null {
+      return state.tabColorByWorktree[wtId]?.[tabId] ?? null;
     },
 
     // ── Tab groups ───────────────────────────────────────────────────────
@@ -1969,6 +2319,9 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           // so what comes back is a fresh thread with the same agent — the same
           // trade a reopened terminal makes with its scrollback.
           actions.openAgentTab(wtId, popped.agentId, popped.title);
+          break;
+        case "panegroup":
+          actions.reopenPaneGroupTab(wtId, popped.shape);
           break;
       }
       return popped;
@@ -2777,9 +3130,11 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     activeMissionTabs,
     activeBrowserTabs,
     activeAgentTabs,
+    activePaneGroupTabs,
     activeItem,
     editorActiveItem,
     workbenchTabIds,
+    topLevelWorkbenchTabIds,
     paneLayout,
     focusedGroupId,
     focusedGroupMru,

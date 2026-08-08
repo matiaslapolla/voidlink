@@ -18,6 +18,7 @@ import {
   deserializeClosedTab,
   deserializeTabRecord,
   parseEditorTabs,
+  paneNodeFromShape,
   samePath,
   serializeEditorTabs,
   type ClosedTab,
@@ -60,6 +61,20 @@ const FIXTURES: { [K in TabKind]: TabTypes[K] } = {
   mission: { id: "mc1" },
   browser: { id: "w1", url: "https://example.com/docs", title: "Docs" },
   agent: { id: "a1", agentId: "claude-sonnet", title: "Reviewer" },
+  panegroup: {
+    id: "pg1",
+    seq: 3,
+    layout: {
+      kind: "split",
+      id: "psplit-1",
+      orientation: "row",
+      ratios: [0.5, 0.5],
+      children: [
+        { kind: "group", id: "pga", group: { id: "pga", tabIds: ["t1"], activeTabId: "t1" } },
+        { kind: "group", id: "pgb", group: { id: "pgb", tabIds: ["t2"], activeTabId: null } },
+      ],
+    },
+  },
 };
 
 /// What a round trip is *expected* to produce, where that differs from the
@@ -239,6 +254,62 @@ describe("tab registry", () => {
       "example.com",
     );
     expect(TAB_SPECS.browser.label({ id: "w", url: "not a url" })).toBe("not a url");
+  });
+
+  describe("panegroup", () => {
+    it("costs one tab, not the boot, when the nested payload is corrupt", () => {
+      // A split with one child is impossible from `splitGroup`, but this is
+      // user-editable JSON on disk — a hand-edit or a half-written blob can
+      // still produce one, and `parsePaneLayout` already rejects rather than
+      // half-honours it.
+      expect(
+        TAB_SPECS.panegroup.deserialize({
+          id: "pg2",
+          seq: 1,
+          layout: { kind: "split", id: "s", orientation: "row", ratios: [1], children: [] },
+        }),
+      ).toBeNull();
+      expect(
+        TAB_SPECS.panegroup.deserialize({ id: "pg2", seq: 1, layout: "garbage" }),
+      ).toBeNull();
+      expect(TAB_SPECS.panegroup.deserialize({ id: "pg2", layout: FIXTURES.panegroup.layout })).toBeNull();
+    });
+
+    it("dedupes on the set of tabs it claims, not on shape or order", () => {
+      const reordered = {
+        id: "pg2",
+        seq: 9,
+        layout: {
+          kind: "split" as const,
+          id: "psplit-2",
+          orientation: "column" as const,
+          ratios: [0.3, 0.7],
+          children: [
+            { kind: "group" as const, id: "pgc", group: { id: "pgc", tabIds: ["t2"], activeTabId: null } },
+            { kind: "group" as const, id: "pgd", group: { id: "pgd", tabIds: ["t1"], activeTabId: "t1" } },
+          ],
+        },
+      };
+      expect(TAB_SPECS.panegroup.equals(FIXTURES.panegroup, reordered)).toBe(true);
+      const different = {
+        ...reordered,
+        layout: { ...reordered.layout, children: [reordered.layout.children[0]] as unknown as typeof reordered.layout.children },
+      };
+      expect(TAB_SPECS.panegroup.equals(FIXTURES.panegroup, different)).toBe(false);
+    });
+
+    it("reopens a closed pane group as a fresh, empty split in the same shape", () => {
+      const snapshot = TAB_SPECS.panegroup.closedSnapshot(FIXTURES.panegroup);
+      expect(snapshot).not.toBeNull();
+      if (!snapshot || snapshot.type !== "panegroup") throw new Error("wrong snapshot type");
+      const layout = paneNodeFromShape(snapshot.shape);
+      expect(layout.kind).toBe("split");
+      if (layout.kind !== "split") throw new Error("unreachable");
+      expect(layout.children).toHaveLength(2);
+      expect(layout.children.every((c) => c.kind === "group")).toBe(true);
+      // Fresh ids: nothing left to address the closed tab's old groups by.
+      expect(layout.children.map((c) => c.id)).not.toEqual(["pga", "pgb"]);
+    });
   });
 });
 
