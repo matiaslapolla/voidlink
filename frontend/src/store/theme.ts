@@ -1,80 +1,21 @@
 import { createSignal } from "solid-js";
 import { onThemeChange, publishThemeChange } from "@/api/windows";
+import {
+  DEFAULT_THEME_ID,
+  getThemeDef,
+  THEMES,
+  themeMode,
+  type ThemeDef,
+  type ThemeId,
+  type ThemeMode,
+} from "@/store/themeTable";
 
-export type ThemeMode = "dark" | "light";
-
-export interface ThemeDef {
-  id: string;
-  label: string;
-  mode: ThemeMode;
-  /** Preview colors: [bg, fg, primary, border] as CSS color strings */
-  preview: [string, string, string, string];
-}
-
-export const THEMES: ThemeDef[] = [
-  {
-    id: "dark",
-    label: "Default Dark",
-    mode: "dark",
-    preview: ["oklch(0.145 0.012 270)", "oklch(0.950 0.008 270)", "oklch(0.655 0.200 270)", "oklch(1 0.008 270 / 12%)"],
-  },
-  {
-    id: "light",
-    label: "Default Light",
-    mode: "light",
-    preview: ["oklch(0.980 0.006 270)", "oklch(0.145 0.012 270)", "oklch(0.530 0.220 270)", "oklch(0 0.006 270 / 12%)"],
-  },
-  {
-    id: "github-dark",
-    label: "GitHub Dark",
-    mode: "dark",
-    preview: ["#0d1117", "#e6edf3", "#58a6ff", "#30363d"],
-  },
-  {
-    id: "github-light",
-    label: "GitHub Light",
-    mode: "light",
-    preview: ["#ffffff", "#1f2328", "#0969da", "#d1d9e0"],
-  },
-  {
-    id: "monokai",
-    label: "Monokai",
-    mode: "dark",
-    preview: ["#272822", "#f8f8f2", "#a6e22e", "#3e3d32"],
-  },
-  {
-    id: "solarized-dark",
-    label: "Solarized Dark",
-    mode: "dark",
-    preview: ["#002b36", "#839496", "#268bd2", "#073642"],
-  },
-  {
-    id: "solarized-light",
-    label: "Solarized Light",
-    mode: "light",
-    preview: ["#fdf6e3", "#657b83", "#268bd2", "#eee8d5"],
-  },
-  {
-    id: "nord",
-    label: "Nord",
-    mode: "dark",
-    preview: ["#2e3440", "#eceff4", "#88c0d0", "#3b4252"],
-  },
-  {
-    id: "dracula",
-    label: "Dracula",
-    mode: "dark",
-    preview: ["#282a36", "#f8f8f2", "#bd93f9", "#44475a"],
-  },
-  {
-    id: "one-dark",
-    label: "One Dark",
-    mode: "dark",
-    preview: ["#282c34", "#abb2bf", "#61afef", "#3e4452"],
-  },
-];
-
-export type ThemeId = (typeof THEMES)[number]["id"];
+/// The table, the mode type and the light/dark predicate live in
+/// `store/themeTable.ts` — pure, importable from a `node` test, and the single
+/// owner of "is this theme light or dark" (see that file). Re-exported here so
+/// every existing `@/store/theme` import keeps working.
+export { THEMES, themeMode };
+export type { ThemeDef, ThemeId, ThemeMode };
 
 const STORAGE_KEY = "voidlink-theme";
 
@@ -83,11 +24,7 @@ function loadTheme(): string {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && THEMES.some((t) => t.id === stored)) return stored;
   } catch { /* ignore */ }
-  return "dark";
-}
-
-function getThemeDef(id: string): ThemeDef {
-  return THEMES.find((t) => t.id === id) ?? THEMES[0];
+  return DEFAULT_THEME_ID;
 }
 
 /// Write the theme into this document and tell the other windows.
@@ -102,12 +39,12 @@ function getThemeDef(id: string): ThemeDef {
 /// `broadcast` is false when we are *applying* a remote change — see
 /// `bridgeThemeAcrossWindows` for why re-publishing would ping-pong.
 function applyTheme(id: string, broadcast = true) {
-  const def = getThemeDef(id);
+  const mode = themeMode(id);
   const root = document.documentElement;
 
   // Set mode class (light or dark) for color-scheme and existing selectors
-  root.classList.toggle("light", def.mode === "light");
-  root.classList.toggle("dark", def.mode === "dark");
+  root.classList.toggle("light", mode === "light");
+  root.classList.toggle("dark", mode === "dark");
 
   // Set data-theme attribute for theme-specific CSS overrides
   // The default dark/light themes use no data-theme (they rely on :root / :root.light)
@@ -136,8 +73,25 @@ function setTheme(id: string, broadcast = true) {
   // Monaco themes and repaint every editor for nothing, and it is the second
   // line of defence against a broadcast loop.
   if (id === themeId()) return;
-  setThemeIdRaw(id);
+
+  // **The cascade is written before the signal, and the order is the bug fix.**
+  //
+  // A Solid setter called outside `batch` runs the whole update cycle
+  // synchronously, user effects included, before it returns. With
+  // `setThemeIdRaw` first, every `createEffect` that watches the theme ran
+  // while `<html>` still carried the *previous* theme's class and
+  // `data-theme` — so `MonacoPanes`' and `SettingsJsonPane`'s theme sync
+  // called `applyVoidlinkTheme(monaco, <new mode>)`, whose `readCssTokens()`
+  // then snapshotted the *old* palette and registered it under the new mode's
+  // name. Switching a dark theme to a light one left `voidlink-light` holding
+  // a dark body, and nothing re-ran to correct it: that is "the editor theme
+  // inverts against the UI", and it persisted until the next theme change.
+  //
+  // `monacoTheme.ts` already made the *inactive* name colourless so a stale
+  // apply cannot invert; this closes the other half, where the name and the
+  // tokens genuinely disagree at the moment of reading.
   applyTheme(id, broadcast);
+  setThemeIdRaw(id);
 }
 
 /// Follow theme changes made in another window. Call once per window root.
@@ -194,8 +148,8 @@ export function useTheme() {
   return {
     /** Current theme ID (e.g. "github-dark", "monokai") */
     theme: themeId,
-    /** Current mode: "dark" or "light" */
-    mode: () => getThemeDef(themeId()).mode,
+    /** Current mode: "dark" or "light" — via `themeMode`, the one owner. */
+    mode: () => themeMode(themeId()),
     /** Set theme by ID. Wrapped rather than passed through so the internal
      * `broadcast` flag stays internal — a UI that suppressed it would silently
      * reintroduce the cross-window drift this channel exists to fix. */

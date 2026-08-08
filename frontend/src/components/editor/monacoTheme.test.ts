@@ -12,6 +12,7 @@ import {
   voidlinkThemeDefinitions,
   type ThemeTokens,
 } from "./monacoTheme";
+import { THEMES, themeMode } from "@/store/themeTable";
 
 /// A token record standing in for one theme's slice of the cascade. The real
 /// `readCssTokens` needs a browser to compute; everything downstream of it is
@@ -125,6 +126,32 @@ describe("deriveMonacoTheme", () => {
   it("names the two themes by app mode", () => {
     expect(monacoThemeName("dark")).toBe(VOIDLINK_DARK);
     expect(monacoThemeName("light")).toBe(VOIDLINK_LIGHT);
+  });
+});
+
+/// Every one of the ten app themes lands on the Monaco theme for its own mode.
+///
+/// `monacoThemeName` takes a `ThemeMode`, so the only way to get this wrong is
+/// upstream — deciding light-vs-dark from the theme *id*. Three of the ten are
+/// light and only one of them is the string "light", so an `id === "light"`
+/// check gets `github-light` and `solarized-light` backwards and inverts the
+/// editor against the UI in exactly those two themes. `themeMode` is the one
+/// function that owns the answer (`store/themeTable.ts`); this walks the whole
+/// table through it.
+describe("every app theme resolves to the Monaco theme for its mode", () => {
+  it.each(THEMES)("$id ($mode)", (theme) => {
+    const mode = themeMode(theme.id);
+    expect(mode).toBe(theme.mode);
+    expect(monacoThemeName(mode)).toBe(mode === "light" ? VOIDLINK_LIGHT : VOIDLINK_DARK);
+    // And the definition registered under that name carries that mode's base.
+    const defs = voidlinkThemeDefinitions(mode, tokens());
+    expect(defs[monacoThemeName(mode)].base).toBe(mode === "light" ? "vs" : "vs-dark");
+  });
+
+  it("covers the three light themes by name, not by count alone", () => {
+    const light = THEMES.filter((t) => themeMode(t.id) === "light").map((t) => t.id);
+    expect(light).toEqual(["light", "github-light", "solarized-light"]);
+    for (const id of light) expect(monacoThemeName(themeMode(id))).toBe(VOIDLINK_LIGHT);
   });
 });
 
