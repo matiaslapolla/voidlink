@@ -119,14 +119,23 @@ export function TitleBar(props: TitleBarProps) {
       /* The title bar is window chrome, not an island: it stays flush to the
          window edge (it carries the traffic lights) and takes the canvas
          colour, so the islands below read as floating on it. Its `border-b` is
-         gone with the islands' — the 8px canvas inset is the separation. */
+         gone with the islands' — the 8px canvas inset is the separation.
+
+         `h-8` (32px) is load-bearing on macOS: `trafficLightPosition.y = 18` in
+         tauri.conf.json puts the buttons' centre at 16px from the window top
+         (the mapping is `centre = y - 2`; `src-tauri/src/window.rs` derives it
+         from tao's source and the AppKit measurement). Change one and the other
+         moves: a taller bar wants `y = height / 2 + 2`. */
       class={`flex items-stretch h-8 shrink-0 select-none bg-canvas ${DEV_CHROME_CLASS}`}
     >
       {/*
         Tauri's injected drag-region script already starts a native drag on
         mousedown and toggles maximise on double click, so no handlers here.
         On macOS the left padding clears the traffic lights the OS draws over
-        this bar (they end at 66px; see trafficLightPosition in tauri.conf.json).
+        this bar. `trafficLightPosition.x = 12` is the close button's left edge
+        and the three buttons sit 23pt apart, so they occupy 12..72px — this
+        used to say 66px, which was the arithmetic that produced the
+        misalignment rather than a measurement. 78px leaves a 6px gap.
       */}
       <div
         data-tauri-drag-region

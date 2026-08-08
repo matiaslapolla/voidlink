@@ -100,6 +100,53 @@ pub(crate) fn dev_title(title: &str) -> String {
     }
 }
 
+/// The macOS traffic-light position every window in this app uses, taken from
+/// the `main` window's `trafficLightPosition` in tauri.conf.json.
+///
+/// **`y` is not a top margin.** tao and wry both implement this by calling
+/// `inset_traffic_lights` on every `drawRect:` of the window's content view
+/// (`tao-0.35/src/platform_impl/macos/view.rs`,
+/// `wry-0.55/src/wkwebview/class/wry_web_view_parent.rs`). That function resizes
+/// the `NSTitlebarContainerView` to `closeButton.height + y` and pins it to the
+/// top of the window; it never touches the buttons' `origin.y`. Measured against
+/// AppKit on macOS 26.5 with the same style mask `titleBarStyle: "Overlay"`
+/// produces, the close button is 14x14 sitting at `origin.y = 9` in that
+/// container, so the mapping is exactly:
+///
+///     button top    from window top = y - 9
+///     button CENTRE from window top = y - 2
+///
+/// `TitleBar.tsx` draws a 32px bar (`h-8`), so a vertically centred button wants
+/// its centre at 16px: **y = 18**. The previous value, 9, was computed as
+/// `(32 - 14) / 2` — the right arithmetic for a top margin, which this is not;
+/// it put the centre at 7px and the button's top flush against the window edge.
+/// That is the "did not work at all" report.
+///
+/// `x` *is* a plain left coordinate: the close button's left edge lands on it,
+/// the three buttons are 23pt apart, so at x = 12 they occupy 12..72px.
+///
+/// Because the inset is re-applied from `drawRect:`, it survives the AppKit
+/// re-layouts that follow a fullscreen exit or a window re-key — this is the
+/// right mechanism, not a one-shot that needs a runtime reposition.
+#[cfg(target_os = "macos")]
+fn traffic_light_position<R: Runtime>(app: &AppHandle<R>) -> tauri::LogicalPosition<f64> {
+    let config = app.config();
+    let position = config
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .and_then(|w| w.traffic_light_position.as_ref());
+
+    match position {
+        Some(p) => tauri::LogicalPosition::new(p.x, p.y),
+        // The `main` entry always carries one; this is the compile-time-unknown
+        // branch, not a second source of truth. Same value, so a config that
+        // lost the key degrades to the same chrome rather than to AppKit's.
+        None => tauri::LogicalPosition::new(12.0, 18.0),
+    }
+}
+
 /// Open a satellite window, or focus it if it is already open.
 ///
 /// Returns `true` when a new window was created, so the caller can tell
@@ -120,15 +167,18 @@ fn open_satellite<R: Runtime>(app: &AppHandle<R>, spec: &SatelliteSpec) -> Resul
         .resizable(true)
         .center();
 
-    // Match the main window's chrome so every window reads as one app. Kept in
-    // sync with the `main` entry in tauri.conf.json by hand — the config is
-    // static and these windows are built at runtime.
+    // Match the main window's chrome so every window reads as one app. The
+    // traffic-light position is *read from* the `main` entry in tauri.conf.json
+    // rather than restated here: it used to be a hand-copied literal and the two
+    // drifted apart (12,14 here against 12,9 there), which is exactly one window
+    // too many to keep in step by memory. See `traffic_light_position` for what
+    // the number means — it is not a top margin.
     #[cfg(target_os = "macos")]
     let builder = builder
         .decorations(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(12.0, 14.0));
+        .traffic_light_position(traffic_light_position(app));
 
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
