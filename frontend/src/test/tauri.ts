@@ -351,6 +351,11 @@ export function fakeCurrentWindow() {
       };
     },
     onFocusChanged: vi.fn(async () => () => {}),
+    // OS file drops onto a terminal pane (`TerminalPane.tsx`). No test drives
+    // an actual drop through this yet — the fake only has to resolve with an
+    // unlisten function so a mounted pane's `onMount` does not throw trying to
+    // register the listener at all.
+    onDragDropEvent: vi.fn(async () => () => {}),
   };
 }
 

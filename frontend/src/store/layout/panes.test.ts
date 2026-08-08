@@ -391,6 +391,33 @@ describe("pruning closed tabs", () => {
     const once = pruneClosedTabs(layout, ["t1", "t2"]);
     expect(pruneClosedTabs(once, ["t1", "t2"])).toEqual(once);
   });
+
+  /// Fails on today's main. A `before` split puts a genuinely new, empty
+  /// group at array position 0 and materialises every other group's claims
+  /// (see `splitGroup`'s header) — so that group is no longer "the one
+  /// catching unclaimed tabs", it just happens to sit where that group used
+  /// to. The old `canCollapse` exempted `groups[0]` by id regardless, so once
+  /// the one tab dropped into it closed, the pane it left behind had no way
+  /// to collapse — first by id, forever, whether or not it was still catching
+  /// anything.
+  it("collapses the last tab in a pane that is first only by position, not by role", () => {
+    const ids = ["t1", "t2"];
+    const { layout: split, newGroupId } = splitGroup(
+      singleGroupLayout("g1"),
+      "g1",
+      "row",
+      "before",
+      ids,
+    );
+    // The new group is first in the tree; g1 keeps both tabs explicitly.
+    expect(groupList(split)[0]?.id).toBe(newGroupId);
+    const withTab = moveTabToGroup(split, "t1", newGroupId!, null, ids);
+    expect(groupCount(withTab)).toBe(2);
+    // t1 — the only tab the first-by-position group held — closes.
+    const after = pruneClosedTabs(withTab, ["t2"], new Set([newGroupId!]));
+    expect(groupCount(after)).toBe(1);
+    expect(groupList(after)[0]?.id).toBe("g1");
+  });
 });
 
 describe("ratios", () => {

@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot } from "solid-js";
 import { LAYOUT_VERSION, LAYOUT_VERSION_KEY, WORKSPACES_KEY } from "@/store/migrate";
+import { groupList } from "./panes";
 
 const createPty = vi.fn<(cwd: string) => Promise<string>>(async () => `pty-${ptyCounter++}`);
 let ptyCounter = 1;
@@ -293,6 +294,33 @@ describe("reopen closed tabs", () => {
     });
   });
 
+  it("reopens a closed pane group as a fresh, empty split in the same shape", async () => {
+    await withStoreAsync(async (store) => {
+      const { actions, state } = store;
+      await actions.spawnTerminal(WT_ID);
+      const termId = state.terminalsByWorktree[WT_ID][0].id;
+
+      const pgId = actions.addTabToSplitPane(WT_ID, termId);
+      expect(pgId).not.toBeNull();
+      expect(state.panegroupTabsByWorktree[WT_ID]).toHaveLength(1);
+
+      actions.closePaneGroupTab(WT_ID, pgId!);
+      expect(state.panegroupTabsByWorktree[WT_ID]).toHaveLength(0);
+      // The terminal itself is untouched — closing the split never closes
+      // what was inside it.
+      expect(state.terminalsByWorktree[WT_ID]).toHaveLength(1);
+
+      const popped = actions.reopenLastClosedTab(WT_ID);
+      expect(popped?.type).toBe("panegroup");
+      expect(state.panegroupTabsByWorktree[WT_ID]).toHaveLength(1);
+      // A fresh id, a fresh empty split — not the terminal's old claim, which
+      // is still wherever it fell back to.
+      const reopened = state.panegroupTabsByWorktree[WT_ID][0];
+      expect(reopened.id).not.toBe(pgId);
+      expect(reopened.layout.kind).toBe("split");
+    });
+  });
+
   it("keeps the closed-tab history across a reload", () => {
     // Persisted by the store's write effect on close; seeded here directly
     // because `createEffect` does not run in this (non-DOM) test environment.
@@ -309,6 +337,107 @@ describe("reopen closed tabs", () => {
         url: "https://example.com/gone",
         title: undefined,
       });
+    });
+  });
+});
+
+describe("panegroup tabs", () => {
+  it("opens a split, splits further inside its own tree, and tracks ratios/claims/focus live", async () => {
+    await withStoreAsync(async (store) => {
+      const { actions, state } = store;
+      await actions.spawnTerminal(WT_ID, "left");
+      await actions.spawnTerminal(WT_ID, "right");
+      const terms = state.terminalsByWorktree[WT_ID];
+      const termAId = terms[0].id;
+      const termBId = terms[1].id;
+
+      // "Add to split pane": a fresh two-pane split, `termA` in the first.
+      const firstPaneGroupId = actions.addTabToSplitPane(WT_ID, termAId);
+      expect(firstPaneGroupId).not.toBeNull();
+      const pg = state.panegroupTabsByWorktree[WT_ID][0];
+      expect(pg.layout.kind).toBe("split");
+      if (pg.layout.kind !== "split") throw new Error("unreachable");
+      // `termA` left the root strip entirely — it is not "unclaimed" there,
+      // and it does not render there either.
+      expect(actions.paneGroupOwning(WT_ID, termAId)).toBeNull();
+      const secondGroupId = pg.layout.children[1];
+      expect(secondGroupId.kind).toBe("group");
+      if (secondGroupId.kind !== "group") throw new Error("unreachable");
+
+      // Split further — inside the panegroup's own tree, not the root's —
+      // and land `termB` in the new pane, both as one write.
+      const secondInnerGroupId = actions.splitPaneGroupWithTab(
+        WT_ID,
+        "column",
+        "after",
+        secondGroupId.group.id,
+        termBId,
+        firstPaneGroupId!,
+      );
+      expect(secondInnerGroupId).not.toBeNull();
+
+      // Drag a ratio on the nested split.
+      const nested = state.panegroupTabsByWorktree[WT_ID][0].layout;
+      if (nested.kind === "split") {
+        actions.setPaneSplitRatios(WT_ID, nested.id, [0.3, 0.7], firstPaneGroupId!);
+      }
+      const after = state.panegroupTabsByWorktree[WT_ID][0].layout;
+      expect(after.kind === "split" ? after.ratios : null).toEqual([
+        expect.closeTo(0.3, 5),
+        expect.closeTo(0.7, 5),
+      ]);
+
+      // Claims and focus: the drop already claimed `termB` in its own inner
+      // pane and focused it there.
+      expect(actions.paneGroupOwning(WT_ID, termBId, firstPaneGroupId!)).toBe(
+        secondInnerGroupId,
+      );
+      const innerGroup = groupList(after).find((g) => g.id === secondInnerGroupId);
+      expect(innerGroup?.tabIds).toContain(termBId);
+      expect(innerGroup?.activeTabId).toBe(termBId);
+    });
+  });
+
+  it("survives a reload with its ratios, claims and focused pane intact", () => {
+    // Seeded directly, like every other kind's reload test in this file
+    // (`createEffect` does not run in this non-DOM environment) — this is
+    // exactly the shape `TAB_SPECS.panegroup.serialize` produces, proven in
+    // `tabs.test.ts`'s round-trip test; what is new here is that the *store*
+    // wires it up under `panegroupTabsByWorktree`, not a bespoke field.
+    backing.set(
+      STORAGE_KEYS.panegroupTabs,
+      JSON.stringify({
+        [WT_ID]: [
+          {
+            id: "pg-1",
+            seq: 1,
+            layout: {
+              kind: "split",
+              id: "s1",
+              orientation: "row",
+              ratios: [0.3, 0.7],
+              children: [
+                { kind: "group", id: "g-left", group: { id: "g-left", tabIds: ["t1"], activeTabId: "t1" } },
+                { kind: "group", id: "g-right", group: { id: "g-right", tabIds: ["t2"], activeTabId: "t2" } },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+
+    withStore((store) => {
+      const pg = store.state.panegroupTabsByWorktree[WT_ID][0];
+      expect(pg).toBeTruthy();
+      expect(pg.layout.kind).toBe("split");
+      if (pg.layout.kind !== "split") throw new Error("unreachable");
+      expect(pg.layout.ratios[0]).toBeCloseTo(0.3, 5);
+      expect(pg.layout.ratios[1]).toBeCloseTo(0.7, 5);
+      const right = pg.layout.children[1];
+      expect(right.kind).toBe("group");
+      if (right.kind !== "group") throw new Error("unreachable");
+      expect(right.group.tabIds).toEqual(["t2"]);
+      expect(right.group.activeTabId).toBe("t2");
     });
   });
 });
@@ -335,6 +464,41 @@ describe("corrupt and half-written blobs", () => {
     });
 
     expect(reported).toEqual([STORAGE_KEYS.stackTabs]);
+  });
+
+  it("drops one panegroup tab over a malformed nested payload, keeping its siblings and the boot", () => {
+    // `panegroupTabs` itself is valid JSON — this is not the quarantine path
+    // above. One entry's `layout` is impossible (a split with a single
+    // child, which `splitGroup` never produces): `parsePaneLayout` rejects
+    // it, `deserializePaneGroupTab` returns `null` for that one entry, and
+    // `deserializeTabRecord` drops just it, the same contract every other
+    // kind's malformed row already gets.
+    backing.set(
+      STORAGE_KEYS.panegroupTabs,
+      JSON.stringify({
+        [WT_ID]: [
+          {
+            id: "pg-bad",
+            seq: 1,
+            layout: { kind: "split", id: "s", orientation: "row", ratios: [1], children: [] },
+          },
+          {
+            id: "pg-good",
+            seq: 2,
+            layout: { kind: "group", id: "g1", group: { id: "g1", tabIds: [], activeTabId: null } },
+          },
+        ],
+      }),
+    );
+    const reported: string[] = [];
+    setCorruptKeyHandler((key) => reported.push(key));
+
+    withStore((store) => {
+      expect(store.state.panegroupTabsByWorktree[WT_ID].map((t) => t.id)).toEqual(["pg-good"]);
+      expect(store.state.workspaces).toHaveLength(1);
+    });
+    // Not a quarantine — the blob parsed fine and the key is not reported.
+    expect(reported).toEqual([]);
   });
 
   it("recovers the shadow copy a crash left behind mid-write", () => {
