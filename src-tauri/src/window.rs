@@ -113,8 +113,10 @@ pub(crate) fn dev_title(title: &str) -> String {
 /// produces, the close button is 14x14 sitting at `origin.y = 9` in that
 /// container, so the mapping is exactly:
 ///
-///     button top    from window top = y - 9
-///     button CENTRE from window top = y - 2
+/// ```text
+/// button top    from window top = y - 9
+/// button CENTRE from window top = y - 2
+/// ```
 ///
 /// `TitleBar.tsx` draws a 32px bar (`h-8`), so a vertically centred button wants
 /// its centre at 16px: **y = 18**. The previous value, 9, was computed as
