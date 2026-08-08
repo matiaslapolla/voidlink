@@ -56,15 +56,42 @@ const COLUMN_SIGNAL = {
   idle: "idle",
 } as const;
 
+/// The board, wired to the workbench's own session poll. What `App.tsx` and
+/// `AgentsSidebar` render.
 export function AgentDashboard(props: { class?: string }) {
   const { settings } = useSettings();
   const sessions = useAgentSessions();
+  return (
+    <AgentBoardView
+      class={props.class}
+      sessions={sessions}
+      showIdle={() => settings.experimental.showIdleAgents}
+    />
+  );
+}
 
+/// The board, minus any assumption about where its sessions come from.
+///
+/// Same split as `GitSurface` under `GitApp`, and for the same reason: the
+/// detached agents panel is a separate webview whose store has no terminals in
+/// it, so it cannot run `useAgentSessions` — it renders the workbench's
+/// `AgentBoardSnapshot` off the wire instead. One component either way, so the
+/// two cannot drift.
+///
+/// `buildAgentBoard` runs *here*, against this window's clock, rather than
+/// arriving pre-derived: the idle threshold is relative to now, and a board
+/// derived when the snapshot was sent would freeze at whatever "now" was then.
+/// That is why the snapshot carries sessions and not columns.
+export function AgentBoardView(props: {
+  class?: string;
+  sessions: () => AgentSession[];
+  showIdle: () => boolean;
+}) {
   const board = createMemo(() =>
     buildAgentBoard({
-      sessions: sessions(),
+      sessions: props.sessions(),
       now: Date.now(),
-      showIdle: settings.experimental.showIdleAgents,
+      showIdle: props.showIdle(),
     }),
   );
 

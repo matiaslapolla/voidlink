@@ -75,11 +75,24 @@ export const ACTION_IDS = [
   "ui.swap-sidebars",
   "ui.toggle-workspace-rail",
   // Detach, per sidebar. Palette-only: which panel you want in a window is a
-  // choice, and three more chords for three rare choices is how a keymap stops
-  // being learnable. `ui.detach-workspaces` is deliberately absent — the rail
-  // is not detachable (see `SIDEBAR_WINDOW_LABEL`).
-  "ui.detach-files",
+  // choice, and more chords for rare choices is how a keymap stops being
+  // learnable. `ui.detach-workspaces` and `ui.detach-terminals` are
+  // deliberately absent — neither is detachable (see `SIDEBAR_WINDOW_LABEL`),
+  // and these ids are generated from that same table in `App.tsx`, so this
+  // list has to name exactly what it can produce.
+  //
+  // `ui.detach-files` became `ui.detach-explorer` with the sidebar's rename.
+  // Unlike `ui.swap-sidebars`, which kept its id to keep its chord, nothing was
+  // ever bound to this one — so there is no chord to protect and no reason to
+  // keep a name that no longer matches the panel.
+  "ui.detach-explorer",
   "ui.detach-git",
+  "ui.detach-agents",
+  // The editor window's way home. The sidebars get theirs from the
+  // `ui.detach-*` rows above, which toggle; the editor has no detach of its
+  // own — it is opened by whatever puts a file in it — so re-attaching is the
+  // only half of that pair it needs.
+  "ui.attach-editor",
   "ui.toggle-diff-mode",
   "ui.toggle-ignore-ws",
   "ui.maximize-pane",

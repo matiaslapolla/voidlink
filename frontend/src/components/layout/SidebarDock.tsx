@@ -16,6 +16,7 @@ import { GripVertical, MoreVertical } from "lucide-solid";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 import { useAppStore } from "@/store/LayoutContext";
 import {
+  SIDEBAR_COLLAPSE,
   SIDEBAR_PANEL,
   SIDEBAR_RAIL_WIDTH,
   sidebarsOnSide,
@@ -249,22 +250,12 @@ export function SidebarDockOverlay() {
     return null;
   }
 
-  /// Whichever flag collapses `id` to its icon rail — one per sidebar, and
-  /// the `switch` is exhaustive over `SidebarId` so a sixth sidebar fails to
-  /// compile here rather than silently previewing at full width.
+  /// Whichever flag collapses `id` to its icon rail. The mapping lives in
+  /// `store/layout/dock.ts` now — this used to be a `switch` here and a second
+  /// copy in `TitleBar`, which is two places to forget a sixth sidebar in.
   const isRailed = (id: SidebarId): boolean => {
-    switch (id) {
-      case "explorer":
-        return !state.sidebarSections.files;
-      case "terminals":
-        return !state.sidebarSections.terminals;
-      case "agents":
-        return !state.sidebarSections.agents;
-      case "git":
-        return state.gitSidebarCollapsed;
-      case "workspaces":
-        return state.workspaceRailCollapsed;
-    }
+    const flag = SIDEBAR_COLLAPSE[id];
+    return flag.kind === "section" ? !state.sidebarSections[flag.key] : state[flag.key];
   };
 
   const previewWidth = () => {

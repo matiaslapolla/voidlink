@@ -45,6 +45,7 @@ import {
   onEditorTabs,
   onWindowContext,
   openGitWindow,
+  requestEditorDockBack,
   requestEditorTabs,
   requestWindowContext,
   sendEditorRequest,
@@ -101,6 +102,8 @@ import {
   type TabKind,
 } from "@/components/layout/TabStrip";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
+import { AttachHomeButton } from "@/components/layout/AttachHomeButton";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PromptHost } from "@/commands/PromptHost";
 import { textPrompt } from "@/commands/prompt";
 import { fsApi } from "@/api/fs";
@@ -167,6 +170,30 @@ export default function EditorApp() {
       void requestWindowContext();
       void requestEditorTabs();
     });
+
+    // Closing this window puts the editor back in the workbench, as the tab it
+    // had focused — the same bargain the detached sidebars make, and for the
+    // same reason: a surface the user dismissed should reappear where the rest
+    // of the app is, not vanish.
+    //
+    // Nothing about the tabs travels. The workbench owns all four collections
+    // *and* which one this window had in front (`EditorTabsSnapshot.active`),
+    // so "activate what you already know" is the whole message — sending the
+    // tab back would make a closing window a second writer, which is the one
+    // thing the editor channel forbids.
+    //
+    // Awaited, not fired off: Tauri's `onCloseRequested` wrapper awaits the
+    // handler before destroying the webview, so a synchronous return raced the
+    // emit against its own teardown.
+    try {
+      void track(
+        getCurrentWindow().onCloseRequested(async () => {
+          await requestEditorDockBack();
+        }),
+      );
+    } catch {
+      // Not running under Tauri. Nothing to close and nothing to re-home.
+    }
 
     onCleanup(() => {
       disposed = true;
@@ -906,6 +933,12 @@ export function EditorSurface(props: {
         </span>
 
         <div class="flex items-stretch gap-1 shrink-0">
+          {/* The way home, in this window's own chrome. Absent when embedded:
+              in stacked mode this surface is a *view* of the workbench, so
+              there is no window to attach. */}
+          <Show when={!props.embedded}>
+            <AttachHomeButton surface={{ kind: "editor" }} />
+          </Show>
           {/* The keyboard route to the collapse. The rail's own icon is the
               pointer route back, and both drive one signal — `aria-expanded`
               rather than `aria-pressed` because what it controls is a panel

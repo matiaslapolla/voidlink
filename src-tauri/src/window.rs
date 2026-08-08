@@ -73,13 +73,39 @@ const FILES_PANEL_SPEC: SatelliteSpec = SatelliteSpec {
     min_height: 400.0,
 };
 
+/// Window label for the detached agent dashboard.
+///
+/// The agent board is the one other sidebar with a window of its own, because
+/// it is the one other sidebar that can be a *consumer*: the workbench already
+/// broadcasts `AgentBoardSnapshot` (see `publishAgentBoard`), so a panel window
+/// renders the real board rather than its own empty store.
+///
+/// The terminals list deliberately has none. Every control on it — new
+/// terminal, select, kill — writes the workbench's session state and spawns or
+/// reaps a PTY, and a satellite's store is an unpersisted private copy with no
+/// terminal surface attached. There is no snapshot channel for it, so each of
+/// those buttons would be the silent no-op `requestOpenWorktreeOnMain` exists
+/// to fix. Same reasoning, and the same verdict, as the workspace rail.
+pub(crate) const AGENTS_PANEL_WINDOW_LABEL: &str = "panel-agents";
+
+/// Wider than the files panel: the board lays cards out in columns, and at a
+/// file tree's width the columns stack into one long ribbon.
+const AGENTS_PANEL_SPEC: SatelliteSpec = SatelliteSpec {
+    label: AGENTS_PANEL_WINDOW_LABEL,
+    title: "Voidlink Agents",
+    width: 420.0,
+    height: 820.0,
+    min_width: 280.0,
+    min_height: 400.0,
+};
+
 /// Every window a sidebar may be detached into, by label.
 ///
 /// An allowlist rather than a label passed straight through from the frontend:
 /// `open_panel_window` is a command any webview in this app can invoke, and a
 /// free-form label would let it build windows this app has no capability entry
 /// for — which is to say, windows with no permissions and no way to say so.
-const PANEL_SPECS: &[&SatelliteSpec] = &[&FILES_PANEL_SPEC];
+const PANEL_SPECS: &[&SatelliteSpec] = &[&FILES_PANEL_SPEC, &AGENTS_PANEL_SPEC];
 
 fn panel_spec(label: &str) -> Option<&'static SatelliteSpec> {
     PANEL_SPECS.iter().copied().find(|spec| spec.label == label)
@@ -138,9 +164,47 @@ fn open_satellite<R: Runtime>(app: &AppHandle<R>, spec: &SatelliteSpec) -> Resul
 }
 
 /// Close a satellite window if it is open. Idempotent.
+///
+/// **`destroy`, not `close` — this is the detach-lifecycle crash.** The failure
+/// was not a panic in our code; it was Tauri's close protocol re-entering
+/// itself, and it is worth writing down because `close()` reads like the right
+/// call:
+///
+/// `Window::close()` does not close a window. It raises `CloseRequested`, and
+/// tauri 2.11.2's own per-window handler (`tauri/src/manager/window.rs`, in
+/// `on_window_event`) does this:
+///
+/// ```text
+/// if window.has_js_listener(WINDOW_CLOSE_REQUESTED_EVENT) { api.prevent_close(); }
+/// window.emit_to_window(WINDOW_CLOSE_REQUESTED_EVENT, &())?;
+/// ```
+///
+/// Every window we detach into registers exactly that listener — it is how a
+/// panel says "dock me back" as it goes (`PanelApp`, `GitApp`). So Tauri
+/// *always* prevented the close and delegated the decision to the webview,
+/// whose `onCloseRequested` wrapper finishes by calling `destroy()` — a command
+/// no capability file granted (`core:window:allow-destroy` was missing from
+/// every one of them). The result, from either side:
+///
+///   • the traffic light did nothing, and the rejected `destroy()` surfaced
+///     only as an unhandled rejection inside an event listener;
+///   • `close_panel_window` from the workbench did nothing either, while
+///     `dockSidebarBack` had already cleared the detached flag — so the panel
+///     was drawn in the shell *and* still live in a window that could not be
+///     dismissed, two copies of one surface writing to one webview each;
+///   • closing `main` then ran `kill_all_ptys` (see `lib.rs`'s
+///     `on_window_event`) while the undismissable satellite kept the process
+///     alive, leaving an app with no workbench, no shells, and no way out
+///     except force-quit.
+///
+/// `destroy()` is the unconditional form: it raises no `CloseRequested`, so it
+/// cannot be prevented and — the part that matters for re-entrancy — the
+/// closing webview never emits the dock-back the workbench would handle as a
+/// *second* close. A close asked for by the workbench therefore runs one way
+/// only, and a close asked for by the OS still runs the JS path exactly once.
 fn close_satellite<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window(label) {
-        existing.close().map_err(|e| e.to_string())?;
+        existing.destroy().map_err(|e| e.to_string())?;
     }
     Ok(())
 }

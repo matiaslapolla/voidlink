@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "editor-window",
-  "description": "Permissions for the standalone editor window's webview. Without an entry here this webview has NO permissions at all \u2014 not even `core:event` \u2014 so its `listen`/`emit` calls reject and it never hears the workbench's context broadcast, which is exactly the bug this file fixes. Scoped like the git window's: `core:event` and the window controls it draws in its own title bar, plus the dialog plugin (confirm/message for discard and stage prompts, open for the file pickers). No `fs:*` \u2014 the editor writes through this app's own Rust commands, not the fs plugin \u2014 and no `core:webview:*`, because it never spawns child webviews. No `notification:*` permission appears here, and its absence is deliberate rather than an oversight: OS notifications are dispatched from Rust only (`src-tauri/src/notify`), because three windows share one origin and three webviews reacting to one `journal-appended` broadcast would produce three banners for one event. Granting a webview the capability would make that regression possible again, one `invoke` at a time.",
+  "description": "Permissions for the standalone editor window's webview. Without an entry here this webview has NO permissions at all — not even `core:event` — so its `listen`/`emit` calls reject and it never hears the workbench's context broadcast, which is exactly the bug this file fixes. Scoped like the git window's: `core:event` and the window controls it draws in its own title bar, plus the dialog plugin (confirm/message for discard and stage prompts, open for the file pickers). No `fs:*` — the editor writes through this app's own Rust commands, not the fs plugin — and no `core:webview:*`, because it never spawns child webviews. No `notification:*` permission appears here, and its absence is deliberate rather than an oversight: OS notifications are dispatched from Rust only (`src-tauri/src/notify`), because three windows share one origin and three webviews reacting to one `journal-appended` broadcast would produce three banners for one event. Granting a webview the capability would make that regression possible again, one `invoke` at a time. Grants `core:window:allow-destroy` alongside `allow-close`, and the pair is not redundant: `close()` only *requests* a close, and tauri prevents it outright for any window that has a JS `tauri://close-requested` listener — which this window has, because closing it is how it asks to be docked back. `onCloseRequested` then finishes the job with `destroy()`, so without this permission the window could not be closed at all, by the traffic light or by the workbench. See `close_satellite` in `src-tauri/src/window.rs`.",
   "webviews": [
     "editor"
   ],
@@ -10,6 +10,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-start-resize-dragging",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "dialog:allow-confirm",
