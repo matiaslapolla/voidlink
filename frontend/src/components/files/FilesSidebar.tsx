@@ -51,11 +51,11 @@ export function FilesSidebar(props: {
         fallback={<FilesRail onExpand={() => actions.toggleSidebarSection("files")} />}
       >
         <div class="h-9 pl-1.5 pr-1 border-b border-border flex items-center gap-1 shrink-0">
-          <SidebarGrip id="files" />
+          <SidebarGrip id="explorer" />
           <span class="flex-1 text-body font-semibold text-muted-foreground truncate">
             Explorer
           </span>
-          <SidebarMenuButton id="files" />
+          <SidebarMenuButton id="explorer" />
         </div>
         <FilesPanel onOpenFile={props.onOpenFile} />
       </Show>

@@ -32,6 +32,8 @@ const PANELS: PanelWidths = {
   rail: 200,
   sidebar: 300,
   gitSidebar: 400,
+  terminalsSidebar: 260,
+  agentsSidebar: 240,
   sidebarTerminalsHeight: 180,
   sidebarAgentsHeight: 220,
 };
@@ -193,6 +195,8 @@ describe("the preset list", () => {
       rail: PANEL_BOUNDS.rail.default,
       sidebar: PANEL_BOUNDS.sidebar.default,
       gitSidebar: PANEL_BOUNDS.gitSidebar.default,
+      terminalsSidebar: PANEL_BOUNDS.terminalsSidebar.default,
+      agentsSidebar: PANEL_BOUNDS.agentsSidebar.default,
       sidebarTerminalsHeight: PANEL_BOUNDS.sidebarTerminalsHeight.default,
       sidebarAgentsHeight: PANEL_BOUNDS.sidebarAgentsHeight.default,
     });

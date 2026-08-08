@@ -14,7 +14,7 @@ import { AppShell, type AppShellSidebar } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
 import { WorkspaceRail } from "@/components/layout/WorkspaceRail";
-import { TerminalSidebar } from "@/components/layout/TerminalSidebar";
+import { TerminalsSidebar } from "@/components/layout/TerminalsSidebar";
 import { MainSurface } from "@/components/layout/MainSurface";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { GitSidebar, GitSidebarCollapsed } from "@/components/git/GitSidebar";
@@ -77,6 +77,7 @@ import { askAgent, registerAgentActions } from "@/commands/agent";
 import { agentById, resolveAgentCommand, useSettings } from "@/store/settings";
 import { AgentBoardBroadcast } from "@/components/agent/AgentBoardBroadcast";
 import { FilesSidebar } from "@/components/files/FilesSidebar";
+import { AgentsSidebar } from "@/components/agent/AgentsSidebar";
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { BoardOverlayHost } from "@/components/board/BoardOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
@@ -1272,59 +1273,53 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
 
   // ── Where the file explorer lives ────────────────────────────────────────
   //
-  // Under horizontal tabs, exactly where it always has: the first section of
-  // the left sidebar, above the terminals list.
+  // The explorer is now a sidebar in its own right (`FilesSidebar`), rendered
+  // identically regardless of tab orientation — its own edge, its own width,
+  // its own splitter, its own collapse.
   //
-  // Under **vertical** tabs it is a sidebar of its own (`FilesSidebar`), with
-  // its own edge, its own width and its own splitter, and the terminals column
-  // goes away. That split is not decoration; it is the consequence of the
-  // preference. A vertical tab strip is a third navigation column at the left
-  // edge, behind the workspace rail and the file tree, and three parallel
-  // vertical lists at one edge is one more than the eye scans. Splitting them
-  // by *kind* is what the window has room for: one edge answers "which thing am
-  // I looking at" (workspaces, then tabs) and the other answers "what is in
-  // this repo" (its files, then its changes).
+  // It used to be *stacked inside the git panel's column* under vertical tabs,
+  // and inside the terminals column under horizontal tabs — two different
+  // components (`FilesSidebar` and the old `TerminalSidebar`) rendering the
+  // same tree, with the panel renaming itself ("Files" under horizontal,
+  // "Explorer" under vertical) as a side effect of an unrelated preference.
+  // That was a limitation, not a design: the shell had a single global
+  // `sidebarsSwapped` boolean, so panels that wanted the same edge had to share
+  // a column to get there. With a per-sidebar dock side they do not. The
+  // explorer, the terminals list, the agent dashboard and the git panel are
+  // four ordinary sidebars now: independent widths, independent collapse,
+  // either edge, and none nested in another.
   //
-  // It used to be *stacked inside the git panel's column* — one column, two
-  // panels, one shared width — and the reason was a limitation, not a design:
-  // the shell had a single global `sidebarsSwapped` boolean, so two panels that
-  // both wanted the right edge had to share a column to get there. With a
-  // per-sidebar dock side they do not. The explorer and the git panel are two
-  // ordinary sidebars now: independent widths, independent collapse, either
-  // edge, and neither nested in the other.
-  //
-  // The terminals sidebar's other two sections survive its absence because
-  // neither is lost. The terminals list is a second rendering of the terminal
-  // *tabs*, and a vertical strip shows those with their full labels — better
-  // than the list it duplicates. "Compare branches" is a row in the "+" menu
-  // and an action in the palette. The repo picker is on the workspace rail.
-  //
-  // `Mod+B` keeps meaning "show or hide the file explorer" in both layouts,
-  // which is why `leftSidebarCollapsed` gates both placements: the binding
-  // names an intent, not a screen edge.
-  const verticalTabs = () => settings.ui.tabOrientation === "vertical";
+  // `Mod+B` keeps meaning "show or hide the file explorer", which is why
+  // `leftSidebarCollapsed` still gates it: the binding names an intent, not a
+  // screen edge.
 
   /// Whether a sidebar renders in the shell at all. Zen takes every panel away;
   /// a detached panel is in a window of its own and its slot collapses.
   const shows = (id: SidebarId) =>
     !isZen() && !state.detachedSidebars.includes(id);
 
-  const filesPane = () => (
-    <Show when={shows("files") && !state.leftSidebarCollapsed}>
-      <Show
-        when={verticalTabs()}
-        fallback={
-          <TerminalSidebar
-            dock={state.dockSide.files}
-            onOpenFile={(path) => void openInEditorWindow(path)}
-          />
-        }
-      >
-        <FilesSidebar
-          dock={state.dockSide.files}
-          onOpenFile={(path) => void openInEditorWindow(path)}
-        />
-      </Show>
+  const explorerPane = () => (
+    <Show when={shows("explorer") && !state.leftSidebarCollapsed}>
+      <FilesSidebar
+        dock={state.dockSide.explorer}
+        onOpenFile={(path) => void openInEditorWindow(path)}
+      />
+    </Show>
+  );
+
+  const terminalsPane = () => (
+    <Show when={shows("terminals")}>
+      <TerminalsSidebar dock={state.dockSide.terminals} />
+    </Show>
+  );
+
+  /// Experimental, like the section it replaced: absent, not hidden, while
+  /// `experimental.agentDashboard` is off. The `<Show>` is what keeps
+  /// `AgentDashboard` — and the poll `useAgentSessions` attaches on mount —
+  /// out of existence entirely rather than merely out of sight.
+  const agentsPane = () => (
+    <Show when={shows("agents") && settings.experimental.agentDashboard}>
+      <AgentsSidebar dock={state.dockSide.agents} />
     </Show>
   );
 
@@ -1366,7 +1361,9 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   /// off it — is torn down and rebuilt because the user moved a panel.
   const shellSidebars: AppShellSidebar[] = [
     { id: "workspaces", content: railPane() },
-    { id: "files", content: filesPane() },
+    { id: "explorer", content: explorerPane() },
+    { id: "terminals", content: terminalsPane() },
+    { id: "agents", content: agentsPane() },
     { id: "git", content: gitPane() },
   ].map(({ id, content }) => ({
     id,

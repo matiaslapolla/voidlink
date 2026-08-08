@@ -24,6 +24,8 @@ describe("panel widths", () => {
       rail: PANEL_BOUNDS.rail.default,
       sidebar: PANEL_BOUNDS.sidebar.default,
       gitSidebar: PANEL_BOUNDS.gitSidebar.default,
+      terminalsSidebar: PANEL_BOUNDS.terminalsSidebar.default,
+      agentsSidebar: PANEL_BOUNDS.agentsSidebar.default,
       sidebarTerminalsHeight: PANEL_BOUNDS.sidebarTerminalsHeight.default,
       sidebarAgentsHeight: PANEL_BOUNDS.sidebarAgentsHeight.default,
     });
@@ -308,10 +310,18 @@ describe("sidebar docking", () => {
   it("ships with the layout the shell has always had", () => {
     expect(DEFAULT_PREFS.dockSide).toEqual({
       workspaces: "left",
-      files: "left",
+      explorer: "left",
+      terminals: "left",
+      agents: "left",
       git: "right",
     });
-    expect(DEFAULT_PREFS.dockOrder).toEqual(["workspaces", "files", "git"]);
+    expect(DEFAULT_PREFS.dockOrder).toEqual([
+      "workspaces",
+      "explorer",
+      "terminals",
+      "agents",
+      "git",
+    ]);
     expect(DEFAULT_PREFS.detachedSidebars).toEqual([]);
     expect(DEFAULT_PREFS.workspaceRailCollapsed).toBe(false);
   });
@@ -319,7 +329,9 @@ describe("sidebar docking", () => {
   it("migrates a blob with sidebarsSwapped:true to the arrangement it produced", () => {
     expect(parsePrefs({ sidebarsSwapped: true } as never).dockSide).toEqual({
       workspaces: "left",
-      files: "right",
+      explorer: "right",
+      terminals: "right",
+      agents: "right",
       git: "left",
     });
   });
@@ -332,13 +344,19 @@ describe("sidebar docking", () => {
 
   it("leaves a blob already in the new shape alone, however often it is parsed", () => {
     const saved = {
-      dockSide: { workspaces: "right", files: "left", git: "left" },
-      dockOrder: ["git", "files", "workspaces"],
+      dockSide: { workspaces: "right", explorer: "left", git: "left" },
+      dockOrder: ["git", "explorer", "workspaces"],
       detachedSidebars: ["git"],
     } as never;
     const once = parsePrefs(saved);
-    expect(once.dockSide).toEqual({ workspaces: "right", files: "left", git: "left" });
-    expect(once.dockOrder).toEqual(["git", "files", "workspaces"]);
+    expect(once.dockSide).toEqual({
+      workspaces: "right",
+      explorer: "left",
+      terminals: "left",
+      agents: "left",
+      git: "left",
+    });
+    expect(once.dockOrder).toEqual(["git", "explorer", "workspaces", "terminals", "agents"]);
     expect(once.detachedSidebars).toEqual(["git"]);
     const twice = parsePrefs(once as never);
     expect(twice.dockSide).toEqual(once.dockSide);
@@ -349,19 +367,31 @@ describe("sidebar docking", () => {
   it("drops a sidebar id this build does not know, rather than throwing", () => {
     expect(() =>
       parsePrefs({
-        dockSide: { files: "right", outline: "left" },
+        dockSide: { explorer: "right", outline: "left" },
         dockOrder: ["outline", "git"],
         detachedSidebars: ["outline"],
       } as never),
     ).not.toThrow();
     const prefs = parsePrefs({
-      dockSide: { files: "right", outline: "left" },
+      dockSide: { explorer: "right", outline: "left" },
       dockOrder: ["outline", "git"],
       detachedSidebars: ["outline"],
     } as never);
-    expect(prefs.dockSide).toEqual({ ...DEFAULT_PREFS.dockSide, files: "right" });
-    expect(prefs.dockOrder).toEqual(["git", "workspaces", "files"]);
+    expect(prefs.dockSide).toEqual({ ...DEFAULT_PREFS.dockSide, explorer: "right" });
+    expect(prefs.dockOrder).toEqual(["git", "workspaces", "explorer", "terminals", "agents"]);
     expect(prefs.detachedSidebars).toEqual([]);
+  });
+
+  it("migrates a persisted `files` id to `explorer`, at the edge and position it had", () => {
+    const prefs = parsePrefs({
+      dockSide: { workspaces: "left", files: "right", git: "left" },
+      dockOrder: ["git", "files", "workspaces"],
+      detachedSidebars: ["files"],
+    } as never);
+    expect(prefs.dockSide.explorer).toBe("right");
+    expect("files" in prefs.dockSide).toBe(false);
+    expect(prefs.dockOrder).toEqual(["git", "explorer", "workspaces", "terminals", "agents"]);
+    expect(prefs.detachedSidebars).toEqual(["explorer"]);
   });
 
   it("does not hand out the module-level defaults to be mutated", () => {

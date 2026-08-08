@@ -91,8 +91,14 @@ export const FILES_PANEL_WINDOW_LABEL = "panel-files";
 /// gap, which is a stream of its own.
 export const SIDEBAR_WINDOW_LABEL: Record<string, string | null> = {
   workspaces: null,
-  files: FILES_PANEL_WINDOW_LABEL,
+  explorer: FILES_PANEL_WINDOW_LABEL,
+  // Both detachable in principle — `canDetachSidebar` answers honestly from
+  // this table — but neither has a window yet. That is a separate stream's
+  // work (detach lifecycle); this one only had to grow the sidebar to five
+  // ids without claiming a capability it does not have.
+  terminals: null,
   git: GIT_WINDOW_LABEL,
+  agents: null,
 };
 
 /// Which sidebar this window *is*, or `null` in the workbench and the two

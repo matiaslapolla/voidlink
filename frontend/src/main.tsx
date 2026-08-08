@@ -38,7 +38,7 @@ void initPlatform().then(() => {
     // above; the label also says *which* panel, so there is one root rather
     // than one per sidebar.
     const sidebarId = currentPanelSidebar()!;
-    document.title = "Voidlink Files";
+    document.title = "Voidlink Explorer";
     render(() => <PanelApp sidebarId={sidebarId} />, root);
   } else {
     render(() => <App />, root);
