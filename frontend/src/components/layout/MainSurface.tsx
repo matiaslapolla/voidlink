@@ -21,6 +21,7 @@ import {
   GitCommitHorizontal,
   Brain,
   Columns3 as BoardIcon,
+  Columns2 as SplitIcon,
   History as TimelineIcon,
   Layers as CombinedIcon,
   Radar as MissionIcon,
@@ -91,6 +92,7 @@ import {
   resolveGroupTabs,
   type PaneNode,
   type SplitOrientation,
+  type TabGroupColor,
 } from "@/store/layout";
 import { useAppStore } from "@/store/LayoutContext";
 import { fsApi } from "@/api/fs";
@@ -148,9 +150,10 @@ export function MainSurface(props: MainSurfaceProps) {
     activeMissionTabs,
     activeBrowserTabs,
     activeAgentTabs,
+    activePaneGroupTabs,
     activeItem,
     activePinnedTabs,
-    workbenchTabIds,
+    topLevelWorkbenchTabIds,
     paneLayout,
     focusedGroupId,
     actions,
@@ -183,7 +186,7 @@ export function MainSurface(props: MainSurfaceProps) {
       out.push({
         kind: "terminal",
         id: term.id,
-        label: term.label,
+        label: tabLabel(term.id, term.label),
         icon: <TerminalSquare class="w-3.5 h-3.5 shrink-0" />,
         // A session restore recreates the tab against a *fresh* PTY. The pane
         // is empty because the shell is new, not because output was lost, and
@@ -193,6 +196,7 @@ export function MainSurface(props: MainSurfaceProps) {
           : term.label,
         terminal: term,
         activity: tabMark(term.id),
+        color: tabColor(term.id),
       });
     }
     for (const tab of activeCompareTabs()) {
@@ -203,7 +207,7 @@ export function MainSurface(props: MainSurfaceProps) {
         // trees by oid, and the derived label would be two shas the user never
         // saw. The refs still show in the tooltip, which is where "what is this
         // actually diffing" belongs.
-        label: tab.label || `${short(tab.baseRef) || "?"}..${short(tab.headRef) || "?"}`,
+        label: tabLabel(tab.id, tab.label || `${short(tab.baseRef) || "?"}..${short(tab.headRef) || "?"}`),
         prefix: "compare · ",
         icon: <GitBranchPlus class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: tab.label
@@ -212,26 +216,28 @@ export function MainSurface(props: MainSurfaceProps) {
         activity: tabMark(tab.id),
         mono: true,
         labelWidth: "max-w-[200px]",
+        color: tabColor(tab.id),
       });
     }
     for (const tab of activeStackTabs()) {
       out.push({
         kind: "stack",
         id: tab.id,
-        label: tab.topBranch,
+        label: tabLabel(tab.id, tab.topBranch),
         prefix: "stack · ",
         icon: <Layers class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: `Stack: ${tab.topBranch} → ${tab.trunk}`,
         activity: tabMark(tab.id),
         mono: true,
         labelWidth: "max-w-[200px]",
+        color: tabColor(tab.id),
       });
     }
     for (const tab of activeHistoryTabs()) {
       out.push({
         kind: "history",
         id: tab.id,
-        label: "graph",
+        label: tabLabel(tab.id, "graph"),
         icon: <GitCommitHorizontal class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: "Commit graph",
         activity: tabMark(tab.id),
@@ -239,49 +245,53 @@ export function MainSurface(props: MainSurfaceProps) {
         // them against and nothing a pin would protect them from.
         pinnable: false,
         draggable: false,
+        color: tabColor(tab.id),
       });
     }
     for (const tab of activeTimelineTabs()) {
       out.push({
         kind: "timeline",
         id: tab.id,
-        label: "timeline",
+        label: tabLabel(tab.id, "timeline"),
         icon: <TimelineIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: "Timeline",
         activity: tabMark(tab.id),
         pinnable: false,
         draggable: false,
+        color: tabColor(tab.id),
       });
     }
     for (const tab of activeCombinedTabs()) {
       out.push({
         kind: "combined",
         id: tab.id,
-        label: "all changes",
+        label: tabLabel(tab.id, "all changes"),
         icon: <CombinedIcon class="w-3.5 h-3.5 shrink-0 text-info opacity-90" />,
         title: "All changes",
         activity: tabMark(tab.id),
         pinnable: false,
         draggable: false,
+        color: tabColor(tab.id),
       });
     }
     for (const tab of activeMissionTabs()) {
       out.push({
         kind: "mission",
         id: tab.id,
-        label: "mission",
+        label: tabLabel(tab.id, "mission"),
         icon: <MissionIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         title: "Mission Control",
         activity: tabMark(tab.id),
         pinnable: false,
         draggable: false,
+        color: tabColor(tab.id),
       });
     }
     for (const tab of activeBrowserTabs()) {
       out.push({
         kind: "browser",
         id: tab.id,
-        label: browserTabLabel(tab),
+        label: tabLabel(tab.id, browserTabLabel(tab)),
         icon: <Globe class="w-3.5 h-3.5 shrink-0 text-info opacity-80" />,
         title: tab.url,
         activity: tabMark(tab.id),
@@ -290,13 +300,14 @@ export function MainSurface(props: MainSurfaceProps) {
         // list would not move it, so the tab stays put too.
         pinnable: false,
         draggable: false,
+        color: tabColor(tab.id),
       });
     }
     for (const tab of activeAgentTabs()) {
       out.push({
         kind: "agent",
         id: tab.id,
-        label: tab.title?.trim() || "Agent",
+        label: tabLabel(tab.id, tab.title?.trim() || "Agent"),
         icon: <Bot class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
         // The question the thread opened with, so two tabs on the same agent are
         // told apart by what they are about rather than by position.
@@ -308,10 +319,40 @@ export function MainSurface(props: MainSurfaceProps) {
         // tab moves and survives being pinned.
         pinnable: true,
         draggable: true,
+        color: tabColor(tab.id),
+      });
+    }
+    for (const tab of activePaneGroupTabs()) {
+      out.push({
+        kind: "panegroup",
+        id: tab.id,
+        label: tabLabel(tab.id, `Split ${tab.seq}`),
+        icon: <SplitIcon class="w-3.5 h-3.5 shrink-0 text-primary opacity-90" />,
+        title: `Split ${tab.seq}`,
+        activity: tabMark(tab.id),
+        color: tabColor(tab.id),
+        // A split is not reordered within its own strip like a terminal is —
+        // it moves the way any other tab does, by dragging it between groups.
+        pinnable: true,
+        draggable: true,
       });
     }
     return out;
   });
+
+  /// A tab's custom label, if it has one, else `fallback` — the kind's own
+  /// derived label. Read here rather than inlined at each push above so every
+  /// kind gets renaming through one call, matching how `tabMark` already
+  /// reads one store lookup per tab rather than each kind wiring its own.
+  function tabLabel(tabId: string, fallback: string): string {
+    return actions.tabLabelOverride(state.activeWorktreeId, tabId) ?? fallback;
+  }
+
+  /// A tab's custom label colour, or `undefined` for the ordinary unstyled
+  /// chrome — the same generic overlay `tabLabel` reads, one axis over.
+  function tabColor(tabId: string): TabGroupColor | undefined {
+    return actions.tabColorOverride(state.activeWorktreeId, tabId) ?? undefined;
+  }
 
   /// Tooltip for an agent tab: the agent's name, plus the first thing asked in
   /// that thread. The label can only show one of the two.
@@ -322,14 +363,84 @@ export function MainSurface(props: MainSurfaceProps) {
   }
 
   // ── The pane tree ────────────────────────────────────────────────────────
+  //
+  // A `panegroup` tab's payload is its own nested `PaneNode` — see
+  // `PaneGroupTab`'s header in `store/layout/tabs.ts`. Rendering it reuses
+  // every piece below rather than standing up a second copy: `groups()`,
+  // `groupTabIds()` and friends are the union of the root tree and every open
+  // `panegroup` tab's tree, keyed by group/split id (globally unique —
+  // `newPaneId` never repeats one), so a nested pane is, to everything from
+  // here down to the flat pane layer, just another pane. `renderGroup` below
+  // is what actually draws the nested split, by calling `renderNode` again
+  // for whichever group's front tab is a `panegroup` — see its comment.
 
-  const groups = createMemo(() => groupList(paneLayout()));
+  interface PaneScope {
+    /// `null` is the worktree's root tree; anything else is a `panegroup`
+    /// tab's id.
+    scopeId: string | null;
+    layout: PaneNode;
+    /// This scope's own universe of tab ids — already excludes what another
+    /// `panegroup` tab has claimed (root), or is exactly what this tree has
+    /// already claimed for itself (nested). See `topLevelWorkbenchTabIds` and
+    /// `actions.paneGroupOwning` in `store/layout/index.ts`'s "Panegroup
+    /// scoping" section for why the two are computed differently.
+    tabIds: string[];
+  }
+
+  const paneScopes = createMemo<PaneScope[]>(() => {
+    const out: PaneScope[] = [
+      { scopeId: null, layout: paneLayout(), tabIds: topLevelWorkbenchTabIds() },
+    ];
+    for (const pg of activePaneGroupTabs()) {
+      out.push({
+        scopeId: pg.id,
+        layout: pg.layout,
+        tabIds: groupList(pg.layout).flatMap((g) => g.tabIds),
+      });
+    }
+    return out;
+  });
+
+  /// Which scope owns each group id *and* each split id — `renderNode`'s
+  /// `Splitter` needs the split's scope too, to write a ratio drag back to
+  /// the right tree.
+  const paneIdScope = createMemo(() => {
+    const out = new Map<string, string | null>();
+    const walk = (node: PaneNode, scopeId: string | null) => {
+      if (node.kind === "group") {
+        out.set(node.group.id, scopeId);
+        return;
+      }
+      out.set(node.id, scopeId);
+      node.children.forEach((c) => walk(c, scopeId));
+    };
+    for (const scope of paneScopes()) walk(scope.layout, scope.scopeId);
+    return out;
+  });
+
+  const groups = createMemo(() => paneScopes().flatMap((s) => groupList(s.layout)));
+
+  /// One top-level group's own pane count — what decides whether *that*
+  /// group's strip shows a header/close-pane control. Deliberately not
+  /// `groups().length`: that now counts every nested pane too, and a
+  /// worktree with one root pane and an open two-pane split must still render
+  /// its root strip exactly as an unsplit workbench does.
+  const scopeGroupCount = (scopeId: string | null) =>
+    groupList(paneScopes().find((s) => s.scopeId === scopeId)?.layout ?? paneLayout()).length;
 
   /// Which tabs each group shows. With the default layout — one group, no
   /// claims — this is `tabs()` in registry order under a single key, which is
   /// what makes the un-split workbench identical to the one before splits
   /// existed.
-  const groupTabIds = createMemo(() => resolveGroupTabs(paneLayout(), workbenchTabIds()));
+  const groupTabIds = createMemo(() => {
+    const out = new Map<string, string[]>();
+    for (const scope of paneScopes()) {
+      for (const [groupId, ids] of resolveGroupTabs(scope.layout, scope.tabIds)) {
+        out.set(groupId, ids);
+      }
+    }
+    return out;
+  });
 
   const descriptorsById = createMemo(() => new Map(tabs().map((t) => [t.id, t])));
 
@@ -369,8 +480,28 @@ export function MainSurface(props: MainSurfaceProps) {
     return out;
   });
 
-  /// Maximize hides every group but one. Zen hides chrome, not panes.
-  const visibleGroups = createMemo(() => new Set(visibleGroupIds(groups().map((g) => g.id))));
+  /// Maximize hides every root group but one. Zen hides chrome, not panes.
+  /// Judged over the *root* tree only — maximize is a statement about which
+  /// top-level pane is on screen, and a nested split has no maximize of its
+  /// own in this stream.
+  const rootGroupIds = createMemo(() => groupList(paneLayout()).map((g) => g.id));
+  const visibleRootGroups = createMemo(() => new Set(visibleGroupIds(rootGroupIds())));
+
+  /// A nested group is on screen exactly when the root group hosting its
+  /// `panegroup` tab is itself visible *and* that tab is the one in front —
+  /// the split's content is not on screen just because the tab exists, only
+  /// while somebody is looking at it.
+  const visibleGroups = createMemo(() => {
+    const out = new Set(visibleRootGroups());
+    for (const scope of paneScopes()) {
+      if (scope.scopeId === null) continue;
+      const hostRoot = rootGroupIds().find((g) => frontTabIds().get(g) === scope.scopeId);
+      if (hostRoot && visibleRootGroups().has(hostRoot)) {
+        for (const g of groupList(scope.layout)) out.add(g.id);
+      }
+    }
+    return out;
+  });
 
   /// The group holding this tab is on screen. Distinct from "the tab is on
   /// screen": a browser tab that is the front tab of a maximized-away group is
@@ -632,14 +763,16 @@ export function MainSurface(props: MainSurfaceProps) {
 
   // ── Group actions ────────────────────────────────────────────────────────
 
-  /// A tab opened while a background group has focus belongs to that group.
-  /// Without this every new terminal would land in the first group, because an
-  /// unclaimed tab falls there by definition — which would make splitting a
-  /// one-way trip.
+  /// A tab opened while a background *root* group has focus belongs to that
+  /// group. Without this every new terminal would land in the first group,
+  /// because an unclaimed tab falls there by definition — which would make
+  /// splitting a one-way trip. Root only: a `panegroup` tab has no "+" of its
+  /// own to open a fresh tab from (see `renderGroup`), so nothing new ever
+  /// appears inside a nested tree this way — only by `addTabToSplitPane`.
   createEffect(
-    on(workbenchTabIds, (ids, prev) => {
+    on(topLevelWorkbenchTabIds, (ids, prev) => {
       const target = focusedGroupId();
-      const first = groups()[0]?.id;
+      const first = rootGroupIds()[0];
       if (!prev || !target || !first || target === first) return;
       const known = new Set(prev);
       for (const id of ids) {
@@ -651,17 +784,33 @@ export function MainSurface(props: MainSurfaceProps) {
   /// A drop landed in `groupId`. One payload covers both shapes of drag: a
   /// whole tab group moves as a unit through the action that re-claims each
   /// member via the pane reducer, and a lone tab moves as it always did.
+  ///
+  /// Refuses a drag that would cross from one scope into another — the root
+  /// tree into a split, a split into the root tree, or one split into another
+  /// — rather than half-moving it: `moveTabToGroup` only ever touches the one
+  /// tree it is given, so honouring a cross-scope drop would *add* the tab's
+  /// claim in the target tree without removing it from the source, leaving it
+  /// claimed twice. `addTabToSplitPane` (the tab context menu's "Add to split
+  /// pane") is the one sanctioned way across; drag stays same-scope only.
   function moveTabHere(payload: TabDragPayload, groupId: string, beforeTabId: string | null) {
+    const wtId = state.activeWorktreeId;
+    const targetScope = paneIdScope().get(groupId) ?? null;
+    const sourceGroupId = payload.tabGroupId
+      ? undefined
+      : groupOfTab().get(payload.id);
+    const sourceScope = sourceGroupId ? (paneIdScope().get(sourceGroupId) ?? null) : targetScope;
+    if (sourceScope !== targetScope) return;
     if (payload.tabGroupId) {
-      actions.moveTabGroupToPane(state.activeWorktreeId, payload.tabGroupId, groupId);
+      actions.moveTabGroupToPane(wtId, payload.tabGroupId, groupId);
       return;
     }
-    actions.moveTabToPaneGroup(state.activeWorktreeId, payload.id, groupId, beforeTabId);
+    actions.moveTabToPaneGroup(wtId, payload.id, groupId, beforeTabId, targetScope);
   }
 
   /// A tab dropped on a group's edge: split that group and land the tab in the
   /// new one. Returns `null` only if the group has vanished between the drag
-  /// starting and the drop landing.
+  /// starting and the drop landing. Same cross-scope refusal as
+  /// `moveTabHere`, for the same reason.
   ///
   /// The split and the move are one store write. As two, the prune effect ran
   /// in between, saw a group with nothing in it, and collapsed the pane before
@@ -678,18 +827,30 @@ export function MainSurface(props: MainSurfaceProps) {
     placement: "before" | "after",
   ) {
     const wtId = state.activeWorktreeId;
+    const scope = paneIdScope().get(groupId) ?? null;
+    const sourceGroupId = payload.tabGroupId ? undefined : groupOfTab().get(payload.id);
+    const sourceScope = sourceGroupId ? (paneIdScope().get(sourceGroupId) ?? null) : scope;
+    if (sourceScope !== scope) return;
     if (payload.tabGroupId) {
-      const newGroupId = actions.splitPaneGroupWithTab(wtId, orientation, placement, groupId, null);
+      const newGroupId = actions.splitPaneGroupWithTab(
+        wtId,
+        orientation,
+        placement,
+        groupId,
+        null,
+        scope,
+      );
       if (newGroupId) moveTabHere(payload, newGroupId, null);
       return;
     }
-    actions.splitPaneGroupWithTab(wtId, orientation, placement, groupId, payload.id);
+    actions.splitPaneGroupWithTab(wtId, orientation, placement, groupId, payload.id, scope);
   }
 
   function selectTab(tab: TabDescriptor, groupId: string) {
     const wtId = state.activeWorktreeId;
-    actions.focusPaneGroup(wtId, groupId);
-    actions.setPaneGroupActiveTab(wtId, groupId, tab.id);
+    const scope = paneIdScope().get(groupId) ?? null;
+    if (scope === null) actions.focusPaneGroup(wtId, groupId);
+    actions.setPaneGroupActiveTab(wtId, groupId, tab.id, scope);
     switch (tab.kind) {
       case "terminal": actions.selectTerminal(wtId, tab.id); break;
       case "compare": actions.selectCompareTab(wtId, tab.id); break;
@@ -700,6 +861,7 @@ export function MainSurface(props: MainSurfaceProps) {
       case "mission": actions.selectMissionTab(wtId, tab.id); break;
       case "browser": actions.selectBrowserTab(wtId, tab.id); break;
       case "agent": actions.selectAgentTab(wtId, tab.id); break;
+      case "panegroup": actions.selectPaneGroupTab(wtId, tab.id); break;
     }
   }
 
@@ -723,6 +885,12 @@ export function MainSurface(props: MainSurfaceProps) {
         // address this conversation again; keeping it would only ride every
         // future `voidlink-agent-threads` write.
         dropAgentThread(wtId, tab.id);
+        break;
+      // Closing the tab does not close what is inside it — those tabs simply
+      // stop being claimed by a nested tree and fall back to the root tree's
+      // first group, the same reactive path a closed tab's own group takes.
+      case "panegroup":
+        actions.closePaneGroupTab(wtId, tab.id);
         break;
     }
   }
@@ -896,7 +1064,10 @@ export function MainSurface(props: MainSurfaceProps) {
     equals: (a, b) => structureKey(a) === structureKey(b),
   });
 
-  /// Ratios, read separately from the structure for the reason above.
+  /// Ratios, read separately from the structure for the reason above. Walks
+  /// every open scope — the root tree and every `panegroup` tab's own — since
+  /// split ids are globally unique (`newPaneId`) and `<Splitter>` looks one up
+  /// by id regardless of which tree it lives in.
   const ratiosBySplit = createMemo(() => {
     const out = new Map<string, number[]>();
     const walk = (n: PaneNode) => {
@@ -904,7 +1075,7 @@ export function MainSurface(props: MainSurfaceProps) {
       out.set(n.id, n.ratios);
       n.children.forEach(walk);
     };
-    walk(paneLayout());
+    for (const scope of paneScopes()) walk(scope.layout);
     return out;
   });
   const ratioAt = (splitId: string, index: number) => ratiosBySplit().get(splitId)?.[index] ?? 0;
@@ -921,12 +1092,26 @@ export function MainSurface(props: MainSurfaceProps) {
   };
 
   function renderGroup(groupId: string): JSX.Element {
-    /// No header at all with one group: today's workbench, unchanged. With two
-    /// or more, the rule is 2px in both states so focus moving between groups
-    /// costs no layout.
+    /// Which tree this group belongs to — the root, or one `panegroup` tab's
+    /// own — and that tree's own pane count. Never `groups().length`: that now
+    /// counts every nested pane across every open split, and a worktree with
+    /// one root pane must still render its root strip exactly as an unsplit
+    /// workbench does the moment somebody opens an unrelated split elsewhere.
+    const scope = paneIdScope().get(groupId) ?? null;
+    const paneCount = () => scopeGroupCount(scope);
+
+    /// No header at all with one pane *in this tree*: today's workbench,
+    /// unchanged. With two or more, the rule is 2px in both states so focus
+    /// moving between groups costs no layout.
     const header = () =>
-      groups().length < 2 ? undefined : focusedGroupId() === groupId ? "focused" : "unfocused";
-    const focusGroup = () => actions.focusPaneGroup(state.activeWorktreeId, groupId);
+      paneCount() < 2 ? undefined : focusedGroupId() === groupId ? "focused" : "unfocused";
+    /// Root only — a nested split's own front pane is tracked by
+    /// `PaneGroup.activeTabId` on its tree, not by keyboard focus, so there is
+    /// nothing to write here for one. See `focusPaneGroup`'s header in
+    /// `store/layout/index.ts`.
+    const focusGroup = () => {
+      if (scope === null) actions.focusPaneGroup(state.activeWorktreeId, groupId);
+    };
 
     /// Zen carries the focus rule itself, because the strip that normally
     /// carries it is not rendered.
@@ -941,7 +1126,14 @@ export function MainSurface(props: MainSurfaceProps) {
     /// pixel — the same no-reflow guarantee the strip's 2px-in-both-states rule
     /// gives, reached a different way because there is no second state to pad
     /// against here.
-    const zenFocus = () => isZen() && groups().length > 1 && focusedGroupId() === groupId;
+    const zenFocus = () => isZen() && paneCount() > 1 && focusedGroupId() === groupId;
+
+    /// The `panegroup` tab in front in this group, if any — what tells the
+    /// body below to render a nested split instead of an empty measuring box.
+    const frontPaneGroupTab = () => {
+      const frontId = frontTabIds().get(groupId);
+      return frontId ? (activePaneGroupTabs().find((t) => t.id === frontId) ?? null) : null;
+    };
 
     return (
       // One pane group = one island (D1). The radius and the clipping come
@@ -995,8 +1187,8 @@ export function MainSurface(props: MainSurfaceProps) {
             // than no button — so the strip is told there is nothing to close
             // rather than being left to render a dead one.
             onClosePane={
-              groups().length > 1
-                ? () => actions.closePaneGroup(state.activeWorktreeId, groupId)
+              paneCount() > 1
+                ? () => actions.closePaneGroup(state.activeWorktreeId, groupId, scope)
                 : undefined
             }
             onMoveTab={(payload, before) => moveTabHere(payload, groupId, before)}
@@ -1009,65 +1201,93 @@ export function MainSurface(props: MainSurfaceProps) {
               actions.reorderItemTab(state.activeWorktreeId, kind, fromId, toId);
             }}
             onTogglePin={(id) => actions.togglePinTab(state.activeWorktreeId, id)}
+            onRenameTab={(id, label) => actions.renameTab(state.activeWorktreeId, id, label)}
+            onRecolorTab={(id, color) => actions.setTabColor(state.activeWorktreeId, id, color)}
+            splitPaneTargets={actions
+              .paneGroupTabsOf(state.activeWorktreeId)
+              .map((t) => ({ id: t.id, label: tabLabel(t.id, `Split ${t.seq}`) }))}
+            // §7.6: a `panegroup` tab cannot itself be split into (one level of
+            // nesting only), and inside a split there is nowhere further to add
+            // one — the row says both rather than merely disappearing.
+            addToSplitPaneDisabledReason={(tab) => {
+              if (scope !== null) return "Already inside a split — splits cannot nest";
+              if (tab.kind === "panegroup") return "A split cannot contain another split";
+              return null;
+            }}
+            onAddToSplitPane={(id, targetId) =>
+              actions.addTabToSplitPane(state.activeWorktreeId, id, targetId)
+            }
             trailing={
-              <NewTabMenu
-                open={menuGroup() === groupId}
-                onOpen={() => {
-                  focusGroup();
-                  setMenuGroup(groupId);
-                }}
-                onClose={closeMenu}
-                disabled={!repoRoot()}
-                newFileMode={newFileMode()}
-                onEnterFileMode={() => { setNewFileMode(true); setNewFileError(""); }}
-                newFileName={newFileName()}
-                setNewFileName={setNewFileName}
-                newFileError={newFileError()}
-                onCreateFile={() => void onCreateFile()}
-                onNewTerminal={() => void onNewTerminal()}
-                onNewCompare={onNewCompare}
-                onOpenBrain={() => {
-                  // An overlay since cut C2, not a tab — but still reachable
-                  // from the same menu, because the menu is where somebody
-                  // looks for it.
-                  openBrain();
-                  closeMenu();
-                }}
-                onOpenBoard={() => {
-                  // An overlay for the same reason the brain is one — see
-                  // `BoardOverlay.tsx` — and in the same menu for the same
-                  // reason: this is where somebody looks for it.
-                  openBoard();
-                  closeMenu();
-                }}
-                onOpenTimeline={() => {
-                  actions.openTimelineTab(state.activeWorktreeId);
-                  closeMenu();
-                }}
-                onOpenMission={() => {
-                  actions.openMissionTab(state.activeWorktreeId);
-                  closeMenu();
-                }}
-                onNewBrowser={onNewBrowser}
-                onNewAgent={() => {
-                  actions.openAgentTab(
-                    state.activeWorktreeId,
-                    defaultAgentId(),
-                    agentById(defaultAgentId())?.name,
-                  );
-                  closeMenu();
-                }}
-                claudeAgents={claudeAgents()}
-                onLaunchAgentTerminal={(agentId) => {
-                  void launchAgentTerminal(store, state.activeWorktreeId, agentId);
-                  closeMenu();
-                }}
-              />
+              // The "+" menu opens brand-new tabs, which land in whichever
+              // *root* group has focus (see the effect above it in this file)
+              // — a control with no way to reach a nested tree correctly would
+              // be worse than no control, so it renders only at the root.
+              scope === null ? (
+                <NewTabMenu
+                  open={menuGroup() === groupId}
+                  onOpen={() => {
+                    focusGroup();
+                    setMenuGroup(groupId);
+                  }}
+                  onClose={closeMenu}
+                  disabled={!repoRoot()}
+                  newFileMode={newFileMode()}
+                  onEnterFileMode={() => { setNewFileMode(true); setNewFileError(""); }}
+                  newFileName={newFileName()}
+                  setNewFileName={setNewFileName}
+                  newFileError={newFileError()}
+                  onCreateFile={() => void onCreateFile()}
+                  onNewTerminal={() => void onNewTerminal()}
+                  onNewCompare={onNewCompare}
+                  onOpenBrain={() => {
+                    // An overlay since cut C2, not a tab — but still reachable
+                    // from the same menu, because the menu is where somebody
+                    // looks for it.
+                    openBrain();
+                    closeMenu();
+                  }}
+                  onOpenBoard={() => {
+                    // An overlay for the same reason the brain is one — see
+                    // `BoardOverlay.tsx` — and in the same menu for the same
+                    // reason: this is where somebody looks for it.
+                    openBoard();
+                    closeMenu();
+                  }}
+                  onOpenTimeline={() => {
+                    actions.openTimelineTab(state.activeWorktreeId);
+                    closeMenu();
+                  }}
+                  onOpenMission={() => {
+                    actions.openMissionTab(state.activeWorktreeId);
+                    closeMenu();
+                  }}
+                  onNewBrowser={onNewBrowser}
+                  onNewAgent={() => {
+                    actions.openAgentTab(
+                      state.activeWorktreeId,
+                      defaultAgentId(),
+                      agentById(defaultAgentId())?.name,
+                    );
+                    closeMenu();
+                  }}
+                  claudeAgents={claudeAgents()}
+                  onLaunchAgentTerminal={(agentId) => {
+                    void launchAgentTerminal(store, state.activeWorktreeId, agentId);
+                    closeMenu();
+                  }}
+                />
+              ) : undefined
             }
           />
         </Show>
-        {/* The body is deliberately empty: it is a measuring box, and the pane
-            that fills it lives in the flat layer below.
+        {/* Ordinarily deliberately empty: a measuring box, and the pane that
+            fills it lives in the flat layer below. When the front tab is a
+            `panegroup`, though, its nested split renders *inside* this box —
+            reusing `renderNode`/`renderGroup` one level down, so a nested pane
+            registers its own body into the very same `rects`/`bodyEls` maps
+            this one does. The flat layer never reparents either way: a
+            terminal claimed by an inner pane is still drawn once, at the top
+            of this component, and only its position moves.
             `min-w-0 min-h-0` because it is now a flex child on *either* axis:
             without it a wide tab label or a tall pane would push the box past
             the island rather than being clipped by it, and the flat layer
@@ -1076,7 +1296,15 @@ export function MainSurface(props: MainSurfaceProps) {
         <div
           ref={(el) => registerBody(groupId, el)}
           class="flex-1 relative overflow-hidden min-w-0 min-h-0"
-        />
+        >
+          <Show when={frontPaneGroupTab()}>
+            {(pg) => (
+              <div class="absolute inset-0 flex flex-col overflow-hidden bg-canvas">
+                {renderNode(pg().layout)}
+              </div>
+            )}
+          </Show>
+        </div>
       </div>
     );
   }
@@ -1158,6 +1386,7 @@ export function MainSurface(props: MainSurfaceProps) {
                       state.activeWorktreeId,
                       node.id,
                       ratiosAfterDrag(ratiosBySplit().get(node.id) ?? [], i, px, usable()),
+                      paneIdScope().get(node.id) ?? null,
                     );
                   }}
                 />
@@ -1193,7 +1422,17 @@ export function MainSurface(props: MainSurfaceProps) {
           // watcher is refcounted, so this and the strip share one poll.
           watchTerminal(term.id, term.ptyId);
           return (
-          <div class={paneClass()} style={paneStyle(term.id)}>
+          // `data-pane-tab-id`: what proves the PTY-survival invariant in
+          // `MainSurface.panegroup.browser.test.tsx` — a terminal moved into a
+          // `panegroup` tab's nested pane is still *this exact node*, only
+          // repositioned. See the component comment above for why the flat
+          // layer never reparents. A name of its own rather than reusing the
+          // tab strip card's `data-tab-id` (`TabStrip.tsx`): the two coexist
+          // on screen, and a shared attribute would make `querySelector`
+          // resolve to whichever of them happens to be first in document
+          // order — which is exactly the false failure this test would then
+          // produce whenever a strip re-renders in front of the flat layer.
+          <div class={paneClass()} style={paneStyle(term.id)} data-pane-tab-id={term.id}>
             <TerminalPane
               ptyId={term.ptyId}
               active={tabIsVisible(term.id)}
@@ -1427,12 +1666,20 @@ export function MainSurface(props: MainSurfaceProps) {
                     style={rectStyle(rect())}
                   >
                     <EmptyState
-                      id={groups().length > 1 ? "groupNoTabs" : "worktreeNoTabs"}
+                      id={scopeGroupCount(paneIdScope().get(group.id) ?? null) > 1
+                        ? "groupNoTabs"
+                        : "worktreeNoTabs"}
                       size="pane"
                       action={
                         <EmptyStateAction
                           onClick={() => {
-                            actions.focusPaneGroup(state.activeWorktreeId, group.id);
+                            // Root only: an empty nested pane has no "+" of its
+                            // own (see `renderGroup`), so a compare tab opened
+                            // from here lands at the root, in whatever group is
+                            // already focused there.
+                            if ((paneIdScope().get(group.id) ?? null) === null) {
+                              actions.focusPaneGroup(state.activeWorktreeId, group.id);
+                            }
                             actions.openCompareTab(state.activeWorktreeId);
                           }}
                         >
