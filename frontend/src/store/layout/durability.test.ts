@@ -28,6 +28,7 @@ vi.mock("@/api/terminal", () => ({
 }));
 
 import { createAppStore } from "./index";
+import { DEFAULT_DOCK_ORDER } from "./dock";
 import {
   STORAGE_KEYS,
   flushWrites,
@@ -620,7 +621,12 @@ describe("reset layout scope", () => {
       expect(store.state.paneLayoutByWorktree[WT_ID].kind).toBe("group");
       expect(store.state.panels.gitSidebar).toBe(320);
       expect(store.state.gitSidebarCollapsed).toBe(false);
-      expect(store.state.dockOrder).toEqual(["workspaces", "files", "git"]);
+      // Against the exported default, not a literal. This assertion was
+      // written as `["workspaces", "files", "git"]` and broke the moment the
+      // dock model grew from three sidebars to five — the reset is correct
+      // either way, and what the test is actually claiming is "back to the
+      // shipped order", which is this constant by definition.
+      expect(store.state.dockOrder).toEqual(DEFAULT_DOCK_ORDER);
     });
   });
 
