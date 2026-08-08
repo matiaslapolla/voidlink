@@ -23,40 +23,84 @@
 /// `AppShell` composes the geometry, and the sidebar components know nothing
 /// about the arrangement beyond the `dock` prop they are handed.
 
-/// The three dockable sidebars. Also the only ids a persisted arrangement may
-/// contain: a blob written by a build that knows a fourth is repaired against
+/// The five dockable sidebars. Also the only ids a persisted arrangement may
+/// contain: a blob written by a build that knows a sixth is repaired against
 /// this list rather than rejected, exactly as `parseGitSectionOrder` does for
 /// the git sidebar's sections.
-export type SidebarId = "workspaces" | "files" | "git";
+///
+/// `explorer` replaces `files` — see `LEGACY_SIDEBAR_ID_ALIASES` below for the
+/// migration — and `terminals`/`agents` are new: they used to be two sections
+/// stacked underneath the explorer inside one `TerminalSidebar`, with no edge,
+/// width or collapse of their own. Splitting them out is the whole point of
+/// this file growing from three ids to five; everything below already worked
+/// against the *list*, not against three hardcoded names.
+export type SidebarId = "workspaces" | "explorer" | "terminals" | "git" | "agents";
 
 export type DockSide = "left" | "right";
 
-export const SIDEBAR_IDS: SidebarId[] = ["workspaces", "files", "git"];
+export const SIDEBAR_IDS: SidebarId[] = [
+  "workspaces",
+  "explorer",
+  "terminals",
+  "git",
+  "agents",
+];
 
 export function isSidebarId(value: unknown): value is SidebarId {
   return typeof value === "string" && (SIDEBAR_IDS as string[]).includes(value);
 }
 
-/// Today's layout, and what a first run gets: the rail and the files/terminals
-/// sidebar on the left, the git panel on the right.
+/// Ids a build before this one could have persisted, mapped to the id that
+/// replaces them. `files` is the only one — `terminals` and `agents` did not
+/// exist as independent sidebars, so there is nothing for them to alias.
+const LEGACY_SIDEBAR_ID_ALIASES: Record<string, SidebarId> = {
+  files: "explorer",
+};
+
+/// Resolve a raw persisted value to a `SidebarId` this build knows, following
+/// the legacy alias when the raw value is one. Returns `null` for anything
+/// else — an id from a newer build, or garbage — so every caller repairs
+/// rather than rejects, per this file's header.
+export function normalizeSidebarId(value: unknown): SidebarId | null {
+  if (typeof value !== "string") return null;
+  if (isSidebarId(value)) return value;
+  return LEGACY_SIDEBAR_ID_ALIASES[value] ?? null;
+}
+
+/// Today's layout, and what a first run gets: the rail, the explorer, the
+/// terminals list and the agent dashboard on the left (in that order — see
+/// `DEFAULT_DOCK_ORDER`), the git panel on the right.
 export const DEFAULT_DOCK_SIDE: Record<SidebarId, DockSide> = {
   workspaces: "left",
-  files: "left",
+  explorer: "left",
+  terminals: "left",
   git: "right",
+  agents: "left",
 };
 
 /// What `sidebarsSwapped: true` produced, expressed in the new model.
 ///
 /// It is not a mirror of the default. The old flag swapped the *two* sidebar
 /// slots either side of the workbench and never touched the rail, which stayed
-/// pinned to the far left — so a swapped layout was rail, git, workbench, files.
+/// pinned to the far left — so a swapped layout was rail, git, workbench,
+/// explorer. `terminals` and `agents` follow the explorer to the right: under
+/// the pre-dock model they were sections stacked *inside* that same column, so
+/// a legacy blob's swap carries them along with the panel they used to live in.
 export const SWAPPED_DOCK_SIDE: Record<SidebarId, DockSide> = {
   workspaces: "left",
-  files: "right",
+  explorer: "right",
+  terminals: "right",
   git: "left",
+  agents: "right",
 };
 
-export const DEFAULT_DOCK_ORDER: SidebarId[] = ["workspaces", "files", "git"];
+export const DEFAULT_DOCK_ORDER: SidebarId[] = [
+  "workspaces",
+  "explorer",
+  "terminals",
+  "agents",
+  "git",
+];
 
 /// Repair a persisted `dockSide` map.
 ///
@@ -66,8 +110,11 @@ export const DEFAULT_DOCK_ORDER: SidebarId[] = ["workspaces", "files", "git"];
 /// untouched even if a stale `sidebarsSwapped` is still sitting beside it.
 ///
 /// Unknown sidebar ids and values that are not an edge are dropped rather than
-/// thrown on — a blob from a newer build that docks a fourth panel must still
-/// place the three this build has.
+/// thrown on — a blob from a newer build that docks a sixth panel must still
+/// place the five this build has. A key of `files` is not unknown: it is the
+/// pre-rename explorer, normalized to `explorer` before anything else is
+/// checked, so a blob written by `main` hydrates with the explorer at the edge
+/// it had.
 export function parseDockSide(
   raw: unknown,
   legacySwapped?: unknown,
@@ -76,22 +123,26 @@ export function parseDockSide(
   const out: Record<SidebarId, DockSide> = { ...base };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!isSidebarId(key)) continue;
+    const id = normalizeSidebarId(key);
+    if (!id) continue;
     if (value !== "left" && value !== "right") continue;
-    out[key] = value;
+    out[id] = value;
   }
   return out;
 }
 
 /// Repair a persisted order: drop unknown ids, drop duplicates, append anything
 /// missing in its shipped position. Modelled on `parseGitSectionOrder` — and
-/// like it, never throws the user's arrangement away over one bad entry.
+/// like it, never throws the user's arrangement away over one bad entry. Each
+/// entry is normalized first, so a legacy `files` lands at the *position*
+/// `explorer` had rather than being dropped and re-appended at the end.
 export function parseDockOrder(raw: unknown): SidebarId[] {
   const seen = new Set<SidebarId>();
   const out: SidebarId[] = [];
   if (Array.isArray(raw)) {
-    for (const id of raw) {
-      if (!isSidebarId(id) || seen.has(id)) continue;
+    for (const entry of raw) {
+      const id = normalizeSidebarId(entry);
+      if (!id || seen.has(id)) continue;
       seen.add(id);
       out.push(id);
     }
@@ -105,7 +156,10 @@ export function parseDockOrder(raw: unknown): SidebarId[] {
 export function parseDetachedSidebars(raw: unknown): SidebarId[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<SidebarId>();
-  for (const id of raw) if (isSidebarId(id)) seen.add(id);
+  for (const entry of raw) {
+    const id = normalizeSidebarId(entry);
+    if (id) seen.add(id);
+  }
   return DEFAULT_DOCK_ORDER.filter((id) => seen.has(id));
 }
 

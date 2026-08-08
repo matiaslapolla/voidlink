@@ -439,8 +439,8 @@ describe("sidebar docking", () => {
     backing.set(
       STORAGE_KEYS.gitPrefs,
       JSON.stringify({
-        dockSide: { workspaces: "left", files: "right", git: "left" },
-        dockOrder: ["git", "workspaces", "files"],
+        dockSide: { workspaces: "left", explorer: "right", git: "left" },
+        dockOrder: ["git", "workspaces", "explorer"],
         workspaceRailCollapsed: true,
         panels: { rail: 212, sidebar: 256, gitSidebar: 420 },
       }),
@@ -449,10 +449,19 @@ describe("sidebar docking", () => {
     withStore((store) => {
       expect(store.state.dockSide).toEqual({
         workspaces: "left",
-        files: "right",
+        explorer: "right",
+        terminals: "left",
+        agents: "left",
         git: "left",
       });
-      expect(store.state.dockOrder).toEqual(["git", "workspaces", "files"]);
+      // Ids missing from the persisted order append in their shipped position.
+      expect(store.state.dockOrder).toEqual([
+        "git",
+        "workspaces",
+        "explorer",
+        "terminals",
+        "agents",
+      ]);
       expect(store.state.workspaceRailCollapsed).toBe(true);
       // The width belongs to the panel, not to the edge it was on.
       expect(store.state.panels.gitSidebar).toBe(420);
@@ -471,7 +480,9 @@ describe("sidebar docking", () => {
     withStore((store) =>
       expect(store.state.dockSide).toEqual({
         workspaces: "left",
-        files: "right",
+        explorer: "right",
+        terminals: "right",
+        agents: "right",
         git: "left",
       }),
     );
@@ -481,7 +492,13 @@ describe("sidebar docking", () => {
     withStore((store) => {
       store.actions.dockSidebar("git", "left", "workspaces");
       expect(store.state.dockSide.git).toBe("left");
-      expect(store.state.dockOrder).toEqual(["git", "workspaces", "files"]);
+      expect(store.state.dockOrder).toEqual([
+        "git",
+        "workspaces",
+        "explorer",
+        "terminals",
+        "agents",
+      ]);
     }, false);
   });
 
@@ -492,7 +509,7 @@ describe("sidebar docking", () => {
 
       store.actions.mirrorSidebars();
       expect(store.state.dockSide.git).toBe("left");
-      expect(store.state.dockSide.files).toBe("right");
+      expect(store.state.dockSide.explorer).toBe("right");
 
       store.actions.mirrorSidebars();
       expect(store.state.dockSide).toEqual(before);

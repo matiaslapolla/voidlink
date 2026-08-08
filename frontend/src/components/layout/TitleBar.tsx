@@ -25,7 +25,8 @@ import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { ViewSwitcher } from "@/components/layout/ViewSwitcher";
 import { isStackedMode } from "@/commands/environment";
 import { useAppStore } from "@/store/LayoutContext";
-import type { DockSide } from "@/store/layout";
+import type { DockSide, SidebarId } from "@/store/layout";
+import { SIDEBAR_LABEL } from "@/components/layout/SidebarDock";
 import { getAction, runAction } from "@/commands/registry";
 import { shortcutLabel } from "@/commands/shortcuts";
 
@@ -89,29 +90,73 @@ export function TitleBar(props: TitleBarProps) {
   };
 
   // Visual semantics follow what the user sees, not where state lives: the
-  // `PanelLeft` button toggles whichever of the two content sidebars is
-  // currently docked on the left, and `PanelRight` the one on the right. With
-  // per-sidebar docking that is a lookup rather than a boolean flip — and both
-  // panels can now be on the same edge, in which case the button for the empty
-  // edge says so instead of pretending to toggle something.
-  const panelOn = (side: DockSide) =>
-    state.dockSide.files === side ? "files" : state.dockSide.git === side ? "git" : null;
+  // `PanelLeft` button toggles a content sidebar docked on the left, and
+  // `PanelRight` one docked on the right. The workspace rail has its own
+  // button (`ui.toggle-workspace-rail`) and is excluded here.
+  //
+  // With five independently dockable sidebars an edge can hold more than one
+  // of these at once — the git panel and the explorer can both end up on the
+  // right, for instance — so a lookup that assumed at most one per edge would
+  // either toggle the wrong panel or silently do nothing. `contentIdsOn`
+  // returns every content sidebar on that edge in the user's own screen order
+  // (`dockOrder`), the button acts on the first one, and its title says so
+  // explicitly when there are more — "say what it means" rather than pretend
+  // one button covers an edge it does not.
+  const contentIdsOn = (side: DockSide): SidebarId[] =>
+    state.dockOrder.filter((id) => id !== "workspaces" && state.dockSide[id] === side);
+
+  const isCollapsed = (id: SidebarId): boolean => {
+    switch (id) {
+      case "explorer":
+        return state.leftSidebarCollapsed;
+      case "git":
+        return state.gitSidebarCollapsed;
+      case "terminals":
+        return !state.sidebarSections.terminals;
+      case "agents":
+        return !state.sidebarSections.agents;
+      case "workspaces":
+        return state.workspaceRailCollapsed;
+    }
+  };
+  const toggle = (id: SidebarId): void => {
+    switch (id) {
+      case "explorer":
+        actions.toggleLeftSidebar();
+        break;
+      case "git":
+        actions.toggleGitSidebar();
+        break;
+      case "terminals":
+        actions.toggleSidebarSection("terminals");
+        break;
+      case "agents":
+        actions.toggleSidebarSection("agents");
+        break;
+      case "workspaces":
+        actions.toggleWorkspaceRail();
+        break;
+    }
+  };
+
+  const panelOn = (side: DockSide): SidebarId | null => contentIdsOn(side)[0] ?? null;
   const collapsedOn = (side: DockSide) => {
     const id = panelOn(side);
-    if (id === "files") return state.leftSidebarCollapsed;
-    if (id === "git") return state.gitSidebarCollapsed;
-    return true;
+    return id ? isCollapsed(id) : true;
   };
   const toggleOn = (side: DockSide) => {
     const id = panelOn(side);
-    if (id === "files") actions.toggleLeftSidebar();
-    else if (id === "git") actions.toggleGitSidebar();
+    if (id) toggle(id);
   };
   const labelOn = (side: DockSide) => {
-    const id = panelOn(side);
+    const ids = contentIdsOn(side);
+    const id = ids[0];
     if (!id) return `No panel is docked on the ${side}`;
-    const name = id === "files" ? "file explorer" : "git panel";
-    return `${collapsedOn(side) ? "Show" : "Hide"} the ${name} (${side})`;
+    const extra =
+      ids.length > 1
+        ? ` — ${ids.length - 1} more panel${ids.length > 2 ? "s" : ""} also on this edge`
+        : "";
+    return `${isCollapsed(id) ? "Show" : "Hide"} the ${SIDEBAR_LABEL[id].toLowerCase()} (${side})${extra}`;
   };
 
   return (

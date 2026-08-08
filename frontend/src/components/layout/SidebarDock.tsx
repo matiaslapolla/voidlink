@@ -46,8 +46,10 @@ import {
 /// headers' own titles — the git panel's header says the branch, not "Git".
 export const SIDEBAR_LABEL: Record<SidebarId, string> = {
   workspaces: "Workspaces",
-  files: "Files",
+  explorer: "Explorer",
+  terminals: "Terminals",
   git: "Git",
+  agents: "Agents",
 };
 
 /// The drag handle in a sidebar's header.
@@ -247,14 +249,28 @@ export function SidebarDockOverlay() {
     return null;
   }
 
+  /// Whichever flag collapses `id` to its icon rail — one per sidebar, and
+  /// the `switch` is exhaustive over `SidebarId` so a sixth sidebar fails to
+  /// compile here rather than silently previewing at full width.
+  const isRailed = (id: SidebarId): boolean => {
+    switch (id) {
+      case "explorer":
+        return !state.sidebarSections.files;
+      case "terminals":
+        return !state.sidebarSections.terminals;
+      case "agents":
+        return !state.sidebarSections.agents;
+      case "git":
+        return state.gitSidebarCollapsed;
+      case "workspaces":
+        return state.workspaceRailCollapsed;
+    }
+  };
+
   const previewWidth = () => {
     const self = dragged();
     if (!self) return 0;
-    const collapsedRail =
-      (self === "files" && !state.sidebarSections.files) ||
-      (self === "git" && state.gitSidebarCollapsed) ||
-      (self === "workspaces" && state.workspaceRailCollapsed);
-    return collapsedRail ? SIDEBAR_RAIL_WIDTH : state.panels[SIDEBAR_PANEL[self]];
+    return isRailed(self) ? SIDEBAR_RAIL_WIDTH : state.panels[SIDEBAR_PANEL[self]];
   };
 
   onCleanup(() => setEdge(null));

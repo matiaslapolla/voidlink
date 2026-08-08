@@ -707,8 +707,15 @@ export function GitSidebar(props: GitSidebarProps) {
           The order is a preference (`prefs.gitSectionOrder`) rather than a
           constant because the sidebar is seven sections tall in a 320px
           column: whichever two you actually use should be reachable without
-          scrolling past the five you don't. */}
-      <div class="flex-1 flex flex-col overflow-y-auto scrollbar-thin">
+          scrolling past the five you don't.
+
+          `px-2` here — not per-section — is the panel's one horizontal inset
+          (matching the `p-2` the Compare-branches footer below already uses):
+          every section's full-width row used to run edge to edge, leaving no
+          strip of the panel's own background to grab. One inset on the
+          container the sections share means every section agrees with it by
+          construction rather than by each one repeating the same padding. */}
+      <div class="flex-1 flex flex-col overflow-y-auto scrollbar-thin px-2">
         <For each={state.gitSectionOrder}>
           {(key, i) => {
             // One per section, created inside the row's own reactive scope so

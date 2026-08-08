@@ -79,14 +79,27 @@ export interface PanelWidths {
   rail: number;
   sidebar: number;
   gitSidebar: number;
+  /// Width of the terminals sidebar, now that it is a dockable panel of its
+  /// own rather than a section stacked under the explorer.
+  terminalsSidebar: number;
+  /// Width of the agent dashboard sidebar, for the same reason.
+  agentsSidebar: number;
   /// Height of the left sidebar's Terminals disclosure, in px, while it and
   /// the Files section above it are both open. The list's `max-h-52` used to
   /// be a constant; it is now the same kind of persisted extent as the three
   /// widths above, resized by the handle on the Files/Terminals seam.
+  ///
+  /// Dead now that `TerminalsSidebar` is its own full-height column rather
+  /// than a section stacked inside `TerminalSidebar`, and kept rather than
+  /// removed: it is a persisted key, and dropping it would not free anything
+  /// — an old blob still has it — while removing the field here would just be
+  /// one more migration to write for a value nothing reads. See MASTER.md.
   sidebarTerminalsHeight: number;
   /// Height of the left sidebar's Agent Dashboard disclosure, in px, while it
   /// and Terminals are both open. Only ever read while
-  /// `experimental.agentDashboard` is on, like the section itself.
+  /// `experimental.agentDashboard` is on, like the section itself. Dead for
+  /// the same reason `sidebarTerminalsHeight` is — `AgentsSidebar` is its own
+  /// column now.
   sidebarAgentsHeight: number;
 }
 
@@ -98,6 +111,10 @@ export const PANEL_BOUNDS: Record<PanelId, { min: number; max: number; default: 
   rail: { min: 160, max: 380, default: 212 },
   sidebar: { min: 180, max: 520, default: 256 },
   gitSidebar: { min: 220, max: 600, default: 320 },
+  // Same bounds as `sidebar` — the three left-edge column panels (explorer,
+  // terminals, agents) are the same kind of thing at a different edge slot.
+  terminalsSidebar: { min: 180, max: 520, default: 256 },
+  agentsSidebar: { min: 180, max: 520, default: 256 },
   sidebarTerminalsHeight: { min: 80, max: 400, default: 208 }, // 208px = the old `max-h-52`.
   sidebarAgentsHeight: { min: 100, max: 480, default: 256 }, // 256px = the old `max-h-64`.
 };
@@ -125,8 +142,10 @@ export const SIDEBAR_RAIL_WIDTH = 32;
 /// the user dragged it to.
 export const SIDEBAR_PANEL: Record<SidebarId, PanelId> = {
   workspaces: "rail",
-  files: "sidebar",
+  explorer: "sidebar",
+  terminals: "terminalsSidebar",
   git: "gitSidebar",
+  agents: "agentsSidebar",
 };
 
 export interface UiPrefs {
@@ -195,6 +214,8 @@ export const DEFAULT_PREFS: UiPrefs = {
     rail: PANEL_BOUNDS.rail.default,
     sidebar: PANEL_BOUNDS.sidebar.default,
     gitSidebar: PANEL_BOUNDS.gitSidebar.default,
+    terminalsSidebar: PANEL_BOUNDS.terminalsSidebar.default,
+    agentsSidebar: PANEL_BOUNDS.agentsSidebar.default,
     sidebarTerminalsHeight: PANEL_BOUNDS.sidebarTerminalsHeight.default,
     sidebarAgentsHeight: PANEL_BOUNDS.sidebarAgentsHeight.default,
   },
@@ -354,6 +375,14 @@ function parsePanelWidths(raw: Partial<PanelWidths> | undefined): PanelWidths {
     gitSidebar: clampPanelWidth(
       "gitSidebar",
       raw?.gitSidebar ?? PANEL_BOUNDS.gitSidebar.default,
+    ),
+    terminalsSidebar: clampPanelWidth(
+      "terminalsSidebar",
+      raw?.terminalsSidebar ?? PANEL_BOUNDS.terminalsSidebar.default,
+    ),
+    agentsSidebar: clampPanelWidth(
+      "agentsSidebar",
+      raw?.agentsSidebar ?? PANEL_BOUNDS.agentsSidebar.default,
     ),
     sidebarTerminalsHeight: clampPanelWidth(
       "sidebarTerminalsHeight",

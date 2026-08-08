@@ -88,7 +88,7 @@ export default function PanelApp(props: { sidebarId: string }) {
           class={`flex items-center h-8 shrink-0 select-none px-3 gap-2 bg-canvas text-body text-muted-foreground ${DEV_CHROME_CLASS}`}
         >
           <span class="font-semibold tracking-wide text-foreground/80 pointer-events-none">
-            Files
+            Explorer
           </span>
           <DevBadge class="pointer-events-none" />
           <span class="ml-auto truncate pointer-events-none">

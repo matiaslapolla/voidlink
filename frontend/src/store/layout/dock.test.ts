@@ -1,10 +1,12 @@
-/// The dock model and its one migration.
+/// The dock model and its two migrations.
 ///
-/// `sidebarsSwapped` was a boolean two builds of users have in localStorage, so
-/// the interesting cases here are all about a blob written by *some other*
-/// build: an old one that only has the boolean, this one, and a future one that
-/// docks a panel this build has never heard of. None of them may throw, and
-/// none of them may lose an arrangement the user set.
+/// `sidebarsSwapped` was a boolean two builds of users have in localStorage,
+/// and `files` was the explorer's id before the sidebar grew from three ids to
+/// five. So the interesting cases here are all about a blob written by *some
+/// other* build: an old one that only has the boolean, one that has `files`
+/// but not `explorer`, this one, and a future one that docks a sixth panel
+/// this build has never heard of. None of them may throw, and none of them may
+/// lose an arrangement the user set.
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DOCK_ORDER,
@@ -23,12 +25,15 @@ import {
 describe("parseDockSide", () => {
   it("maps sidebarsSwapped:true to the arrangement it produced", () => {
     // The old flag swapped the two sidebar slots and never touched the rail,
-    // so a swapped layout was rail, git, workbench, files.
+    // so a swapped layout was rail, git, workbench, explorer (with terminals
+    // and agents following the explorer — they used to be stacked inside it).
     expect(parseDockSide(undefined, true)).toEqual(SWAPPED_DOCK_SIDE);
     expect(parseDockSide(undefined, true)).toMatchObject({
       workspaces: "left",
       git: "left",
-      files: "right",
+      explorer: "right",
+      terminals: "right",
+      agents: "right",
     });
   });
 
@@ -39,7 +44,13 @@ describe("parseDockSide", () => {
   });
 
   it("leaves a blob already in the new shape alone, and is idempotent", () => {
-    const saved = { workspaces: "right", files: "right", git: "left" } as const;
+    const saved = {
+      workspaces: "right",
+      explorer: "right",
+      terminals: "right",
+      git: "left",
+      agents: "left",
+    } as const;
     const once = parseDockSide(saved);
     expect(once).toEqual(saved);
     expect(parseDockSide(once)).toEqual(saved);
@@ -49,15 +60,15 @@ describe("parseDockSide", () => {
   });
 
   it("drops an unknown sidebar id without throwing", () => {
-    const parsed = parseDockSide({ files: "right", terminals: "left", 7: "left" });
-    expect(parsed).toEqual({ ...DEFAULT_DOCK_SIDE, files: "right" });
-    expect("terminals" in parsed).toBe(false);
+    const parsed = parseDockSide({ explorer: "right", panegroup: "left", 7: "left" });
+    expect(parsed).toEqual({ ...DEFAULT_DOCK_SIDE, explorer: "right" });
+    expect("panegroup" in parsed).toBe(false);
   });
 
   it("drops a side the shell has no branch for", () => {
-    expect(parseDockSide({ git: "top", files: "right" })).toEqual({
+    expect(parseDockSide({ git: "top", explorer: "right" })).toEqual({
       ...DEFAULT_DOCK_SIDE,
-      files: "right",
+      explorer: "right",
     });
   });
 
@@ -70,89 +81,186 @@ describe("parseDockSide", () => {
   it("hands out its own record rather than the module-level default", () => {
     const a = parseDockSide(undefined);
     expect(a).not.toBe(DEFAULT_DOCK_SIDE);
-    a.files = "right";
-    expect(DEFAULT_DOCK_SIDE.files).toBe("left");
+    a.explorer = "right";
+    expect(DEFAULT_DOCK_SIDE.explorer).toBe("left");
+  });
+
+  // ── The `files` → `explorer` migration ────────────────────────────────────
+  describe("the files → explorer rename", () => {
+    it("hydrates a `files` key written by main as `explorer`, at the same edge", () => {
+      const legacyBlob = { workspaces: "left", files: "right", git: "left" };
+      expect(parseDockSide(legacyBlob)).toEqual({
+        ...DEFAULT_DOCK_SIDE,
+        workspaces: "left",
+        explorer: "right",
+        git: "left",
+      });
+      expect("files" in parseDockSide(legacyBlob)).toBe(false);
+    });
+
+    it("is idempotent once migrated", () => {
+      const legacyBlob = { files: "right" };
+      const once = parseDockSide(legacyBlob);
+      const twice = parseDockSide(once);
+      expect(twice).toEqual(once);
+    });
+
+    it("prefers an explicit `explorer` over a stale `files` in the same blob", () => {
+      // Not a realistic blob (no build ever writes both), but the resolution
+      // order should still be sane rather than accidental key-order dependent.
+      const mixed = { files: "right", explorer: "left" };
+      expect(parseDockSide(mixed).explorer).toBe("left");
+    });
   });
 });
 
 describe("parseDockOrder", () => {
   it("keeps the user's order", () => {
-    expect(parseDockOrder(["git", "workspaces", "files"])).toEqual([
+    expect(parseDockOrder(["git", "workspaces", "explorer"])).toEqual([
       "git",
       "workspaces",
-      "files",
+      "explorer",
+      "terminals",
+      "agents",
     ]);
   });
 
   it("repairs rather than rejects: unknown ids and duplicates go, missing ones append", () => {
-    expect(parseDockOrder(["git", "git", "terminals", 4])).toEqual([
+    expect(parseDockOrder(["git", "git", "panegroup", 4])).toEqual([
       "git",
       "workspaces",
-      "files",
+      "explorer",
+      "terminals",
+      "agents",
     ]);
     expect(parseDockOrder(null)).toEqual(DEFAULT_DOCK_ORDER);
+  });
+
+  it("migrates a `files` entry to `explorer`, at the position `files` had", () => {
+    expect(parseDockOrder(["git", "files", "workspaces"])).toEqual([
+      "git",
+      "explorer",
+      "workspaces",
+      "terminals",
+      "agents",
+    ]);
+  });
+
+  it("does not duplicate explorer when both files and explorer appear", () => {
+    // The second occurrence (however it got there) is a duplicate once
+    // normalized, and duplicates are dropped like any other repeat entry.
+    expect(parseDockOrder(["files", "explorer", "git"])).toEqual([
+      "explorer",
+      "git",
+      "workspaces",
+      "terminals",
+      "agents",
+    ]);
   });
 });
 
 describe("parseDetachedSidebars", () => {
   it("keeps known ids, drops the rest, and never repeats one", () => {
-    expect(parseDetachedSidebars(["git", "git", "terminals"])).toEqual(["git"]);
+    expect(parseDetachedSidebars(["git", "git", "panegroup"])).toEqual(["git"]);
     expect(parseDetachedSidebars("git")).toEqual([]);
     expect(parseDetachedSidebars(undefined)).toEqual([]);
   });
+
+  it("migrates a detached `files` to `explorer`", () => {
+    expect(parseDetachedSidebars(["files"])).toEqual(["explorer"]);
+    expect(parseDetachedSidebars(["files", "git"])).toEqual(["explorer", "git"]);
+  });
 });
 
-describe("sidebarsOnSide", () => {
-  const order: SidebarId[] = ["workspaces", "files", "git"];
+describe("sidebarsOnSide over five ids", () => {
+  const order: SidebarId[] = ["workspaces", "explorer", "terminals", "agents", "git"];
 
   it("reads one screen order for both edges", () => {
     expect(sidebarsOnSide(order, DEFAULT_DOCK_SIDE, "left")).toEqual([
       "workspaces",
-      "files",
+      "explorer",
+      "terminals",
+      "agents",
     ]);
     expect(sidebarsOnSide(order, DEFAULT_DOCK_SIDE, "right")).toEqual(["git"]);
   });
 
   it("leaves a detached panel out of both", () => {
-    expect(sidebarsOnSide(order, DEFAULT_DOCK_SIDE, "left", ["files"])).toEqual([
+    expect(sidebarsOnSide(order, DEFAULT_DOCK_SIDE, "left", ["terminals"])).toEqual([
       "workspaces",
+      "explorer",
+      "agents",
     ]);
     expect(sidebarsOnSide(order, DEFAULT_DOCK_SIDE, "right", ["git"])).toEqual([]);
   });
+
+  it("groups several panels sharing one edge", () => {
+    const allLeft: Record<SidebarId, "left" | "right"> = {
+      workspaces: "left",
+      explorer: "left",
+      terminals: "left",
+      agents: "left",
+      git: "left",
+    };
+    expect(sidebarsOnSide(order, allLeft, "left")).toEqual(order);
+    expect(sidebarsOnSide(order, allLeft, "right")).toEqual([]);
+  });
 });
 
-describe("moveInDockOrder", () => {
-  const order: SidebarId[] = ["workspaces", "files", "git"];
+describe("moveInDockOrder over five ids", () => {
+  const order: SidebarId[] = ["workspaces", "explorer", "terminals", "agents", "git"];
 
   it("lands the panel in front of the id it was dropped on", () => {
-    expect(moveInDockOrder(order, "git", "files")).toEqual([
+    expect(moveInDockOrder(order, "git", "explorer")).toEqual([
       "workspaces",
       "git",
-      "files",
+      "explorer",
+      "terminals",
+      "agents",
     ]);
   });
 
   it("sends it to the end for a null target", () => {
     expect(moveInDockOrder(order, "workspaces", null)).toEqual([
-      "files",
+      "explorer",
+      "terminals",
+      "agents",
       "git",
       "workspaces",
     ]);
   });
 
   it("moves nothing when a panel is dropped on itself", () => {
-    expect(moveInDockOrder(order, "files", "files")).toEqual(order);
+    expect(moveInDockOrder(order, "agents", "agents")).toEqual(order);
+  });
+
+  it("reorders two panels already sharing an edge without disturbing a third", () => {
+    // terminals and agents both start on the left; swap them and workspaces
+    // (also left) and explorer (also left) stay exactly where they were.
+    expect(moveInDockOrder(order, "agents", "terminals")).toEqual([
+      "workspaces",
+      "explorer",
+      "agents",
+      "terminals",
+      "git",
+    ]);
   });
 });
 
-describe("mirrorArrangement", () => {
+describe("mirrorArrangement over five ids", () => {
   it("puts every panel on the other edge, outermost staying outermost", () => {
     const next = mirrorArrangement({
       sides: DEFAULT_DOCK_SIDE,
       order: DEFAULT_DOCK_ORDER,
     });
-    expect(next.sides).toEqual({ workspaces: "right", files: "right", git: "left" });
-    expect(next.order).toEqual(["git", "files", "workspaces"]);
+    expect(next.sides).toEqual({
+      workspaces: "right",
+      explorer: "right",
+      terminals: "right",
+      agents: "right",
+      git: "left",
+    });
+    expect(next.order).toEqual(["git", "agents", "terminals", "explorer", "workspaces"]);
   });
 
   it("is its own inverse — the property the old ⌘\\ toggle had", () => {
@@ -166,7 +274,7 @@ describe("mirrorArrangement", () => {
 
 describe("slotOrder", () => {
   it("keeps every left panel before the workbench and every right one after", () => {
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       expect(slotOrder("left", i)).toBeLessThan(0);
       expect(slotOrder("right", i)).toBeGreaterThan(0);
     }

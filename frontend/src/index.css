@@ -86,7 +86,8 @@
    * status bar, which also just borrowed `--sidebar`) painted the exact
    * same lightness. Geometrically four separate regions; visually one grey
    * field with `--island-gap` cut into it. `--sidebar` now means only what
-   * its name says (the docked panels — `TerminalSidebar`, `GitSidebar`),
+   * its name says (the docked panels — `FilesSidebar`, `TerminalsSidebar`,
+   * `AgentsSidebar`, `GitSidebar`),
    * `--background` still means the editor/main surface (elev-1, unchanged),
    * and these three take back the identity the rail, tab strip and status
    * bar never should have shared.
@@ -481,7 +482,8 @@ html:not([data-density]) {
 
 /* Coverage audit (MASTER §5). Every *row-shaped* surface in the shell opts in:
  *   • rail worktree rows            — WorkspaceRail
- *   • terminal rows + file section  — TerminalSidebar
+ *   • terminal rows                  — TerminalsSidebar
+ *   • file tree rows                 — FilesSidebar
  *   • change/branch/worktree/stash/tag rows and section headers — GitSidebar
  * Four surfaces are deliberately *excluded*, and adding a second density
  * mechanism for them would be the wrong fix:
