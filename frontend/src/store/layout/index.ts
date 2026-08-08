@@ -31,6 +31,7 @@ import {
 import { clampPanelWidth, loadPrefs, persistPrefs } from "./prefs";
 import type { DiffMode, GitSectionKey, PanelId } from "./prefs";
 import {
+  SIDEBAR_COLLAPSE,
   mirrorArrangement,
   moveInDockOrder,
   type DockSide,
@@ -199,14 +200,17 @@ export {
   loadEditorPrefs,
   persistEditorPrefs,
 } from "./prefs";
-export type { DockSide, SidebarId } from "./dock";
+export type { DockSide, SidebarCollapse, SidebarId } from "./dock";
 export {
   DEFAULT_DOCK_ORDER,
   DEFAULT_DOCK_SIDE,
+  SIDEBAR_COLLAPSE,
   SIDEBAR_IDS,
   SWAPPED_DOCK_SIDE,
+  isSidebarId,
   mirrorArrangement,
   moveInDockOrder,
+  normalizeSidebarId,
   parseDetachedSidebars,
   parseDockOrder,
   parseDockSide,
@@ -1387,6 +1391,31 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           const next = mirrorArrangement({ sides: s.dockSide, order: s.dockOrder });
           s.dockSide = next.sides;
           s.dockOrder = next.order;
+        }),
+      );
+    },
+
+    /// Take a sidebar to its icon rail, or bring it back — whichever of the
+    /// five flags in `SIDEBAR_COLLAPSE` is the one that sidebar actually uses.
+    ///
+    /// The five toggles above (`toggleGitSidebar`, `toggleWorkspaceRail`,
+    /// `toggleSidebarSection`) stay as they are: they are what the *headers*
+    /// call, and they flip. This one *sets*, which is what a caller that knows
+    /// the state it wants needs — "a panel coming home from a window arrives
+    /// collapsed" is an assignment, and expressing it as a toggle would expand
+    /// a panel that was already railed.
+    setSidebarCollapsed(id: SidebarId, collapsed: boolean) {
+      const flag = SIDEBAR_COLLAPSE[id];
+      setState(
+        produce((s) => {
+          if (flag.kind === "section") s.sidebarSections[flag.key] = !collapsed;
+          else s[flag.key] = collapsed;
+          // The explorer is the one sidebar with a second flag over it:
+          // `leftSidebarCollapsed` removes it from the shell entirely (that is
+          // what Mod+B means), and a panel returning from a window has to be
+          // *visible* at rail width, not absent. Collapsed is a state you can
+          // see and click; hidden is not.
+          if (id === "explorer" && collapsed) s.leftSidebarCollapsed = false;
         }),
       );
     },

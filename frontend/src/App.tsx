@@ -103,6 +103,7 @@ import {
   onOpenWorktreeRequest,
   closeEditorWindow,
   closeGitWindow,
+  isEditorWindowOpen,
   openEditorWindow,
   publishEditorTabs,
   publishWindowContext,
@@ -445,27 +446,84 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // the palette and the terminal deep-links included.
   const store = useAppStore();
 
+  /// Bring the editor's focused tab to the front of the workbench.
+  ///
+  /// What "the editor comes back as a tab" means. The editor window and the
+  /// workbench focus independently — that is the whole point of
+  /// `editorActiveItemByWorktree` existing beside `activeItemByWorktree` — so
+  /// re-homing is activating, here, the tab that window had in front. The tabs
+  /// themselves never went anywhere: this store has owned all four collections
+  /// the entire time.
+  function homeEditorTab(): void {
+    const wtId = state.activeWorktreeId;
+    const item = state.editorActiveItemByWorktree[wtId];
+    if (!item) return;
+    switch (item.type) {
+      case "file": {
+        const tab = (state.openFilesByWorktree[wtId] ?? []).find((t) => t.id === item.id);
+        if (tab) actions.selectFileTab(wtId, tab.id, tab.path);
+        break;
+      }
+      case "diff":
+        actions.selectDiffTab(wtId, item.id);
+        break;
+      case "conflict":
+        actions.selectConflictTab(wtId, item.id);
+        break;
+      case "preview":
+        actions.selectPreviewTab(wtId, item.id);
+        break;
+      default:
+        // A kind the editor window does not host. Nothing to bring forward,
+        // and nothing wrong either — the window simply had nothing focused
+        // that this workbench draws differently.
+        break;
+    }
+  }
+
   // Detached sidebars: reopen the windows a previous session left detached, and
   // dock a panel back when its window closes. See `commands/sidebarWindows.ts`.
-  useSidebarWindows(store);
+  useSidebarWindows(store, { onEditorHome: homeEditorTab });
 
   createEffect(() => {
     if (!isStackedMode()) {
       setStackedViewRouter(null);
-      // Back to windows: leave the workbench showing, and open nothing. The
-      // satellites reappear when the user next asks for one.
+      // Back to windows: leave the workbench showing, and open nothing.
+      //
+      // Deliberately *not* reopening what stacked mode pulled in. Switching
+      // modes is not an undo — the user gets a workbench with everything inside
+      // it and reopens whichever surfaces they want. Silently repopulating the
+      // screen with three windows they last saw an hour ago is the opposite of
+      // what "put it all in one window" was asking for.
       setStackedView("workbench");
       return;
     }
+    // Asked *before* the router goes in, and read synchronously: from the next
+    // line on, `isEditorWindowOpen` answers "there are no windows here" — which
+    // is the right answer for every other caller and the wrong one for the
+    // transition itself.
+    const editorWasOpen = isEditorWindowOpen();
+
     setStackedViewRouter({
       showWorkbench: () => setStackedView("workbench"),
       showEditor: () => setStackedView("editor"),
       showGit: () => setStackedView("git"),
     });
-    // Any satellite still open would now be a second copy of a view we host —
-    // two editors over one tab list, with only one of them in front of the user.
-    void closeEditorWindow().catch(() => {});
-    void closeGitWindow().catch(() => {});
+
+    // Every satellite still open would now be a second copy of a view we host —
+    // two editors over one tab list, with only one of them in front of the
+    // user. So this closes them *and re-homes their content*: stacked mode
+    // means "everything is a view in one window", which is a promise about
+    // where the content is, not merely about which windows exist.
+    void (async () => {
+      for (const id of [...state.detachedSidebars]) await dockSidebarBack(store, id);
+      // Only if it was actually open. `homeEditorTab` changes which tab is in
+      // front, and doing that to a user who never had an editor window is a
+      // workbench that reshuffles itself over an unrelated setting.
+      if (await editorWasOpen.catch(() => false)) homeEditorTab();
+      await closeEditorWindow().catch(() => {});
+      await closeGitWindow().catch(() => {});
+    })();
   });
   onCleanup(() => setStackedViewRouter(null));
 
@@ -650,7 +708,13 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       group: "View",
       run: () => actions.toggleWorkspaceRail(),
     },
-    ...SIDEBAR_IDS.filter(canDetachSidebar).map((id): Action => ({
+    // The agent board is behind `experimental.agentDashboard`, and a row that
+    // detaches a panel the workbench is not drawing would open a window for a
+    // surface the user has switched off. Absent, not disabled — the experiment
+    // being off is not a reason to show them the door to it.
+    ...SIDEBAR_IDS.filter(
+      (id) => canDetachSidebar(id) && (id !== "agents" || settings.experimental.agentDashboard),
+    ).map((id): Action => ({
       id: `ui.detach-${id}`,
       label: state.detachedSidebars.includes(id)
         ? `Dock the ${SIDEBAR_LABEL[id].toLowerCase()} panel back`
@@ -664,6 +728,25 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
           ? void dockSidebarBack(store, id)
           : void detachSidebar(store, id),
     })),
+    {
+      // The editor window's counterpart to the `ui.detach-*` rows above. Not a
+      // toggle: nothing "detaches" the editor — it is opened by whatever puts a
+      // file in it — so the only half worth a row is the way back.
+      //
+      // Same code path as the button in that window's own chrome
+      // (`commands/attachHome.ts` → `requestEditorDockBack` → the workbench's
+      // `homeEditorTab`); this row is the one that reaches it from over here,
+      // for a user whose editor is on a display they are not looking at.
+      id: "ui.attach-editor",
+      label: "Attach the editor to this window",
+      description: "Close the editor window and bring its tab back into the workbench",
+      group: "View",
+      enabled: () => !isStackedMode(),
+      run: () => {
+        homeEditorTab();
+        void closeEditorWindow().catch(() => {});
+      },
+    },
     {
       id: "ui.toggle-diff-mode",
       label: "Toggle inline / split diff",

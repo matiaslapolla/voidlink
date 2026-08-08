@@ -66,6 +66,9 @@ export const MAIN_WINDOW_LABEL = "main";
 /// window's capability file documents.
 export const FILES_PANEL_WINDOW_LABEL = "panel-files";
 
+/// Window label for the detached agent dashboard. Same rules as above.
+export const AGENTS_PANEL_WINDOW_LABEL = "panel-agents";
+
 /// Which window hosts each sidebar when it is detached. `null` means "this one
 /// cannot be detached" and the affordance is absent rather than disabled.
 ///
@@ -89,16 +92,26 @@ export const FILES_PANEL_WINDOW_LABEL = "panel-files";
 /// of its buttons would be the silent no-op `requestOpenWorktreeOnMain` exists
 /// to fix. Making it work means mirroring the whole workspace model across the
 /// gap, which is a stream of its own.
+///
+/// **The terminals list is `null` for exactly that reason**, and it is worth
+/// saying because it is the entry that most looks like an oversight. Every
+/// control on that sidebar is a write: new terminal spawns a PTY, select moves
+/// the workbench's active tab, kill reaps a shell. There is no snapshot channel
+/// feeding it either, so a detached terminals list would be an empty list whose
+/// every button is that same silent no-op. Making it real means mirroring the
+/// session model *and* adding a request channel back — a stream, not a table
+/// entry.
+///
+/// The agent dashboard is `panel-agents` precisely because it is the opposite:
+/// `AgentBoardSnapshot` already crosses the gap, and the board is
+/// read-and-navigate by design (see `publishAgentBoard`), so a window over it
+/// is a consumer with nothing to write.
 export const SIDEBAR_WINDOW_LABEL: Record<string, string | null> = {
   workspaces: null,
   explorer: FILES_PANEL_WINDOW_LABEL,
-  // Both detachable in principle — `canDetachSidebar` answers honestly from
-  // this table — but neither has a window yet. That is a separate stream's
-  // work (detach lifecycle); this one only had to grow the sidebar to five
-  // ids without claiming a capability it does not have.
   terminals: null,
   git: GIT_WINDOW_LABEL,
-  agents: null,
+  agents: AGENTS_PANEL_WINDOW_LABEL,
 };
 
 /// Which sidebar this window *is*, or `null` in the workbench and the two
@@ -258,9 +271,18 @@ export async function openSidebarWindow(sidebarId: string): Promise<boolean> {
 
 /// Close a detached panel's window. Idempotent, and a no-op for a sidebar with
 /// no window of its own.
+///
+/// Unlike `openSidebarWindow` and `isSidebarWindowOpen`, this does **not** bail
+/// out in stacked mode. Those two are answering "what does this environment
+/// do?", and the answer there is "views, not windows". Closing is answering
+/// "make sure that window is gone", and the honest answer is the same in both
+/// modes — including during the switch *into* stacked, which is precisely when
+/// there are satellite windows to collect and a router already installed. A
+/// guard here made the transition unable to close the windows it exists to
+/// close. With none, the stacked-mode case is one no-op IPC.
 export async function closeSidebarWindow(sidebarId: string): Promise<void> {
   const label = SIDEBAR_WINDOW_LABEL[sidebarId];
-  if (!label || stackedRouter) return;
+  if (!label) return;
   if (label === GIT_WINDOW_LABEL) {
     await closeGitWindow();
     return;
@@ -294,6 +316,27 @@ export function onSidebarDockBack(
   handler: (sidebarId: string) => void,
 ): Promise<UnlistenFn> {
   return listenLoudly<string>(PANEL_DOCK_BACK_EVENT, handler);
+}
+
+const EDITOR_DOCK_BACK_EVENT = "voidlink://editor-dock-back";
+
+/// "The editor window is going away — put its tab back in front over there."
+///
+/// The editor's counterpart to `requestSidebarDockBack`, and deliberately
+/// carrying no payload. The workbench already holds every tab the editor window
+/// was showing *and* which one it had focused
+/// (`editorActiveItemByWorktree`, the field it broadcasts as
+/// `EditorTabsSnapshot.active`), so re-homing is "activate what you already
+/// know", not "receive a copy of it". Sending the tab back would make the
+/// closing window a second writer of tab state, which is the one thing the
+/// editor channel's header rules out.
+export async function requestEditorDockBack(): Promise<void> {
+  await emitQuietly(EDITOR_DOCK_BACK_EVENT);
+}
+
+/// Subscribe to editor dock-back requests. Workbench side.
+export function onEditorDockBack(handler: () => void): Promise<UnlistenFn> {
+  return listenLoudly(EDITOR_DOCK_BACK_EVENT, () => handler());
 }
 
 /// Bring the workbench window to the front.

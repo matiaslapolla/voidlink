@@ -208,6 +208,35 @@ export function mirrorArrangement(input: {
   return { sides, order: [...input.order].reverse() };
 }
 
+/// Which persisted flag takes each sidebar down to its icon rail.
+///
+/// The five collapses were never one flag — the explorer, the terminals list
+/// and the agent board have a `sidebarSections` disclosure each, the git panel
+/// and the workspace rail have booleans of their own. `SidebarDock`'s drag
+/// preview carried the mapping as a private `switch`, and "come back collapsed"
+/// needs the same answer, so it moves here: a sixth sidebar is then a compile
+/// error in one file rather than a preview that silently draws at full width.
+///
+/// `TitleBar` deliberately does **not** use this. Its edge buttons ask a
+/// different question — "is this panel on screen at all", which for the
+/// explorer is `leftSidebarCollapsed` (what Mod+B means), not the icon rail.
+///
+/// `section` entries are *disclosures*: `true` means open, so railed is the
+/// negation. `flag` entries are collapses: `true` means railed. That asymmetry
+/// is in the persisted data already; naming it here is cheaper than migrating
+/// two user-visible preferences to agree.
+export type SidebarCollapse =
+  | { kind: "section"; key: "files" | "terminals" | "agents" }
+  | { kind: "flag"; key: "gitSidebarCollapsed" | "workspaceRailCollapsed" };
+
+export const SIDEBAR_COLLAPSE: Record<SidebarId, SidebarCollapse> = {
+  workspaces: { kind: "flag", key: "workspaceRailCollapsed" },
+  explorer: { kind: "section", key: "files" },
+  terminals: { kind: "section", key: "terminals" },
+  git: { kind: "flag", key: "gitSidebarCollapsed" },
+  agents: { kind: "section", key: "agents" },
+};
+
 /// Flex `order` for a sidebar's slot.
 ///
 /// The one number that moves a panel from one edge to the other. `AppShell`

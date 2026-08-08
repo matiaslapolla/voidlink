@@ -5,6 +5,8 @@ import EditorApp from "./EditorApp.tsx";
 import PanelApp from "./PanelApp.tsx";
 import { initPlatform } from "@/api/platform";
 import { currentPanelSidebar, isEditorWindow, isGitWindow } from "@/api/windows";
+import { SIDEBAR_LABEL } from "@/components/layout/SidebarDock";
+import { isSidebarId } from "@/store/layout";
 import { bridgeThemeAcrossWindows } from "@/store/theme";
 import { bridgeUiVisualAcrossWindows } from "@/store/settings";
 import "./index.css";
@@ -38,7 +40,9 @@ void initPlatform().then(() => {
     // above; the label also says *which* panel, so there is one root rather
     // than one per sidebar.
     const sidebarId = currentPanelSidebar()!;
-    document.title = "Voidlink Explorer";
+    document.title = isSidebarId(sidebarId)
+      ? `Voidlink ${SIDEBAR_LABEL[sidebarId]}`
+      : "Voidlink";
     render(() => <PanelApp sidebarId={sidebarId} />, root);
   } else {
     render(() => <App />, root);
