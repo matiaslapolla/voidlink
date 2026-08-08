@@ -32,6 +32,7 @@ import {
   STORAGE_KEYS,
   flushWrites,
   resetCorruptionReports,
+  resetLayoutStorage,
   setCorruptKeyHandler,
   writeJson,
 } from "./persistence";
@@ -533,5 +534,121 @@ describe("sidebar docking", () => {
       store.actions.setSidebarDetached("git", false);
       expect(store.state.detachedSidebars).toEqual([]);
     }, false);
+  });
+});
+
+/// What "Reset layout" is allowed to cost.
+///
+/// The button in Settings → UI has always promised, in its own help copy, that
+/// it "clears the pane tree and panel sizes only — settings, themes, provider
+/// keys and saved snapshots all survive it". It used to clear every layout key
+/// there was, workspaces and open tabs included, which is not a layout reset —
+/// it is starting over. These tests are the copy, restated as assertions.
+describe("reset layout scope", () => {
+  const WT_B = "66666666-6666-4666-8666-666666666666";
+  const WT_C = "55555555-5555-4555-8555-555555555555";
+
+  function seedThreeWorkspaces() {
+    backing.set(LAYOUT_VERSION_KEY, String(LAYOUT_VERSION));
+    backing.set(
+      WORKSPACES_KEY,
+      JSON.stringify(
+        [
+          { id: "88888888-8888-4888-8888-888888888888", name: "Main", root: "/repo", wt: WT_ID },
+          { id: "99999999-9999-4999-8999-999999999999", name: "Api", root: "/api", wt: WT_B },
+          { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Web", root: "/web", wt: WT_C },
+        ].map((w) => ({
+          id: w.id,
+          name: w.name,
+          repoRoot: w.root,
+          worktrees: [
+            { id: w.wt, path: w.root, branch: "main", isMain: true, isSynthetic: false },
+          ],
+          activeWorktreeId: w.wt,
+          isRepo: true,
+        })),
+      ),
+    );
+  }
+
+  /// A two-way split, a panel dragged far off its default, and a dozen tabs
+  /// spread over the three worktrees.
+  function seedBrokenLayoutAndTabs() {
+    backing.set(
+      STORAGE_KEYS.paneLayout,
+      JSON.stringify({
+        [WT_ID]: {
+          kind: "split",
+          id: "s1",
+          orientation: "row",
+          ratios: [0.5, 0.5],
+          children: [
+            { kind: "group", id: "g1", group: { id: "g1", tabIds: [], activeTabId: null } },
+            { kind: "group", id: "g2", group: { id: "g2", tabIds: [], activeTabId: null } },
+          ],
+        },
+      }),
+    );
+    backing.set(
+      STORAGE_KEYS.gitPrefs,
+      JSON.stringify({
+        panels: { rail: 212, sidebar: 256, gitSidebar: 600 },
+        gitSidebarCollapsed: true,
+        dockOrder: ["git", "workspaces", "files"],
+      }),
+    );
+    const four = (prefix: string) =>
+      [1, 2, 3, 4].map((n) => ({ id: `${prefix}-${n}`, url: `https://example.com/${n}` }));
+    backing.set(
+      STORAGE_KEYS.browserTabs,
+      JSON.stringify({ [WT_ID]: four("a"), [WT_B]: four("b"), [WT_C]: four("c") }),
+    );
+    backing.set(STORAGE_KEYS.historyTabs, JSON.stringify({ [WT_ID]: [{ id: "hist-1" }] }));
+    backing.set(
+      STORAGE_KEYS.activeItem,
+      JSON.stringify({ [WT_ID]: { type: "history", id: "hist-1" } }),
+    );
+  }
+
+  it("flattens the split and restores the widths", () => {
+    seedThreeWorkspaces();
+    seedBrokenLayoutAndTabs();
+    resetLayoutStorage();
+
+    withStore((store) => {
+      // One group again, claiming nothing — `panes.ts`'s default layout.
+      expect(store.state.paneLayoutByWorktree[WT_ID].kind).toBe("group");
+      expect(store.state.panels.gitSidebar).toBe(320);
+      expect(store.state.gitSidebarCollapsed).toBe(false);
+      expect(store.state.dockOrder).toEqual(["workspaces", "files", "git"]);
+    });
+  });
+
+  it("keeps every workspace and every tab — the help copy says settings and content survive", () => {
+    seedThreeWorkspaces();
+    seedBrokenLayoutAndTabs();
+    resetLayoutStorage();
+
+    withStore((store) => {
+      expect(
+        store.state.workspaces,
+        "Reset layout took the user's workspaces, which its own help copy says survive it",
+      ).toHaveLength(3);
+      const openTabs = [WT_ID, WT_B, WT_C].flatMap(
+        (wt) => store.state.browserTabsByWorktree[wt] ?? [],
+      );
+      expect(openTabs, "Reset layout closed tabs; it clears the pane tree, not its contents").toHaveLength(12);
+      expect(store.state.historyTabsByWorktree[WT_ID]).toHaveLength(1);
+      expect(store.activeItem()).toEqual({ type: "history", id: "hist-1" });
+    });
+  });
+
+  it("leaves saved snapshots and presets alone", () => {
+    seedThreeWorkspaces();
+    backing.set(STORAGE_KEYS.snapshots, JSON.stringify({ [WT_ID]: [{ id: "snap-1" }] }));
+    backing.set(STORAGE_KEYS.layoutPresets, JSON.stringify({ ws: [{ id: "preset-1" }] }));
+    resetLayoutStorage();
+    expect(backing.has(STORAGE_KEYS.snapshots)).toBe(true);
+    expect(backing.has(STORAGE_KEYS.layoutPresets)).toBe(true);
   });
 });

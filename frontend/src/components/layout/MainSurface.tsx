@@ -1661,13 +1661,6 @@ function NewTabMenu(props: {
                 New terminal
               </MenuItem>
               <MenuItem
-                onClick={props.onNewCompare}
-                icon={<GitBranchPlus class="w-3.5 h-3.5" />}
-                tooltip="Diff any two refs — branches, tags, SHAs, HEAD~3 — with a changed-file tree beside the diff."
-              >
-                New branch compare
-              </MenuItem>
-              <MenuItem
                 onClick={props.onEnterFileMode}
                 icon={<FilePlus2 class="w-3.5 h-3.5" />}
                 tooltip="Create an empty file at the workspace root and open it in the editor."
@@ -1687,6 +1680,18 @@ function NewTabMenu(props: {
                 tooltip="What is happening across every workspace, not just this one — plus fan-out and triggers."
               >
                 Mission Control
+              </MenuItem>
+              {/* Down here with the other destinations rather than up with new
+                  file / new terminal: a compare is somewhere you go, not
+                  something you create. This is also its only home now — it used
+                  to be a pinned footer button in the git sidebar, where it was
+                  the one row that opened a tab instead of showing repo state. */}
+              <MenuItem
+                onClick={props.onNewCompare}
+                icon={<GitBranchPlus class="w-3.5 h-3.5" />}
+                tooltip="Diff any two refs — branches, tags, SHAs, HEAD~3 — with a changed-file tree beside the diff."
+              >
+                New branch compare
               </MenuItem>
               <MenuItem
                 onClick={props.onOpenBrain}
