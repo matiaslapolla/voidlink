@@ -487,14 +487,17 @@ function UiPane() {
   );
 }
 
-/// The `--reset-layout` escape hatch: clear every layout key and reload.
+/// The `--reset-layout` escape hatch: clear the geometry keys and reload.
 ///
 /// Layout state is the one thing in this app that can render the shell
 /// unusable — a pane tree that claims tabs that do not exist, a panel dragged
 /// to zero, a blob half-written by a crash. `resetLayoutStorage()` clears
-/// exactly the layout keys: settings, provider keys, themes and *saved
-/// snapshots* are all untouched, which is why this can sit next to the
-/// ordinary UI preferences instead of behind a support ticket.
+/// exactly the *arrangement*: the pane tree, the panel widths and the sidebar
+/// docking. Workspaces, open tabs, settings, provider keys, themes and *saved
+/// snapshots* all survive, which is why this can sit next to the ordinary UI
+/// preferences instead of behind a support ticket. The scope and the copy below
+/// have to keep agreeing — see `LAYOUT_STORAGE_KEYS` in
+/// `store/layout/persistence.ts`, which is the list this row describes.
 function ResetLayoutRow() {
   const [confirming, setConfirming] = createSignal(false);
   return (
@@ -502,7 +505,7 @@ function ResetLayoutRow() {
       <div class="w-28 shrink-0">
         <div class="text-muted-foreground">Layout</div>
         <div class="text-micro text-muted-foreground/70 leading-tight">
-          Tabs, panes, panel widths
+          Panes, panel widths, docking
         </div>
       </div>
       <div class="flex items-center gap-2">
@@ -522,8 +525,8 @@ function ResetLayoutRow() {
           }
           title={
             confirming()
-              ? "Click again to clear tabs, panes and panel widths, then reload"
-              : "Clears tabs, panes and panel widths. Settings, provider keys and saved snapshots are kept."
+              ? "Click again to clear the pane tree, panel widths and docking, then reload"
+              : "Clears the pane tree, panel widths and sidebar docking. Workspaces, open tabs, settings, provider keys and saved snapshots are kept."
           }
           class={`px-3 py-1 rounded border text-label transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
             confirming()
@@ -2320,7 +2323,7 @@ function HelpPane() {
         />
         <HelpRow
           title="If the layout breaks"
-          body="Reset layout, on the UI tab, clears the pane tree and panel sizes only — settings, themes, provider keys and saved snapshots all survive it."
+          body="Reset layout, on the UI tab, clears the pane tree, panel sizes and sidebar docking only — your workspaces, your open tabs, settings, themes, provider keys and saved snapshots all survive it."
         />
       </Section>
 

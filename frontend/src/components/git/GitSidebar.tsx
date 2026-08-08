@@ -740,19 +740,14 @@ export function GitSidebar(props: GitSidebarProps) {
         </For>
       </div>
 
-      {/* Pinned footer. Compare is a destination rather than a view of repo
-          state, so it sits below the collapsible sections instead of
-          competing with them for vertical space. */}
-      <div class="shrink-0 border-t border-border p-2">
-        <button
-          onClick={() => actions.openCompareTab(props.worktreeId)}
-          class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed border-border text-body text-muted-foreground hover:text-foreground hover:bg-accent/40 hover:border-border/80 transition-colors"
-          title="Compare two branches, tags, or commits"
-        >
-          <GitCompare class="w-3.5 h-3.5 shrink-0" />
-          Compare branches
-        </button>
-      </div>
+      {/* Compare used to be pinned here, under a comment that conceded the
+          point: it is a *destination* rather than a view of repo state, and
+          everything else in this panel is a live view of the repository. It now
+          lives in the `+` new-tab menu with the other things that open tabs
+          (`MainSurface`'s `NewTabMenu`), and in the palette as `git.compare`.
+          The upstream compare stays — it is a different affordance, about the
+          current branch's relationship to its upstream, and belongs next to the
+          branch it is about. */}
     </aside>
   );
 }

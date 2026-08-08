@@ -145,15 +145,55 @@ export const STORAGE_KEYS = {
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
 
-/// Every key a layout reset clears — which is every key above *except*
-/// snapshots and layout presets. Both are documents the user named and saved;
-/// "my panes are broken, start over" must not also throw those away. Settings
-/// and AI keys live under their own names and are likewise untouched.
-const RESET_EXEMPT: string[] = [STORAGE_KEYS.snapshots, STORAGE_KEYS.layoutPresets];
-
-export const LAYOUT_STORAGE_KEYS: string[] = Object.values(STORAGE_KEYS).filter(
-  (key) => !RESET_EXEMPT.includes(key),
-);
+/// Every key a layout reset clears — an **allowlist**, and deliberately a short
+/// one.
+///
+/// It used to be the inverse: every key above except snapshots and presets,
+/// which meant "Reset layout" also took the user's workspaces, every open tab,
+/// the MRU, the nav history and every agent transcript. That is not a layout
+/// reset, it is starting over — and the button's own help copy has always said
+/// otherwise ("clears the pane tree and panel sizes only — settings, themes,
+/// provider keys and saved snapshots all survive it"). The copy is the
+/// specification; this list is it, restated.
+///
+/// Why each of these three is layout, and nothing else here is:
+///
+///   - `paneLayout` — the split tree itself. The unreachable group and the
+///     pane claiming tabs that do not exist both live here, and clearing it
+///     returns every worktree to `singleGroupLayout()`, which claims nothing
+///     and therefore shows every open tab in one strip.
+///   - `gitPrefs` — the shell's geometry blob: the three panel widths, the
+///     three sidebar collapse flags, and dock side/order/detached. The
+///     zero-width panel and the unreachable dock arrangement are here.
+///   - `editorPrefs` — the editor window's own geometry (file-tree column
+///     width, split fraction). A separate key only because a second window
+///     writes it; the same kind of state as `gitPrefs`'s `panels`.
+///
+/// Two known imprecisions, kept rather than papered over:
+///
+///   - `gitPrefs` is one blob, so clearing it also costs the view preferences
+///     riding in it (diff mode, diff line numbers, active git tab, which git
+///     sections are open and in what order, collapsed/blurred workspaces).
+///     Splitting the blob to spare them would be a storage migration for a
+///     handful of one-click settings; a reset costs them, and that is the
+///     trade. If it ever stops being one, split the key — do not add a second
+///     writer to this one.
+///   - Tab-strip orientation and vertical tab width are *not* cleared: they
+///     live in the settings blob (`store/settings.ts`, `ui.tabOrientation` /
+///     `ui.verticalTabWidth`), whose comment already states the intent —
+///     "resetting the layout must not silently take the column back to its
+///     default width" — and which the help copy promises survives.
+///
+/// Everything else survives by construction: workspaces and the active
+/// workspace pointer, every tab collection of every kind, tab groups, pins,
+/// the MRU, nav history, closed-tab history, the active-tab pointer, agent
+/// threads, hills, review notes, fan-out runs, triggers, and — as before —
+/// saved snapshots and layout presets.
+export const LAYOUT_STORAGE_KEYS: string[] = [
+  STORAGE_KEYS.paneLayout,
+  STORAGE_KEYS.gitPrefs,
+  STORAGE_KEYS.editorPrefs,
+];
 
 /// `localStorage` is absent in the test runner and in any non-browser host, and
 /// throws rather than returning `undefined` when it is disabled. One guard,
@@ -373,9 +413,10 @@ export function layoutKeyValueStore(): {
   };
 }
 
-/// Clear every key the layout store owns, leaving settings, AI keys and
-/// anything else in `localStorage` untouched. The escape hatch for a layout
-/// state so broken the shell will not render.
+/// Clear the three geometry keys in `LAYOUT_STORAGE_KEYS`, leaving workspaces,
+/// tabs, settings, AI keys and everything else in `localStorage` untouched. The
+/// escape hatch for a layout state so broken the shell will not render — see
+/// that list for why the scope is exactly those three.
 export function resetLayoutStorage(): void {
   pending.clear();
   if (timer !== null) {
