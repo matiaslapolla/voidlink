@@ -24,6 +24,11 @@ export interface StoredCard {
   order: number;
   rev: number;
   body: string;
+  /// Optional here for the same reason it is optional on disk: most fixtures
+  /// are cards written before the field existed, and they have to keep
+  /// working.
+  labels?: string[];
+  due?: string | null;
 }
 
 /// A stand-in for the directory, because the thing under test is a
@@ -37,11 +42,20 @@ export const asWire = (c: StoredCard) => ({
   title: c.title,
   column: c.column,
   order: c.order,
-  labels: [] as string[],
+  labels: c.labels ?? [],
   created: "2026-08-04T10:00:00.000-03:00",
+  due: c.due ?? null,
   path: `${c.id}.md`,
   rev: `rev-${c.rev}`,
 });
+
+/// Read a frontmatter flow array back out of what the surface wrote. Absent
+/// is `[]`, which is what an omitted `labels:` line means.
+export function arrayField(content: string, name: string): string[] {
+  const raw = content.match(new RegExp(`^${name}: \\[(.*)\\]$`, "m"))?.[1];
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim().replace(/^"|"$/g, ""));
+}
 
 /// Read one frontmatter scalar back out of what the surface wrote. The point
 /// of parsing rather than trusting: the fake disk then holds what the *file*
@@ -72,6 +86,11 @@ export function installBoard(cards: StoredCard[], columns = ["Todo", "Doing", "D
         title: field(content, "title"),
         column: field(content, "column"),
         order: Number(field(content, "order")),
+        labels: arrayField(content, "labels"),
+        // An omitted `due:` line is no due date — the same collapse the Rust
+        // parser makes, so the fake disk cannot be more forgiving than the
+        // real one.
+        due: content.includes("\ndue:") ? field(content, "due") : null,
         rev: (existing?.rev ?? 0) + 1,
         body: content.split("---\n")[2] ?? "",
       };
@@ -89,10 +108,16 @@ export const THREE_CARDS: StoredCard[] = [
 ];
 
 export const onClose = vi.fn(() => {});
+/// Stands in for the workbench's "open a file" — the one thing the board
+/// delegates rather than does, so the test can assert the path it asked for.
+export const onOpenCard = vi.fn<(path: string) => void>();
 
 export function mountBoard(repoPath = REPO) {
   onClose.mockClear();
-  return render(() => <BoardOverlay repoPath={repoPath} onClose={onClose} />);
+  onOpenCard.mockClear();
+  return render(() => (
+    <BoardOverlay repoPath={repoPath} onClose={onClose} onOpenCard={onOpenCard} />
+  ));
 }
 
 export const tile = (title: string) => screen.getByLabelText(title);

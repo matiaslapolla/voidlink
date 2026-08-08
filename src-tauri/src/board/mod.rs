@@ -85,6 +85,14 @@ pub struct BoardCard {
     pub order: f64,
     pub labels: Vec<String>,
     pub created: Option<String>,
+    /// When the card is due, as an ISO `YYYY-MM-DD` date, or `None`.
+    ///
+    /// Optional in both directions on purpose. Every card written before this
+    /// field existed has no `due:` line, and must load rather than fail — a
+    /// board is a directory of hand-editable files, so "the field is missing"
+    /// is the ordinary state, not a corrupt one. An older build reading a card
+    /// this one wrote ignores the line for the same reason.
+    pub due: Option<String>,
     /// Board-relative path, e.g. "2026-08-04-wire-the-watcher.md".
     pub path: String,
     /// What was on disk when this was read. Hand it back to
@@ -195,6 +203,7 @@ fn parse_card(fm: &str, id: String, path: String, rev: String) -> BoardCard {
     let mut order = 0.0_f64;
     let mut labels = Vec::new();
     let mut created = None;
+    let mut due = None;
 
     for line in fm.lines() {
         let line = line.trim_end();
@@ -209,6 +218,13 @@ fn parse_card(fm: &str, id: String, path: String, rev: String) -> BoardCard {
             order = unquote_scalar(rest).parse::<f64>().unwrap_or(0.0);
         } else if let Some(rest) = line.strip_prefix("created:") {
             created = Some(unquote_scalar(rest));
+        } else if let Some(rest) = line.strip_prefix("due:") {
+            // A bare `due:` with nothing after it is a field somebody cleared
+            // by hand. Absent and empty mean the same thing — no due date —
+            // and collapsing them here is what stops an empty string from
+            // reaching the UI's overdue comparison as a date in the year 0.
+            let value = unquote_scalar(rest);
+            due = if value.is_empty() { None } else { Some(value) };
         } else if let Some(rest) = line.strip_prefix("labels:") {
             labels = parse_flow_array(rest);
         }
@@ -219,7 +235,7 @@ fn parse_card(fm: &str, id: String, path: String, rev: String) -> BoardCard {
         title = id.clone();
     }
 
-    BoardCard { id, title, column, order, labels, created, path, rev }
+    BoardCard { id, title, column, order, labels, created, due, path, rev }
 }
 
 /// The declared columns, or the defaults when `board.md` is absent or says
@@ -404,6 +420,81 @@ mod tests {
         assert_eq!(card.labels, vec!["rust"]);
         assert_eq!(card.created.as_deref(), Some("2026-08-04T10:00:00.000-03:00"));
         assert_eq!(body, "What the card is about.\n");
+    }
+
+    /// The exact bytes `buildCardMarkdown` emits for a card with every field
+    /// set, quoted from `boardModel.test.ts`'s `EVERY_FIELD_MARKDOWN`.
+    ///
+    /// The two constants are the round trip: the TypeScript test asserts the
+    /// serialiser produces this string, and this one asserts the parser reads
+    /// every field back out of it. Neither side can drift without the other
+    /// failing, which is the only thing keeping a writer in one language and a
+    /// reader in another honest.
+    const EVERY_FIELD_MARKDOWN: &str = "---\n\
+        id: 2026-08-04-wire-the-watcher\n\
+        type: card\n\
+        title: \"Wire the watcher\"\n\
+        column: \"Doing\"\n\
+        order: 1.5\n\
+        labels: [\"rust\", \"watch\"]\n\
+        created: \"2026-08-04T10:00:00.000-03:00\"\n\
+        due: \"2026-08-31\"\n\
+        ---\n\
+        Why it matters.\n";
+
+    #[test]
+    fn parse_card_reads_back_every_field_the_frontend_serialises() {
+        let (fm, body) = split_frontmatter(EVERY_FIELD_MARKDOWN);
+        let card = parse_card(
+            fm.unwrap(),
+            "2026-08-04-wire-the-watcher".to_string(),
+            "2026-08-04-wire-the-watcher.md".to_string(),
+            "rev".to_string(),
+        );
+        assert_eq!(card.title, "Wire the watcher");
+        assert_eq!(card.column, "Doing");
+        assert_eq!(card.order, 1.5);
+        assert_eq!(card.labels, vec!["rust", "watch"]);
+        assert_eq!(card.created.as_deref(), Some("2026-08-04T10:00:00.000-03:00"));
+        assert_eq!(card.due.as_deref(), Some("2026-08-31"));
+        assert_eq!(body, "Why it matters.\n");
+    }
+
+    /// The compatibility claim, both directions.
+    ///
+    /// A card written before `due:` existed has no such line and must load with
+    /// `due: None` rather than failing — otherwise shipping this field would
+    /// blank every board that predates it.
+    #[test]
+    fn a_card_written_before_due_existed_loads_with_no_due_date() {
+        let raw = card_markdown("Older card", "Todo", 1.0);
+        assert!(!raw.contains("due:"), "the fixture must be a pre-`due` card");
+        let (fm, _) = split_frontmatter(&raw);
+        let card =
+            parse_card(fm.unwrap(), "older".to_string(), "older.md".to_string(), "r".to_string());
+        assert_eq!(card.due, None);
+        assert_eq!(card.title, "Older card");
+    }
+
+    /// A `due:` somebody emptied by hand is no due date, not a date of "".
+    #[test]
+    fn an_empty_due_line_parses_as_absent() {
+        let raw = "---\ntitle: X\ncolumn: Todo\norder: 1\ndue:\n---\nbody\n";
+        let (fm, _) = split_frontmatter(raw);
+        let card = parse_card(fm.unwrap(), "x".to_string(), "x.md".to_string(), "r".to_string());
+        assert_eq!(card.due, None);
+    }
+
+    /// The other direction of the compatibility claim: a card carrying fields
+    /// this parser has no arm for is still a card. `due:` was one of those
+    /// lines until this change, and the next new field will be another.
+    #[test]
+    fn an_unknown_frontmatter_field_is_ignored_rather_than_failing_the_card() {
+        let raw = "---\ntitle: X\ncolumn: Todo\norder: 1\nassignee: nobody\n---\nbody\n";
+        let (fm, _) = split_frontmatter(raw);
+        let card = parse_card(fm.unwrap(), "x".to_string(), "x.md".to_string(), "r".to_string());
+        assert_eq!(card.title, "X");
+        assert_eq!(card.column, "Todo");
     }
 
     /// A field nobody can read must not be able to hide the card.

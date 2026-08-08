@@ -23,7 +23,14 @@ import { X } from "lucide-solid";
 import { Portal } from "solid-js/web";
 import { BoardSurface } from "@/components/board/BoardSurface";
 
-export function BoardOverlay(props: { repoPath: string; onClose: () => void }) {
+export function BoardOverlay(props: {
+  repoPath: string;
+  onClose: () => void;
+  /// Open a card's markdown file as an ordinary editor tab. Passed straight
+  /// through: the overlay owns dismissal and nothing else, and the workbench
+  /// is what knows how to open a file. See `BoardSurface`'s prop.
+  onOpenCard?: (absolutePath: string) => void;
+}) {
   /// ESC closes. Captured at the document because focus is usually inside the
   /// new-card input by the time the user presses it.
   const onKeyDown = (e: KeyboardEvent) => {
@@ -62,7 +69,7 @@ export function BoardOverlay(props: { repoPath: string; onClose: () => void }) {
             </div>
           </div>
           <div class="flex-1 min-h-0">
-            <BoardSurface repoPath={props.repoPath} />
+            <BoardSurface repoPath={props.repoPath} onOpenCard={props.onOpenCard} />
           </div>
         </div>
       </div>
@@ -76,10 +83,15 @@ export function BoardOverlayHost(props: {
   open: boolean;
   repoPath: string;
   onClose: () => void;
+  onOpenCard?: (absolutePath: string) => void;
 }) {
   return (
     <Show when={props.open}>
-      <BoardOverlay repoPath={props.repoPath} onClose={props.onClose} />
+      <BoardOverlay
+        repoPath={props.repoPath}
+        onClose={props.onClose}
+        onOpenCard={props.onOpenCard}
+      />
     </Show>
   );
 }
