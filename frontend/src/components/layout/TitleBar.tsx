@@ -26,7 +26,7 @@ import { ViewSwitcher } from "@/components/layout/ViewSwitcher";
 import { isStackedMode } from "@/commands/environment";
 import { useAppStore } from "@/store/LayoutContext";
 import type { DockSide, SidebarId } from "@/store/layout";
-import { SIDEBAR_LABEL } from "@/components/layout/SidebarDock";
+import { SIDEBAR_LABEL, sidebarSuppressedReason } from "@/components/layout/SidebarDock";
 import { getAction, runAction } from "@/commands/registry";
 import { shortcutLabel } from "@/commands/shortcuts";
 
@@ -102,8 +102,18 @@ export function TitleBar(props: TitleBarProps) {
   // (`dockOrder`), the button acts on the first one, and its title says so
   // explicitly when there are more — "say what it means" rather than pretend
   // one button covers an edge it does not.
+  //
+  // A suppressed panel is skipped outright rather than listed and disabled: it
+  // is not on screen, so a button offering to "hide" it would be describing a
+  // panel the user cannot point at, and on an edge that also holds a real one
+  // it would steal the button from it (`contentIdsOn` picks the first).
   const contentIdsOn = (side: DockSide): SidebarId[] =>
-    state.dockOrder.filter((id) => id !== "workspaces" && state.dockSide[id] === side);
+    state.dockOrder.filter(
+      (id) =>
+        id !== "workspaces" &&
+        state.dockSide[id] === side &&
+        !sidebarSuppressedReason(id),
+    );
 
   const isCollapsed = (id: SidebarId): boolean => {
     switch (id) {

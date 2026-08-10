@@ -27,7 +27,11 @@ import { forgetPtySize } from "@/commands/terminalSize";
 import { LedSlot, ledLabel, terminalSignal } from "@/components/layout/StatusLed";
 import { Splitter } from "@/components/layout/Splitter";
 import { PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH, type DockSide } from "@/store/layout";
-import { SidebarGrip, SidebarMenuButton } from "@/components/layout/SidebarDock";
+import {
+  SidebarCollapseButton,
+  SidebarGrip,
+  SidebarMenuButton,
+} from "@/components/layout/SidebarDock";
 import { tabMark } from "@/store/activity";
 import { watchTerminal } from "@/store/terminalWatch";
 
@@ -105,6 +109,11 @@ export function TerminalsSidebar(props: {
             <Plus class="w-3.5 h-3.5" />
           </span>
           <SidebarMenuButton id="terminals" />
+          <SidebarCollapseButton
+            dock={dock()}
+            label="the terminals sidebar"
+            onCollapse={() => actions.toggleSidebarSection("terminals")}
+          />
         </div>
 
         <div class="flex-1 overflow-y-auto scrollbar-thin p-1.5 density-gap">

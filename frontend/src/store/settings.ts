@@ -250,6 +250,18 @@ export interface UiSettings {
   /// `backgroundImage` is unset, and overridden to fully opaque under
   /// `prefers-reduced-transparency: reduce` regardless of its value (`index.css`).
   surfaceOpacity: number;
+  /// Blur radius, in px, applied *behind* every translucent surface — the
+  /// difference between "the photo shows through the chrome" and "the chrome
+  /// is frosted glass sitting on the photo". Only the second one stays
+  /// readable over a busy image, which is why this defaults to on rather than
+  /// to 0: an install that turns on a background image should get the
+  /// legible version of it without a second trip to settings.
+  ///
+  /// Same two conditions as `surfaceOpacity`: ignored while `backgroundImage`
+  /// is unset, and dropped entirely under `prefers-reduced-transparency:
+  /// reduce` (`index.css`). 0 is a real value and removes the compositing
+  /// pass altogether — see `data-surface-blur` in the effect below.
+  surfaceBlur: number;
   /// How the background image is scaled and positioned. See `BackgroundFit`.
   backgroundFit: BackgroundFit;
 }
@@ -456,6 +468,7 @@ const DEFAULTS: AppSettings = {
     showIgnoredFiles: false,
     backgroundImage: null,
     surfaceOpacity: 100,
+    surfaceBlur: 18,
     backgroundFit: "cover",
   },
   terminal: {
@@ -546,7 +559,21 @@ function clampSurfaceOpacity(v: unknown): number {
   return Math.max(SURFACE_OPACITY_MIN, Math.min(SURFACE_OPACITY_MAX, Math.round(v)));
 }
 
-/// Validate the three background/translucency keys field by field, same
+/// Bounds of the `surfaceBlur` slider. 0 is allowed — unlike the opacity
+/// floor, "no blur" is a coherent thing to ask for (it is what shipped before
+/// this setting existed) and it is also the only value that costs nothing to
+/// render. The ceiling is where more radius stops being visible: past ~40px a
+/// photograph is already an even wash of colour, so the slider would be
+/// spending GPU on a difference nobody can see.
+export const SURFACE_BLUR_MIN = 0;
+export const SURFACE_BLUR_MAX = 40;
+
+function clampSurfaceBlur(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return DEFAULTS.ui.surfaceBlur;
+  return Math.max(SURFACE_BLUR_MIN, Math.min(SURFACE_BLUR_MAX, Math.round(v)));
+}
+
+/// Validate the four background/translucency keys field by field, same
 /// policy as `parseExperimentalSettings`: a hand-edited or stale value falls
 /// back to its default rather than reaching Monaco-adjacent code with a shape
 /// nothing here has a branch for.
@@ -559,6 +586,7 @@ function parseUiSettings(partial: Partial<UiSettings> | undefined): UiSettings {
         ? partial.backgroundImage
         : null,
     surfaceOpacity: clampSurfaceOpacity(partial?.surfaceOpacity),
+    surfaceBlur: clampSurfaceBlur(partial?.surfaceBlur),
     backgroundFit: BACKGROUND_FITS.includes(partial?.backgroundFit as BackgroundFit)
       ? (partial!.backgroundFit as BackgroundFit)
       : DEFAULTS.ui.backgroundFit,
@@ -725,10 +753,18 @@ createEffect(() => {
 /// it is trusted: a path that no longer resolves (the file moved, an install
 /// synced settings without the file) must fall back to the plain themed
 /// background silently, not paint a broken-image icon into the shell.
+///
+/// The blur half is `--ui-surface-blur` plus a `data-surface-blur` attribute.
+/// The attribute exists so that `surfaceBlur: 0` produces *no rule at all*
+/// rather than `blur(0px)`: a zero-radius `backdrop-filter` still promotes
+/// every surface carrying it to its own compositing layer and still costs a
+/// readback per frame, which is the whole expense with none of the effect.
 createEffect(() => {
   const html = document.documentElement;
   const path = settings.ui.backgroundImage;
   html.style.setProperty("--ui-surface-opacity", `${settings.ui.surfaceOpacity}%`);
+  html.style.setProperty("--ui-surface-blur", `${settings.ui.surfaceBlur}px`);
+  html.toggleAttribute("data-surface-blur", settings.ui.surfaceBlur > 0);
   html.setAttribute("data-bg-fit", settings.ui.backgroundFit);
 
   if (!path) {
@@ -784,6 +820,7 @@ export function bridgeUiVisualAcrossWindows(): () => void {
     const value = {
       backgroundImage: settings.ui.backgroundImage,
       surfaceOpacity: settings.ui.surfaceOpacity,
+      surfaceBlur: settings.ui.surfaceBlur,
       backgroundFit: settings.ui.backgroundFit,
     };
     if (first) {
@@ -799,6 +836,10 @@ export function bridgeUiVisualAcrossWindows(): () => void {
     setSettings("ui", {
       backgroundImage: value.backgroundImage,
       surfaceOpacity: clampSurfaceOpacity(value.surfaceOpacity),
+      // Clamped, so a payload from a window running an older build — one with
+      // no `surfaceBlur` in it at all — lands on the default rather than on
+      // `undefined`, which the store would happily write through.
+      surfaceBlur: clampSurfaceBlur(value.surfaceBlur),
       backgroundFit: BACKGROUND_FITS.includes(value.backgroundFit)
         ? value.backgroundFit
         : DEFAULTS.ui.backgroundFit,

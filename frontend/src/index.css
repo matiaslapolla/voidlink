@@ -906,6 +906,58 @@ html[data-bg-image] #root {
   background-size: cover, cover;
 }
 
+/* ── The frost (Stream E, blur) ───────────────────────────────────────────────
+ * The mix above makes the islands translucent; on its own that means a
+ * photograph's own detail — its edges, its text, its high-frequency noise —
+ * arrives at full sharpness under the app's own text and competes with it.
+ * Contrast is not the failing mode (the scrim already guarantees AA); legibility
+ * is. Blurring the backdrop is what turns "the image shows through the chrome"
+ * into "the chrome is frosted glass over the image", and it is the difference
+ * between a background image being usable at 60% and only at 95%.
+ *
+ * Every token the block above mixes toward transparent gets one, keyed on the
+ * Tailwind utility that paints it, and the list has to stay in step with that
+ * one: a surface that goes translucent without a blur is the bug this fixes.
+ *
+ * Two deliberate omissions:
+ *   • `.bg-canvas`, which is `transparent` under an image rather than mixed —
+ *     it is the hole the photo shows *through*, so blurring it would blur the
+ *     image itself everywhere it is meant to be seen.
+ *   • `.material-chrome` / `.material-structural`, which carry their own blur
+ *     already (see Materials above) and pick it by *what the surface is*.
+ *     Menus, tooltips, dialogs and the palette are all on those classes; this
+ *     rule must not overwrite a considered 20/30px with the slider's value.
+ *
+ * `:where()` keeps the whole selector at zero specificity, so any component
+ * that needs to opt a surface out can do it with a plain class.
+ *
+ * Nesting: a translucent card inside a translucent sidebar blurs a backdrop
+ * that is *already* blurred, which compounds radius but not tint — the "never
+ * stack two materials" rule under Materials above is about opacity stacking,
+ * and does not apply. What nesting does cost is a compositing layer each,
+ * which is why `surfaceBlur: 0` removes the rule rather than passing `0px`
+ * (see the `data-surface-blur` comment in `store/settings.ts`). */
+html[data-bg-image][data-surface-blur]
+  :where(
+    .bg-background,
+    .bg-sidebar,
+    .bg-card,
+    .bg-popover,
+    .bg-elev-1,
+    .bg-elev-2,
+    .bg-elev-3,
+    .bg-surface-rail,
+    .bg-surface-tabstrip,
+    .bg-surface-statusbar
+  ) {
+  /* Saturation is lower than the materials' 160/180%: those sit over the app's
+   * own chrome, whose colours are already muted, while this sits over an
+   * arbitrary photograph that arrives saturated. Pushing it further is what
+   * makes a wallpaper bleed colour into the UI. */
+  -webkit-backdrop-filter: blur(var(--ui-surface-blur)) saturate(120%);
+  backdrop-filter: blur(var(--ui-surface-blur)) saturate(120%);
+}
+
 html[data-bg-image][data-bg-fit="contain"] #root {
   background-size: cover, contain;
 }
@@ -940,6 +992,21 @@ html[data-bg-image][data-bg-fit="tile"] #root {
   html[data-bg-image] #root {
     background-image: none;
     background-color: var(--canvas);
+  }
+
+  /* The frost goes with the translucency it exists to make readable: with the
+   * surfaces back at full opacity there is nothing behind them to blur, and
+   * leaving the rule up would keep paying for a compositing layer per surface
+   * to produce no pixels at all.
+   *
+   * Deliberately `*` rather than a copy of the ten-utility list above: under
+   * this preference *no* backdrop blur in the shell is wanted, so a rule that
+   * cannot fall out of step with that list is the more honest one. The two
+   * materials are zeroed by their own block above; this catches everything
+   * else, including anything added later. */
+  html[data-bg-image][data-surface-blur] :where(*) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }
 
