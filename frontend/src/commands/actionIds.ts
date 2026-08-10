@@ -48,6 +48,7 @@ export const ACTION_IDS = [
   "editor.close-group",
   "editor.focus-next-group",
   "editor.go-to-symbol",
+  "editor.go-to-definition",
   // Terminal
   "terminal.new",
   "terminal.repeat-last",

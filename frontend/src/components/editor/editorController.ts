@@ -146,6 +146,28 @@ class EditorController {
     // surface handles the pointer case, this covers a focus that arrives from
     // Monaco itself (a find-widget close, a peek, a command).
     group.disposables.push(editor.onDidFocusEditorText(() => this.focusGroup(groupId)));
+    // Cmd/Ctrl+Click on a symbol. Taken before Monaco sees it — see
+    // `goToDefinition` for why Monaco's own handling cannot work here, and
+    // because `multiCursorModifier: "ctrlCmd"` makes this the *add a cursor*
+    // chord, which would otherwise fire alongside the jump.
+    group.disposables.push(
+      editor.onMouseDown((e) => {
+        if (!this.goToDefinition) return;
+        if (e.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT) return;
+        const { metaKey, ctrlKey, altKey, shiftKey } = e.event;
+        if (!(metaKey || ctrlKey) || altKey || shiftKey) return;
+        const position = e.target.position;
+        if (!position) return;
+        e.event.preventDefault();
+        e.event.stopPropagation();
+        this.focusGroup(groupId);
+        // The definition is resolved at the *cursor*, and on mousedown the
+        // cursor is still wherever it was — so move it first, which is what the
+        // click was going to do anyway.
+        editor.setPosition(position);
+        this.goToDefinition();
+      }),
+    );
     this.groups.set(groupId, group);
     registerEditorActions(editor);
 
@@ -455,6 +477,7 @@ class EditorController {
       this.applyTextTransforms(meta);
       await fsApi.writeFile(path, meta.model.getValue());
       meta.dirty = false;
+      this.didSave?.(path);
     } finally {
       meta.saving = false;
       this.notify();
@@ -532,6 +555,23 @@ class EditorController {
   /// Called when a *background* write fails. Set by whoever owns the toast
   /// surface; a manual save reports through its own rejected promise instead.
   autoSaveFailed: ((path: string, error: unknown) => void) | null = null;
+
+  /// Called after a buffer reaches disk, manual or autosave. Set by whoever
+  /// owns the language-server bridge — `textDocument/didSave` is the trigger
+  /// rust-analyzer defers its flycheck to, so without this Rust diagnostics lag
+  /// a save by however long the next edit takes to arrive.
+  didSave: ((path: string) => void) | null = null;
+
+  /// Cmd/Ctrl+Click go-to-definition. Set by whoever can open a file — in this
+  /// app the editor window does not own its own tab list, so the jump is a
+  /// request to the workbench.
+  ///
+  /// It has to be intercepted rather than left to Monaco: Monaco's own
+  /// ctrl-click contribution hands its target to `ICodeEditorService`, whose
+  /// default implementation refuses any URI that is not the editor's current
+  /// model. Every cross-file jump therefore ends as a silent no-op, which reads
+  /// exactly like a broken feature.
+  goToDefinition: (() => void) | null = null;
 
   /// `autoSave: onFocusChange`. Wired to each group's blur event in `init`, and
   /// also the right place for a future window-blur hook. Saves the file that

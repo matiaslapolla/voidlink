@@ -28,8 +28,24 @@ function get(ptyId: string): PtyHistory {
   return h;
 }
 
+/// A command line long enough that nothing beyond it is a command line any more.
+/// Only reachable when something we failed to classify is being appended
+/// forever; a real typed command is orders of magnitude shorter.
+const MAX_BUFFER_CHARS = 4096;
+
 export function recordKeystroke(ptyId: string, data: string) {
   mostRecentPty = ptyId;
+  // `term.onData` carries everything the emulator sends up the input path, and
+  // that is not only typing: with mouse reporting on — lazygit, vim with
+  // `set mouse=a`, any Ink app that tracks the pointer — every pointer move
+  // emits an SGR report like `\x1b[<35;40;12M`. The escape itself is skipped by
+  // the loop below, but `[<35;40;12M` is all printable, so it was appended; and
+  // since a full-screen app never sends a bare CR through this path, nothing
+  // ever reset the buffer. It grew for the life of the pane, and
+  // `repeatLastCommand` would eventually replay mouse noise as a command.
+  //
+  // Anything beginning with ESC is the emulator talking, not the user.
+  if (data.charCodeAt(0) === 0x1b) return;
   const h = get(ptyId);
   for (const ch of data) {
     const code = ch.charCodeAt(0);
@@ -45,6 +61,10 @@ export function recordKeystroke(ptyId: string, data: string) {
       // Ctrl-C or Ctrl-U — abandon the line.
       h.buffer = "";
     } else if (code >= 0x20) {
+      // Backstop for any other sequence that reaches here without a leading
+      // ESC. Dropping the oldest chars keeps whatever the user most recently
+      // typed, which is the half `repeatLastCommand` would want.
+      if (h.buffer.length >= MAX_BUFFER_CHARS) h.buffer = h.buffer.slice(-MAX_BUFFER_CHARS / 2);
       h.buffer += ch;
     }
   }

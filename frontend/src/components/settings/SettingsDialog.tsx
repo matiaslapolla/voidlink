@@ -47,6 +47,7 @@ import {
   SURFACE_OPACITY_MIN,
   type BackgroundFit,
   type CursorStyle,
+  type TerminalGpuAcceleration,
   type EditorCoreSettings,
   type EditorSettings,
   type EnvironmentMode,
@@ -656,6 +657,11 @@ const CURSOR_STYLES: { id: CursorStyle; label: string }[] = [
   { id: "block", label: "Block" },
   { id: "underline", label: "Underline" },
   { id: "bar", label: "Bar" },
+];
+
+const GPU_ACCELERATION: { id: TerminalGpuAcceleration; label: string }[] = [
+  { id: "auto", label: "Auto" },
+  { id: "off", label: "Off" },
 ];
 
 // Each preset is labelled by its primary family (for the chip text) and
@@ -1306,6 +1312,16 @@ function TerminalPane() {
           format={(v) => `${v}×`} onInput={(v) => updateTerminal({ scrollSensitivity: v })} />
         <ToggleRow label="Scroll on input" value={settings.terminal.scrollOnUserInput}
           onChange={(v) => updateTerminal({ scrollOnUserInput: v })} />
+      </Section>
+
+      <Section title="Rendering">
+        <SegmentedRow
+          label="GPU acceleration"
+          hint="Auto uses WebGL when available. Turn off if text stutters on Linux — WebKitGTK can report a working WebGL context that is actually software-rendered, which is slower than the fallback."
+          value={settings.terminal.gpuAcceleration}
+          options={GPU_ACCELERATION}
+          onChange={(v) => updateTerminal({ gpuAcceleration: v })}
+        />
       </Section>
 
       <Section title="Shell integration">

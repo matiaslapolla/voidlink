@@ -133,12 +133,20 @@ export function SegmentedRow<T extends string>(props: {
   label: string;
   labelCell?: JSX.Element;
   value: T;
+  hint?: string;
   options: { id: T; label: string }[];
   onChange: (v: T) => void;
 }) {
   return (
     <div class="flex items-center gap-3">
-      {props.labelCell ?? <span class={`${LABEL_COL} text-muted-foreground`} title={props.label}>{props.label}</span>}
+      {props.labelCell ?? (
+        <div class={LABEL_COL} title={props.label}>
+          <div class="text-muted-foreground">{props.label}</div>
+          <Show when={props.hint}>
+            <div class="text-micro text-muted-foreground/70 leading-tight">{props.hint}</div>
+          </Show>
+        </div>
+      )}
       <div class="flex-1 flex gap-1">
         <For each={props.options}>
           {(opt) => (

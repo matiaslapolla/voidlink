@@ -63,7 +63,22 @@ export interface TerminalSettings {
   rightClickSelectsWord: boolean;
   scrollSensitivity: number;
   scrollOnUserInput: boolean;
+  /// Whether the terminal may use the WebGL renderer.
+  ///
+  /// `auto` feature-detects and falls back to xterm's DOM renderer when WebGL2
+  /// is unavailable or the addon fails to construct, which is right almost
+  /// everywhere. The escape hatch exists for Linux: WebKitGTK hands back a
+  /// *successful* WebGL2 context even when it is backed by a software
+  /// rasterizer, and it masks the renderer string, so nothing we can query
+  /// distinguishes a real GPU from llvmpipe. On such a machine the accelerated
+  /// path is the slower one and there is no way to detect it — only to let the
+  /// user say so.
+  gpuAcceleration: TerminalGpuAcceleration;
 }
+
+/// `auto` — use WebGL when it is available. `off` — always use xterm's DOM
+/// renderer.
+export type TerminalGpuAcceleration = "auto" | "off";
 
 /// Word wrap. `wordWrapColumn` wraps at `wordWrapColumn` regardless of the
 /// viewport; `bounded` wraps at the smaller of the two, which is the only mode
@@ -473,6 +488,7 @@ const DEFAULTS: AppSettings = {
     rightClickSelectsWord: false,
     scrollSensitivity: 1,
     scrollOnUserInput: true,
+    gpuAcceleration: "auto",
   },
   /// Derived from `settingsSchema.ts` rather than written out here, so the
   /// defaults, the parse and the dialog cannot drift apart.

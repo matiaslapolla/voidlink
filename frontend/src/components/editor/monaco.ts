@@ -48,9 +48,53 @@ export function loadMonaco(): Promise<typeof Monaco> {
         );
       },
     };
-    return import("monaco-editor");
+    const monaco = await import("monaco-editor");
+    standDownTypescriptWorker(monaco);
+    return monaco;
   })();
   return loading;
+}
+
+/// Take semantic analysis away from Monaco's bundled TypeScript worker.
+///
+/// Monaco ships VS Code's TypeScript language service and runs it against an
+/// in-memory file system that contains only the models this window happens to
+/// have open. There is no `node_modules` in there, no `tsconfig.json` and no
+/// sibling source file, so *every* import in *every* buffer resolves to nothing
+/// and comes back as `ts(2307) Cannot find module` — bare specifiers, relative
+/// paths and `@/` aliases alike, in a repo where `tsc` is perfectly happy.
+///
+/// Those markers are published under Monaco's own `typescript` owner, and the
+/// real diagnostics from `lspBridge` under `typescript-language-server`, so the
+/// two sets *coexist*: the language server answering correctly never displaces
+/// the worker's phantom errors. Semantics belong to the server, which has the
+/// disk; this is where that is made true.
+///
+/// Syntax validation stays on. It needs no file system, it is right, and it is
+/// what makes an unclosed brace squiggle on the keystroke instead of after a
+/// round trip through a process.
+///
+/// `jsx` still matters with semantics off, because `.tsx` opens as Monaco's
+/// `typescript` language — `inferLanguage` collapses them, the tokenizer is
+/// shared — and the worker also backs bracket matching and the folding model.
+///
+/// **`monaco.typescript`, not `monaco.languages.typescript`** — the latter is
+/// deprecated in 0.55 and typed as `{ deprecated: true }`, so it does not even
+/// compile. Same move the JSON defaults made; see `SettingsJsonPane.tsx`.
+function standDownTypescriptWorker(monaco: typeof Monaco) {
+  const ts = monaco.typescript;
+  for (const defaults of [ts.typescriptDefaults, ts.javascriptDefaults]) {
+    defaults.setDiagnosticsOptions({
+      noSemanticValidation: true,
+      noSyntaxValidation: false,
+      noSuggestionDiagnostics: true,
+    });
+    defaults.setCompilerOptions({
+      target: ts.ScriptTarget.ESNext,
+      jsx: ts.JsxEmit.Preserve,
+      allowNonTsExtensions: true,
+    });
+  }
 }
 
 /// The parts of the editor surface that are VoidLink's, not the user's.

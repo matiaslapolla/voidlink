@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use serde::Serialize;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
@@ -32,12 +33,77 @@ pub(crate) struct PtySession {
     /// command instead lets two in-flight `write_pty` calls race for the lock,
     /// which reorders a fast paste or a bracketed-paste wrapper around its own
     /// payload.
-    pub input: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
+    ///
+    /// Bounded. A child that stops draining its stdin (a hung full-screen
+    /// program, a shell blocked on a full pty ring) leaves the writer thread
+    /// parked inside `write_all`, and an unbounded queue would then grow for
+    /// every keystroke and every paste with nothing ever to drain it. The cap
+    /// turns that into a refused write, which the frontend can surface, rather
+    /// than into memory the user cannot reclaim without closing the pane.
+    pub input: Mutex<std::sync::mpsc::SyncSender<Vec<u8>>>,
     pub child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     pub shutdown: Arc<AtomicBool>,
+    /// Producer-side backpressure. See `FlowGate`.
+    pub flow: Arc<FlowGate>,
     #[cfg(unix)]
     pub master_fd: std::os::unix::io::RawFd,
     pub child_pid: Option<u32>,
+}
+
+/// How many queued input chunks a session will hold before refusing writes.
+/// Only reachable when the child has stopped reading; a healthy shell drains
+/// this to empty between keystrokes.
+const INPUT_QUEUE_DEPTH: usize = 1024;
+
+/// Lets the frontend stop the reader thread, which is the only place real
+/// backpressure can live.
+///
+/// xterm parses on the webview's main thread at a few tens of MB/s; a shell
+/// running `yes` produces at GB/s. With nothing in between, the bytes pile up
+/// in xterm's internal write buffer until it hits its own 50 MB ceiling and
+/// starts *throwing* — output is then silently lost and the pane stays wedged
+/// for as long as the flood runs. Buffering the excess on this side would only
+/// move the same unbounded growth into Rust.
+///
+/// Pausing the reader is what actually fixes it: we stop draining the pty, the
+/// kernel's pty buffer fills, and the shell itself blocks on `write`. The
+/// producer slows to the consumer's rate, which is what flow control means.
+/// The frontend drives this from bytes it has *parsed*, not bytes it has
+/// received — see the watermark pair in `TerminalPane.tsx`.
+pub(crate) struct FlowGate {
+    paused: Mutex<bool>,
+    resumed: Condvar,
+}
+
+impl FlowGate {
+    fn new() -> Self {
+        Self { paused: Mutex::new(false), resumed: Condvar::new() }
+    }
+
+    fn set(&self, paused: bool) {
+        if let Ok(mut p) = self.paused.lock() {
+            *p = paused;
+        }
+        if !paused {
+            self.resumed.notify_all();
+        }
+    }
+
+    /// Park until the frontend resumes, or until the session is shutting down.
+    ///
+    /// The wait is bounded rather than indefinite so a pane that unmounts while
+    /// paused — a worktree switch mid-flood, a crashed webview — cannot strand
+    /// the reader thread forever holding the session open. The flag is re-read
+    /// on each wake, so a lost notify costs one tick, not correctness.
+    fn wait_until_open(&self, shutdown: &AtomicBool) {
+        let Ok(mut paused) = self.paused.lock() else { return };
+        while *paused && !shutdown.load(Ordering::Relaxed) {
+            match self.resumed.wait_timeout(paused, Duration::from_millis(100)) {
+                Ok((guard, _)) => paused = guard,
+                Err(_) => return,
+            }
+        }
+    }
 }
 
 pub(crate) type PtyStore = Arc<DashMap<String, PtySession>>;
@@ -46,6 +112,29 @@ pub(crate) type PtyStore = Arc<DashMap<String, PtySession>>;
 /// its screen. Sized to cover a screenful of a busy TUI several times over
 /// while staying bounded per session.
 const SCROLLBACK_CAP_BYTES: usize = 512 * 1024;
+
+/// How long consecutive reads are allowed to accumulate before being sent as
+/// one chunk, and the size at which a batch is flushed early.
+///
+/// This is not a micro-optimisation, it is the difference between the IPC's
+/// fast path and its slow one. Tauri's `Channel::send` branches on payload
+/// size: anything **under 1 KiB** is `serde_json`-encoded into a decimal number
+/// array, spliced into a JavaScript source string, and `eval`'d in the webview
+/// — roughly four bytes of JS source, plus a parse, per byte of terminal
+/// output. At or above 1 KiB it takes the binary path instead (queued, then
+/// fetched as a real `ArrayBuffer`).
+///
+/// A `read()` on a pty returns whatever the shell has written *so far*, so an
+/// interactive TUI redrawing itself — Ink, textual, htop, btop — produces a
+/// stream of small writes that land almost entirely under that threshold. The
+/// workload we care most about was therefore taking the slowest path available,
+/// once per read. Batching a few milliseconds of reads together both collapses
+/// N sends into one and carries the result over the threshold.
+///
+/// 4 ms is chosen to sit under a 60 fps frame (16.7 ms) so coalescing is never
+/// what makes a frame late; VS Code's equivalent boundary buffer uses 5 ms.
+const COALESCE_WINDOW: Duration = Duration::from_millis(4);
+const COALESCE_MAX_BYTES: usize = 32 * 1024;
 
 /// Where a session's output goes, plus what it has already produced.
 ///
@@ -349,11 +438,19 @@ async fn create_pty(
         // not had a chance to subscribe yet.
         chans.insert(session_id.clone(), Mutex::new(PtySink::new()));
 
-        let reader_session_id = session_id.clone();
-        let reader_app_handle = app_handle.clone();
-        let reader_channels = chans.clone();
+        let flow = Arc::new(FlowGate::new());
+
+        // Output crosses two threads on its way to the sink. The reader does
+        // nothing but drain the pty as fast as the OS hands bytes over, so a
+        // slow consumer can never make the pty itself the bottleneck; the
+        // coalescer batches what the reader produced and is the only thing that
+        // touches the sink. Splitting them is what makes `COALESCE_WINDOW`
+        // expressible at all — `read()` blocks, so a single thread cannot both
+        // wait for more bytes and give up waiting after 4 ms.
+        let (raw_tx, raw_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
         let reader_shutdown = shutdown.clone();
-        let reader_store = store.clone();
+        let reader_flow = flow.clone();
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
         std::thread::spawn(move || {
@@ -362,36 +459,82 @@ async fn create_pty(
                 if reader_shutdown.load(Ordering::Relaxed) {
                     break;
                 }
+                // Backpressure lives here and nowhere else: not reading is what
+                // fills the kernel's pty buffer and blocks the shell's `write`.
+                reader_flow.wait_until_open(&reader_shutdown);
+                if reader_shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
                 match std::io::Read::read(&mut reader, &mut buf) {
-                    Ok(0) | Err(_) => {
-                        let _ = reader_app_handle.emit(
-                            &format!("pty-exit:{}", reader_session_id),
-                            PtyExitPayload {
-                                exit_code: reap_exit_code(&reader_store, &reader_session_id),
-                            },
-                        );
-                        break;
-                    }
+                    Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        // The sink is created with the session, so this only
-                        // misses if the session was closed mid-read — in which
-                        // case the shutdown flag ends the loop imminently.
-                        if let Some(sink) = reader_channels.get(&reader_session_id) {
-                            if let Ok(mut sink) = sink.lock() {
-                                sink.push(buf[..n].to_vec());
-                            }
+                        if raw_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
                         }
                     }
                 }
             }
-            reader_channels.remove(&reader_session_id);
+            // Dropping `raw_tx` is the EOF signal. The coalescer owns the exit
+            // event so it fires *after* the last bytes have reached the sink —
+            // emitting it here would let "the shell exited" overtake the output
+            // that explains why.
+        });
+
+        let coalesce_session_id = session_id.clone();
+        let coalesce_app_handle = app_handle.clone();
+        let coalesce_channels = chans.clone();
+        let coalesce_store = store.clone();
+        let coalesce_shutdown = shutdown.clone();
+
+        std::thread::spawn(move || {
+            while let Ok(first) = raw_rx.recv() {
+                let mut batch = first;
+                let deadline = Instant::now() + COALESCE_WINDOW;
+                while batch.len() < COALESCE_MAX_BYTES {
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                        break;
+                    };
+                    match raw_rx.recv_timeout(remaining) {
+                        Ok(more) => batch.extend_from_slice(&more),
+                        // Timed out, or the reader is gone. Either way this
+                        // batch is complete; a disconnect is caught by the
+                        // outer `recv` on the next turn.
+                        Err(_) => break,
+                    }
+                }
+                // The sink is created with the session, so this only misses if
+                // the session was closed mid-read — in which case the shutdown
+                // flag has already ended the reader loop.
+                if let Some(sink) = coalesce_channels.get(&coalesce_session_id) {
+                    if let Ok(mut sink) = sink.lock() {
+                        sink.push(batch);
+                    }
+                }
+            }
+            // Only a shell that ended on its own is an exit worth reporting.
+            // When `shutdown` is set the app closed this session deliberately —
+            // `close_pty` has already removed it and the caller is tearing the
+            // tab down — and announcing an exit there would tell the frontend a
+            // shell died when what actually happened is that it was asked to.
+            // The pre-split reader loop got this for free by breaking at the top
+            // of the loop before it could emit; the check has to be explicit now
+            // that the emit lives past the reader's own exit.
+            if !coalesce_shutdown.load(Ordering::Relaxed) {
+                let _ = coalesce_app_handle.emit(
+                    &format!("pty-exit:{}", coalesce_session_id),
+                    PtyExitPayload {
+                        exit_code: reap_exit_code(&coalesce_store, &coalesce_session_id),
+                    },
+                );
+            }
+            coalesce_channels.remove(&coalesce_session_id);
         });
 
         // One writer thread per session, fed by an ordered queue. The blocking
         // write happens here rather than in the command so a shell that stops
         // draining its input (a full pipe) can never stall the IPC thread.
         let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-        let (input, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (input, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE_DEPTH);
         std::thread::spawn(move || {
             while let Ok(chunk) = rx.recv() {
                 if std::io::Write::write_all(&mut writer, &chunk).is_err() {
@@ -409,6 +552,7 @@ async fn create_pty(
             input: Mutex::new(input),
             child: Mutex::new(child),
             shutdown,
+            flow,
             #[cfg(unix)]
             master_fd,
             child_pid,
@@ -436,9 +580,39 @@ fn write_pty(
 ) -> Result<(), String> {
     let session = state.get(&session_id).ok_or("PTY session not found")?;
     let input = session.input.lock().map_err(|e| e.to_string())?;
-    input
-        .send(data.into_bytes())
-        .map_err(|_| "PTY writer has exited".to_string())
+    // `try_send`, never `send`: this runs inline on the IPC thread, so blocking
+    // on a full queue would stall every other command behind a shell that has
+    // stopped reading. A full queue means `INPUT_QUEUE_DEPTH` chunks are already
+    // waiting on a child that is not draining them, which no further keystroke
+    // is going to fix.
+    input.try_send(data.into_bytes()).map_err(|e| match e {
+        std::sync::mpsc::TrySendError::Full(_) => {
+            "PTY input queue is full — the shell has stopped reading".to_string()
+        }
+        std::sync::mpsc::TrySendError::Disconnected(_) => "PTY writer has exited".to_string(),
+    })
+}
+
+/// Pause or resume the session's reader thread.
+///
+/// Called by the pane from the watermark pair around `term.write`'s completion
+/// callback: paused once the bytes xterm has *received but not yet parsed*
+/// exceed the high mark, resumed once parsing has drained them below the low
+/// one. Sync for the same reason `write_pty` is — a pause that overtakes the
+/// resume it was supposed to precede would wedge the session.
+///
+/// Idempotent, and safe to call for a session that is already gone: a pane
+/// unmounting mid-flood should not have to care whether its resume lands.
+#[tauri::command]
+fn pty_set_paused(
+    session_id: String,
+    paused: bool,
+    state: tauri::State<'_, PtyStore>,
+) -> Result<(), String> {
+    if let Some(session) = state.get(&session_id) {
+        session.flow.set(paused);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -520,6 +694,11 @@ async fn close_pty(
 ) -> Result<(), String> {
     if let Some((_, session)) = state.remove(&session_id) {
         session.shutdown.store(true, Ordering::Relaxed);
+        // Wake a reader parked on the flow gate. It re-reads `shutdown` on every
+        // wake and would notice within the gate's own timeout regardless; this
+        // only spares the close that arrives while a pane is paused mid-flood
+        // from waiting out that tick.
+        session.flow.set(false);
         if let Ok(mut child) = session.child.lock() {
             let _ = child.kill();
         }
@@ -851,26 +1030,40 @@ pub(crate) mod proc_info {
     /// macOS has no `/proc/<pid>/cmdline`; argv comes from
     /// `sysctl kern.procargs2`, whose payload is
     /// `[argc: i32][exec path]\0…\0[argv[0]]\0[argv[1]]\0…[env]`.
+    /// `kern.argmax` is fixed for the life of the boot, so it is read once
+    /// rather than on every call. `argv` runs from the 1.5 s foreground-process
+    /// poll, once per open pane — this was a syscall per pane per tick, forever,
+    /// for a number that cannot change.
+    #[cfg(target_os = "macos")]
+    fn argmax() -> Option<usize> {
+        static ARGMAX: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        *ARGMAX.get_or_init(|| {
+            let mut value: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>();
+            let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+            let ok = unsafe {
+                libc::sysctl(
+                    mib.as_mut_ptr(),
+                    2,
+                    &mut value as *mut _ as *mut libc::c_void,
+                    &mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if ok != 0 || value <= 0 {
+                None
+            } else {
+                Some(value as usize)
+            }
+        })
+    }
+
     #[cfg(target_os = "macos")]
     fn argv(pid: u32) -> Option<Vec<String>> {
-        let mut argmax: libc::c_int = 0;
-        let mut len = std::mem::size_of::<libc::c_int>();
-        let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
-        let ok = unsafe {
-            libc::sysctl(
-                mib.as_mut_ptr(),
-                2,
-                &mut argmax as *mut _ as *mut libc::c_void,
-                &mut len,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if ok != 0 || argmax <= 0 {
-            return None;
-        }
+        let argmax = argmax()?;
 
-        let mut buf = vec![0u8; argmax as usize];
+        let mut buf = vec![0u8; argmax];
         let mut len = buf.len();
         let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
         let ok = unsafe {
@@ -1172,6 +1365,7 @@ async fn pty_process_info(
 fn kill_all_ptys(store: &PtyStore) {
     for entry in store.iter() {
         entry.value().shutdown.store(true, Ordering::Relaxed);
+        entry.value().flow.set(false);
         if let Ok(mut child) = entry.value().child.lock() {
             let _ = child.kill();
         }
@@ -1286,6 +1480,7 @@ pub fn run() {
             resize_pty,
             pty_subscribe,
             pty_unsubscribe,
+            pty_set_paused,
             close_pty,
             pty_process_info,
             git::git_repo_info,

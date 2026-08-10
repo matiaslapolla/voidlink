@@ -435,6 +435,29 @@ export function EditorSurface(props: {
     });
   }
 
+  /// Jump to the definition of the symbol under the cursor.
+  ///
+  /// Monaco's own go-to-definition can only navigate to a model that already
+  /// exists, and this window does not own the tab list — opening a file is a
+  /// request to the workbench. So the cross-file case goes through the bridge
+  /// and the same `open-file` request everything else uses.
+  ///
+  /// Shared by three entry points: the palette action, its chord, and the
+  /// Cmd/Ctrl+Click the controller hands back here.
+  async function goToDefinition() {
+    const target = await lspBridge().definitionAtCursor();
+    if (!target) {
+      // Honest, and names the two reasons it can happen. A silent no-op reads
+      // as a broken keybinding.
+      pushToast("No definition found — the language server may still be indexing", "warning");
+      return;
+    }
+    send({ kind: "open-file", path: target.path });
+    // The open is a round trip through the workbench; the reveal has to wait
+    // for the model to be attached here.
+    setTimeout(() => editorController.revealPosition(target.line, target.column), 120);
+  }
+
   /// Create a file and open it. Repo-relative, so the prompt is a path and not
   /// a name — `src/foo/bar.ts` is what people actually type, and the Rust side
   /// creates the parents.
@@ -553,8 +576,12 @@ export function EditorSurface(props: {
 
   onMount(() => {
     editorController.autoSaveFailed = (path) => void saveWithRetry(path);
+    editorController.didSave = (path) => lspBridge().notifySaved(path);
+    editorController.goToDefinition = () => void goToDefinition();
     onCleanup(() => {
       editorController.autoSaveFailed = null;
+      editorController.didSave = null;
+      editorController.goToDefinition = null;
     });
   });
 
@@ -684,29 +711,12 @@ export function EditorSurface(props: {
         },
       },
       {
-        // Monaco's own go-to-definition can only navigate to a model that
-        // already exists, and this window does not own the tab list — opening a
-        // file is a request to the workbench. So the cross-file case goes
-        // through the bridge and the same `open-file` request everything else
-        // uses. Within an already-open file, Monaco's F12 keeps working too.
         id: "editor.go-to-definition",
         label: "Go to definition",
         description: "Jump to where the symbol under the cursor is defined",
         group: "Editor",
         enabled: () => !!editorController.getActivePath(),
-        run: async () => {
-          const target = await lspBridge().definitionAtCursor();
-          if (!target) {
-            // Honest, and names the two reasons it can happen. A silent no-op
-            // reads as a broken keybinding.
-            pushToast("No definition found — the language server may still be indexing", "warning");
-            return;
-          }
-          send({ kind: "open-file", path: target.path });
-          // The open is a round trip through the workbench; the reveal has to
-          // wait for the model to be attached here.
-          setTimeout(() => editorController.revealPosition(target.line, target.column), 120);
-        },
+        run: () => void goToDefinition(),
       },
       {
         id: "file.new",
