@@ -343,9 +343,11 @@ describe("background image + opacity settings", () => {
 
   it("clamps an out-of-range opacity into the slider's bounds", () => {
     expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: 150 } })).ui.surfaceOpacity).toBe(100);
-    // Below the floor (`SURFACE_OPACITY_MIN`), not below zero — the scrim's
-    // AA guarantee only holds down to that floor. See `index.css`.
-    expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: -4 } })).ui.surfaceOpacity).toBe(20);
+    // Clamped to the floor, which is 0 — fully see-through islands are a real
+    // position on the slider, and the scrim below them is what keeps text
+    // legible there. See `index.css`.
+    expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: -4 } })).ui.surfaceOpacity).toBe(0);
+    expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: 0 } })).ui.surfaceOpacity).toBe(0);
     expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: "62" } })).ui.surfaceOpacity).toBe(100);
   });
 

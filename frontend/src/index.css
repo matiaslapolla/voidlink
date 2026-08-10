@@ -837,12 +837,16 @@ html:not([data-density]) {
  * **Measured contrast** (`oklch → oklab → linear sRGB`, composited as CSS
  * actually will: the scrim over a worst-case pure-white or pure-black photo,
  * then the island at the opacity slider's floor — `SURFACE_OPACITY_MIN` in
- * `settings.ts`, 20%; the slider never reaches literal 0). `--foreground`
- * against the result, for all ten themes, in the two places text lands:
+ * `settings.ts`, 0%, where an island's own tint is gone and what text sits on
+ * is the scrim itself). `--foreground` against the result, for all ten themes,
+ * in the two places text lands:
  *
- *   • on an island: worst 4.77:1 (`solarized-dark`), defaults 15.0:1 / 17.2:1
+ *   • on an island at 20%: worst 4.77:1 (`solarized-dark`), defaults 15.0:1 /
+ *     17.2:1
  *   • on the canvas — the title bar, which paints `bg-canvas` directly on the
- *     scrim: worst 4.74:1 (`solarized-dark`), defaults 14.8:1 / 16.8:1
+ *     scrim: worst 4.74:1 (`solarized-dark`), defaults 14.8:1 / 16.8:1. This
+ *     row is also the island's own worst case at the 0% floor: with no tint
+ *     left, an island and the canvas are the same surface.
  *
  * The same worst cases with no scrim at all measure 1.3:1 and 1.5:1 — an
  * outright failure — which is the whole reason this exists as a fixed layer
@@ -857,8 +861,8 @@ html:not([data-density]) {
  * **The one theme this does not save is `solarized-light`**, which measures
  * 3.82:1 on the canvas and 4.00:1 on an island. That is not this feature's
  * doing: its `--foreground` on its own `--canvas` is 4.26:1 with no image
- * present at all, so no scrim value and no opacity floor can lift it — at the
- * slider's floor an island *is* the canvas. MASTER.md §10.13 already names
+ * present at all, so no scrim value can lift it — at the slider's floor an
+ * island *is* the canvas. MASTER.md §10.13 already names
  * `solarized-light` as one of the two extreme themes to validate against; the
  * theme's own text/canvas pair is the thing to fix, in a stream that is allowed
  * to retune tokens. */

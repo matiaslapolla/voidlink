@@ -543,15 +543,16 @@ function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | unde
   return { ...defaults, ...partial };
 }
 
-/// Floor of the `surfaceOpacity` slider. Not 0: the island's own tint would
-/// disappear entirely at 0%, leaving nothing but the scrim between text and
-/// the photo. `index.css`'s scrim comment (search that file for "Background
-/// image + island translucency") has the measured worst-case contrast this
-/// floor relies on — a fixed 92%-opaque `--canvas` layer under the islands
-/// keeps foreground text ≥ AA against the two extremes a photo can present,
-/// even at this floor. Raising this floor without re-checking that math would
-/// silently invalidate the guarantee.
-export const SURFACE_OPACITY_MIN = 20;
+/// Floor of the `surfaceOpacity` slider. 0 is allowed: at 0% the island's own
+/// tint is gone and an island *is* the canvas — which is a coherent thing to
+/// ask for, because the canvas is not bare. `index.css`'s scrim comment
+/// (search that file for "Background image + island translucency") has the
+/// measured worst-case contrast: a fixed 95%-opaque `--canvas` layer under
+/// everything keeps foreground text ≥ AA against the two extremes a photo can
+/// present, and its canvas-side numbers are exactly the 0% case. Weakening
+/// that scrim without re-checking the math would silently invalidate the
+/// guarantee.
+export const SURFACE_OPACITY_MIN = 0;
 export const SURFACE_OPACITY_MAX = 100;
 
 function clampSurfaceOpacity(v: unknown): number {

@@ -103,15 +103,15 @@ describe("the background image is actually visible", () => {
   });
 
   it("moves the island surfaces across the slider's whole range", () => {
-    // `SURFACE_OPACITY_MIN` is 20 and the maximum is 100; the visible result
+    // `SURFACE_OPACITY_MIN` is 0 and the maximum is 100; the visible result
     // has to differ at both ends, in both directions, or the slider is inert.
     const seen = new Set<number>();
-    for (const percent of [20, 50, 80, 100]) {
+    for (const percent of [0, 20, 50, 80, 100]) {
       withBackgroundImage(percent);
       seen.add(paintedAlpha("--color-background"));
     }
-    expect(seen.size).toBe(4);
-    expect(Math.min(...seen)).toBeCloseTo(0.2, 1);
+    expect(seen.size).toBe(5);
+    expect(Math.min(...seen)).toBeCloseTo(0, 1);
     expect(Math.max(...seen)).toBeCloseTo(1, 1);
   });
 
