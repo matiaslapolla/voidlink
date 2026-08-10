@@ -160,6 +160,13 @@ export const KEYMAP: readonly KeymapEntry[] = [
     note: "VS Code's own chord, and unclaimed here. Scoped out of the terminal, where ⌘⇧O is nothing but ought to stay nothing.",
   },
   {
+    actionId: "editor.go-to-definition",
+    group: "Editor",
+    window: "editor",
+    binding: { meta: true, alt: true, key: "o", scope: "outside-terminal" },
+    note: "Not F12: the function row is off the table here. Same letter as ⌘⇧O (go to symbol) because it is the same 'go to' family — one finds the symbol in this file, the other finds where it came from — and ⌘⌥ is the modifier pair that survives macOS's Option remapping, same as ⌘⌥B and ⌘⌥F. The chord users will actually reach for is Cmd+Click, which `editorController.goToDefinition` intercepts.",
+  },
+  {
     actionId: "editor.split-right",
     group: "Editor",
     window: "editor",
@@ -170,7 +177,18 @@ export const KEYMAP: readonly KeymapEntry[] = [
   // ── View ──────────────────────────────────────────────────────────────
   { actionId: "ui.toggle-left-sidebar", group: "View", binding: { meta: true, key: "b" } },
   { actionId: "ui.toggle-git-sidebar", group: "View", binding: { meta: true, key: "j" } },
-  { actionId: "ui.swap-sidebars", group: "View", binding: { meta: true, key: "\\" } },
+  {
+    actionId: "ui.swap-sidebars",
+    group: "View",
+    binding: { meta: true, key: "\\" },
+    note: "Mirrors the whole arrangement now rather than flipping one boolean, which is what the chord always looked like it did. Unchanged chord on purpose.",
+  },
+  {
+    actionId: "ui.toggle-workspace-rail",
+    group: "View",
+    binding: { meta: true, shift: true, key: "b" },
+    note: "Beside ⌘B (the file explorer) and ⌘J (the git panel), because it is the third sidebar of the same family. ⌘⇧B is unclaimed; ⌘⌥B is the editor's blame toggle.",
+  },
   {
     actionId: "view.toggle-blame",
     group: "View",

@@ -1,7 +1,10 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  Eye,
+  EyeOff,
   FolderGit2,
   FolderOpen,
   GitBranch,
@@ -36,7 +39,8 @@ import {
   type Point,
 } from "@/components/layout/dragDrop";
 import { EmptyState } from "@/components/layout/EmptyState";
-import { PANEL_BOUNDS } from "@/store/layout";
+import { PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH, type DockSide } from "@/store/layout";
+import { SidebarGrip, SidebarMenuButton } from "@/components/layout/SidebarDock";
 
 /// The far-left vertical rail: every workspace, and under each one its
 /// worktrees. Replaces the old horizontal workspace tab bar — the tab strip in
@@ -44,14 +48,29 @@ import { PANEL_BOUNDS } from "@/store/layout";
 /// live. Drag-to-reorder and double-click-to-rename are ported verbatim from
 /// the tab bar; the badges come straight off `git worktree list` (via
 /// `hydrateWorktrees`) rather than being recomputed here.
-export function WorkspaceRail() {
+export function WorkspaceRail(props: {
+  /// Which edge this panel is docked to. The *only* thing it knows about the
+  /// arrangement, and it needs it for one reason: the resize handle has to sit
+  /// on the side facing the workbench, or a docked-right rail would be resized
+  /// by a handle against the window frame.
+  dock?: DockSide;
+}) {
   const { state, actions } = useAppStore();
+  const dock = (): DockSide => props.dock ?? "left";
+  /// Collapsed to its icon rail — the same idiom the other two sidebars have
+  /// (`GitSidebarCollapsed`, `FilesRail`), which is why the rail collapses to
+  /// `SIDEBAR_RAIL_WIDTH` rather than to nothing. `panels.rail` is deliberately
+  /// untouched, so expanding comes back to the width the user dragged to.
+  const railed = () => state.workspaceRailCollapsed;
   const [renaming, setRenaming] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal("");
   /// Collapsed workspace ids, as a `Set` for the membership test the rows run
   /// on every render. The list itself is persisted state (`prefs.ts`), not a
   /// component signal — this is only the shape that answers `has` in O(1).
   const collapsed = createMemo(() => new Set(state.collapsedWorkspaces));
+  /// Blurred workspace ids, same shape and reason as `collapsed` above —
+  /// screencast privacy (`toggleWorkspaceBlurred`, `prefs.ts`).
+  const blurred = createMemo(() => new Set(state.blurredWorkspaces));
   /// Drag state stays in component-local signals — no need to round-trip
   /// through the store. `dragId` is the workspace being dragged; `dropTarget`
   /// is the workspace it would land *before* (or "end" for the trailing slot).
@@ -71,6 +90,8 @@ export function WorkspaceRail() {
 
   const isCollapsed = (id: string) => collapsed().has(id);
   const toggleCollapsed = (id: string) => actions.toggleWorkspaceCollapsed(id);
+  const isBlurred = (id: string) => blurred().has(id);
+  const toggleBlurred = (id: string) => actions.toggleWorkspaceBlurred(id);
 
   const startRename = (id: string, name: string) => {
     setRenaming(id);
@@ -225,11 +246,29 @@ export function WorkspaceRail() {
       /* Island (D1): no border. The edge is the canvas gap `AppShell` puts
          around it; the radius and the clipping belong to the slot. */
       ref={(el) => (railRef = el)}
-      class="flex flex-col bg-sidebar overflow-hidden relative shrink-0"
-      style={{ width: `${state.panels.rail}px` }}
+      class="flex flex-col bg-surface-rail overflow-hidden relative shrink-0"
+      style={{ width: `${railed() ? SIDEBAR_RAIL_WIDTH : state.panels.rail}px` }}
+      data-motion="sidebar-collapse"
     >
-      <div class="h-9 px-3 border-b border-border flex items-center shrink-0">
-        <span class="text-body font-semibold text-muted-foreground truncate">Workspaces</span>
+      <Show when={!railed()} fallback={<WorkspaceRailCollapsed />}>
+      <div class="h-9 pl-1.5 pr-1 border-b border-border flex items-center gap-1 shrink-0">
+        <SidebarGrip id="workspaces" />
+        <span class="flex-1 text-body font-semibold text-muted-foreground truncate">
+          Workspaces
+        </span>
+        <SidebarMenuButton id="workspaces" />
+        {/* The way *out* of the panel, and the counterpart of the rail's own
+            way back in. `aria-expanded` on both, in the same vocabulary the
+            git panel and the file explorer already use. */}
+        <button
+          onClick={() => actions.toggleWorkspaceRail()}
+          aria-label="Collapse the workspace rail"
+          aria-expanded={true}
+          title="Collapse the workspace rail"
+          class="p-0.5 rounded shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-[background-color,color] duration-[var(--dur-tint)] ease-out"
+        >
+          <ChevronLeft class="w-3.5 h-3.5" />
+        </button>
       </div>
 
       <div class="flex-1 overflow-y-auto scrollbar-thin py-1">
@@ -280,10 +319,23 @@ export function WorkspaceRail() {
                       <button
                         onClick={() => actions.selectWorkspace(ws.id)}
                         onDblClick={() => startRename(ws.id, ws.name)}
-                        use:tooltip={`${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`}
+                        use:tooltip={
+                          isBlurred(ws.id)
+                            ? "Blurred for screen recording\nDouble-click to rename, drag to reorder"
+                            : `${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`
+                        }
+                        aria-label={isBlurred(ws.id) ? "Workspace name hidden for screen recording" : undefined}
                         class="flex-1 min-w-0 text-left truncate font-medium hover:text-foreground"
                       >
-                        {ws.name}
+                        <span
+                          aria-hidden={isBlurred(ws.id) || undefined}
+                          class={isBlurred(ws.id) ? "blur-[6px] select-none" : ""}
+                        >
+                          {ws.name}
+                        </span>
+                        <Show when={isBlurred(ws.id)}>
+                          <span class="sr-only">Workspace name hidden for screen recording</span>
+                        </Show>
                       </button>
                     }
                   >
@@ -301,6 +353,29 @@ export function WorkspaceRail() {
                       class="flex-1 min-w-0 bg-background/60 rounded px-1 text-body outline-none"
                     />
                   </Show>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleBlurred(ws.id);
+                    }}
+                    aria-label={
+                      isBlurred(ws.id) ? `Reveal ${ws.name}` : `Blur ${ws.name} for screen recording`
+                    }
+                    title={
+                      isBlurred(ws.id)
+                        ? "Reveal name and worktrees"
+                        : "Blur name and worktrees for screen recording"
+                    }
+                    class={`p-0.5 rounded shrink-0 transition-colors ${
+                      isBlurred(ws.id)
+                        ? "text-primary opacity-100 hover:bg-accent/60"
+                        : "opacity-60 group-hover:opacity-100 hover:bg-accent/60 hover:text-foreground"
+                    }`}
+                  >
+                    <Show when={isBlurred(ws.id)} fallback={<Eye class="w-3 h-3" />}>
+                      <EyeOff class="w-3 h-3" />
+                    </Show>
+                  </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -378,14 +453,18 @@ export function WorkspaceRail() {
                             setMenu({ x: e.clientX, y: e.clientY, workspace: ws, worktree: wt });
                           }}
                           title={
-                            worktreeMark(wt.id)
-                              ? `${wt.path || "No folder selected"} — ${ledLabel(worktreeMark(wt.id)!)}`
-                              : wt.path || "No folder selected"
+                            isBlurred(ws.id)
+                              ? "Blurred for screen recording"
+                              : worktreeMark(wt.id)
+                                ? `${wt.path || "No folder selected"} — ${ledLabel(worktreeMark(wt.id)!)}`
+                                : wt.path || "No folder selected"
                           }
                           aria-label={
-                            worktreeMark(wt.id)
-                              ? `${worktreeLabel(wt)} — ${ledLabel(worktreeMark(wt.id)!)}`
-                              : worktreeLabel(wt)
+                            isBlurred(ws.id)
+                              ? "Worktree hidden for screen recording"
+                              : worktreeMark(wt.id)
+                                ? `${worktreeLabel(wt)} — ${ledLabel(worktreeMark(wt.id)!)}`
+                                : worktreeLabel(wt)
                           }
                         >
                           <Show
@@ -394,7 +473,15 @@ export function WorkspaceRail() {
                           >
                             <FolderGit2 class="w-3 h-3 shrink-0 opacity-70" />
                           </Show>
-                          <span class="truncate flex-1">{worktreeLabel(wt)}</span>
+                          <span
+                            aria-hidden={isBlurred(ws.id) || undefined}
+                            class={`truncate flex-1 ${isBlurred(ws.id) ? "blur-[6px] select-none" : ""}`}
+                          >
+                            {worktreeLabel(wt)}
+                          </span>
+                          <Show when={isBlurred(ws.id)}>
+                            <span class="sr-only">Worktree hidden for screen recording</span>
+                          </Show>
                           {/* §7.5.3 rule 1, at the level the rule was missing.
                               A tab signalling in a worktree the user is not in
                               had nowhere to go: the pane tree only exists for
@@ -512,16 +599,50 @@ export function WorkspaceRail() {
           />
         )}
       </Show>
+      </Show>
 
+      {/* Rendered while collapsed too, disabled and saying why — the
+          arrangement `TerminalSidebar` and `GitSidebarCollapsed` already have.
+          `side` follows the dock: the handle belongs on the edge facing the
+          workbench, which is the one the user drags against. */}
       <Splitter
-        side="end"
+        side={dock() === "left" ? "end" : "start"}
         label="Workspace rail width"
         value={state.panels.rail}
         min={PANEL_BOUNDS.rail.min}
         max={PANEL_BOUNDS.rail.max}
         defaultValue={PANEL_BOUNDS.rail.default}
+        disabledReason={
+          railed() ? "The workspace rail is collapsed — expand it to resize" : undefined
+        }
         onResize={(w) => actions.setPanelWidth("rail", w)}
       />
     </nav>
+  );
+}
+
+/// What the rail collapses *to*: a `SIDEBAR_RAIL_WIDTH` strip with the way back
+/// on it. The visual language is `GitSidebarCollapsed`'s, deliberately — the
+/// shell already had two collapsed rails and inventing a third idiom would say
+/// this panel is a different kind of thing than the two it sits beside.
+function WorkspaceRailCollapsed() {
+  const { actions } = useAppStore();
+  // `bg-surface-rail`, not `bg-sidebar`: a collapsed rail is still the rail, and
+  // the region token is what says so. `GitSidebarCollapsed` keeps `bg-sidebar`
+  // because the git panel genuinely is a docked sidebar — the two rails look
+  // alike and are not the same region.
+  return (
+    <div class="flex flex-col items-center w-full h-full bg-surface-rail py-2 gap-2">
+      <button
+        onClick={() => actions.toggleWorkspaceRail()}
+        aria-label="Expand the workspace rail"
+        aria-expanded={false}
+        use:tooltip={"Show the workspace rail\nThe panel returns to the width you left it at"}
+        class="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-[background-color,color] duration-[var(--dur-tint)] ease-out"
+      >
+        <FolderGit2 class="w-4 h-4" />
+      </button>
+      <SidebarGrip id="workspaces" />
+    </div>
   );
 }

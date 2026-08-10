@@ -90,6 +90,20 @@ export function registerWorkspaceActions(): void {
       enabled: () => state.workspaces.length > 1,
       run: () => cycleWorkspace(-1),
     },
+    // Same code path as the rail's eye button (`WorkspaceRail.tsx`) — both
+    // call `toggleWorkspaceBlurred`, so there is exactly one place the
+    // screencast-privacy state actually flips.
+    {
+      id: "workspace.toggleBlur",
+      label: "Blur active workspace",
+      description: "Blur this workspace's name and worktree labels, for screen recordings",
+      group: "Workspace",
+      enabled: () => !!activeWorkspace(),
+      run: () => {
+        const ws = activeWorkspace();
+        if (ws) actions.toggleWorkspaceBlurred(ws.id);
+      },
+    },
     // ── Worktrees ────────────────────────────────────────────────────
     {
       id: "worktree.new",

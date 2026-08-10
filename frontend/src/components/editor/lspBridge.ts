@@ -33,13 +33,21 @@
 /// bandwidth. Source files are small and this is a local pipe.
 
 import type * as Monaco from "monaco-editor";
+import { fsApi } from "@/api/fs";
 import { lspApi, type LspExitEvent, type LspLogEvent, type LspMessageEvent } from "@/api/lsp";
 import type { EditorSettings } from "@/store/settings";
 import { editorController } from "./editorController";
 import { LspClient } from "./lspClient";
 import { applyDiagnostics, registerLspProviders, type LspSessionHandle } from "./lspProviders";
 import { pathFromUri, toLspPosition, type LspDiagnostic, type LspLocation, type LspLocationLink, toTargets } from "./lspProtocol";
-import { LSP_SERVERS, lspLanguageId, serverCommand, serverForPath, type LspServerSpec } from "./lspServers";
+import {
+  LSP_SERVERS,
+  lspLanguageId,
+  serverCommand,
+  serverForPath,
+  tsserverLibCandidates,
+  type LspServerSpec,
+} from "./lspServers";
 import { acknowledgeLspCrash, lspStatus, setLspStatus, shouldToastCrash, type LspState } from "./lspStatus";
 
 /// Content changes are coalesced for this long. Long enough that a fast typist
@@ -94,6 +102,13 @@ interface Session {
   binary: string;
   log: string[];
   restartTimer: ReturnType<typeof setTimeout> | null;
+  /// What `initialize` sends. Resolved per session rather than read off the
+  /// spec because `typescript-language-server`'s has to be discovered on disk;
+  /// see `resolveInitializationOptions`.
+  initializationOptions: unknown;
+  /// The file whose opening started this session. Kept so a restart can
+  /// rediscover the same options without waiting for the user to click a tab.
+  hintPath: string | null;
 }
 
 export interface LspBridgeOptions {
@@ -121,6 +136,9 @@ export interface LspBridge {
   /// navigation has to go through the workbench's open-file request, which is
   /// what this exists to feed.
   definitionAtCursor(): Promise<{ path: string; line: number; column: number } | null>;
+  /// A buffer reached disk. rust-analyzer defers its `cargo check` to this, so
+  /// without it Rust diagnostics only catch up on the next edit.
+  notifySaved(path: string): void;
   dispose(): void;
 }
 
@@ -131,6 +149,7 @@ const INERT: LspBridge = {
   restartActive() {},
   activeLog: () => null,
   definitionAtCursor: () => Promise.resolve(null),
+  notifySaved() {},
   dispose() {},
 };
 
@@ -219,7 +238,42 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
 
   // ── Session lifecycle ────────────────────────────────────────────────────
 
-  async function ensureSession(spec: LspServerSpec): Promise<Session | null> {
+  /// What to send as `initializationOptions` for a session about to start.
+  ///
+  /// Only `typescript-language-server` needs anything discovered: it bundles a
+  /// TypeScript and, given no path, looks for one relative to the workspace
+  /// root — which in a repo whose root is a git root rather than a package root
+  /// finds nothing, leaving every buffer analysed by a TypeScript that is not
+  /// the project's. `tsserverLibCandidates` lists the plausible installs
+  /// nearest-first and this picks the first that is really there, in one stat
+  /// round trip rather than one per level.
+  ///
+  /// Finding none is not a failure: the server's bundled copy is a perfectly
+  /// good fallback and is exactly what it would have used anyway.
+  async function resolveInitializationOptions(
+    spec: LspServerSpec,
+    hintPath: string | null,
+  ): Promise<unknown> {
+    const root = options.workspaceRoot();
+    if (spec.id !== "typescript-language-server" || !hintPath || !root) {
+      return spec.initializationOptions;
+    }
+    const candidates = tsserverLibCandidates(hintPath, root);
+    if (candidates.length === 0) return spec.initializationOptions;
+    try {
+      const stamps = await fsApi.statFiles(candidates.map((lib) => `${lib}/tsserver.js`));
+      const found = candidates.find((_, i) => stamps[i]?.exists);
+      return found ? { tsserver: { path: found } } : spec.initializationOptions;
+    } catch {
+      // A failed stat is not worth blocking a language server over.
+      return spec.initializationOptions;
+    }
+  }
+
+  async function ensureSession(
+    spec: LspServerSpec,
+    hintPath: string | null = null,
+  ): Promise<Session | null> {
     if (stopped || !options.settings().lspEnabled) return null;
     if (!options.workspaceRoot()) return null;
     const existing = sessions.get(spec.id);
@@ -239,7 +293,13 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
         return null;
       }
       if (stopped) return null;
-      return await startSession(spec, command, binary, existing?.crashes ?? 0);
+      return await startSession(
+        spec,
+        command,
+        binary,
+        existing?.crashes ?? 0,
+        hintPath ?? existing?.hintPath ?? null,
+      );
     } catch (e) {
       console.warn("[lsp] could not start", spec.id, e);
       return null;
@@ -254,6 +314,7 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
     command: string,
     binary: string,
     crashes: number,
+    hintPath: string | null,
   ): Promise<Session | null> {
     const id = `${spec.id}-${++sessionSeq}`;
     const session: Session = {
@@ -270,6 +331,8 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
       binary,
       log: [],
       restartTimer: null,
+      initializationOptions: spec.initializationOptions,
+      hintPath,
       client: null as unknown as LspClient,
     };
     session.client = new LspClient(
@@ -282,6 +345,9 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
     );
     sessions.set(spec.id, session);
     refreshStatus();
+
+    session.initializationOptions = await resolveInitializationOptions(spec, hintPath);
+    if (stopped || sessions.get(spec.id) !== session) return null;
 
     try {
       await lspApi.start(id, command, [...spec.args], options.workspaceRoot());
@@ -313,7 +379,7 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
           rootUri,
           rootPath: root,
           workspaceFolders: [{ uri: rootUri, name: root.split("/").pop() ?? root }],
-          initializationOptions: session.spec.initializationOptions,
+          initializationOptions: session.initializationOptions,
           capabilities: CLIENT_CAPABILITIES,
         },
         // The one request with a long budget: rust-analyzer's `initialize`
@@ -394,7 +460,7 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
       session.restartTimer = null;
       if (stopped || sessions.get(session.spec.id) !== session) return;
       sessions.delete(session.spec.id);
-      void ensureSession(session.spec).then(() => {
+      void ensureSession(session.spec, session.hintPath).then(() => {
         // Carry the count across the restart so three *consecutive* crashes
         // are still three.
         const next = sessions.get(session.spec.id);
@@ -426,6 +492,15 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
         return null;
       case "window/workDoneProgress/create":
         return null;
+      case "workspace/workspaceFolders": {
+        // The other half of declaring `workspace.workspaceFolders`. A server
+        // that asks and is declined would fall back to `rootUri` anyway, but
+        // MethodNotFound against a capability we advertised is the kind of
+        // inconsistency that makes a server log look like a client bug.
+        const root = options.workspaceRoot();
+        if (!root) return null;
+        return [{ uri: monaco.Uri.file(root).toString(), name: root.split("/").pop() ?? root }];
+      }
       case "workspace/configuration": {
         // One `null` per requested section — "no configuration for that", which
         // makes every server fall back to its defaults.
@@ -497,7 +572,7 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
       // Start on first sight of a file that needs it, rather than starting
       // both servers on window open: a repo with no Rust in it should never
       // spawn rust-analyzer.
-      void ensureSession(spec).then((s) => {
+      void ensureSession(spec, path).then((s) => {
         if (s) trackModel(model);
       });
       return;
@@ -632,7 +707,7 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
       // edit.
       missing.clear();
       const spec = activeSpec();
-      if (spec) void ensureSession(spec);
+      if (spec) void ensureSession(spec, editorController.getActivePath());
       refreshStatus();
     },
 
@@ -648,7 +723,7 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
         sessions.delete(spec.id);
       }
       missing.delete(spec.id);
-      void ensureSession(spec).then(() => {
+      void ensureSession(spec, editorController.getActivePath()).then(() => {
         for (const model of monaco.editor.getModels()) trackModel(model);
       });
     },
@@ -688,6 +763,30 @@ export function createLspBridge(monaco: typeof Monaco, options: LspBridgeOptions
       }
     },
 
+    notifySaved(path) {
+      const spec = serverForPath(path);
+      const session = spec ? sessions.get(spec.id) : null;
+      if (!session || session.state !== "ready") return;
+      const uri = monaco.Uri.file(path).toString();
+      const doc = session.docs.get(uri);
+      // Only for a document the server has actually been told about — a save of
+      // a file it never saw would be a notification about nothing.
+      if (!doc) return;
+      // A pending debounced `didChange` still holds the newest text. Flushing it
+      // first is what stops the server checking the buffer as it was a moment
+      // ago and reporting diagnostics for text that is no longer on disk.
+      if (doc.timer) {
+        clearTimeout(doc.timer);
+        doc.timer = null;
+        doc.version += 1;
+        session.client.notify("textDocument/didChange", {
+          textDocument: { uri, version: doc.version },
+          contentChanges: [{ text: doc.model.getValue() }],
+        });
+      }
+      session.client.notify("textDocument/didSave", { textDocument: { uri } });
+    },
+
     dispose() {
       stopped = true;
       for (const off of unlisten) off();
@@ -714,7 +813,10 @@ const CLIENT_CAPABILITIES = {
       dynamicRegistration: false,
       willSave: false,
       willSaveWaitUntil: false,
-      didSave: false,
+      // `true` because `notifySaved` sends it. rust-analyzer gates its flycheck
+      // on this notification, so declaring it false is what left Rust
+      // diagnostics a save behind.
+      didSave: true,
     },
     completion: {
       dynamicRegistration: false,
@@ -758,7 +860,11 @@ const CLIENT_CAPABILITIES = {
     // which is a valid answer meaning "use your defaults".
     configuration: true,
     didChangeConfiguration: { dynamicRegistration: false },
-    workspaceFolders: false,
+    // `true`, matching the `workspaceFolders` array `initialize` actually
+    // sends. Declaring it false told servers to ignore that array and fall back
+    // to `rootUri` — the same directory here, but a contradiction that would
+    // quietly become a bug the day a second folder is supported.
+    workspaceFolders: true,
     applyEdit: false,
   },
   window: { workDoneProgress: true },

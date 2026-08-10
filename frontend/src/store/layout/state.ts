@@ -23,10 +23,13 @@ import type {
   DiffTab,
   HistoryTab,
   OpenFileTab,
+  PaneGroupTab,
   PreviewTab,
   StackTab,
   TabCollectionKey,
 } from "./tabs";
+import type { TabGroupColor } from "./tabGroups";
+import type { DockSide, SidebarId } from "./dock";
 import type {
   GitSectionKey,
   GitSections,
@@ -61,6 +64,20 @@ export interface AppStoreState {
   /// transcript lives under `STORAGE_KEYS.agentThreads` keyed by tab id, because
   /// a conversation is far larger than a tab and is written far more often.
   agentTabsByWorktree: Record<string, AgentTab[]>;
+  /// Split panes, as tabs — each payload its own nested `PaneNode`. See
+  /// `PaneGroupTab`'s header for the one-level-of-nesting rule.
+  panegroupTabsByWorktree: Record<string, PaneGroupTab[]>;
+  /// A tab's custom label, keyed by tab id. Absent (no entry) means "use the
+  /// kind's derived label" — `TAB_SPECS[kind].label(tab)` — which is also
+  /// what clearing a rename restores it to. Not part of any kind's own tab
+  /// shape: every kind gets renaming for free this way, rather than each
+  /// carrying an optional `label` field with its own restore/clear rules.
+  tabLabelByWorktree: Record<string, Record<string, string>>;
+  /// A tab's custom label colour, keyed by tab id, the same shape and the
+  /// same reasoning as `tabLabelByWorktree` above. Absent means unstyled —
+  /// the default tab chrome, not `DEFAULT_TAB_GROUP_COLOR` — so a tab nobody
+  /// ever coloured persists nothing extra at all.
+  tabColorByWorktree: Record<string, Record<string, TabGroupColor>>;
   /// LIFO stack of recently closed tabs, capped at CLOSED_TAB_HISTORY_LIMIT.
   /// Persisted since Wave 4 (`voidlink-closed-tabs`): the tab you closed by
   /// accident five minutes before a reload is the same mistake on either side
@@ -102,7 +119,12 @@ export interface AppStoreState {
   panels: PanelWidths;
   gitSidebarCollapsed: boolean;
   leftSidebarCollapsed: boolean;
-  sidebarsSwapped: boolean;
+  workspaceRailCollapsed: boolean;
+  /// Which edge each sidebar is docked to, the screen order they render in, and
+  /// which of them are in a window of their own. See `store/layout/dock.ts`.
+  dockSide: Record<SidebarId, DockSide>;
+  dockOrder: SidebarId[];
+  detachedSidebars: SidebarId[];
   diffMode: DiffMode;
   diffLineNumbers: boolean;
   gitTab: GitTab;
@@ -112,6 +134,9 @@ export interface AppStoreState {
   gitSectionOrder: GitSectionKey[];
   sidebarSections: SidebarSections;
   collapsedWorkspaces: string[];
+  /// Workspace ids whose rail labels are blurred for screencasts. See
+  /// `UiPrefs.blurredWorkspaces` in `prefs.ts`.
+  blurredWorkspaces: string[];
 }
 
 /// Compile-time proof that every `stateKey` a registry spec names is a real
@@ -136,6 +161,8 @@ export function seedWorktreeCollections(s: AppStoreState, wtId: string) {
   }
   s.closedTabsByWorktree[wtId] ??= [];
   s.pinnedTabsByWorktree[wtId] ??= [];
+  s.tabLabelByWorktree[wtId] ??= {};
+  s.tabColorByWorktree[wtId] ??= {};
   s.paneLayoutByWorktree[wtId] ??= singleGroupLayout();
   s.tabGroupsByWorktree[wtId] ??= emptyTabGroupState();
   s.tabMruByWorktree[wtId] ??= {};
@@ -154,6 +181,8 @@ export function dropWorktreeCollections(s: AppStoreState, wtId: string) {
   }
   delete s.closedTabsByWorktree[wtId];
   delete s.pinnedTabsByWorktree[wtId];
+  delete s.tabLabelByWorktree[wtId];
+  delete s.tabColorByWorktree[wtId];
   delete s.paneLayoutByWorktree[wtId];
   delete s.tabGroupsByWorktree[wtId];
   delete s.tabMruByWorktree[wtId];

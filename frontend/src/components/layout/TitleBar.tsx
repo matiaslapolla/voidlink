@@ -7,6 +7,7 @@ import {
   Square,
   X,
   PanelLeft,
+  PanelLeftClose,
   PanelRight,
   ArrowLeftRight,
   ArrowUpRight,
@@ -24,6 +25,8 @@ import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
 import { ViewSwitcher } from "@/components/layout/ViewSwitcher";
 import { isStackedMode } from "@/commands/environment";
 import { useAppStore } from "@/store/LayoutContext";
+import type { DockSide, SidebarId } from "@/store/layout";
+import { SIDEBAR_LABEL } from "@/components/layout/SidebarDock";
 import { getAction, runAction } from "@/commands/registry";
 import { shortcutLabel } from "@/commands/shortcuts";
 
@@ -86,31 +89,98 @@ export function TitleBar(props: TitleBarProps) {
     }
   };
 
-  // Visual semantics follow what the user sees, not where state lives:
-  // when sidebars are swapped, the git panel becomes the "left" toggle and
-  // the files/terminal panel becomes the "right" toggle.
-  const leftCollapsed = () =>
-    state.sidebarsSwapped ? state.gitSidebarCollapsed : state.leftSidebarCollapsed;
-  const rightCollapsed = () =>
-    state.sidebarsSwapped ? state.leftSidebarCollapsed : state.gitSidebarCollapsed;
-  const toggleLeft = () =>
-    state.sidebarsSwapped ? actions.toggleGitSidebar() : actions.toggleLeftSidebar();
-  const toggleRight = () =>
-    state.sidebarsSwapped ? actions.toggleLeftSidebar() : actions.toggleGitSidebar();
+  // Visual semantics follow what the user sees, not where state lives: the
+  // `PanelLeft` button toggles a content sidebar docked on the left, and
+  // `PanelRight` one docked on the right. The workspace rail has its own
+  // button (`ui.toggle-workspace-rail`) and is excluded here.
+  //
+  // With five independently dockable sidebars an edge can hold more than one
+  // of these at once — the git panel and the explorer can both end up on the
+  // right, for instance — so a lookup that assumed at most one per edge would
+  // either toggle the wrong panel or silently do nothing. `contentIdsOn`
+  // returns every content sidebar on that edge in the user's own screen order
+  // (`dockOrder`), the button acts on the first one, and its title says so
+  // explicitly when there are more — "say what it means" rather than pretend
+  // one button covers an edge it does not.
+  const contentIdsOn = (side: DockSide): SidebarId[] =>
+    state.dockOrder.filter((id) => id !== "workspaces" && state.dockSide[id] === side);
+
+  const isCollapsed = (id: SidebarId): boolean => {
+    switch (id) {
+      case "explorer":
+        return state.leftSidebarCollapsed;
+      case "git":
+        return state.gitSidebarCollapsed;
+      case "terminals":
+        return !state.sidebarSections.terminals;
+      case "agents":
+        return !state.sidebarSections.agents;
+      case "workspaces":
+        return state.workspaceRailCollapsed;
+    }
+  };
+  const toggle = (id: SidebarId): void => {
+    switch (id) {
+      case "explorer":
+        actions.toggleLeftSidebar();
+        break;
+      case "git":
+        actions.toggleGitSidebar();
+        break;
+      case "terminals":
+        actions.toggleSidebarSection("terminals");
+        break;
+      case "agents":
+        actions.toggleSidebarSection("agents");
+        break;
+      case "workspaces":
+        actions.toggleWorkspaceRail();
+        break;
+    }
+  };
+
+  const panelOn = (side: DockSide): SidebarId | null => contentIdsOn(side)[0] ?? null;
+  const collapsedOn = (side: DockSide) => {
+    const id = panelOn(side);
+    return id ? isCollapsed(id) : true;
+  };
+  const toggleOn = (side: DockSide) => {
+    const id = panelOn(side);
+    if (id) toggle(id);
+  };
+  const labelOn = (side: DockSide) => {
+    const ids = contentIdsOn(side);
+    const id = ids[0];
+    if (!id) return `No panel is docked on the ${side}`;
+    const extra =
+      ids.length > 1
+        ? ` — ${ids.length - 1} more panel${ids.length > 2 ? "s" : ""} also on this edge`
+        : "";
+    return `${isCollapsed(id) ? "Show" : "Hide"} the ${SIDEBAR_LABEL[id].toLowerCase()} (${side})${extra}`;
+  };
 
   return (
     <div
       /* The title bar is window chrome, not an island: it stays flush to the
          window edge (it carries the traffic lights) and takes the canvas
          colour, so the islands below read as floating on it. Its `border-b` is
-         gone with the islands' — the 8px canvas inset is the separation. */
+         gone with the islands' — the 8px canvas inset is the separation.
+
+         `h-8` (32px) is load-bearing on macOS: `trafficLightPosition.y = 18` in
+         tauri.conf.json puts the buttons' centre at 16px from the window top
+         (the mapping is `centre = y - 2`; `src-tauri/src/window.rs` derives it
+         from tao's source and the AppKit measurement). Change one and the other
+         moves: a taller bar wants `y = height / 2 + 2`. */
       class={`flex items-stretch h-8 shrink-0 select-none bg-canvas ${DEV_CHROME_CLASS}`}
     >
       {/*
         Tauri's injected drag-region script already starts a native drag on
         mousedown and toggles maximise on double click, so no handlers here.
         On macOS the left padding clears the traffic lights the OS draws over
-        this bar (they end at 66px; see trafficLightPosition in tauri.conf.json).
+        this bar. `trafficLightPosition.x = 12` is the close button's left edge
+        and the three buttons sit 23pt apart, so they occupy 12..72px — this
+        used to say 66px, which was the arithmetic that produced the
+        misalignment rather than a measurement. 78px leaves a 6px gap.
       */}
       <div
         data-tauri-drag-region
@@ -140,21 +210,38 @@ export function TitleBar(props: TitleBarProps) {
           <ArrowRight class="w-3.5 h-3.5" />
         </NavButton>
         <div class="w-px self-center h-4 bg-border mx-1" />
+        {/* The workspace rail's toggle, beside the other two sidebars' — it
+            became collapsible in the same change that made it dockable, and a
+            collapse with no title-bar control would be the one sidebar you
+            could only reach from its own header. Runs the registered action, so
+            the button, the chord and the palette row are one code path. */}
+        <NavButton
+          actionId="ui.toggle-workspace-rail"
+          enabled
+          label={state.workspaceRailCollapsed ? "Show the workspace rail" : "Collapse the workspace rail"}
+          disabledReason=""
+        >
+          <PanelLeftClose class="w-3.5 h-3.5" />
+        </NavButton>
         <button
-          onClick={toggleLeft}
-          aria-label={leftCollapsed() ? "Show left sidebar" : "Hide left sidebar"}
-          aria-pressed={!leftCollapsed()}
-          class={`w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors ${leftCollapsed() ? "" : "text-foreground"}`}
-          title={leftCollapsed() ? "Show left sidebar" : "Hide left sidebar"}
+          onClick={() => toggleOn("left")}
+          disabled={!panelOn("left")}
+          aria-disabled={!panelOn("left")}
+          aria-label={labelOn("left")}
+          aria-pressed={!collapsedOn("left")}
+          class={`w-9 flex items-center justify-center transition-colors ${panelOn("left") ? "hover:bg-accent/60 hover:text-foreground" : "opacity-40 cursor-not-allowed"} ${collapsedOn("left") ? "" : "text-foreground"}`}
+          title={labelOn("left")}
         >
           <PanelLeft class="w-3.5 h-3.5" />
         </button>
         <button
-          onClick={toggleRight}
-          aria-label={rightCollapsed() ? "Show right sidebar" : "Hide right sidebar"}
-          aria-pressed={!rightCollapsed()}
-          class={`w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors ${rightCollapsed() ? "" : "text-foreground"}`}
-          title={rightCollapsed() ? "Show right sidebar" : "Hide right sidebar"}
+          onClick={() => toggleOn("right")}
+          disabled={!panelOn("right")}
+          aria-disabled={!panelOn("right")}
+          aria-label={labelOn("right")}
+          aria-pressed={!collapsedOn("right")}
+          class={`w-9 flex items-center justify-center transition-colors ${panelOn("right") ? "hover:bg-accent/60 hover:text-foreground" : "opacity-40 cursor-not-allowed"} ${collapsedOn("right") ? "" : "text-foreground"}`}
+          title={labelOn("right")}
         >
           <PanelRight class="w-3.5 h-3.5" />
         </button>
@@ -203,15 +290,19 @@ export function TitleBar(props: TitleBarProps) {
         </>}>
           <ViewSwitcher />
         </Show>
-        <button
-          onClick={() => actions.toggleSidebarsSwapped()}
-          aria-label="Swap left and right sidebars"
-          aria-pressed={state.sidebarsSwapped}
-          class={`w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors ${state.sidebarsSwapped ? "text-foreground" : ""}`}
-          title="Swap left and right sidebars"
+        {/* Repurposed rather than removed. It was a two-state swap of two
+            slots; it now mirrors the whole arrangement — every panel to the
+            opposite edge, order reversed — which is what the icon always
+            claimed. It is no longer a *state*, so there is no `aria-pressed`:
+            pressing it twice returns the layout it found. */}
+        <NavButton
+          actionId="ui.swap-sidebars"
+          enabled
+          label="Mirror the sidebar layout"
+          disabledReason=""
         >
           <ArrowLeftRight class="w-3.5 h-3.5" />
-        </button>
+        </NavButton>
         <div class="w-px self-center h-4 bg-border mx-1" />
         <button
           onClick={toggleTheme}
@@ -247,7 +338,7 @@ export function TitleBar(props: TitleBarProps) {
             class="w-9 flex items-center justify-center hover:bg-accent/60 hover:text-foreground transition-colors"
             title="Maximize"
           >
-            <Square class="w-3 h-3" />
+            <Square class="w-3.5 h-3.5" />
           </button>
           <button
             onClick={withWindow((w) => void w.close())}

@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-solid";
 import {
+  LABEL_COL,
   LABEL_INDENT,
   Section,
   SegmentedRow,
@@ -42,7 +43,11 @@ import {
 } from "./gitConfig";
 import {
   useSettings,
+  SURFACE_OPACITY_MAX,
+  SURFACE_OPACITY_MIN,
+  type BackgroundFit,
   type CursorStyle,
+  type TerminalGpuAcceleration,
   type EditorCoreSettings,
   type EditorSettings,
   type EnvironmentMode,
@@ -317,6 +322,66 @@ const DENSITIES: { id: UiDensity; label: string }[] = [
   { id: "normal", label: "Normal" },
   { id: "comfortable", label: "Comfortable" },
 ];
+const BACKGROUND_FIT_OPTIONS: { id: BackgroundFit; label: string }[] = [
+  { id: "cover", label: "Cover" },
+  { id: "contain", label: "Contain" },
+  { id: "tile", label: "Tile" },
+];
+
+/// "Choose image…" / "Change…" plus the current file's name and a clear
+/// button. No existing row shape fits a file picker, so this is the one place
+/// that chrome lives — everything else in this pane reuses `rows.tsx`.
+function BackgroundImageRow() {
+  const { settings, pickBackgroundImage, clearBackgroundImage } = useSettings();
+  const [busy, setBusy] = createSignal(false);
+  const fileName = () => {
+    const path = settings.ui.backgroundImage;
+    return path ? (path.split(/[\\/]/).pop() ?? path) : null;
+  };
+  async function pick() {
+    setBusy(true);
+    try {
+      await pickBackgroundImage();
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div class="flex items-center gap-3">
+      <span class={`${LABEL_COL} text-muted-foreground`} title="Background image">
+        Background
+      </span>
+      <div class="flex-1 flex items-center gap-2 min-w-0">
+        <button
+          onClick={() => void pick()}
+          disabled={busy()}
+          aria-label={
+            fileName() ? `Change background image (current: ${fileName()})` : "Choose a background image"
+          }
+          class="px-2 py-1 rounded border border-border text-label text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-50 shrink-0"
+        >
+          {busy() ? "Choosing…" : fileName() ? "Change…" : "Choose image…"}
+        </button>
+        <span
+          class="truncate text-label text-muted-foreground/80 flex-1 min-w-0"
+          title={settings.ui.backgroundImage ?? undefined}
+        >
+          {fileName() ?? "None — plain themed background"}
+        </span>
+        <Show when={settings.ui.backgroundImage}>
+          <button
+            onClick={() => clearBackgroundImage()}
+            aria-label="Remove background image"
+            title="Remove background image"
+            class="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0"
+          >
+            <Trash2 class="w-3 h-3" />
+          </button>
+        </Show>
+      </div>
+    </div>
+  );
+}
 
 function UiPane() {
   const { settings, updateUi } = useSettings();
@@ -392,19 +457,48 @@ function UiPane() {
           switching to it closes any satellite window already open.
         </p>
       </div>
+      <div>
+        <BackgroundImageRow />
+        <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
+          Painted behind the shell in all three windows. A path that no longer
+          resolves falls back to the plain themed background.
+        </p>
+        <Show when={settings.ui.backgroundImage}>
+          <div class="mt-2 space-y-2">
+            <SliderRow
+              label="Opacity"
+              value={settings.ui.surfaceOpacity}
+              min={SURFACE_OPACITY_MIN}
+              max={SURFACE_OPACITY_MAX}
+              step={1}
+              format={(v) => `${v}%`}
+              onInput={(v) => updateUi({ surfaceOpacity: v })}
+            />
+            <SegmentedRow
+              label="Fit"
+              value={settings.ui.backgroundFit}
+              options={BACKGROUND_FIT_OPTIONS}
+              onChange={(v) => updateUi({ backgroundFit: v })}
+            />
+          </div>
+        </Show>
+      </div>
       <ResetLayoutRow />
     </div>
   );
 }
 
-/// The `--reset-layout` escape hatch: clear every layout key and reload.
+/// The `--reset-layout` escape hatch: clear the geometry keys and reload.
 ///
 /// Layout state is the one thing in this app that can render the shell
 /// unusable — a pane tree that claims tabs that do not exist, a panel dragged
 /// to zero, a blob half-written by a crash. `resetLayoutStorage()` clears
-/// exactly the layout keys: settings, provider keys, themes and *saved
-/// snapshots* are all untouched, which is why this can sit next to the
-/// ordinary UI preferences instead of behind a support ticket.
+/// exactly the *arrangement*: the pane tree, the panel widths and the sidebar
+/// docking. Workspaces, open tabs, settings, provider keys, themes and *saved
+/// snapshots* all survive, which is why this can sit next to the ordinary UI
+/// preferences instead of behind a support ticket. The scope and the copy below
+/// have to keep agreeing — see `LAYOUT_STORAGE_KEYS` in
+/// `store/layout/persistence.ts`, which is the list this row describes.
 function ResetLayoutRow() {
   const [confirming, setConfirming] = createSignal(false);
   return (
@@ -412,7 +506,7 @@ function ResetLayoutRow() {
       <div class="w-28 shrink-0">
         <div class="text-muted-foreground">Layout</div>
         <div class="text-micro text-muted-foreground/70 leading-tight">
-          Tabs, panes, panel widths
+          Panes, panel widths, docking
         </div>
       </div>
       <div class="flex items-center gap-2">
@@ -432,8 +526,8 @@ function ResetLayoutRow() {
           }
           title={
             confirming()
-              ? "Click again to clear tabs, panes and panel widths, then reload"
-              : "Clears tabs, panes and panel widths. Settings, provider keys and saved snapshots are kept."
+              ? "Click again to clear the pane tree, panel widths and docking, then reload"
+              : "Clears the pane tree, panel widths and sidebar docking. Workspaces, open tabs, settings, provider keys and saved snapshots are kept."
           }
           class={`px-3 py-1 rounded border text-label transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
             confirming()
@@ -563,6 +657,11 @@ const CURSOR_STYLES: { id: CursorStyle; label: string }[] = [
   { id: "block", label: "Block" },
   { id: "underline", label: "Underline" },
   { id: "bar", label: "Bar" },
+];
+
+const GPU_ACCELERATION: { id: TerminalGpuAcceleration; label: string }[] = [
+  { id: "auto", label: "Auto" },
+  { id: "off", label: "Off" },
 ];
 
 // Each preset is labelled by its primary family (for the chip text) and
@@ -1213,6 +1312,16 @@ function TerminalPane() {
           format={(v) => `${v}×`} onInput={(v) => updateTerminal({ scrollSensitivity: v })} />
         <ToggleRow label="Scroll on input" value={settings.terminal.scrollOnUserInput}
           onChange={(v) => updateTerminal({ scrollOnUserInput: v })} />
+      </Section>
+
+      <Section title="Rendering">
+        <SegmentedRow
+          label="GPU acceleration"
+          hint="Auto uses WebGL when available. Turn off if text stutters on Linux — WebKitGTK can report a working WebGL context that is actually software-rendered, which is slower than the fallback."
+          value={settings.terminal.gpuAcceleration}
+          options={GPU_ACCELERATION}
+          onChange={(v) => updateTerminal({ gpuAcceleration: v })}
+        />
       </Section>
 
       <Section title="Shell integration">
@@ -2230,7 +2339,7 @@ function HelpPane() {
         />
         <HelpRow
           title="If the layout breaks"
-          body="Reset layout, on the UI tab, clears the pane tree and panel sizes only — settings, themes, provider keys and saved snapshots all survive it."
+          body="Reset layout, on the UI tab, clears the pane tree, panel sizes and sidebar docking only — your workspaces, your open tabs, settings, themes, provider keys and saved snapshots all survive it."
         />
       </Section>
 

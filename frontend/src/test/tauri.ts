@@ -228,6 +228,7 @@ export function resetTauri(): void {
   state.calls.length = 0;
   state.listeners.clear();
   state.channels.length = 0;
+  closeHandlers.length = 0;
   state.nextEventId = 1;
   state.windowLabel = "main";
 }
@@ -290,6 +291,30 @@ export async function fakeEmit(event: string, payload?: unknown): Promise<void> 
   emitTauriEvent(event, payload);
 }
 
+/// `convertFileSrc()`. The real one hands back an `asset://` (or
+/// `http://asset.localhost/`) URL the webview's asset protocol can fetch; there
+/// is no protocol handler in a test browser, so this returns a URL of the same
+/// *shape* rather than one that resolves. Callers assert on the mapping, never
+/// on the bytes.
+///
+/// It has to be here, and in both setup files' `@tauri-apps/api/core` factory,
+/// because a `vi.mock` factory *replaces* the module: an export the factory
+/// omits does not fall through to the real one. Under jsdom that surfaces as
+/// `undefined` at call time, but the browser project resolves the mock as real
+/// ESM, where a missing named export is a parse error that fails the whole file
+/// on import — which is how this was found.
+export function fakeConvertFileSrc(filePath: string, protocol = "asset"): string {
+  return `${protocol}://localhost/${encodeURIComponent(filePath)}`;
+}
+
+/// Every `onCloseRequested` handler registered in this window, newest last.
+/// `closeCurrentWindow()` is what runs them.
+const closeHandlers: ((evt: CloseRequestedEventLike) => void | Promise<void>)[] = [];
+
+interface CloseRequestedEventLike {
+  preventDefault(): void;
+}
+
 /// `getCurrentWindow()` / `getCurrentWebview()`. One object: the two differ in
 /// the real API by methods nothing in this app calls on both.
 export function fakeCurrentWindow() {
@@ -304,8 +329,54 @@ export function fakeCurrentWindow() {
     setFocus: vi.fn(async () => {}),
     isFocused: vi.fn(async () => true),
     close: vi.fn(async () => {}),
+    /// Recorded as an `invoke`-shaped call so `tauriCalls("destroy")` can
+    /// assert a window actually took itself down. `destroy` is not really a
+    /// command — but it is the one window operation this app's lifecycle turns
+    /// on, and the alternative is a test reaching into a `vi.fn` it has no
+    /// handle on.
+    destroy: vi.fn(async () => {
+      state.calls.push({ command: "destroy", args: { label: state.windowLabel } });
+    }),
+    /// Models tauri 2.11's own wrapper, which is the part that matters: it
+    /// **awaits** the handler and only then destroys the window. A handler that
+    /// fires its IPC off without awaiting is racing its own teardown, and a
+    /// fake that called the handler synchronously would let that bug pass.
+    onCloseRequested: async (
+      handler: (evt: CloseRequestedEventLike) => void | Promise<void>,
+    ) => {
+      closeHandlers.push(handler);
+      return () => {
+        const at = closeHandlers.indexOf(handler);
+        if (at !== -1) closeHandlers.splice(at, 1);
+      };
+    },
     onFocusChanged: vi.fn(async () => () => {}),
+    // OS file drops onto a terminal pane (`TerminalPane.tsx`). No test drives
+    // an actual drop through this yet — the fake only has to resolve with an
+    // unlisten function so a mounted pane's `onMount` does not throw trying to
+    // register the listener at all.
+    onDragDropEvent: vi.fn(async () => () => {}),
   };
+}
+
+/// Close this window the way the OS traffic light would: raise the close
+/// request, await every handler, and destroy unless one prevented it.
+///
+/// The whole point of the detach lifecycle is that a window closed by the OS
+/// and one closed by our own control end up in the same place, so a test has to
+/// be able to press the traffic light.
+export async function closeCurrentWindow(): Promise<void> {
+  for (const handler of [...closeHandlers]) {
+    let prevented = false;
+    await handler({
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    if (!prevented) {
+      state.calls.push({ command: "destroy", args: { label: state.windowLabel } });
+    }
+  }
 }
 
 function safeJson(value: unknown): string {

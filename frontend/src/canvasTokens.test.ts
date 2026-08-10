@@ -47,12 +47,30 @@ function oklchLightness(value: string): number {
 /// whose `L` is 0 leaves a lightness of `0.85 x L`.
 function mixRatio(selector: string): number {
   const block = blockFor(indexCss, selector);
-  const m = /--canvas:\s*color-mix\(in oklab,\s*var\(--background\)\s*([0-9.]+)%,\s*black\)/.exec(
-    block,
+  const m = block.match(
+    /--canvas:\s*color-mix\(in oklab,\s*var\(--background\)\s*([0-9.]+)%,\s*black\)/,
   );
   if (!m) throw new Error(`no derived --canvas in ${selector}`);
   return Number.parseFloat(m[1]) / 100;
 }
+
+/// Same shape as `mixRatio`, generalised to any `--token: color-mix(in oklab,
+/// var(--background) N%, black)` declaration — the region surfaces
+/// (`--surface-rail`, `--surface-tabstrip`, `--surface-statusbar`) are
+/// derived exactly the way `--canvas` is, off the same `:root`/`:root.light`
+/// blocks, for the same reason: one definition, inherited by every named
+/// theme through the `var(--background)` indirection.
+function regionRatio(selector: string, token: string): number {
+  const block = blockFor(indexCss, selector);
+  const re = new RegExp(
+    `${token}:\\s*color-mix\\(in oklab,\\s*var\\(--background\\)\\s*([0-9.]+)%,\\s*black\\)`,
+  );
+  const m = block.match(re);
+  if (!m) throw new Error(`no derived ${token} in ${selector}`);
+  return Number.parseFloat(m[1]) / 100;
+}
+
+const REGION_TOKENS = ["--surface-statusbar", "--surface-rail", "--surface-tabstrip"];
 
 function backgroundOf(css: string, selector: string): string {
   const m = /--background:\s*([^;]+);/.exec(blockFor(css, selector));
@@ -126,6 +144,31 @@ describe("the recessed canvas (Direction D1)", () => {
 
       expect(canvas).toBeLessThan(island);
       expect(island - canvas).toBeGreaterThanOrEqual(MIN_SEPARATION);
+    },
+  );
+
+  it("derives the region surfaces rather than hardcoding them per theme", () => {
+    // Same argument as --canvas: `--surface-rail` / `--surface-tabstrip` /
+    // `--surface-statusbar` must be declared once, in index.css, and never
+    // restated in themes.css, or the eight named themes stop inheriting them
+    // for free through the `var(--background)` indirection.
+    for (const token of REGION_TOKENS) {
+      expect(themesCss).not.toContain(token);
+    }
+  });
+
+  it.each(SURFACES)(
+    "keeps every region strictly between canvas and island in $name",
+    ({ css, selector, mode }) => {
+      const modeSelector = mode === "light" ? ":root.light" : ":root";
+      const island = oklchLightness(backgroundOf(css, selector));
+      const canvas = island * mixRatio(modeSelector);
+
+      for (const token of REGION_TOKENS) {
+        const region = island * regionRatio(modeSelector, token);
+        expect(region).toBeGreaterThan(canvas);
+        expect(region).toBeLessThan(island);
+      }
     },
   );
 

@@ -1,5 +1,8 @@
 import { createStore } from "solid-js/store";
 import { createEffect } from "solid-js";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { onUiVisualChange, publishUiVisualChange } from "@/api/windows";
 import type { CommitIdentity } from "@/types/git";
 import { defaultEditorSettings, parseEditorSettings } from "./settingsSchema";
 import {
@@ -35,6 +38,13 @@ export type EnvironmentMode = "stacked" | "detached";
 /// the note on the file explorer's placement there.
 export type TabOrientation = "horizontal" | "vertical";
 
+/// How the background image is scaled and positioned against the window.
+/// `cover` is the sensible default — fills the window, cropping rather than
+/// letterboxing, which is what every other "pick a wallpaper" surface does.
+export type BackgroundFit = "cover" | "contain" | "tile";
+
+export const BACKGROUND_FITS: readonly BackgroundFit[] = ["cover", "contain", "tile"];
+
 export interface TerminalSettings {
   fontFamily: string;
   fontSize: number;
@@ -53,7 +63,22 @@ export interface TerminalSettings {
   rightClickSelectsWord: boolean;
   scrollSensitivity: number;
   scrollOnUserInput: boolean;
+  /// Whether the terminal may use the WebGL renderer.
+  ///
+  /// `auto` feature-detects and falls back to xterm's DOM renderer when WebGL2
+  /// is unavailable or the addon fails to construct, which is right almost
+  /// everywhere. The escape hatch exists for Linux: WebKitGTK hands back a
+  /// *successful* WebGL2 context even when it is backed by a software
+  /// rasterizer, and it masks the renderer string, so nothing we can query
+  /// distinguishes a real GPU from llvmpipe. On such a machine the accelerated
+  /// path is the slower one and there is no way to detect it — only to let the
+  /// user say so.
+  gpuAcceleration: TerminalGpuAcceleration;
 }
+
+/// `auto` — use WebGL when it is available. `off` — always use xterm's DOM
+/// renderer.
+export type TerminalGpuAcceleration = "auto" | "off";
 
 /// Word wrap. `wordWrapColumn` wraps at `wordWrapColumn` regardless of the
 /// viewport; `bounded` wraps at the smaller of the two, which is the only mode
@@ -213,6 +238,20 @@ export interface UiSettings {
   /// but a repo's `.env` is gitignored and still needs editing, which is the
   /// case this exists for.
   showIgnoredFiles: boolean;
+  /// Absolute path to a user-picked background image, or `null` for the
+  /// plain themed background. A *path*, not a copy of the file — resolved
+  /// through the Tauri asset protocol (`convertFileSrc`) at paint time, never
+  /// read into a data URI. Shared by all three windows (see
+  /// `bridgeUiVisualAcrossWindows` in this file).
+  backgroundImage: string | null;
+  /// How opaque the island surfaces are over the background image, 0-100.
+  /// 100 (the default) is today's fully opaque chrome — an install that never
+  /// touches this setting sees no visual change. Ignored while
+  /// `backgroundImage` is unset, and overridden to fully opaque under
+  /// `prefers-reduced-transparency: reduce` regardless of its value (`index.css`).
+  surfaceOpacity: number;
+  /// How the background image is scaled and positioned. See `BackgroundFit`.
+  backgroundFit: BackgroundFit;
 }
 
 /// Non-secret identity of a provider key. `id` is the OS-keychain account the
@@ -415,6 +454,9 @@ const DEFAULTS: AppSettings = {
     tabOrientation: "horizontal",
     verticalTabWidth: 200,
     showIgnoredFiles: false,
+    backgroundImage: null,
+    surfaceOpacity: 100,
+    backgroundFit: "cover",
   },
   terminal: {
     // Prefer a nerd-font stack so Starship/powerline glyphs render, with plain
@@ -446,6 +488,7 @@ const DEFAULTS: AppSettings = {
     rightClickSelectsWord: false,
     scrollSensitivity: 1,
     scrollOnUserInput: true,
+    gpuAcceleration: "auto",
   },
   /// Derived from `settingsSchema.ts` rather than written out here, so the
   /// defaults, the parse and the dialog cannot drift apart.
@@ -485,6 +528,41 @@ const DEFAULTS: AppSettings = {
 function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | undefined): T {
   if (!partial) return { ...defaults };
   return { ...defaults, ...partial };
+}
+
+/// Floor of the `surfaceOpacity` slider. Not 0: the island's own tint would
+/// disappear entirely at 0%, leaving nothing but the scrim between text and
+/// the photo. `index.css`'s scrim comment (search that file for "Background
+/// image + island translucency") has the measured worst-case contrast this
+/// floor relies on — a fixed 92%-opaque `--canvas` layer under the islands
+/// keeps foreground text ≥ AA against the two extremes a photo can present,
+/// even at this floor. Raising this floor without re-checking that math would
+/// silently invalidate the guarantee.
+export const SURFACE_OPACITY_MIN = 20;
+export const SURFACE_OPACITY_MAX = 100;
+
+function clampSurfaceOpacity(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return DEFAULTS.ui.surfaceOpacity;
+  return Math.max(SURFACE_OPACITY_MIN, Math.min(SURFACE_OPACITY_MAX, Math.round(v)));
+}
+
+/// Validate the three background/translucency keys field by field, same
+/// policy as `parseExperimentalSettings`: a hand-edited or stale value falls
+/// back to its default rather than reaching Monaco-adjacent code with a shape
+/// nothing here has a branch for.
+function parseUiSettings(partial: Partial<UiSettings> | undefined): UiSettings {
+  const merged = mergeDefaults(DEFAULTS.ui, partial);
+  return {
+    ...merged,
+    backgroundImage:
+      typeof partial?.backgroundImage === "string" && partial.backgroundImage.trim()
+        ? partial.backgroundImage
+        : null,
+    surfaceOpacity: clampSurfaceOpacity(partial?.surfaceOpacity),
+    backgroundFit: BACKGROUND_FITS.includes(partial?.backgroundFit as BackgroundFit)
+      ? (partial!.backgroundFit as BackgroundFit)
+      : DEFAULTS.ui.backgroundFit,
+  };
 }
 
 /// Validate a persisted roster row by row, and synthesize the one-entry roster
@@ -576,7 +654,10 @@ export function parseSettings(raw: string | null): AppSettings {
     if (!raw) return JSON.parse(JSON.stringify(DEFAULTS));
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
     return {
-      ui: mergeDefaults(DEFAULTS.ui, parsed.ui),
+      // Validated rather than merged: `backgroundImage`, `surfaceOpacity` and
+      // `backgroundFit` all need field-by-field checks (`parseUiSettings`),
+      // the same reason `ai` and `experimental` don't use a plain merge.
+      ui: parseUiSettings(parsed.ui),
       terminal: mergeDefaults(DEFAULTS.terminal, parsed.terminal),
       // Absent in every payload saved before the editor became configurable,
       // which is every payload on disk today.
@@ -632,6 +713,108 @@ createEffect(() => {
   html.setAttribute("data-density", settings.ui.density);
 });
 
+/// The one place the background image and the island-opacity mix are applied
+/// to the document — `index.css`'s `html[data-bg-image]` rule is the other
+/// half, and together they are the whole feature (see that rule for the
+/// mixing math). No component paints the image itself; this is the "geometry
+/// lives in one place" rule `AppShell.tsx` states for the island inset,
+/// applied to the background layer.
+///
+/// The path is resolved through the Tauri asset protocol (`convertFileSrc`),
+/// never read into a data URI, and probed with a throwaway `Image()` before
+/// it is trusted: a path that no longer resolves (the file moved, an install
+/// synced settings without the file) must fall back to the plain themed
+/// background silently, not paint a broken-image icon into the shell.
+createEffect(() => {
+  const html = document.documentElement;
+  const path = settings.ui.backgroundImage;
+  html.style.setProperty("--ui-surface-opacity", `${settings.ui.surfaceOpacity}%`);
+  html.setAttribute("data-bg-fit", settings.ui.backgroundFit);
+
+  if (!path) {
+    html.style.removeProperty("--ui-bg-image");
+    html.removeAttribute("data-bg-image");
+    return;
+  }
+  const src = convertFileSrc(path);
+  const probe = new Image();
+  probe.onload = () => {
+    // The setting may have moved on while the probe was in flight (the user
+    // picked a different image, or cleared it) — only apply if it's still
+    // the path this load was for.
+    if (settings.ui.backgroundImage !== path) return;
+    html.style.setProperty("--ui-bg-image", `url("${src}")`);
+    html.setAttribute("data-bg-image", "");
+  };
+  probe.onerror = () => {
+    if (settings.ui.backgroundImage !== path) return;
+    html.style.removeProperty("--ui-bg-image");
+    html.removeAttribute("data-bg-image");
+  };
+  probe.src = src;
+});
+
+/// Tell the other windows the background/opacity/fit changed, and mirror
+/// changes they broadcast. Same symmetric shape as `bridgeThemeAcrossWindows`
+/// in `store/theme.ts` (any window may write, every window follows) and for
+/// the same reason: each window is a separate JS context that hydrates this
+/// store once at module eval, so a change made in the workbench would
+/// otherwise never reach an already-open editor or git window.
+///
+/// Call once per window root, from `main.tsx` alongside
+/// `bridgeThemeAcrossWindows`.
+export function bridgeUiVisualAcrossWindows(): () => void {
+  let applyingRemote = false;
+  let disposed = false;
+  let unlisten: (() => void) | null = null;
+  // The effect below fires immediately on its first run — that is us catching
+  // up to whatever this window's own module-eval hydration already loaded,
+  // not a change anyone else needs to hear. Broadcasting it would have a
+  // freshly-opened satellite shout its (possibly stale) local read at a
+  // workbench that already has the current value. Same reasoning as
+  // `applyTheme`'s `broadcast = false` on its own initial call.
+  let first = true;
+
+  // Publish on every local change to the three keys — except the first
+  // (above) and except while we are in the middle of *applying* a remote one,
+  // which would otherwise ping the change straight back out (the `source`
+  // guard in `onUiVisualChange` only drops our own echo, not a second,
+  // locally-triggered lap).
+  createEffect(() => {
+    const value = {
+      backgroundImage: settings.ui.backgroundImage,
+      surfaceOpacity: settings.ui.surfaceOpacity,
+      backgroundFit: settings.ui.backgroundFit,
+    };
+    if (first) {
+      first = false;
+      return;
+    }
+    if (applyingRemote) return;
+    void publishUiVisualChange(value);
+  });
+
+  void onUiVisualChange((value) => {
+    applyingRemote = true;
+    setSettings("ui", {
+      backgroundImage: value.backgroundImage,
+      surfaceOpacity: clampSurfaceOpacity(value.surfaceOpacity),
+      backgroundFit: BACKGROUND_FITS.includes(value.backgroundFit)
+        ? value.backgroundFit
+        : DEFAULTS.ui.backgroundFit,
+    });
+    applyingRemote = false;
+  }).then((fn) => {
+    if (disposed) void fn();
+    else unlisten = fn;
+  });
+
+  return () => {
+    disposed = true;
+    if (unlisten) unlisten();
+  };
+}
+
 export function useSettings() {
   return {
     settings,
@@ -643,6 +826,23 @@ export function useSettings() {
     },
     updateUi(patch: Partial<UiSettings>) {
       setSettings("ui", patch);
+    },
+    /// Ask the OS for an image and set it as the background, or leave the
+    /// current one untouched if the user cancels. Resolves once the picker
+    /// closes so the settings row can show it is busy (`SettingsDialog.tsx`).
+    ///
+    /// Stores the path only — never a copy of the file, never a data URI. The
+    /// effect above resolves it through the asset protocol at paint time.
+    async pickBackgroundImage(): Promise<void> {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      setSettings("ui", "backgroundImage", selected);
+    },
+    clearBackgroundImage() {
+      setSettings("ui", "backgroundImage", null);
     },
     updateAi(patch: Partial<AiSettings>) {
       setSettings("ai", patch);

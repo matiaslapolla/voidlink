@@ -45,6 +45,7 @@ import {
   onEditorTabs,
   onWindowContext,
   openGitWindow,
+  requestEditorDockBack,
   requestEditorTabs,
   requestWindowContext,
   sendEditorRequest,
@@ -58,7 +59,6 @@ import { EditorGroupsView } from "@/components/editor/EditorGroupsView";
 import { Breadcrumbs } from "@/components/editor/Breadcrumbs";
 import { GoToSymbol } from "@/components/editor/GoToSymbol";
 import {
-  DEFAULT_SPLIT_FRACTION,
   SINGLE_GROUP,
   cycleFocus,
   focusGroup,
@@ -102,6 +102,8 @@ import {
   type TabKind,
 } from "@/components/layout/TabStrip";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
+import { AttachHomeButton } from "@/components/layout/AttachHomeButton";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PromptHost } from "@/commands/PromptHost";
 import { textPrompt } from "@/commands/prompt";
 import { fsApi } from "@/api/fs";
@@ -112,7 +114,15 @@ import { registerActions, type Action } from "@/commands/registry";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { pushToast } from "@/commands/toast";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
-import { createAppStore, SIDEBAR_RAIL_WIDTH } from "@/store/layout";
+import {
+  EDITOR_PANEL_BOUNDS,
+  SIDEBAR_RAIL_WIDTH,
+  clampEditorPanelWidth,
+  createAppStore,
+  loadEditorPrefs,
+  persistEditorPrefs,
+} from "@/store/layout";
+import { Splitter } from "@/components/layout/Splitter";
 import { useSettings } from "@/store/settings";
 import type { EditorReorderableKind, EditorTabKind } from "@/api/windows";
 
@@ -160,6 +170,30 @@ export default function EditorApp() {
       void requestWindowContext();
       void requestEditorTabs();
     });
+
+    // Closing this window puts the editor back in the workbench, as the tab it
+    // had focused — the same bargain the detached sidebars make, and for the
+    // same reason: a surface the user dismissed should reappear where the rest
+    // of the app is, not vanish.
+    //
+    // Nothing about the tabs travels. The workbench owns all four collections
+    // *and* which one this window had in front (`EditorTabsSnapshot.active`),
+    // so "activate what you already know" is the whole message — sending the
+    // tab back would make a closing window a second writer, which is the one
+    // thing the editor channel forbids.
+    //
+    // Awaited, not fired off: Tauri's `onCloseRequested` wrapper awaits the
+    // handler before destroying the webview, so a synchronous return raced the
+    // emit against its own teardown.
+    try {
+      void track(
+        getCurrentWindow().onCloseRequested(async () => {
+          await requestEditorDockBack();
+        }),
+      );
+    } catch {
+      // Not running under Tauri. Nothing to close and nothing to re-home.
+    }
 
     onCleanup(() => {
       disposed = true;
@@ -237,6 +271,24 @@ export function EditorSurface(props: {
   /// inherit the workbench's collapse on every window open and then diverge —
   /// the worst of both models.
   const [treeVisible, setTreeVisible] = createSignal(true);
+
+  /// Width of the file-tree column and the editor split fraction, loaded once
+  /// from their own key. `EditorPrefs`'s header (`store/layout/prefs.ts`)
+  /// explains why these cannot ride in the workbench's `panels`/`gitPrefs`
+  /// blob the way `treeVisible` above deliberately does not either — but
+  /// unlike `treeVisible`, a width the user drags to *is* geometry worth
+  /// surviving a reload, so it gets a persisted key of its own rather than a
+  /// plain signal.
+  const initialEditorPrefs = loadEditorPrefs();
+  const [treeWidth, setTreeWidthRaw] = createSignal(initialEditorPrefs.panels.tree);
+  const setTreeWidth = (px: number) => setTreeWidthRaw(clampEditorPanelWidth("tree", px));
+  /// Suppresses the column's width transition for the duration of a splitter
+  /// drag, the same reason the workbench sidebars do (see `Splitter`'s header
+  /// and `TerminalSidebar`'s `resizing` signal) — the collapse transition
+  /// carries information (§7.1's exemption); the same transition on a pane
+  /// the user is holding would make it trail the pointer instead (§7.3.10).
+  const [treeResizing, setTreeResizing] = createSignal(false);
+
   /// The left rail shows either the file tree or find-in-files, never both —
   /// two scrolling trees in a 240px column is a worse answer than a swap.
   const [searchVisible, setSearchVisible] = createSignal(false);
@@ -291,12 +343,21 @@ export function EditorSurface(props: {
   // it was — split panes send no new requests and honour the same contract.
 
   const [split, setSplit] = createSignal<SplitLayout>(SINGLE_GROUP);
-  const [splitFraction, setSplitFraction] = createSignal(DEFAULT_SPLIT_FRACTION);
+  /// Persisted like `treeWidth` above — see that signal's comment for why this
+  /// is its own key rather than a workbench `panels` field. Reset-per-session
+  /// used to be the only option because nothing here survived a reload at
+  /// all; now that `treeWidth` does, leaving the split fraction behind would
+  /// be the one geometry in this window the user's drag still does not stick.
+  const [splitFraction, setSplitFraction] = createSignal(initialEditorPrefs.splitFraction);
   /// What the new pane opens on when a split is created: whatever the pane it
   /// was split off was showing. A blank second editor would make the user open
   /// the file twice to get the side-by-side they asked for.
   const [seedPath, setSeedPath] = createSignal<string | null>(null);
   const [symbolPickerOpen, setSymbolPickerOpen] = createSignal(false);
+
+  createEffect(() => {
+    persistEditorPrefs({ panels: { tree: treeWidth() }, splitFraction: splitFraction() });
+  });
 
   /// Focus is the controller's — Monaco reports it whenever the caret lands in
   /// a pane, including routes this component never sees (the find widget, a
@@ -372,6 +433,29 @@ export function EditorSurface(props: {
         { label: "Retry", run: () => void saveWithRetry(path) },
       );
     });
+  }
+
+  /// Jump to the definition of the symbol under the cursor.
+  ///
+  /// Monaco's own go-to-definition can only navigate to a model that already
+  /// exists, and this window does not own the tab list — opening a file is a
+  /// request to the workbench. So the cross-file case goes through the bridge
+  /// and the same `open-file` request everything else uses.
+  ///
+  /// Shared by three entry points: the palette action, its chord, and the
+  /// Cmd/Ctrl+Click the controller hands back here.
+  async function goToDefinition() {
+    const target = await lspBridge().definitionAtCursor();
+    if (!target) {
+      // Honest, and names the two reasons it can happen. A silent no-op reads
+      // as a broken keybinding.
+      pushToast("No definition found — the language server may still be indexing", "warning");
+      return;
+    }
+    send({ kind: "open-file", path: target.path });
+    // The open is a round trip through the workbench; the reveal has to wait
+    // for the model to be attached here.
+    setTimeout(() => editorController.revealPosition(target.line, target.column), 120);
   }
 
   /// Create a file and open it. Repo-relative, so the prompt is a path and not
@@ -492,8 +576,12 @@ export function EditorSurface(props: {
 
   onMount(() => {
     editorController.autoSaveFailed = (path) => void saveWithRetry(path);
+    editorController.didSave = (path) => lspBridge().notifySaved(path);
+    editorController.goToDefinition = () => void goToDefinition();
     onCleanup(() => {
       editorController.autoSaveFailed = null;
+      editorController.didSave = null;
+      editorController.goToDefinition = null;
     });
   });
 
@@ -623,29 +711,12 @@ export function EditorSurface(props: {
         },
       },
       {
-        // Monaco's own go-to-definition can only navigate to a model that
-        // already exists, and this window does not own the tab list — opening a
-        // file is a request to the workbench. So the cross-file case goes
-        // through the bridge and the same `open-file` request everything else
-        // uses. Within an already-open file, Monaco's F12 keeps working too.
         id: "editor.go-to-definition",
         label: "Go to definition",
         description: "Jump to where the symbol under the cursor is defined",
         group: "Editor",
         enabled: () => !!editorController.getActivePath(),
-        run: async () => {
-          const target = await lspBridge().definitionAtCursor();
-          if (!target) {
-            // Honest, and names the two reasons it can happen. A silent no-op
-            // reads as a broken keybinding.
-            pushToast("No definition found — the language server may still be indexing", "warning");
-            return;
-          }
-          send({ kind: "open-file", path: target.path });
-          // The open is a round trip through the workbench; the reveal has to
-          // wait for the model to be attached here.
-          setTimeout(() => editorController.revealPosition(target.line, target.column), 120);
-        },
+        run: () => void goToDefinition(),
       },
       {
         id: "file.new",
@@ -872,6 +943,12 @@ export function EditorSurface(props: {
         </span>
 
         <div class="flex items-stretch gap-1 shrink-0">
+          {/* The way home, in this window's own chrome. Absent when embedded:
+              in stacked mode this surface is a *view* of the workbench, so
+              there is no window to attach. */}
+          <Show when={!props.embedded}>
+            <AttachHomeButton surface={{ kind: "editor" }} />
+          </Show>
           {/* The keyboard route to the collapse. The rail's own icon is the
               pointer route back, and both drive one signal — `aria-expanded`
               rather than `aria-pressed` because what it controls is a panel
@@ -987,13 +1064,19 @@ export function EditorSurface(props: {
                 way back that is where the panel was, instead of only in the
                 title bar. Same component and same idiom as the workbench's
                 sidebar — the explorer collapses to one thing in this app.
-                The width transition is the one animation here: it says where
-                the panel went (§7.1's information exemption). Nothing drags
-                this column, so unlike the workbench's there is no gesture to
-                suppress it for. */}
+                The width transition says where the panel went (§7.1's
+                information exemption); it is suppressed for the duration of a
+                splitter drag below, the same reason the workbench sidebars
+                suppress theirs (§7.3.10 — a transition on a pane the user is
+                holding would make it trail the pointer). `relative` anchors
+                the splitter to this column's own edge. */}
             <aside
-              class="island shrink-0 bg-sidebar flex flex-col min-h-0 overflow-hidden transition-[width] duration-[var(--dur-short)] ease-[var(--ease-in-out)]"
-              style={{ width: treeVisible() ? "15rem" : `${SIDEBAR_RAIL_WIDTH}px` }}
+              class="island relative shrink-0 bg-sidebar flex flex-col min-h-0 overflow-hidden"
+              classList={{
+                "transition-[width] duration-[var(--dur-short)] ease-[var(--ease-in-out)]":
+                  !treeResizing(),
+              }}
+              style={{ width: treeVisible() ? `${treeWidth()}px` : `${SIDEBAR_RAIL_WIDTH}px` }}
               data-motion="editor-tree-collapse"
             >
               <Show
@@ -1037,169 +1120,193 @@ export function EditorSurface(props: {
                 />
                 </Show>
               </Show>
+              {/* Rendered while collapsed too, disabled rather than absent —
+                  same reasoning as the workbench sidebar's own handle
+                  (`TerminalSidebar`'s width `<Splitter>`). `value` stays the
+                  pre-collapse width; the rail's `SIDEBAR_RAIL_WIDTH` is a
+                  render-time width only. */}
+              <Splitter
+                side="end"
+                label="File tree column width"
+                value={treeWidth()}
+                min={EDITOR_PANEL_BOUNDS.tree.min}
+                max={EDITOR_PANEL_BOUNDS.tree.max}
+                defaultValue={EDITOR_PANEL_BOUNDS.tree.default}
+                disabledReason={
+                  treeVisible() ? undefined : "The file tree is collapsed — expand it to resize"
+                }
+                onDragStateChange={setTreeResizing}
+                onResize={setTreeWidth}
+              />
             </aside>
 
             {/* Tabs + surfaces */}
-            {/* Same fork the workbench's pane groups take — see `renderGroup`
-                in `MainSurface.tsx`. The strip is one component and the
-                preference is one preference; a vertical strip in one window
-                and a horizontal one in the other would read as a bug. */}
-            <main
-              class="island flex-1 min-w-0 flex bg-background"
-              classList={{
-                "flex-col": !verticalTabs(),
-                "flex-row": verticalTabs(),
-              }}
-            >
+            {/* `<main>` itself stays a column always: `EditorStatusBar` below
+                is a full-width footer under the tab strip *and* the editor
+                surface, in both orientations. Only the strip-plus-editor row
+                forks — the same fork the workbench's pane groups take, see
+                `renderGroup` in `MainSurface.tsx` — because a vertical strip
+                folded the status bar into the same row used to squeeze it
+                into a slim third column beside the editor rather than
+                stretching it under both. */}
+            <main class="island flex-1 min-w-0 flex flex-col bg-background">
               {/* The app draws its own drag image (see `beginDragTracking` in
                   `TabStrip.tsx`), which means a window that mounts a strip and
                   no ghost has an *invisible* drag. This window has no pane
                   groups, so its hint says the only thing a drag can do here. */}
               <DragGhost hint="Release to reorder" />
-              <TabStrip
-                orientation={appSettings.ui.tabOrientation}
-                width={verticalTabWidth()}
-                tabs={tabs()}
-                activeId={activeItem()?.id ?? null}
-                isPinned={isPinned}
-                onSelect={(tab) => {
-                  const kind = asEditorKind(tab.kind);
-                  if (kind) send({ kind: "activate", tab: kind, id: tab.id });
+              <div
+                class="flex-1 flex min-w-0 min-h-0"
+                classList={{
+                  "flex-col": !verticalTabs(),
+                  "flex-row": verticalTabs(),
                 }}
-                onClose={(tab) => {
-                  const kind = asEditorKind(tab.kind);
-                  if (kind) send({ kind: "close", tab: kind, id: tab.id });
-                }}
-                onReorder={(kind, fromId, toId) => {
-                  // Conflict tabs are marked non-draggable, so anything that
-                  // reaches here is reorderable by construction.
-                  const editorKind = asEditorKind(kind);
-                  if (!editorKind || editorKind === "conflict") return;
-                  send({
-                    kind: "reorder",
-                    tab: editorKind satisfies EditorReorderableKind,
-                    fromId,
-                    toId,
-                  });
-                }}
-                onTogglePin={(id) => send({ kind: "toggle-pin", id })}
-                trailing={
-                  <Show when={activeMarkdownPath()}>
-                    {(md) => (
-                      <button
-                        onClick={() => send({ kind: "open-preview", filePath: md() })}
-                        title={`Preview markdown: ${baseName(md())}`}
-                        aria-label="Preview markdown"
-                        class="mx-0.5 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors shrink-0"
+              >
+                <TabStrip
+                  orientation={appSettings.ui.tabOrientation}
+                  width={verticalTabWidth()}
+                  tabs={tabs()}
+                  activeId={activeItem()?.id ?? null}
+                  isPinned={isPinned}
+                  onSelect={(tab) => {
+                    const kind = asEditorKind(tab.kind);
+                    if (kind) send({ kind: "activate", tab: kind, id: tab.id });
+                  }}
+                  onClose={(tab) => {
+                    const kind = asEditorKind(tab.kind);
+                    if (kind) send({ kind: "close", tab: kind, id: tab.id });
+                  }}
+                  onReorder={(kind, fromId, toId) => {
+                    // Conflict tabs are marked non-draggable, so anything that
+                    // reaches here is reorderable by construction.
+                    const editorKind = asEditorKind(kind);
+                    if (!editorKind || editorKind === "conflict") return;
+                    send({
+                      kind: "reorder",
+                      tab: editorKind satisfies EditorReorderableKind,
+                      fromId,
+                      toId,
+                    });
+                  }}
+                  onTogglePin={(id) => send({ kind: "toggle-pin", id })}
+                  trailing={
+                    <Show when={activeMarkdownPath()}>
+                      {(md) => (
+                        <button
+                          onClick={() => send({ kind: "open-preview", filePath: md() })}
+                          title={`Preview markdown: ${baseName(md())}`}
+                          aria-label="Preview markdown"
+                          class="mx-0.5 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors shrink-0"
+                        >
+                          <Eye class="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </Show>
+                  }
+                />
+
+                {/* `min-w-0 min-h-0`: this is a flex child on either axis now,
+                    and without it a wide editor would push past the island
+                    rather than being clipped by it. */}
+                <div class="flex-1 relative overflow-hidden min-w-0 min-h-0">
+                  {/* Always mounted so Monaco initialises on window load rather
+                      than on the first click. */}
+                  <div
+                    class="absolute inset-0"
+                    style={{ display: activeItem()?.type === "file" ? "block" : "none" }}
+                  >
+                    <EditorGroupsView
+                      layout={split}
+                      fraction={splitFraction}
+                      onFraction={setSplitFraction}
+                      onFocusGroup={focusEditorGroup}
+                      renderGroup={(groupId) => (
+                        <>
+                          {/* Per-buffer, inline, and it does not steal focus. A
+                              modal here would fire once per file during a rebase;
+                              a toast would scroll away before the user could
+                              choose. Per *group*, because a split can have a
+                              conflicted file in one pane and a clean one in the
+                              other, and a bar over the wrong buffer is a lie. */}
+                          <Show when={groupPath(groupId)}>
+                            {(path) => (
+                              <Show when={conflictedPaths().has(path())}>
+                                <ExternalChangeBar
+                                  path={path()}
+                                  onKeepMine={() => editorController.keepMine(path())}
+                                  onTakeTheirs={() => void editorController.takeTheirs(path())}
+                                  onShowDiff={() => send({ kind: "open-diff", filePath: path() })}
+                                />
+                              </Show>
+                            )}
+                          </Show>
+                          {/* Where you are, and what you are inside of. The app's
+                              own row idiom, not Monaco's breadcrumb widget —
+                              MASTER §11.5. */}
+                          <Breadcrumbs
+                            groupId={groupId}
+                            path={() => groupPath(groupId)}
+                            repoRoot={repoPath}
+                            onGoToSymbol={() => {
+                              focusEditorGroup(groupId);
+                              setSymbolPickerOpen(true);
+                            }}
+                          />
+                          <EditorHost
+                            class="w-full flex-1 min-h-0"
+                            groupId={groupId}
+                            seedPath={groupId === "primary" ? undefined : seedPath}
+                          />
+                        </>
+                      )}
+                    />
+                  </div>
+
+                  <For each={snapshot().diffs}>
+                    {(tab) => (
+                      <div
+                        class="absolute inset-0"
+                        style={{ display: tab.id === activeIdOf("diff") ? "block" : "none" }}
                       >
-                        <Eye class="w-3.5 h-3.5" />
-                      </button>
+                        <DiffTabView
+                          repoPath={path()}
+                          filePath={tab.filePath}
+                          staged={tab.staged}
+                        />
+                      </div>
                     )}
+                  </For>
+
+                  <For each={snapshot().conflicts}>
+                    {(tab) => (
+                      <div
+                        class="absolute inset-0"
+                        style={{ display: tab.id === activeIdOf("conflict") ? "block" : "none" }}
+                      >
+                        <MergeEditor
+                          repoPath={path()}
+                          filePath={tab.filePath}
+                          onResolved={() => send({ kind: "close", tab: "conflict", id: tab.id })}
+                        />
+                      </div>
+                    )}
+                  </For>
+
+                  <For each={snapshot().previews}>
+                    {(tab) => (
+                      <div
+                        class="absolute inset-0"
+                        style={{ display: tab.id === activeIdOf("preview") ? "block" : "none" }}
+                      >
+                        <MarkdownPreview filePath={tab.filePath} />
+                      </div>
+                    )}
+                  </For>
+
+                  <Show when={tabs().length === 0}>
+                    <EditorEmptyState />
                   </Show>
-                }
-              />
-
-              {/* `min-w-0 min-h-0`: this is a flex child on either axis now,
-                  and without it a wide editor would push past the island
-                  rather than being clipped by it. */}
-              <div class="flex-1 relative overflow-hidden min-w-0 min-h-0">
-                {/* Always mounted so Monaco initialises on window load rather
-                    than on the first click. */}
-                <div
-                  class="absolute inset-0"
-                  style={{ display: activeItem()?.type === "file" ? "block" : "none" }}
-                >
-                  <EditorGroupsView
-                    layout={split}
-                    fraction={splitFraction}
-                    onFraction={setSplitFraction}
-                    onFocusGroup={focusEditorGroup}
-                    renderGroup={(groupId) => (
-                      <>
-                        {/* Per-buffer, inline, and it does not steal focus. A
-                            modal here would fire once per file during a rebase;
-                            a toast would scroll away before the user could
-                            choose. Per *group*, because a split can have a
-                            conflicted file in one pane and a clean one in the
-                            other, and a bar over the wrong buffer is a lie. */}
-                        <Show when={groupPath(groupId)}>
-                          {(path) => (
-                            <Show when={conflictedPaths().has(path())}>
-                              <ExternalChangeBar
-                                path={path()}
-                                onKeepMine={() => editorController.keepMine(path())}
-                                onTakeTheirs={() => void editorController.takeTheirs(path())}
-                                onShowDiff={() => send({ kind: "open-diff", filePath: path() })}
-                              />
-                            </Show>
-                          )}
-                        </Show>
-                        {/* Where you are, and what you are inside of. The app's
-                            own row idiom, not Monaco's breadcrumb widget —
-                            MASTER §11.5. */}
-                        <Breadcrumbs
-                          groupId={groupId}
-                          path={() => groupPath(groupId)}
-                          repoRoot={repoPath}
-                          onGoToSymbol={() => {
-                            focusEditorGroup(groupId);
-                            setSymbolPickerOpen(true);
-                          }}
-                        />
-                        <EditorHost
-                          class="w-full flex-1 min-h-0"
-                          groupId={groupId}
-                          seedPath={groupId === "primary" ? undefined : seedPath}
-                        />
-                      </>
-                    )}
-                  />
                 </div>
-
-                <For each={snapshot().diffs}>
-                  {(tab) => (
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: tab.id === activeIdOf("diff") ? "block" : "none" }}
-                    >
-                      <DiffTabView
-                        repoPath={path()}
-                        filePath={tab.filePath}
-                        staged={tab.staged}
-                      />
-                    </div>
-                  )}
-                </For>
-
-                <For each={snapshot().conflicts}>
-                  {(tab) => (
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: tab.id === activeIdOf("conflict") ? "block" : "none" }}
-                    >
-                      <MergeEditor
-                        repoPath={path()}
-                        filePath={tab.filePath}
-                        onResolved={() => send({ kind: "close", tab: "conflict", id: tab.id })}
-                      />
-                    </div>
-                  )}
-                </For>
-
-                <For each={snapshot().previews}>
-                  {(tab) => (
-                    <div
-                      class="absolute inset-0"
-                      style={{ display: tab.id === activeIdOf("preview") ? "block" : "none" }}
-                    >
-                      <MarkdownPreview filePath={tab.filePath} />
-                    </div>
-                  )}
-                </For>
-
-                <Show when={tabs().length === 0}>
-                  <EditorEmptyState />
-                </Show>
               </div>
 
               {/* What the buffer in front actually is. Below the surfaces, not

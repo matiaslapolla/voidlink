@@ -76,6 +76,7 @@ import {
 } from "@/components/layout/dragDrop";
 import type { SplitOrientation, TabGroup, TabGroupColor } from "@/store/layout";
 import type { TabOrientation } from "@/store/settings";
+import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 // Values come straight from the reducer module rather than through the store's
 // barrel: the strip has to keep working in the editor window, which has no
 // store, and `tabGroups.ts` is pure and DOM-free.
@@ -97,7 +98,8 @@ export type TabKind =
   | "combined"
   | "mission"
   | "browser"
-  | "agent";
+  | "agent"
+  | "panegroup";
 
 /// One tab, flattened out of whatever the calling window keeps.
 export interface TabDescriptor {
@@ -141,6 +143,10 @@ export interface TabDescriptor {
   mono?: boolean;
   /// Tailwind max-width for the label, for kinds that need more room.
   labelWidth?: string;
+  /// A user-chosen label colour, from the same five chart tokens a tab
+  /// group's chip uses (`TAB_GROUP_COLORS`). `undefined` is the tab's
+  /// ordinary, unstyled chrome — most tabs never touch this.
+  color?: TabGroupColor;
 }
 
 /// The active tab's 2px `--primary` rule — **one** of them, for the whole
@@ -275,6 +281,12 @@ export interface TabStripProps {
   /// The column's width in px while `orientation` is `vertical`; ignored
   /// otherwise. The caller owns it because the caller owns the preference.
   width?: number;
+  /// Rows for a right-click on the strip's own bare space — new tab, reopen
+  /// last closed, tab orientation. Absent (the editor window's strip, which
+  /// has none of these) means no menu opens there; the caller builds the list
+  /// because building it needs the registry and the settings store, and this
+  /// module takes neither.
+  emptySpaceMenuItems?: () => ContextMenuItem[];
 
   // ── Pane groups ────────────────────────────────────────────────────────
   // All optional: a window with one group (or none at all, like the editor)
@@ -333,6 +345,27 @@ export interface TabStripProps {
   ) => void;
   /// Reorder a group within this strip.
   onReorderTabGroup?: (tabGroupId: string, beforeTabGroupId: string | null) => void;
+
+  // ── Per-tab rename and colour ─────────────────────────────────────────────
+  // F2 (on the active tab) and double-click both start renaming, matching the
+  // group chip's own two paths (`TabGroupChip`, above). `null` clears back to
+  // the kind's derived label / the tab's unstyled default. Both absent (the
+  // editor window's four kinds do not opt in yet) renders exactly today's row.
+  onRenameTab?: (tabId: string, label: string | null) => void;
+  onRecolorTab?: (tabId: string, color: TabGroupColor | null) => void;
+
+  // ── "Add to split pane" ───────────────────────────────────────────────────
+  /// Every `panegroup` tab open in this worktree, for "add to an existing
+  /// split" rows in the tab context menu. Empty (or absent) leaves only "new
+  /// split" — there is nothing existing to offer.
+  splitPaneTargets?: { id: string; label: string }[];
+  /// `null` enables the row; any other string is the reason it is disabled
+  /// (§7.6) — a `panegroup` tab cannot itself be split into, and the row has
+  /// nowhere to reach the pane-group action from in a window with no store
+  /// (the editor window never provides this at all).
+  addToSplitPaneDisabledReason?: (tab: TabDescriptor) => string | null;
+  /// Move a tab into `targetId`'s split, or a fresh one when omitted.
+  onAddToSplitPane?: (tabId: string, targetId?: string) => void;
 }
 
 /// The colour dot's fill, per token. A static map so Tailwind's scanner sees
@@ -844,6 +877,26 @@ export function TabStrip(props: TabStripProps) {
     queueMicrotask(remeasure);
   });
 
+  // ── Per-tab rename ────────────────────────────────────────────────────────
+  // One id at a time, strip-wide — the same shape `TabGroupChip` keeps
+  // locally for a chip, lifted here because a tab card is a slot-keyed row
+  // (`Index`, not `For` — see the comment below) and F2 has to name *which*
+  // slot without a pointer having touched it.
+  const [renamingId, setRenamingId] = createSignal<string | null>(null);
+  function startRename(tabId: string) {
+    if (props.onRenameTab) setRenamingId(tabId);
+  }
+  function commitRename(tab: TabDescriptor, value: string) {
+    setRenamingId(null);
+    const trimmed = value.trim();
+    // Unchanged or blank: neither is worth a write, and a blank commit reads
+    // as "clear the rename" everywhere else in the app it could be — leaving
+    // it alone here instead so an accidental all-select-delete followed by
+    // blur does not silently rename the tab back to nothing.
+    if (!trimmed || trimmed === tab.label) return;
+    props.onRenameTab?.(tab.id, trimmed);
+  }
+
   // ── Context menu ─────────────────────────────────────────────────────────
   const [ctx, setCtx] = createSignal<{ x: number; y: number; tab: TabDescriptor } | null>(
     null,
@@ -852,6 +905,10 @@ export function TabStrip(props: TabStripProps) {
 
   function openCtx(e: MouseEvent, tab: TabDescriptor) {
     e.preventDefault();
+    // A tab sits inside the strip's own scroller, which — per Stream D — now
+    // has its own right-click menu for genuinely empty space. Stopping here
+    // is what keeps a right-click on a tab from opening both.
+    e.stopPropagation();
     setGroupCtx(null);
     setCtx({ x: e.clientX, y: e.clientY, tab });
   }
@@ -868,8 +925,22 @@ export function TabStrip(props: TabStripProps) {
 
   function openGroupCtx(e: MouseEvent, group: TabGroup) {
     e.preventDefault();
+    // Same reason `openCtx` stops here: the chip lives in the scroller too.
+    e.stopPropagation();
     setCtx(null);
     setGroupCtx({ x: e.clientX, y: e.clientY, group });
+  }
+
+  // ── Empty-space menu ──────────────────────────────────────────────────────
+  // New tab, reopen last closed, tab orientation — reached from the strip's
+  // own bare scroller. `ctx`/`groupCtx` above already stop propagation before
+  // this can fire, so this only ever answers a right-click that landed on
+  // nothing: the strip's per-element `onContextMenu` convention, one level up.
+  const [emptyCtx, setEmptyCtx] = createSignal<{ x: number; y: number } | null>(null);
+  function openEmptyCtx(e: MouseEvent) {
+    if (!props.emptySpaceMenuItems) return;
+    e.preventDefault();
+    setEmptyCtx({ x: e.clientX, y: e.clientY });
   }
 
   /// Close every unpinned tab of the same kind except `keep`. Derived from the
@@ -906,7 +977,7 @@ export function TabStrip(props: TabStripProps) {
       // still reads as the pane's own frame rather than as a divider between
       // the strip and the body. Same 2px either way, so focus moving between
       // groups still costs no layout.
-      class="flex bg-sidebar shrink-0"
+      class="flex bg-surface-tabstrip shrink-0"
       classList={{
         "items-center h-9": !vertical(),
         "flex-col h-full": vertical(),
@@ -922,8 +993,14 @@ export function TabStrip(props: TabStripProps) {
     >
       <div
         ref={(el) => (scrollRef = el)}
+        data-testid="tab-strip-scroller"
         // No drag handlers: the scroller *is* the strip's drop zone, registered
         // with the controller above and hit-tested by rect.
+        //
+        // A right-click here that reaches this far is one `openCtx` /
+        // `openGroupCtx` already declined to stop — i.e. genuinely empty
+        // space, not a tab or a chip.
+        onContextMenu={openEmptyCtx}
         //
         // `relative` is load-bearing twice over: it makes the scroller the
         // cards' `offsetParent` (so `measureIndicator` needs no coordinate
@@ -962,6 +1039,10 @@ export function TabStrip(props: TabStripProps) {
                   onClose={props.onClose}
                   onContextMenu={openCtx}
                   onPointerDown={startTabDrag}
+                  renamingId={renamingId()}
+                  onRenameRequest={props.onRenameTab ? (tab) => startRename(tab.id) : undefined}
+                  onCommitRename={commitRename}
+                  onCancelRename={() => setRenamingId(null)}
                 />
               }
             >
@@ -1106,7 +1187,22 @@ export function TabStrip(props: TabStripProps) {
           closeAllUnpinned();
           closeCtx();
         }}
+        onRecolor={props.onRecolorTab}
+        splitPaneTargets={props.splitPaneTargets}
+        addToSplitPaneDisabledReason={props.addToSplitPaneDisabledReason}
+        onAddToSplitPane={props.onAddToSplitPane}
       />
+
+      <Show when={emptyCtx()}>
+        {(c) => (
+          <ContextMenu
+            x={c().x}
+            y={c().y}
+            items={props.emptySpaceMenuItems!()}
+            onClose={() => setEmptyCtx(null)}
+          />
+        )}
+      </Show>
     </div>
   );
 }
@@ -1126,8 +1222,13 @@ function TabRow(props: {
   onClose: (tab: TabDescriptor) => void;
   onContextMenu: (e: MouseEvent, tab: TabDescriptor) => void;
   onPointerDown: (e: PointerEvent, tab: TabDescriptor) => void;
+  renamingId: string | null;
+  onRenameRequest?: (tab: TabDescriptor) => void;
+  onCommitRename: (tab: TabDescriptor, value: string) => void;
+  onCancelRename: () => void;
 }) {
   const active = () => props.tab.id === props.activeId;
+  const renaming = () => props.tab.id === props.renamingId;
   return (
     <Show
       when={props.tab.terminal}
@@ -1142,6 +1243,10 @@ function TabRow(props: {
           onClose={() => props.onClose(props.tab)}
           onContextMenu={(e) => props.onContextMenu(e, props.tab)}
           onPointerDown={(e) => props.onPointerDown(e, props.tab)}
+          onRenameRequest={props.onRenameRequest && (() => props.onRenameRequest?.(props.tab))}
+          renaming={renaming()}
+          onCommitRename={(v) => props.onCommitRename(props.tab, v)}
+          onCancelRename={props.onCancelRename}
         />
       }
     >
@@ -1156,6 +1261,10 @@ function TabRow(props: {
           onClose={() => props.onClose(props.tab)}
           onContextMenu={(e) => props.onContextMenu(e, props.tab)}
           onPointerDown={(e) => props.onPointerDown(e, props.tab)}
+          onRenameRequest={props.onRenameRequest && (() => props.onRenameRequest?.(props.tab))}
+          renaming={renaming()}
+          onCommitRename={(v) => props.onCommitRename(props.tab, v)}
+          onCancelRename={props.onCancelRename}
         />
       )}
     </Show>
@@ -1417,6 +1526,87 @@ interface TabChromeProps {
   /// has actually moved, so this never competes with `onSelect` — and the strip
   /// decides whether this tab may be dragged at all.
   onPointerDown: (e: PointerEvent) => void;
+  /// Double-click and, on the active tab, `F2` both start a rename — matching
+  /// the group chip's own two paths. Absent when the caller gave no
+  /// `onRenameTab` at all, in which case the card renders exactly as it did
+  /// before renaming existed.
+  onRenameRequest?: () => void;
+  /// This card is the one currently swapped for its rename `<input>`.
+  renaming: boolean;
+  onCommitRename: (value: string) => void;
+  onCancelRename: () => void;
+}
+
+/// A tab's rename `<input>`, swapped in for its label span. One
+/// implementation shared by `PlainTab` and `TerminalTab` — see the "a chip
+/// being renamed is a text field, not a grip" comment on `TabGroupChip`,
+/// which this mirrors one level down from the chip to the tab itself.
+function EditableTabLabel(props: {
+  tab: TabDescriptor;
+  displayLabel: string;
+  vertical: boolean;
+  mono?: boolean;
+  renaming: boolean;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  let inputRef: HTMLInputElement | undefined;
+
+  createEffect(() => {
+    if (!props.renaming) return;
+    queueMicrotask(() => {
+      inputRef?.focus();
+      inputRef?.select();
+    });
+  });
+
+  return (
+    <Show
+      when={props.renaming}
+      fallback={
+        <span
+          class={`truncate ${
+            props.vertical ? "flex-1 min-w-0" : (props.tab.labelWidth ?? "max-w-[140px]")
+          } ${props.mono ? "font-mono text-body" : ""}`}
+          classList={{ italic: props.tab.preview }}
+        >
+          <Show when={props.tab.prefix}>
+            <span
+              class={`text-label ${
+                props.tab.prefixTone === "warning" ? "text-warning" : "text-muted-foreground"
+              } ${props.mono ? "font-sans" : ""}`}
+            >
+              {props.tab.prefix}
+            </span>
+          </Show>
+          {props.displayLabel}
+        </span>
+      }
+    >
+      <input
+        ref={inputRef}
+        value={props.tab.label}
+        // A rename is a text field, not a grip or a select — none of these
+        // three may reach the card underneath it.
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        onBlur={(e) => props.onCommit(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            props.onCommit((e.currentTarget as HTMLInputElement).value);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            props.onCancel();
+          }
+        }}
+        aria-label={`Rename ${props.tab.label}`}
+        class={`min-w-0 max-w-[140px] bg-muted/40 border border-border rounded px-1 text-body focus:outline-none focus:ring-1 focus:ring-ring ${
+          props.vertical ? "flex-1" : ""
+        }`}
+      />
+    </Show>
+  );
 }
 
 function PlainTab(props: TabChromeProps & { pinned: boolean }) {
@@ -1433,9 +1623,24 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
       // the inspector now that the rule inside it is gone.
       data-tab-id={props.tab.id}
       data-active={props.active ? "" : undefined}
+      // Focusable only when it can be renamed *and* is the front tab — `F2`
+      // asks "rename the tab I am looking at", and a card nobody can reach by
+      // keyboard cannot receive it. Tabbing between every card in the strip is
+      // a bigger a11y change than renaming needs today.
+      tabIndex={props.onRenameRequest && props.active ? 0 : undefined}
       onPointerDown={props.onPointerDown}
       class={props.class}
       onClick={props.onSelect}
+      onDblClick={(e) => {
+        if (!props.onRenameRequest) return;
+        e.stopPropagation();
+        props.onRenameRequest();
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "F2" || !props.onRenameRequest) return;
+        e.preventDefault();
+        props.onRenameRequest();
+      }}
       onContextMenu={props.onContextMenu}
       onMouseDown={(e) => {
         if (e.button === 1 && closable()) {
@@ -1448,31 +1653,27 @@ function PlainTab(props: TabChromeProps & { pinned: boolean }) {
       <Show when={props.pinned} fallback={props.tab.icon}>
         <Pin class="w-3 h-3 shrink-0 text-primary" />
       </Show>
+      <Show when={props.tab.color}>
+        {(color) => (
+          <span
+            aria-hidden="true"
+            class={`w-1.5 h-1.5 rounded-full shrink-0 ${GROUP_DOT[color()]}`}
+          />
+        )}
+      </Show>
       {/* In a column the label takes the space that is there — `flex-1
           min-w-0` — instead of the 140px a row can spare. `labelWidth` is a
           per-kind override of that row budget and has nothing to say about a
           column, so it is ignored there rather than fought with. */}
-      <span
-        class={`truncate ${
-          props.vertical
-            ? "flex-1 min-w-0"
-            : (props.tab.labelWidth ?? "max-w-[140px]")
-        } ${props.tab.mono ? "font-mono text-body" : ""}`}
-        classList={{ italic: props.tab.preview }}
-      >
-        <Show when={props.tab.prefix}>
-          <span
-            class={`text-label ${
-              props.tab.prefixTone === "warning"
-                ? "text-warning"
-                : "text-muted-foreground"
-            } ${props.tab.mono ? "font-sans" : ""}`}
-          >
-            {props.tab.prefix}
-          </span>
-        </Show>
-        {props.tab.label}
-      </span>
+      <EditableTabLabel
+        tab={props.tab}
+        displayLabel={props.tab.label}
+        vertical={props.vertical}
+        mono={props.tab.mono}
+        renaming={props.renaming}
+        onCommit={props.onCommitRename}
+        onCancel={props.onCancelRename}
+      />
       <TabTrailing
         tab={props.tab}
         closable={closable()}
@@ -1572,17 +1773,29 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
   const waiting = () => watch()?.waiting() ?? false;
 
   /// While a foreground command runs, the tab wears its name. The static label
-  /// ("Terminal 2") stays in the tooltip and comes back when the process exits.
-  const displayLabel = () => (busy() && processName()) || props.session.label;
+  /// — a rename if the tab has one, else "Terminal 2" — stays in the tooltip
+  /// and comes back when the process exits.
+  const displayLabel = () => (busy() && processName()) || props.tab.label;
 
   return (
     <div
       // See `PlainTab` for what these two attributes are read by.
       data-tab-id={props.tab.id}
       data-active={props.active ? "" : undefined}
+      tabIndex={props.onRenameRequest && props.active ? 0 : undefined}
       onPointerDown={props.onPointerDown}
       class={props.class}
       onClick={props.onSelect}
+      onDblClick={(e) => {
+        if (!props.onRenameRequest) return;
+        e.stopPropagation();
+        props.onRenameRequest();
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "F2" || !props.onRenameRequest) return;
+        e.preventDefault();
+        props.onRenameRequest();
+      }}
       onContextMenu={props.onContextMenu}
       onMouseDown={(e) => {
         if (e.button === 1) {
@@ -1591,11 +1804,19 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
         }
       }}
       title={
-        displayLabel() === props.session.label
-          ? props.session.label
-          : `${props.session.label} — ${displayLabel()}`
+        displayLabel() === props.tab.label
+          ? props.tab.label
+          : `${props.tab.label} — ${displayLabel()}`
       }
     >
+      <Show when={props.tab.color}>
+        {(color) => (
+          <span
+            aria-hidden="true"
+            class={`w-1.5 h-1.5 rounded-full shrink-0 ${GROUP_DOT[color()]}`}
+          />
+        )}
+      </Show>
       {/* ONE dot per terminal tab, in the trailing slot.
 
           There used to be a second, leading LED here. The comment defending it
@@ -1611,12 +1832,14 @@ function TerminalTab(props: TabChromeProps & { session: TerminalSession }) {
           The tradeoff inherited from that choice: the trailing slot is
           hover-shared with the close button, so a marked tab hides its × until
           you hover it. */}
-      <span
-        class="truncate"
-        classList={{ "max-w-[140px]": !props.vertical, "flex-1 min-w-0": props.vertical }}
-      >
-        {displayLabel()}
-      </span>
+      <EditableTabLabel
+        tab={props.tab}
+        displayLabel={displayLabel()}
+        vertical={props.vertical}
+        renaming={props.renaming}
+        onCommit={props.onCommitRename}
+        onCancel={props.onCancelRename}
+      />
       <TabTrailing
         tab={props.tab}
         signal={terminalSignal({
@@ -1778,6 +2001,7 @@ const KIND_LABELS: Record<TabKind, string> = {
   mission: "Mission Control",
   browser: "Browser",
   agent: "Agents",
+  panegroup: "Splits",
 };
 
 /// Single right-click menu rendered as a portal so it escapes the strip's
@@ -1797,6 +2021,10 @@ function TabContextMenu(props: {
   onCloseTab: (tab: TabDescriptor) => void;
   onCloseOthers: (tab: TabDescriptor) => void;
   onCloseAllUnpinned: () => void;
+  onRecolor?: (tabId: string, color: TabGroupColor | null) => void;
+  splitPaneTargets?: { id: string; label: string }[];
+  addToSplitPaneDisabledReason?: (tab: TabDescriptor) => string | null;
+  onAddToSplitPane?: (tabId: string, targetId?: string) => void;
 }) {
   let panelRef: HTMLDivElement | undefined;
 
@@ -1893,6 +2121,68 @@ function TabContextMenu(props: {
             <MenuItem onClick={props.onCloseAllUnpinned} icon={<X class="w-3.5 h-3.5" />}>
               Close all unpinned
             </MenuItem>
+            {/* Label colour: the same five chart-token swatches the group
+                chip's own menu offers, applied to this one tab rather than to
+                a whole group. Absent when the caller gave no `onRecolor` — the
+                editor window's four kinds do not opt in. */}
+            <Show when={props.onRecolor}>
+              {(onRecolor) => (
+                <div class="px-3 py-1.5 flex items-center gap-1.5 border-t border-border/50">
+                  <For each={TAB_GROUP_COLORS}>
+                    {(color) => (
+                      <button
+                        onClick={() =>
+                          onRecolor()(c().tab.id, c().tab.color === color ? null : color)
+                        }
+                        aria-label={`Colour ${color}`}
+                        aria-pressed={c().tab.color === color}
+                        class={`w-4 h-4 rounded-full transition-[box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${GROUP_DOT[color]}`}
+                        classList={{ "ring-2 ring-offset-1 ring-ring": c().tab.color === color }}
+                      />
+                    )}
+                  </For>
+                </div>
+              )}
+            </Show>
+            {/* "Add to split pane": a new pane group tab, or an existing one.
+                One row per open split rather than a flyout submenu — the same
+                choice `TabGroupChip`'s own menu makes for colour, and it is
+                small in practice: a worktree with many splits open is rare. */}
+            <Show when={props.onAddToSplitPane}>
+              {(onAdd) => {
+                const reason = () => props.addToSplitPaneDisabledReason?.(c().tab) ?? undefined;
+                return (
+                  <div class="border-t border-border/50">
+                    <MenuItem
+                      onClick={() => {
+                        onAdd()(c().tab.id);
+                        props.onClose();
+                      }}
+                      icon={<SquareDashed class="w-3.5 h-3.5" />}
+                      disabledReason={reason()}
+                      tooltip={reason() ? undefined : "Move this tab into a new split pane"}
+                    >
+                      Add to split pane
+                    </MenuItem>
+                    <For each={props.splitPaneTargets ?? []}>
+                      {(target) => (
+                        <MenuItem
+                          onClick={() => {
+                            onAdd()(c().tab.id, target.id);
+                            props.onClose();
+                          }}
+                          icon={<SquareDashed class="w-3.5 h-3.5" />}
+                          disabledReason={reason()}
+                          tooltip={reason() ? undefined : `Move this tab into ${target.label}`}
+                        >
+                          Add to {target.label}
+                        </MenuItem>
+                      )}
+                    </For>
+                  </div>
+                );
+              }}
+            </Show>
           </div>
         </Portal>
       )}
@@ -2164,13 +2454,21 @@ export function MenuItem(props: {
   icon: JSX.Element;
   children: JSX.Element;
   tooltip?: string;
+  /// A reason, not a boolean (§7.6: every disabled control states why). Undo
+  /// itself is what "no reason" looks like — the tooltip carries the reason
+  /// either way, so a caller with nothing to add can still pass one along.
+  disabledReason?: string;
 }) {
+  const disabled = () => !!props.disabledReason;
   return (
     <button
       role="menuitem"
-      use:tooltip={props.tooltip}
-      onClick={props.onClick}
-      class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+      disabled={disabled()}
+      use:tooltip={props.disabledReason ?? props.tooltip}
+      onClick={() => {
+        if (!disabled()) props.onClick();
+      }}
+      class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground disabled:cursor-not-allowed"
     >
       <span class="text-muted-foreground/80">{props.icon}</span>
       <span class="flex-1">{props.children}</span>

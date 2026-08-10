@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onMount, onCleanup, getOwner, runWithOwner, untrack } from "solid-js";
+import { createEffect, createSignal, onMount, onCleanup, getOwner, runWithOwner, untrack, Show } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
@@ -7,6 +7,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
+import { ContextMenu } from "@/components/git/ContextMenu";
+import { terminalMenuItems } from "@/components/terminal/terminalMenu";
 import { registerDropZone } from "@/components/layout/dragDrop";
 import { useSettings } from "@/store/settings";
 import { useTheme } from "@/store/theme";
@@ -34,6 +36,27 @@ import { lastGridSize, rememberGridSize, sizeForPty } from "@/commands/terminalS
 // xterm's fit() measures DOM + reflows the grid, which is expensive and
 // visually noisy during drag. We debounce so fit runs once, after drag ends.
 const RESIZE_DEBOUNCE_MS = 150;
+
+// ── Flow control ──────────────────────────────────────────────────────────
+// xterm parses on the main thread; a shell can produce faster than that for as
+// long as it likes. Without a valve the excess accumulates in xterm's internal
+// write buffer, which has a hard 50 MB ceiling and *throws* past it — output is
+// then lost outright, and because the throw lands inside the channel callback it
+// repeats for every subsequent chunk.
+//
+// The watermarks below are measured in bytes xterm has been handed but has not
+// finished parsing, which is what the `write` completion callback reports. Above
+// the high mark the backend stops reading the pty (see `FlowGate` in
+// `src-tauri/src/lib.rs`) and the shell blocks on its own `write`; below the low
+// mark it resumes. The gap between the two is what stops a steady flood from
+// pausing and resuming once per chunk.
+//
+// 128 KiB is a few full-screen repaints of a large grid — big enough that normal
+// bursty output never trips it, small enough to stay far under the ceiling and
+// keep Ctrl-C feeling immediate, since everything already buffered still has to
+// be painted before the terminal goes quiet.
+const FLOW_HIGH_WATER_BYTES = 128 * 1024;
+const FLOW_LOW_WATER_BYTES = 16 * 1024;
 
 /// Payload of `pty-exit:<sessionId>`. Must match the Rust side in
 /// `src-tauri/src/lib.rs`.
@@ -93,6 +116,10 @@ interface TerminalPaneProps {
   /// Live list of real branch names in the repo. Read at link-resolution
   /// time (per buffer line) so it stays current as branches come and go.
   branchNames?: () => string[];
+  /// Close this terminal's tab. Absent means the pane offers no "close
+  /// terminal" row — every real caller passes it; optional only so a future
+  /// caller (a preview, a test) is not forced to invent one.
+  onClose?: () => void;
 }
 
 // xterm canvas is always rendered opaque: canvas-transparency is unreliable
@@ -193,6 +220,14 @@ export function TerminalPane(props: TerminalPaneProps) {
   // Highlight ring while a file is dragged over the pane.
   const [dragOver, setDragOver] = createSignal(false);
 
+  // ── Context menu (Stream D) ────────────────────────────────────────────
+  // The live `Terminal` instance, for `getSelection()` / `clear()` /
+  // `focus()` from the menu below. A signal rather than a bare local: it is
+  // created inside the async `onMount` body, past the point a plain variable
+  // read during the synchronous render would still be `undefined`.
+  const [term, setTerm] = createSignal<Terminal | null>(null);
+  const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
+
   /// Type the dropped paths onto the shell input line. Each path is
   /// shell-quoted (so spaces / parens don't break the command) and a
   /// trailing space lets the user keep typing. We write straight to the
@@ -203,11 +238,20 @@ export function TerminalPane(props: TerminalPaneProps) {
     void invoke("write_pty", { sessionId: props.ptyId, data: text + " " });
   }
 
+  /// This pane's box, measured once per drag gesture.
+  ///
+  /// `onDragDropEvent` is a *webview-global* listener and every mounted pane
+  /// registers one, so an uncached `getBoundingClientRect` here meant one forced
+  /// layout per pane per drag-move frame — dragging a file across the window
+  /// while a terminal was busy cost N synchronous layouts a frame for a rect
+  /// that does not move during a drag. Reset whenever the gesture ends.
+  let dragRect: DOMRect | null = null;
+
   /// True when the screen point (client coords) lands inside this pane's
   /// box. Hidden panes are display:none → 0×0 rect → always false, so this
   /// also doubles as the "am I the visible terminal?" check for OS drops.
   function pointInPane(clientX: number, clientY: number): boolean {
-    const r = container.getBoundingClientRect();
+    const r = (dragRect ??= container.getBoundingClientRect());
     if (r.width === 0 || r.height === 0) return false;
     return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
   }
@@ -229,11 +273,19 @@ export function TerminalPane(props: TerminalPaneProps) {
   // still awaiting — rapid worktree switching hits exactly that window, and
   // handing the disposer to an owner that has already run its cleanups would
   // strand the terminal just as thoroughly as registering none at all.
+  //
+  // Registrations accumulate. They used to overwrite — `teardown = fn` — so of
+  // the seven sites that call this, only the last one to run was ever honoured;
+  // the rest were silently dropped. Disposing the terminal happens to subsume
+  // most of what the earlier ones do (its own listeners and parser hooks go with
+  // it), which is why this stayed invisible, but the replay guard's timer was
+  // genuinely never cleared, and anything registered here that is *not* owned by
+  // the terminal would be missed the same way.
   let disposed = false;
-  let teardown: (() => void) | null = null;
+  const teardowns: (() => void)[] = [];
   const ownedCleanup = (fn: () => void) => {
-    teardown = fn;
-    if (disposed) { teardown = null; fn(); }
+    if (disposed) { fn(); return; }
+    teardowns.push(fn);
   };
   const ownedEffect = (fn: () => void) => {
     if (disposed) return;
@@ -241,9 +293,11 @@ export function TerminalPane(props: TerminalPaneProps) {
   };
   onCleanup(() => {
     disposed = true;
-    const fn = teardown;
-    teardown = null;
-    fn?.();
+    // In registration order: the terminal's own disposal is registered last and
+    // has to stay last, since the earlier entries still reference it.
+    for (const fn of teardowns.splice(0)) {
+      try { fn(); } catch { /* one failed teardown must not strand the rest */ }
+    }
   });
 
   onMount(async () => {
@@ -258,9 +312,20 @@ export function TerminalPane(props: TerminalPaneProps) {
     // Unmounted while we waited — never build a terminal nobody will show.
     if (disposed) return;
 
+    // Start at the size the grid is actually going to be. xterm's default is
+    // 80x24, so without this every pane reflows once on the first `refit()`
+    // below — a full grid rebuild plus an `onResize` plus a `resize_pty` round
+    // trip, per pane, on every mount and every worktree switch.
+    const seed = sizeForPty(ptyId) ?? lastGridSize();
+
     const term = new Terminal({
       // Required for `term.unicode.activeVersion` (used below).
       allowProposedApi: true,
+      ...(seed ? { cols: seed.cols, rows: seed.rows } : {}),
+      // xterm logs at `info` by default, straight to the console, which in a
+      // release build has no consumer and in dev is noise on the same thread
+      // that has to keep up with the parser.
+      logLevel: "warn",
       theme: palette(),
       fontFamily: t.fontFamily,
       fontSize: t.fontSize,
@@ -279,6 +344,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       scrollSensitivity: t.scrollSensitivity,
       scrollOnUserInput: t.scrollOnUserInput,
     });
+    setTerm(term);
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
@@ -294,6 +360,13 @@ export function TerminalPane(props: TerminalPaneProps) {
     }
 
     term.open(container);
+
+    /// Measured row height in CSS px, or `null` when it must be re-measured.
+    /// Read by the wheel handler far below; declared up here because both
+    /// `onResize` (immediately below) and the font-metrics effect invalidate it,
+    /// and the first `refit()` fires `onResize` while the mount body is still
+    /// well above the wheel handler's own scope.
+    let cachedCellHeight: number | null = null;
 
     // ── Grid size ─────────────────────────────────────────────────────
     // The shell and the renderer must agree on the column count or every
@@ -326,7 +399,11 @@ export function TerminalPane(props: TerminalPaneProps) {
         }
       });
     };
-    term.onResize(({ cols, rows }) => publish(cols, rows));
+    term.onResize(({ cols, rows }) => {
+      // The grid moved, so the measured row height below is no longer valid.
+      cachedCellHeight = null;
+      publish(cols, rows);
+    });
 
     /// Re-measure the container and reflow the grid to match, reporting
     /// whether it could be measured at all. Publishing is left to `onResize`.
@@ -356,7 +433,7 @@ export function TerminalPane(props: TerminalPaneProps) {
     // canvas renderer), so the existing opt-in ligatures path below is
     // unaffected and we don't need to gate it.
     let webglAddon: WebglAddon | null = null;
-    if (webgl2Available()) {
+    if (t.gpuAcceleration !== "off" && webgl2Available()) {
       try {
         // `preserveDrawingBuffer` is the fix for the pane going black when the
         // app loses focus. By default a WebGL drawing buffer's contents are
@@ -367,6 +444,11 @@ export function TerminalPane(props: TerminalPaneProps) {
         // fill bandwidth per frame; it does not touch the data pipeline, so the
         // stutter class of problem called out at the top of this file is
         // unaffected.
+        //
+        // The positional argument is why `@xterm/addon-webgl` is pinned to a
+        // patch range in `package.json`: upstream has already replaced this
+        // signature with `new WebglAddon({ preserveDrawingBuffer, customGlyphs })`,
+        // so a minor bump silently changes what `true` means here.
         const addon = new WebglAddon(true);
         // A lost GL context (OOM, GPU reset, system suspend) would otherwise
         // leave a blank canvas. Dispose the addon so xterm falls back to the
@@ -416,19 +498,44 @@ export function TerminalPane(props: TerminalPaneProps) {
     // may not be that, so state the grid's size outright rather than assume
     // silence means agreement.
     if (!published) publish(term.cols, term.rows);
-    term.focus();
+    // Only the pane the user is looking at. Mount is async (`document.fonts.ready`
+    // above), and a worktree switch mounts every pane in the new worktree at
+    // once — unconditional focus meant they raced, so which terminal ended up
+    // focused was down to font-loading order, and a background pane could take
+    // focus away from the front one after the user had already started typing.
+    if (props.active !== false) term.focus();
 
-    /// Force the full grid to repaint, rebuilding the glyph atlas first.
+    /// Force the full grid to repaint from the glyph atlas we already have.
     ///
-    /// `refresh` alone re-runs the renderer over rows xterm considers damaged,
-    /// which is enough for a stale frame but not for a texture atlas the GPU
-    /// dropped underneath us (DPR change, context recycle, suspend). Clearing
-    /// it first is cheap at the frequency we call this — only on focus,
-    /// visibility and DPR transitions, never per frame.
+    /// This is the answer to a *stale frame* — the buffer was presented and
+    /// discarded, nothing has damaged the grid since, so nothing would redraw
+    /// it. Focus and visibility transitions are exactly that case.
     const repaint = () => {
       try {
-        webglAddon?.clearTextureAtlas();
         term.refresh(0, term.rows - 1);
+      } catch { /* ignore — the terminal may be mid-teardown */ }
+    };
+
+    /// Throw the glyph atlas away and rebuild it.
+    ///
+    /// This is the answer to a *stale atlas* — the cell box changed size, or the
+    /// GPU dropped our textures underneath us. It is a different and far more
+    /// expensive event than a stale frame: every glyph on screen is
+    /// re-rasterized and re-uploaded, which is the single costliest operation
+    /// available to us on WebKitGTK's GL path.
+    ///
+    /// Keeping the two apart is the whole point. This used to be the only
+    /// repaint, wired to `focusin` — so clicking into the terminal, or
+    /// alt-tabbing back to the app, discarded the atlas of every visible pane
+    /// at once, for an event where nothing about the glyphs had changed.
+    ///
+    /// No `refresh` afterwards: `clearTextureAtlas` already ends in a
+    /// full-viewport redraw request, and adding one queues a second damage span
+    /// for the same frame.
+    const rebuildAtlas = () => {
+      try {
+        if (webglAddon) webglAddon.clearTextureAtlas();
+        else term.refresh(0, term.rows - 1);
       } catch { /* ignore — the terminal may be mid-teardown */ }
     };
 
@@ -442,7 +549,9 @@ export function TerminalPane(props: TerminalPaneProps) {
     // itself because the query is only true for the DPR it was built with.
     let dprMedia: MediaQueryList | null = null;
     const onDprChange = () => {
-      repaint();
+      // The one case that genuinely invalidates the atlas: glyphs were
+      // rasterized for the old device-pixel ratio and are now the wrong size.
+      rebuildAtlas();
       // The WebGL cell box is `floor(charWidth * dpr) / dpr`, so the column
       // count that fits changes with the DPR even though the container's CSS
       // size doesn't — ResizeObserver hears nothing about this one.
@@ -539,11 +648,19 @@ export function TerminalPane(props: TerminalPaneProps) {
         ligaturesDisposer = null;
       }
     };
-    void ensureLigatures(t.ligatures);
+    // Settings are applied by two effects, not one, and the split is the point.
+    //
+    // Solid re-runs an effect when *any* signal it read changes, so a single
+    // effect covering all sixteen options paid the most expensive path in it for
+    // the cheapest change in it: toggling `scrollOnUserInput` — a boolean the
+    // renderer never sees — ran `refit()`, whose `proposeDimensions` does two
+    // `getComputedStyle` reads and therefore forces a synchronous layout, and
+    // then repainted every row. Only the metrics below can change the size of a
+    // cell, so only they can change how many cells fit.
 
-    // Reactively apply setting changes. Font/size changes need a refresh to
-    // repaint the canvas with the new glyph metrics — just setting the option
-    // invalidates cached measurements but doesn't redraw the existing grid.
+    /// Font metrics. Changing any of these changes the cell box, so the grid
+    /// has to be re-measured and the shell told about the new column count —
+    /// not just the canvas redrawn.
     ownedEffect(() => {
       const s = settings.terminal;
       term.options.fontFamily = s.fontFamily;
@@ -552,6 +669,24 @@ export function TerminalPane(props: TerminalPaneProps) {
       term.options.fontWeight = s.fontWeight;
       term.options.fontWeightBold = s.fontWeightBold;
       term.options.letterSpacing = s.letterSpacing;
+      void ensureLigatures(s.ligatures);
+      // The measured row height is derived from these; drop it so the next
+      // wheel event re-reads it rather than scrolling by the old cell size.
+      cachedCellHeight = null;
+      // `untrack`: refit reads `props.active`, which is a plain getter, not a
+      // memo. Tracking it would subscribe this effect to the active-tab
+      // signal, so every tab switch would re-run it for every mounted pane —
+      // defeating the resize debounce mid-drag and front-running the
+      // deliberate wait-a-frame path below.
+      untrack(refit);
+      try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
+    });
+
+    /// Behaviour. None of these touch glyph metrics, so none of them need a
+    /// re-measure or a full-grid repaint — xterm redraws what it must on its
+    /// own when the option genuinely affects rendering.
+    ownedEffect(() => {
+      const s = settings.terminal;
       term.options.cursorBlink = s.cursorBlink;
       term.options.cursorStyle = s.cursorStyle;
       term.options.cursorWidth = s.cursorWidth;
@@ -562,24 +697,16 @@ export function TerminalPane(props: TerminalPaneProps) {
       term.options.rightClickSelectsWord = s.rightClickSelectsWord;
       term.options.scrollSensitivity = s.scrollSensitivity;
       term.options.scrollOnUserInput = s.scrollOnUserInput;
-      void ensureLigatures(s.ligatures);
-      // Font metrics changed, so the number of cells that fit changed with
-      // them, and the shell has to hear about it — not just the grid.
-      // `untrack`: refit reads `props.active`, which is a plain getter, not a
-      // memo. Tracking it would subscribe this effect to the active-tab
-      // signal, so every tab switch would re-run it for every mounted pane —
-      // defeating the resize debounce mid-drag and front-running the
-      // deliberate wait-a-frame path below.
-      untrack(refit);
-      try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
     });
 
-    // Theme swap on app light/dark toggle. xterm rebuilds its color
-    // cache when `options.theme` is reassigned; a refresh forces a
-    // canvas repaint so already-rendered cells pick up the new palette.
+    // Theme swap on app light/dark toggle. Assigning `options.theme` is enough:
+    // xterm rebuilds its colour cache and the renderer redraws off the back of
+    // that (the WebGL renderer refreshes its char atlas and clears its model).
+    // This effect only reads `mode()`, so it runs on a theme toggle and nowhere
+    // else — an explicit `refresh` here would be a second full-grid repaint for
+    // the same change.
     ownedEffect(() => {
       term.options.theme = palette();
-      try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
     });
 
     /// True from before we subscribe until the replayed scrollback has been
@@ -640,10 +767,19 @@ export function TerminalPane(props: TerminalPaneProps) {
 
     /// Measured row height in CSS px. Taken from the rendered grid rather
     /// than the font size so `lineHeight` and DPR rounding are included.
+    ///
+    /// Cached, because the only caller is the wheel handler and the measurement
+    /// is a `querySelector` plus a `getBoundingClientRect` — a DOM query and a
+    /// forced synchronous layout, which trackpad scrolling was paying on every
+    /// frame of every gesture, in the middle of whatever full-screen app was
+    /// repainting underneath. Row height can only change when the font metrics
+    /// or the grid do, and both invalidate this.
     const cellHeight = (): number => {
+      if (cachedCellHeight !== null) return cachedCellHeight;
       const rows = container.querySelector(".xterm-rows") as HTMLElement | null;
       const h = rows?.getBoundingClientRect().height ?? container.clientHeight;
-      return h > 0 && term.rows > 0 ? h / term.rows : 17;
+      cachedCellHeight = h > 0 && term.rows > 0 ? h / term.rows : 17;
+      return cachedCellHeight;
     };
 
     term.attachCustomWheelEventHandler((ev) => {
@@ -744,6 +880,51 @@ export function TerminalPane(props: TerminalPaneProps) {
       wasActive = active;
     });
 
+    // ── Flow control ──────────────────────────────────────────────────
+    // Bytes handed to `term.write` that its parser has not finished with. The
+    // completion callback is the only honest measure of whether we are keeping
+    // up: chunks *arriving* say nothing, because they arrive at the shell's rate
+    // no matter what ours is.
+    let unparsedBytes = 0;
+    let readerPaused = false;
+    /// Ask the backend to stop or restart reading the pty. Failures are ignored
+    /// on purpose — every one of them means the session is already gone, and a
+    /// pane tearing down mid-flood must not raise on its way out.
+    const setReaderPaused = (paused: boolean) => {
+      if (paused === readerPaused) return;
+      readerPaused = paused;
+      void invoke("pty_set_paused", { sessionId: ptyId, paused }).catch(() => {});
+    };
+    /// Called once xterm has parsed `n` bytes.
+    const onParsed = (n: number) => {
+      unparsedBytes -= n;
+      if (readerPaused && unparsedBytes <= FLOW_LOW_WATER_BYTES) setReaderPaused(false);
+    };
+    /// Hand a chunk to xterm and keep the watermark bookkeeping honest.
+    ///
+    /// Wrapped, because `write` throws once its internal buffer passes 50 MB and
+    /// the throw would otherwise escape into the channel callback and repeat for
+    /// every subsequent chunk. Flow control should make that unreachable; this is
+    /// what keeps "unreachable" from meaning "wedged pane" if it ever isn't.
+    const writeToTerm = (bytes: Uint8Array, then?: () => void) => {
+      const n = bytes.byteLength;
+      unparsedBytes += n;
+      try {
+        term.write(bytes, () => {
+          onParsed(n);
+          then?.();
+        });
+      } catch {
+        onParsed(n);
+        then?.();
+        return;
+      }
+      if (unparsedBytes >= FLOW_HIGH_WATER_BYTES) setReaderPaused(true);
+    };
+    // A pane that unmounts while paused would leave the session paused for
+    // whoever subscribes next — a terminal that never prints again.
+    ownedCleanup(() => setReaderPaused(false));
+
     const outputChannel = new Channel<ArrayBuffer>();
     outputChannel.onmessage = (data: ArrayBuffer) => {
       // Detaching is a round trip, so chunks can still land after teardown.
@@ -755,7 +936,7 @@ export function TerminalPane(props: TerminalPaneProps) {
         // keystrokes going the other way and would answer the wrong question.
         // The store owns the window and the timers — this only forwards a length.
         noteTerminalOutput(ptyId, bytes.byteLength);
-        term.write(bytes);
+        writeToTerm(bytes);
         return;
       }
       // Scrollback replay is not activity: it is us repainting what already
@@ -768,7 +949,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       // generated by the parser, not by the socket.
       replayBytesSeen += bytes.byteLength;
       const done = replayBytesTotal !== null && replayBytesSeen >= replayBytesTotal;
-      term.write(bytes, done ? endReplay : undefined);
+      writeToTerm(bytes, done ? endReplay : undefined);
     };
     // The token identifies *this* attachment. A pane that unmounts after its
     // replacement has already subscribed must not detach the live one, so the
@@ -868,12 +1049,16 @@ export function TerminalPane(props: TerminalPaneProps) {
       } else if (p.type === "drop") {
         const inside = pointInPane(p.position.x / dpr(), p.position.y / dpr());
         setDragOver(false);
+        dragRect = null;
         if (inside && p.paths.length > 0) {
           term.focus();
           injectPaths(p.paths);
         }
       } else {
+        // Gesture over (or not yet started) — the cached box is no longer
+        // guaranteed to describe where this pane will be next time.
         setDragOver(false);
+        dragRect = null;
       }
     });
 
@@ -901,6 +1086,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       // May already be null if onContextLoss disposed it — never double-dispose.
       try { webglAddon?.dispose(); } catch { /* ignore */ }
       term.dispose();
+      setTerm(null);
     });
   });
 
@@ -926,12 +1112,52 @@ export function TerminalPane(props: TerminalPaneProps) {
     },
   });
 
+  /// Copy / paste / clear / close. xterm has no context menu of its own — its
+  /// `SelectionService` only special-cases a right-click button-down to leave
+  /// an existing selection alone (`handleMouseDown`, checked against
+  /// `@xterm/xterm` ^6.0.0 docs before this was written) — so the browser's
+  /// `contextmenu` event reaches this handler untouched and a selection made
+  /// just before right-clicking survives to be copied. Row *presence* and
+  /// `disabledReason` are `terminalMenuItems` in `terminalMenu.ts`; this is
+  /// only the wiring from a live `Terminal` to that pure builder.
+  const menuItems = () =>
+    terminalMenuItems({
+      selection: term()?.getSelection() ?? "",
+      onCopy: (text) => void navigator.clipboard.writeText(text),
+      onPaste: () => {
+        void navigator.clipboard.readText().then((text) => {
+          if (text) void invoke("write_pty", { sessionId: props.ptyId, data: text });
+        });
+      },
+      onClear: () => term()?.clear(),
+      onClose: props.onClose,
+    });
+
   return (
     <div
       ref={container}
       class={`${props.class ?? "w-full h-full"} ${dragOver() ? "ring-2 ring-inset ring-primary/70" : ""}`}
       style={{ "background-color": paneBg() }}
-    />
+      onContextMenu={(e) => {
+        e.preventDefault();
+        // The pane island underneath (`MainSurface.renderGroup`) has its own
+        // menu for a pane's bare chrome — stopping here is what keeps a
+        // right-click on the terminal from opening both.
+        e.stopPropagation();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      <Show when={menu()}>
+        {(m) => (
+          <ContextMenu
+            x={m().x}
+            y={m().y}
+            items={menuItems()}
+            onClose={() => setMenu(null)}
+          />
+        )}
+      </Show>
+    </div>
   );
 }
 
@@ -939,13 +1165,29 @@ export function TerminalPane(props: TerminalPaneProps) {
 /// renderer. WebKitGTK (Linux) and WKWebView (macOS) don't both guarantee
 /// WebGL2, and calling getContext on a throwaway canvas is the cheapest way
 /// to know without risking a mid-construction throw inside the addon.
+///
+/// Memoized, and the probe context is explicitly released — both for the same
+/// reason. `getContext("webgl2")` returns a *real* context against a real GPU
+/// resource, and browsers cap how many can be live at once (WebKit's ceiling is
+/// around 16). Probing per pane meant every mount burned one and left it for the
+/// garbage collector, on top of the one the addon itself takes; switching
+/// worktrees remounts every pane at once. That is the same context-exhaustion
+/// failure the owner-discipline comment above describes — panes coming back
+/// black — reached by a second route the original fix did not cover.
+let webgl2Probe: boolean | null = null;
 function webgl2Available(): boolean {
+  if (webgl2Probe !== null) return webgl2Probe;
   try {
     const canvas = document.createElement("canvas");
-    return !!canvas.getContext("webgl2");
+    const gl = canvas.getContext("webgl2");
+    // Hand the resource back immediately rather than waiting for GC. Without
+    // the extension we can do nothing, which is the pre-existing behaviour.
+    gl?.getExtension("WEBGL_lose_context")?.loseContext();
+    webgl2Probe = !!gl;
   } catch {
-    return false;
+    webgl2Probe = false;
   }
+  return webgl2Probe;
 }
 
 /// Quote a path for a POSIX shell input line. Bare when it only contains
@@ -954,6 +1196,25 @@ function webgl2Available(): boolean {
 function quoteForShell(p: string): string {
   if (/^[\w@%+=:,./-]+$/.test(p)) return p;
   return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
+/// Whether linkifying is appropriate for what is currently on screen.
+///
+/// Two cases where it is not, and both are the same mistake in different
+/// clothes — treating another program's canvas as if it were our scrollback:
+///
+///   • **The alternate screen.** A full-screen app owns every cell. Claude Code,
+///     btop and lazygit draw hex, paths and branch-shaped words as *chrome*, and
+///     `SHA_REGEX` in particular (seven or more hex digits) matches a great deal
+///     of incidental output. Underlining it and turning the cursor into a
+///     pointer is noise over content the user cannot click through to anyway.
+///   • **Mouse reporting on.** The application has asked for the mouse. Anything
+///     we put under the cursor is competing with it for the same gesture.
+///
+/// Skipping both also takes the per-row `translateToString` and regex scan off
+/// the hover path for exactly the TUIs that repaint most.
+function linkifyAllowed(term: Terminal): boolean {
+  return term.buffer.active.type !== "alternate" && term.modes.mouseTrackingMode === "none";
 }
 
 /// Build an xterm link provider that matches `regex` against each
@@ -969,6 +1230,10 @@ function buildLinkProvider(
       bufferLineNumber: number,
       callback: (links: TerminalLink[] | undefined) => void,
     ) {
+      if (!linkifyAllowed(term)) {
+        callback(undefined);
+        return;
+      }
       const line = term.buffer.active.getLine(bufferLineNumber - 1);
       if (!line) {
         callback(undefined);
@@ -1041,6 +1306,10 @@ function buildBranchLinkProvider(
       bufferLineNumber: number,
       callback: (links: TerminalLink[] | undefined) => void,
     ) {
+      if (!linkifyAllowed(term)) {
+        callback(undefined);
+        return;
+      }
       const re = ensureRegex();
       if (!re) {
         callback(undefined);

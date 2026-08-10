@@ -59,6 +59,72 @@ export const EDITOR_WINDOW_LABEL = "editor";
 /// The workbench's own label. Not a satellite — the sole writer of state.
 export const MAIN_WINDOW_LABEL = "main";
 
+/// Window label for a detached sidebar panel. Must match `PANEL_SPECS` in
+/// `src-tauri/src/window.rs`, and must have an entry in
+/// `src-tauri/capabilities/` — a webview with no capability entry has *no*
+/// permissions at all, not even `core:event`, which is the failure the editor
+/// window's capability file documents.
+export const FILES_PANEL_WINDOW_LABEL = "panel-files";
+
+/// Window label for the detached agent dashboard. Same rules as above.
+export const AGENTS_PANEL_WINDOW_LABEL = "panel-agents";
+
+/// Which window hosts each sidebar when it is detached. `null` means "this one
+/// cannot be detached" and the affordance is absent rather than disabled.
+///
+/// **The git panel reuses the existing git window rather than getting a
+/// panel-scoped one of its own.** The standalone git client (`GitApp`, label
+/// `git`) is already the git surface with a whole window around it — the very
+/// same panes, laid out as nav plus detail instead of a 300px column. A second
+/// window that also showed the git panel would be two answers to "the git panel
+/// is in a window", with two labels, two capability entries and two things for
+/// a user to have open at once. So "detach git" opens *that* window and marks
+/// the sidebar detached, which is what collapses its slot in the shell.
+///
+/// The pre-existing "Open git window" button is left as it was: it opens the
+/// same one window without detaching. Opening the fuller surface beside the
+/// sidebar is a different intent from moving the sidebar out, and the panel
+/// still lives in exactly one window either way.
+///
+/// The workspace rail is deliberately not detachable. It is the workbench's own
+/// writer — creating a workspace or a worktree registers state and spawns a
+/// PTY — and a satellite's store is an unpersisted private copy, so every one
+/// of its buttons would be the silent no-op `requestOpenWorktreeOnMain` exists
+/// to fix. Making it work means mirroring the whole workspace model across the
+/// gap, which is a stream of its own.
+///
+/// **The terminals list is `null` for exactly that reason**, and it is worth
+/// saying because it is the entry that most looks like an oversight. Every
+/// control on that sidebar is a write: new terminal spawns a PTY, select moves
+/// the workbench's active tab, kill reaps a shell. There is no snapshot channel
+/// feeding it either, so a detached terminals list would be an empty list whose
+/// every button is that same silent no-op. Making it real means mirroring the
+/// session model *and* adding a request channel back — a stream, not a table
+/// entry.
+///
+/// The agent dashboard is `panel-agents` precisely because it is the opposite:
+/// `AgentBoardSnapshot` already crosses the gap, and the board is
+/// read-and-navigate by design (see `publishAgentBoard`), so a window over it
+/// is a consumer with nothing to write.
+export const SIDEBAR_WINDOW_LABEL: Record<string, string | null> = {
+  workspaces: null,
+  explorer: FILES_PANEL_WINDOW_LABEL,
+  terminals: null,
+  git: GIT_WINDOW_LABEL,
+  agents: AGENTS_PANEL_WINDOW_LABEL,
+};
+
+/// Which sidebar this window *is*, or `null` in the workbench and the two
+/// full-surface satellites. Read at render time by `main.tsx`, the same way the
+/// git and editor roots are chosen.
+export function currentPanelSidebar(): string | null {
+  const label = currentWindowLabel();
+  for (const [id, windowLabel] of Object.entries(SIDEBAR_WINDOW_LABEL)) {
+    if (windowLabel && windowLabel === label && label !== GIT_WINDOW_LABEL) return id;
+  }
+  return null;
+}
+
 const CONTEXT_EVENT = "voidlink://window-context";
 const CONTEXT_REQUEST_EVENT = "voidlink://window-context-request";
 const REFS_EVENT = "voidlink://git-refs-changed";
@@ -176,6 +242,101 @@ export async function closeEditorWindow(): Promise<void> {
 export async function isEditorWindowOpen(): Promise<boolean> {
   if (stackedRouter) return false;
   return invoke<boolean>("is_editor_window_open");
+}
+
+// ─── Detached sidebar panels ────────────────────────────────────────────────
+//
+// A detached panel is a fourth root off the same bundle, not a new
+// architecture: `main.tsx` picks it on the window label exactly as it picks
+// `GitApp` and `EditorApp`, and it consumes the same `WindowContext` broadcast
+// every other satellite does. Nothing new crosses the gap — which is why there
+// is one new event here (the panel saying "I am closing, dock me back") and not
+// a second channel.
+
+/// Open the window that hosts `sidebarId` while it is detached, or focus it if
+/// it is already open. Resolves to `true` when a window was actually created.
+///
+/// Rejects for a sidebar that has no window (see `SIDEBAR_WINDOW_LABEL`), and
+/// in stacked mode, where there are no satellite windows to detach *into* — the
+/// caller shows the reason rather than leaving a menu row that does nothing.
+export async function openSidebarWindow(sidebarId: string): Promise<boolean> {
+  const label = SIDEBAR_WINDOW_LABEL[sidebarId];
+  if (!label) throw new Error(`"${sidebarId}" cannot be detached`);
+  if (stackedRouter) {
+    throw new Error("This environment shows the other surfaces as views, not windows");
+  }
+  if (label === GIT_WINDOW_LABEL) return invoke<boolean>("open_git_window");
+  return invoke<boolean>("open_panel_window", { label });
+}
+
+/// Close a detached panel's window. Idempotent, and a no-op for a sidebar with
+/// no window of its own.
+///
+/// Unlike `openSidebarWindow` and `isSidebarWindowOpen`, this does **not** bail
+/// out in stacked mode. Those two are answering "what does this environment
+/// do?", and the answer there is "views, not windows". Closing is answering
+/// "make sure that window is gone", and the honest answer is the same in both
+/// modes — including during the switch *into* stacked, which is precisely when
+/// there are satellite windows to collect and a router already installed. A
+/// guard here made the transition unable to close the windows it exists to
+/// close. With none, the stacked-mode case is one no-op IPC.
+export async function closeSidebarWindow(sidebarId: string): Promise<void> {
+  const label = SIDEBAR_WINDOW_LABEL[sidebarId];
+  if (!label) return;
+  if (label === GIT_WINDOW_LABEL) {
+    await closeGitWindow();
+    return;
+  }
+  await invoke("close_panel_window", { label });
+}
+
+/// Whether a detached panel's window is currently open. Used on boot to decide
+/// whether a persisted detachment still has a window behind it.
+export async function isSidebarWindowOpen(sidebarId: string): Promise<boolean> {
+  const label = SIDEBAR_WINDOW_LABEL[sidebarId];
+  if (!label || stackedRouter) return false;
+  if (label === GIT_WINDOW_LABEL) return isGitWindowOpen();
+  return invoke<boolean>("is_panel_window_open", { label });
+}
+
+const PANEL_DOCK_BACK_EVENT = "voidlink://panel-dock-back";
+
+/// "Put me back in the shell." Emitted by a detached panel's own window as it
+/// closes, so that closing the window *is* re-docking — the panel comes back at
+/// the edge and width it had, because neither was ever thrown away.
+///
+/// Quiet, like every other broadcast here: a window on its way out cannot act
+/// on a rejected emit, and the workbench reconciles on its next boot anyway.
+export async function requestSidebarDockBack(sidebarId: string): Promise<void> {
+  await emitQuietly(PANEL_DOCK_BACK_EVENT, sidebarId);
+}
+
+/// Subscribe to dock-back requests. Workbench side.
+export function onSidebarDockBack(
+  handler: (sidebarId: string) => void,
+): Promise<UnlistenFn> {
+  return listenLoudly<string>(PANEL_DOCK_BACK_EVENT, handler);
+}
+
+const EDITOR_DOCK_BACK_EVENT = "voidlink://editor-dock-back";
+
+/// "The editor window is going away — put its tab back in front over there."
+///
+/// The editor's counterpart to `requestSidebarDockBack`, and deliberately
+/// carrying no payload. The workbench already holds every tab the editor window
+/// was showing *and* which one it had focused
+/// (`editorActiveItemByWorktree`, the field it broadcasts as
+/// `EditorTabsSnapshot.active`), so re-homing is "activate what you already
+/// know", not "receive a copy of it". Sending the tab back would make the
+/// closing window a second writer of tab state, which is the one thing the
+/// editor channel's header rules out.
+export async function requestEditorDockBack(): Promise<void> {
+  await emitQuietly(EDITOR_DOCK_BACK_EVENT);
+}
+
+/// Subscribe to editor dock-back requests. Workbench side.
+export function onEditorDockBack(handler: () => void): Promise<UnlistenFn> {
+  return listenLoudly(EDITOR_DOCK_BACK_EVENT, () => handler());
 }
 
 /// Bring the workbench window to the front.
@@ -463,6 +624,37 @@ export async function publishBlameEnabled(enabled: boolean): Promise<void> {
 /// Subscribe to blame-enabled broadcasts. Same no-republish rule.
 export function onBlameEnabled(handler: (enabled: boolean) => void): Promise<UnlistenFn> {
   return onSourced<boolean>(BLAME_EVENT, handler);
+}
+
+const UI_VISUAL_EVENT = "voidlink://ui-visual-changed";
+
+/// The background image, its opacity mix and its fit mode — one payload
+/// because they are set together from Settings → UI and there is no useful
+/// state in which one arrives without the other two. Typed here rather than
+/// imported from `store/settings.ts`: this module defines its own payload
+/// shapes for every channel above, and `store/settings.ts` is the one that
+/// depends on this file, not the other way round.
+export interface UiVisualSettings {
+  backgroundImage: string | null;
+  surfaceOpacity: number;
+  backgroundFit: "cover" | "contain" | "tile";
+}
+
+/// Tell every other window the background/opacity/fit changed. Symmetric like
+/// the theme and blame channels above — any window may open Settings → UI —
+/// and for the same reason: these live in `localStorage` (`voidlink-settings`)
+/// and each window's store hydrates once at module eval, so nothing but a
+/// broadcast reaches an already-open satellite.
+export async function publishUiVisualChange(value: UiVisualSettings): Promise<void> {
+  await publishSourced(UI_VISUAL_EVENT, value);
+}
+
+/// Subscribe to background/opacity/fit broadcasts. Same no-republish rule as
+/// `onThemeChange` / `onBlameEnabled`.
+export function onUiVisualChange(
+  handler: (value: UiVisualSettings) => void,
+): Promise<UnlistenFn> {
+  return onSourced<UiVisualSettings>(UI_VISUAL_EVENT, handler);
 }
 
 // ─── Editor tabs: main owns them, the editor window renders them ─────────────

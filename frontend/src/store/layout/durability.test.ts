@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot } from "solid-js";
 import { LAYOUT_VERSION, LAYOUT_VERSION_KEY, WORKSPACES_KEY } from "@/store/migrate";
+import { groupList } from "./panes";
 
 const createPty = vi.fn<(cwd: string) => Promise<string>>(async () => `pty-${ptyCounter++}`);
 let ptyCounter = 1;
@@ -28,10 +29,12 @@ vi.mock("@/api/terminal", () => ({
 }));
 
 import { createAppStore } from "./index";
+import { DEFAULT_DOCK_ORDER } from "./dock";
 import {
   STORAGE_KEYS,
   flushWrites,
   resetCorruptionReports,
+  resetLayoutStorage,
   setCorruptKeyHandler,
   writeJson,
 } from "./persistence";
@@ -291,6 +294,33 @@ describe("reopen closed tabs", () => {
     });
   });
 
+  it("reopens a closed pane group as a fresh, empty split in the same shape", async () => {
+    await withStoreAsync(async (store) => {
+      const { actions, state } = store;
+      await actions.spawnTerminal(WT_ID);
+      const termId = state.terminalsByWorktree[WT_ID][0].id;
+
+      const pgId = actions.addTabToSplitPane(WT_ID, termId);
+      expect(pgId).not.toBeNull();
+      expect(state.panegroupTabsByWorktree[WT_ID]).toHaveLength(1);
+
+      actions.closePaneGroupTab(WT_ID, pgId!);
+      expect(state.panegroupTabsByWorktree[WT_ID]).toHaveLength(0);
+      // The terminal itself is untouched — closing the split never closes
+      // what was inside it.
+      expect(state.terminalsByWorktree[WT_ID]).toHaveLength(1);
+
+      const popped = actions.reopenLastClosedTab(WT_ID);
+      expect(popped?.type).toBe("panegroup");
+      expect(state.panegroupTabsByWorktree[WT_ID]).toHaveLength(1);
+      // A fresh id, a fresh empty split — not the terminal's old claim, which
+      // is still wherever it fell back to.
+      const reopened = state.panegroupTabsByWorktree[WT_ID][0];
+      expect(reopened.id).not.toBe(pgId);
+      expect(reopened.layout.kind).toBe("split");
+    });
+  });
+
   it("keeps the closed-tab history across a reload", () => {
     // Persisted by the store's write effect on close; seeded here directly
     // because `createEffect` does not run in this (non-DOM) test environment.
@@ -307,6 +337,107 @@ describe("reopen closed tabs", () => {
         url: "https://example.com/gone",
         title: undefined,
       });
+    });
+  });
+});
+
+describe("panegroup tabs", () => {
+  it("opens a split, splits further inside its own tree, and tracks ratios/claims/focus live", async () => {
+    await withStoreAsync(async (store) => {
+      const { actions, state } = store;
+      await actions.spawnTerminal(WT_ID, "left");
+      await actions.spawnTerminal(WT_ID, "right");
+      const terms = state.terminalsByWorktree[WT_ID];
+      const termAId = terms[0].id;
+      const termBId = terms[1].id;
+
+      // "Add to split pane": a fresh two-pane split, `termA` in the first.
+      const firstPaneGroupId = actions.addTabToSplitPane(WT_ID, termAId);
+      expect(firstPaneGroupId).not.toBeNull();
+      const pg = state.panegroupTabsByWorktree[WT_ID][0];
+      expect(pg.layout.kind).toBe("split");
+      if (pg.layout.kind !== "split") throw new Error("unreachable");
+      // `termA` left the root strip entirely — it is not "unclaimed" there,
+      // and it does not render there either.
+      expect(actions.paneGroupOwning(WT_ID, termAId)).toBeNull();
+      const secondGroupId = pg.layout.children[1];
+      expect(secondGroupId.kind).toBe("group");
+      if (secondGroupId.kind !== "group") throw new Error("unreachable");
+
+      // Split further — inside the panegroup's own tree, not the root's —
+      // and land `termB` in the new pane, both as one write.
+      const secondInnerGroupId = actions.splitPaneGroupWithTab(
+        WT_ID,
+        "column",
+        "after",
+        secondGroupId.group.id,
+        termBId,
+        firstPaneGroupId!,
+      );
+      expect(secondInnerGroupId).not.toBeNull();
+
+      // Drag a ratio on the nested split.
+      const nested = state.panegroupTabsByWorktree[WT_ID][0].layout;
+      if (nested.kind === "split") {
+        actions.setPaneSplitRatios(WT_ID, nested.id, [0.3, 0.7], firstPaneGroupId!);
+      }
+      const after = state.panegroupTabsByWorktree[WT_ID][0].layout;
+      expect(after.kind === "split" ? after.ratios : null).toEqual([
+        expect.closeTo(0.3, 5),
+        expect.closeTo(0.7, 5),
+      ]);
+
+      // Claims and focus: the drop already claimed `termB` in its own inner
+      // pane and focused it there.
+      expect(actions.paneGroupOwning(WT_ID, termBId, firstPaneGroupId!)).toBe(
+        secondInnerGroupId,
+      );
+      const innerGroup = groupList(after).find((g) => g.id === secondInnerGroupId);
+      expect(innerGroup?.tabIds).toContain(termBId);
+      expect(innerGroup?.activeTabId).toBe(termBId);
+    });
+  });
+
+  it("survives a reload with its ratios, claims and focused pane intact", () => {
+    // Seeded directly, like every other kind's reload test in this file
+    // (`createEffect` does not run in this non-DOM environment) — this is
+    // exactly the shape `TAB_SPECS.panegroup.serialize` produces, proven in
+    // `tabs.test.ts`'s round-trip test; what is new here is that the *store*
+    // wires it up under `panegroupTabsByWorktree`, not a bespoke field.
+    backing.set(
+      STORAGE_KEYS.panegroupTabs,
+      JSON.stringify({
+        [WT_ID]: [
+          {
+            id: "pg-1",
+            seq: 1,
+            layout: {
+              kind: "split",
+              id: "s1",
+              orientation: "row",
+              ratios: [0.3, 0.7],
+              children: [
+                { kind: "group", id: "g-left", group: { id: "g-left", tabIds: ["t1"], activeTabId: "t1" } },
+                { kind: "group", id: "g-right", group: { id: "g-right", tabIds: ["t2"], activeTabId: "t2" } },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+
+    withStore((store) => {
+      const pg = store.state.panegroupTabsByWorktree[WT_ID][0];
+      expect(pg).toBeTruthy();
+      expect(pg.layout.kind).toBe("split");
+      if (pg.layout.kind !== "split") throw new Error("unreachable");
+      expect(pg.layout.ratios[0]).toBeCloseTo(0.3, 5);
+      expect(pg.layout.ratios[1]).toBeCloseTo(0.7, 5);
+      const right = pg.layout.children[1];
+      expect(right.kind).toBe("group");
+      if (right.kind !== "group") throw new Error("unreachable");
+      expect(right.group.tabIds).toEqual(["t2"]);
+      expect(right.group.activeTabId).toBe("t2");
     });
   });
 });
@@ -333,6 +464,41 @@ describe("corrupt and half-written blobs", () => {
     });
 
     expect(reported).toEqual([STORAGE_KEYS.stackTabs]);
+  });
+
+  it("drops one panegroup tab over a malformed nested payload, keeping its siblings and the boot", () => {
+    // `panegroupTabs` itself is valid JSON — this is not the quarantine path
+    // above. One entry's `layout` is impossible (a split with a single
+    // child, which `splitGroup` never produces): `parsePaneLayout` rejects
+    // it, `deserializePaneGroupTab` returns `null` for that one entry, and
+    // `deserializeTabRecord` drops just it, the same contract every other
+    // kind's malformed row already gets.
+    backing.set(
+      STORAGE_KEYS.panegroupTabs,
+      JSON.stringify({
+        [WT_ID]: [
+          {
+            id: "pg-bad",
+            seq: 1,
+            layout: { kind: "split", id: "s", orientation: "row", ratios: [1], children: [] },
+          },
+          {
+            id: "pg-good",
+            seq: 2,
+            layout: { kind: "group", id: "g1", group: { id: "g1", tabIds: [], activeTabId: null } },
+          },
+        ],
+      }),
+    );
+    const reported: string[] = [];
+    setCorruptKeyHandler((key) => reported.push(key));
+
+    withStore((store) => {
+      expect(store.state.panegroupTabsByWorktree[WT_ID].map((t) => t.id)).toEqual(["pg-good"]);
+      expect(store.state.workspaces).toHaveLength(1);
+    });
+    // Not a quarantine — the blob parsed fine and the key is not reported.
+    expect(reported).toEqual([]);
   });
 
   it("recovers the shadow copy a crash left behind mid-write", () => {
@@ -420,5 +586,239 @@ describe("compare tree width", () => {
       actions.setCompareTreeWidth(WT_ID, id, Number.NaN);
       expect(state.compareTabsByWorktree[WT_ID][0].treeWidth).toBe(320);
     });
+  });
+});
+
+/// The docking arrangement is geometry, not view state, so it belongs to the
+/// same durability contract as the panel widths: a reload — and, in stacked
+/// mode, a switch away from the workbench and back — must come back to the
+/// layout the user built rather than to the defaults.
+///
+/// Asserted from the *storage* side, like `session restore` above: this project
+/// has no DOM, so the store's persist effects never run here (see
+/// `vitest.config.ts` — the unit project deliberately skips Solid's browser
+/// build). Seeding the blob and hydrating it is the half of the round trip this
+/// harness can prove; `prefs.test.ts` proves the parse, and the write is the
+/// same effect every other preference in this file rides on.
+describe("sidebar docking", () => {
+  it("comes back to the edges and the order the user left", () => {
+    backing.set(
+      STORAGE_KEYS.gitPrefs,
+      JSON.stringify({
+        dockSide: { workspaces: "left", explorer: "right", git: "left" },
+        dockOrder: ["git", "workspaces", "explorer"],
+        workspaceRailCollapsed: true,
+        panels: { rail: 212, sidebar: 256, gitSidebar: 420 },
+      }),
+    );
+
+    withStore((store) => {
+      expect(store.state.dockSide).toEqual({
+        workspaces: "left",
+        explorer: "right",
+        terminals: "left",
+        agents: "left",
+        git: "left",
+      });
+      // Ids missing from the persisted order append in their shipped position.
+      expect(store.state.dockOrder).toEqual([
+        "git",
+        "workspaces",
+        "explorer",
+        "terminals",
+        "agents",
+      ]);
+      expect(store.state.workspaceRailCollapsed).toBe(true);
+      // The width belongs to the panel, not to the edge it was on.
+      expect(store.state.panels.gitSidebar).toBe(420);
+    });
+  });
+
+  it("remembers which panels are in a window of their own", () => {
+    backing.set(STORAGE_KEYS.gitPrefs, JSON.stringify({ detachedSidebars: ["git"] }));
+    // Persisted so a relaunch can *reopen* the window rather than silently
+    // pulling the panel back into a shell the user had already emptied.
+    withStore((store) => expect(store.state.detachedSidebars).toEqual(["git"]));
+  });
+
+  it("hydrates a pre-dock blob into the arrangement its flag produced", () => {
+    backing.set(STORAGE_KEYS.gitPrefs, JSON.stringify({ sidebarsSwapped: true }));
+    withStore((store) =>
+      expect(store.state.dockSide).toEqual({
+        workspaces: "left",
+        explorer: "right",
+        terminals: "right",
+        agents: "right",
+        git: "left",
+      }),
+    );
+  });
+
+  it("moves a panel's edge and its position in one write", () => {
+    withStore((store) => {
+      store.actions.dockSidebar("git", "left", "workspaces");
+      expect(store.state.dockSide.git).toBe("left");
+      expect(store.state.dockOrder).toEqual([
+        "git",
+        "workspaces",
+        "explorer",
+        "terminals",
+        "agents",
+      ]);
+    }, false);
+  });
+
+  it("mirrors the whole arrangement, and mirroring twice is the identity", () => {
+    withStore((store) => {
+      const before = { ...store.state.dockSide };
+      const order = [...store.state.dockOrder];
+
+      store.actions.mirrorSidebars();
+      expect(store.state.dockSide.git).toBe("left");
+      expect(store.state.dockSide.explorer).toBe("right");
+
+      store.actions.mirrorSidebars();
+      expect(store.state.dockSide).toEqual(before);
+      expect(store.state.dockOrder).toEqual(order);
+    }, false);
+  });
+
+  it("keeps a moved panel's width — the width belongs to the panel, not the edge", () => {
+    withStore((store) => {
+      store.actions.setPanelWidth("gitSidebar", 420);
+      store.actions.dockSidebar("git", "left");
+      expect(store.state.panels.gitSidebar).toBe(420);
+    }, false);
+  });
+
+  it("detaching and docking back is one flag, and is idempotent either way", () => {
+    withStore((store) => {
+      store.actions.setSidebarDetached("git", true);
+      store.actions.setSidebarDetached("git", true);
+      expect(store.state.detachedSidebars).toEqual(["git"]);
+      store.actions.setSidebarDetached("git", false);
+      expect(store.state.detachedSidebars).toEqual([]);
+    }, false);
+  });
+});
+
+/// What "Reset layout" is allowed to cost.
+///
+/// The button in Settings → UI has always promised, in its own help copy, that
+/// it "clears the pane tree and panel sizes only — settings, themes, provider
+/// keys and saved snapshots all survive it". It used to clear every layout key
+/// there was, workspaces and open tabs included, which is not a layout reset —
+/// it is starting over. These tests are the copy, restated as assertions.
+describe("reset layout scope", () => {
+  const WT_B = "66666666-6666-4666-8666-666666666666";
+  const WT_C = "55555555-5555-4555-8555-555555555555";
+
+  function seedThreeWorkspaces() {
+    backing.set(LAYOUT_VERSION_KEY, String(LAYOUT_VERSION));
+    backing.set(
+      WORKSPACES_KEY,
+      JSON.stringify(
+        [
+          { id: "88888888-8888-4888-8888-888888888888", name: "Main", root: "/repo", wt: WT_ID },
+          { id: "99999999-9999-4999-8999-999999999999", name: "Api", root: "/api", wt: WT_B },
+          { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Web", root: "/web", wt: WT_C },
+        ].map((w) => ({
+          id: w.id,
+          name: w.name,
+          repoRoot: w.root,
+          worktrees: [
+            { id: w.wt, path: w.root, branch: "main", isMain: true, isSynthetic: false },
+          ],
+          activeWorktreeId: w.wt,
+          isRepo: true,
+        })),
+      ),
+    );
+  }
+
+  /// A two-way split, a panel dragged far off its default, and a dozen tabs
+  /// spread over the three worktrees.
+  function seedBrokenLayoutAndTabs() {
+    backing.set(
+      STORAGE_KEYS.paneLayout,
+      JSON.stringify({
+        [WT_ID]: {
+          kind: "split",
+          id: "s1",
+          orientation: "row",
+          ratios: [0.5, 0.5],
+          children: [
+            { kind: "group", id: "g1", group: { id: "g1", tabIds: [], activeTabId: null } },
+            { kind: "group", id: "g2", group: { id: "g2", tabIds: [], activeTabId: null } },
+          ],
+        },
+      }),
+    );
+    backing.set(
+      STORAGE_KEYS.gitPrefs,
+      JSON.stringify({
+        panels: { rail: 212, sidebar: 256, gitSidebar: 600 },
+        gitSidebarCollapsed: true,
+        dockOrder: ["git", "workspaces", "files"],
+      }),
+    );
+    const four = (prefix: string) =>
+      [1, 2, 3, 4].map((n) => ({ id: `${prefix}-${n}`, url: `https://example.com/${n}` }));
+    backing.set(
+      STORAGE_KEYS.browserTabs,
+      JSON.stringify({ [WT_ID]: four("a"), [WT_B]: four("b"), [WT_C]: four("c") }),
+    );
+    backing.set(STORAGE_KEYS.historyTabs, JSON.stringify({ [WT_ID]: [{ id: "hist-1" }] }));
+    backing.set(
+      STORAGE_KEYS.activeItem,
+      JSON.stringify({ [WT_ID]: { type: "history", id: "hist-1" } }),
+    );
+  }
+
+  it("flattens the split and restores the widths", () => {
+    seedThreeWorkspaces();
+    seedBrokenLayoutAndTabs();
+    resetLayoutStorage();
+
+    withStore((store) => {
+      // One group again, claiming nothing — `panes.ts`'s default layout.
+      expect(store.state.paneLayoutByWorktree[WT_ID].kind).toBe("group");
+      expect(store.state.panels.gitSidebar).toBe(320);
+      expect(store.state.gitSidebarCollapsed).toBe(false);
+      // Against the exported default, not a literal. This assertion was
+      // written as `["workspaces", "files", "git"]` and broke the moment the
+      // dock model grew from three sidebars to five — the reset is correct
+      // either way, and what the test is actually claiming is "back to the
+      // shipped order", which is this constant by definition.
+      expect(store.state.dockOrder).toEqual(DEFAULT_DOCK_ORDER);
+    });
+  });
+
+  it("keeps every workspace and every tab — the help copy says settings and content survive", () => {
+    seedThreeWorkspaces();
+    seedBrokenLayoutAndTabs();
+    resetLayoutStorage();
+
+    withStore((store) => {
+      expect(
+        store.state.workspaces,
+        "Reset layout took the user's workspaces, which its own help copy says survive it",
+      ).toHaveLength(3);
+      const openTabs = [WT_ID, WT_B, WT_C].flatMap(
+        (wt) => store.state.browserTabsByWorktree[wt] ?? [],
+      );
+      expect(openTabs, "Reset layout closed tabs; it clears the pane tree, not its contents").toHaveLength(12);
+      expect(store.state.historyTabsByWorktree[WT_ID]).toHaveLength(1);
+      expect(store.activeItem()).toEqual({ type: "history", id: "hist-1" });
+    });
+  });
+
+  it("leaves saved snapshots and presets alone", () => {
+    seedThreeWorkspaces();
+    backing.set(STORAGE_KEYS.snapshots, JSON.stringify({ [WT_ID]: [{ id: "snap-1" }] }));
+    backing.set(STORAGE_KEYS.layoutPresets, JSON.stringify({ ws: [{ id: "preset-1" }] }));
+    resetLayoutStorage();
+    expect(backing.has(STORAGE_KEYS.snapshots)).toBe(true);
+    expect(backing.has(STORAGE_KEYS.layoutPresets)).toBe(true);
   });
 });

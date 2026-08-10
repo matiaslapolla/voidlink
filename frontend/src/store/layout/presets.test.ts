@@ -28,7 +28,15 @@ import {
 import { createTabGroup, emptyTabGroupState } from "./tabGroups";
 import { PANEL_BOUNDS, type PanelWidths } from "./prefs";
 
-const PANELS: PanelWidths = { rail: 200, sidebar: 300, gitSidebar: 400 };
+const PANELS: PanelWidths = {
+  rail: 200,
+  sidebar: 300,
+  gitSidebar: 400,
+  terminalsSidebar: 260,
+  agentsSidebar: 240,
+  sidebarTerminalsHeight: 180,
+  sidebarAgentsHeight: 220,
+};
 
 /// Two panes: `g1` holds t1 and t2, `right` holds t3 and t4, and t1/t2 are in a
 /// tab group called Review.
@@ -128,7 +136,13 @@ describe("applying", () => {
         savedAt: 0,
         panes: null,
         tabGroups: null,
-        panels: { rail: 9999, sidebar: -5, gitSidebar: Number.NaN } as PanelWidths,
+        panels: {
+          rail: 9999,
+          sidebar: -5,
+          gitSidebar: Number.NaN,
+          sidebarTerminalsHeight: 180,
+          sidebarAgentsHeight: 220,
+        } as PanelWidths,
       },
       [],
     );
@@ -181,6 +195,10 @@ describe("the preset list", () => {
       rail: PANEL_BOUNDS.rail.default,
       sidebar: PANEL_BOUNDS.sidebar.default,
       gitSidebar: PANEL_BOUNDS.gitSidebar.default,
+      terminalsSidebar: PANEL_BOUNDS.terminalsSidebar.default,
+      agentsSidebar: PANEL_BOUNDS.agentsSidebar.default,
+      sidebarTerminalsHeight: PANEL_BOUNDS.sidebarTerminalsHeight.default,
+      sidebarAgentsHeight: PANEL_BOUNDS.sidebarAgentsHeight.default,
     });
   });
 });

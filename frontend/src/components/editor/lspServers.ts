@@ -93,6 +93,34 @@ export function lspLanguageId(path: string): string {
   }
 }
 
+/// Every directory that could hold the TypeScript installation `file` is
+/// compiled against, nearest first.
+///
+/// `typescript-language-server` bundles its own TypeScript and, failing an
+/// explicit path, looks for one relative to the workspace root. In a repo whose
+/// root is a git root rather than a package root — this one: the root has a
+/// lockfile and no `node_modules`, the app lives in `frontend/` — that search
+/// misses and every buffer is analysed by a TypeScript that is not the
+/// project's. Diagnostics then drift from `tsc` on anything version-sensitive.
+///
+/// Nearest first because a monorepo can have several, and the one that governs
+/// a file is the closest ancestor's. Bounded by `root` so this never walks out
+/// of the workspace and into a stray `node_modules` in `$HOME`.
+export function tsserverLibCandidates(file: string, root: string): string[] {
+  const normalise = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const base = normalise(root);
+  let dir = normalise(file);
+  // A path outside the workspace has no ancestors worth searching.
+  if (dir !== base && !dir.startsWith(`${base}/`)) return [];
+  const dirs: string[] = [];
+  while (dir.length > base.length) {
+    dir = dir.slice(0, dir.lastIndexOf("/"));
+    if (dir.length >= base.length) dirs.push(dir);
+  }
+  if (dirs[dirs.length - 1] !== base) dirs.push(base);
+  return dirs.map((d) => `${d}/node_modules/typescript/lib`);
+}
+
 /// What to actually execute for `spec`: the user's override if they set one,
 /// otherwise the bare binary name for `PATH` lookup.
 ///

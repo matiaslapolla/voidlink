@@ -35,9 +35,11 @@ import { isMac } from "@/api/platform";
 import {
   bridgeGitRefsAcrossWindows,
   onWindowContext,
+  requestSidebarDockBack,
   requestWindowContext,
   type WindowContext,
 } from "@/api/windows";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   BranchesPane,
   ChangesPane,
@@ -52,6 +54,7 @@ import { GitErrorBoundary } from "@/components/git/GitErrorBoundary";
 import { StackSidebarSection } from "@/components/git/stack/StackSidebarSection";
 import { CompareTab } from "@/components/git/compare/CompareTab";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
+import { AttachHomeButton } from "@/components/layout/AttachHomeButton";
 import { PromptHost } from "@/commands/PromptHost";
 import { ToastViewport } from "@/commands/ToastViewport";
 import { TooltipLayer } from "@/components/ui/Tooltip";
@@ -92,9 +95,33 @@ export default function GitApp() {
     // Mirror refs pulses in both directions, so a commit here refreshes the
     // workbench and a rebase there refreshes us.
     const disposeBridge = bridgeGitRefsAcrossWindows();
+    let disposed = false;
+
+    // This window is also where the git *sidebar* goes when it is detached —
+    // there is one window that can hold the git panel, not two (see
+    // `SIDEBAR_WINDOW_LABEL`). So closing it docks the panel back. The
+    // workbench ignores the request when the sidebar was never detached, which
+    // is what keeps "open the git client beside my sidebar" working unchanged.
+    //
+    // The handler awaits its emit rather than firing it off: Tauri's
+    // `onCloseRequested` wrapper awaits the handler and *then* destroys the
+    // webview, so a synchronous return posted the dock-back into a context
+    // that was already being torn down. See `PanelApp` for the same note.
+    let unlistenClose: (() => void) | null = null;
+    try {
+      void getCurrentWindow()
+        .onCloseRequested(async () => {
+          await requestSidebarDockBack("git");
+        })
+        .then((fn) => {
+          if (disposed) void fn();
+          else unlistenClose = fn;
+        });
+    } catch {
+      // Not running under Tauri. Nothing to close, nothing to dock back.
+    }
 
     let unlistenContext: (() => void) | null = null;
-    let disposed = false;
     void onWindowContext((ctx) => {
       setContext(ctx);
     }).then((fn) => {
@@ -113,6 +140,7 @@ export default function GitApp() {
       disposed = true;
       disposeBridge();
       if (unlistenContext) unlistenContext();
+      if (unlistenClose) unlistenClose();
     });
   });
 
@@ -295,6 +323,12 @@ export function GitSurface(props: {
               onManageRemotes={() => setRemotesOpen(true)}
             />
           </div>
+        </Show>
+        {/* The way home, in this window's own chrome. Absent when embedded:
+            in stacked mode this surface is a *view* of the workbench, so
+            there is no window to attach and nothing to attach it to. */}
+        <Show when={!props.embedded}>
+          <AttachHomeButton surface={{ kind: "git" }} class="shrink-0" />
         </Show>
       </div>
       <Show when={repoPath()}>

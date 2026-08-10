@@ -21,6 +21,7 @@
 /// overflow rule are testable without a layout engine.
 import type { JSX } from "solid-js";
 import type { ActivitySignal } from "@/components/layout/activitySignal";
+import type { ContextMenuItem } from "@/components/git/ContextMenu";
 
 /// Which end of the bar a segment sits at. Purely a rendering hint: the bar is
 /// one row with a spacer in the middle, and `align` decides which side of the
@@ -160,4 +161,19 @@ export function planOverflow(
     }
   }
   return { visible, collapsed };
+}
+
+/// The status bar's right-click menu (Stream D): one row per segment that has
+/// an `onClick` — "the action each segment's tooltip already names" — running
+/// that exact same callback, so a menu row and a pointer click are one code
+/// path. A segment with no `onClick` (branch, ahead/behind, dirty, stack, the
+/// AI draft indicator) names nothing to run and is left out entirely rather
+/// than shown disabled: it never had an action, so §7.6's "absent, not
+/// disabled" rule for a row that can never apply governs here.
+export function statusBarMenuItems(
+  segments: readonly Pick<StatusSegment, "label" | "onClick">[],
+): ContextMenuItem[] {
+  return segments
+    .filter((s): s is { label: string; onClick: () => void } => !!s.onClick)
+    .map((s) => ({ label: s.label, onSelect: s.onClick }));
 }

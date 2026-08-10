@@ -24,8 +24,8 @@ import "@/index.css";
 /// exactly the kind of duplication that rots the first time one drifts from
 /// the other.
 vi.mock("@tauri-apps/api/core", async () => {
-  const { fakeInvoke, MockChannel } = await import("./tauri");
-  return { invoke: fakeInvoke, Channel: MockChannel };
+  const { fakeInvoke, MockChannel, fakeConvertFileSrc } = await import("./tauri");
+  return { invoke: fakeInvoke, Channel: MockChannel, convertFileSrc: fakeConvertFileSrc };
 });
 
 vi.mock("@tauri-apps/api/event", async () => {

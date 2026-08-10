@@ -368,9 +368,22 @@ export function setGroupActiveTab(
 /// Forget tabs that are no longer open, then collapse any group left empty.
 ///
 /// "Close the last tab in a group and the group goes away" is the behaviour
-/// that keeps a split from rotting into dead rectangles. The first group is
-/// exempt: it holds unclaimed tabs, so an empty claim list means "everything",
-/// not "nothing".
+/// that keeps a split from rotting into dead rectangles.
+///
+/// "Empty" is judged by the group's *resolved* tabs, not its raw `tabIds` —
+/// the two disagree for whichever group is currently catching unclaimed tabs,
+/// whose explicit claim list is `[]` even while it is showing several. Using
+/// the raw list (as this used to) meant exempting `groups[0]` by id, on the
+/// assumption that array position and "the catch-all" are the same group.
+/// They stop being the same the moment a `before` split puts a genuinely new,
+/// empty group at position 0 and materialises every other group's claims —
+/// see `splitGroup`'s header. That group is no longer catching anything, but
+/// the id-based exemption still protected it, so closing the one tab someone
+/// then dropped into it left an empty pane with no way to collapse short of a
+/// reload. Resolving first is what makes the check mean "is this group
+/// showing anything" regardless of where it sits in the tree; the *last*
+/// group is still protected, but by `removeGroup`'s own count guard below, not
+/// by a position it may no longer deserve.
 ///
 /// `collapsible` narrows *which* empty groups may go. Without it, "empty"
 /// alone decides — and a group is at its emptiest one instant after it is
@@ -386,15 +399,14 @@ export function pruneClosedTabs(
 ): PaneNode {
   const live = new Set(allTabIds);
   const groups = groupList(node);
-  const firstGroupId = groups[0]?.id;
+  const resolved = resolveGroupTabs(node, allTabIds);
   // Nothing to prune is the overwhelmingly common case — this runs on every
   // change to the tree, which during a splitter drag means every frame. An
   // O(groups) scan with no allocation lets the caller compare the result by
   // *reference*, where it used to `JSON.stringify` the whole tree twice a frame
   // to find out that nothing had happened.
   const canCollapse = (g: PaneGroup) =>
-    g.id !== firstGroupId &&
-    g.tabIds.length === 0 &&
+    (resolved.get(g.id)?.length ?? 0) === 0 &&
     (collapsible === undefined || collapsible.has(g.id));
   const stale = groups.some(
     (g) =>

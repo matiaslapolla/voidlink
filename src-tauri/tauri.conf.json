@@ -25,12 +25,19 @@
         "titleBarStyle": "Overlay",
         "trafficLightPosition": {
           "x": 12,
-          "y": 14
+          "y": 18
         }
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "requireLiteralLeadingDot": false,
+          "allow": ["**/*"]
+        }
+      }
     }
   },
   "bundle": {

@@ -10,11 +10,11 @@ import {
   untrack,
   type JSX,
 } from "solid-js";
-import { AppShell } from "@/components/layout/AppShell";
+import { AppShell, type AppShellSidebar } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
 import { WorkspaceRail } from "@/components/layout/WorkspaceRail";
-import { TerminalSidebar } from "@/components/layout/TerminalSidebar";
+import { TerminalsSidebar } from "@/components/layout/TerminalsSidebar";
 import { MainSurface } from "@/components/layout/MainSurface";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { GitSidebar, GitSidebarCollapsed } from "@/components/git/GitSidebar";
@@ -76,7 +76,8 @@ import { pushToast } from "@/commands/toast";
 import { askAgent, registerAgentActions } from "@/commands/agent";
 import { agentById, resolveAgentCommand, useSettings } from "@/store/settings";
 import { AgentBoardBroadcast } from "@/components/agent/AgentBoardBroadcast";
-import { FilesPanel } from "@/components/files/FilesPanel";
+import { FilesSidebar } from "@/components/files/FilesSidebar";
+import { AgentsSidebar } from "@/components/agent/AgentsSidebar";
 import { BrainOverlayHost } from "@/components/brain/BrainOverlay";
 import { BoardOverlayHost } from "@/components/board/BoardOverlay";
 import { AgentPanel } from "@/components/agent/AgentPanel";
@@ -102,6 +103,7 @@ import {
   onOpenWorktreeRequest,
   closeEditorWindow,
   closeGitWindow,
+  isEditorWindowOpen,
   openEditorWindow,
   publishEditorTabs,
   publishWindowContext,
@@ -115,11 +117,22 @@ import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import { samePath } from "@/store/layout/tabs";
 import {
+  SIDEBAR_IDS,
   groupList,
   resolveGroupTabs,
+  slotOrder,
   type ActiveItem,
+  type SidebarId,
   type SplitOrientation,
 } from "@/store/layout";
+import { SidebarDockOverlay, SidebarBodyMenuScope } from "@/components/layout/SidebarDock";
+import {
+  canDetachSidebar,
+  detachSidebar,
+  dockSidebarBack,
+  useSidebarWindows,
+} from "@/commands/sidebarWindows";
+import { SIDEBAR_LABEL } from "@/components/layout/SidebarDock";
 import { browserTabLabel } from "@/components/browser/BrowserPane";
 
 /// The other two surfaces, loaded only if stacked mode actually renders them.
@@ -432,23 +445,85 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // the whole app — the title bar, the git sidebar's file rows, the file tree,
   // the palette and the terminal deep-links included.
   const store = useAppStore();
+
+  /// Bring the editor's focused tab to the front of the workbench.
+  ///
+  /// What "the editor comes back as a tab" means. The editor window and the
+  /// workbench focus independently — that is the whole point of
+  /// `editorActiveItemByWorktree` existing beside `activeItemByWorktree` — so
+  /// re-homing is activating, here, the tab that window had in front. The tabs
+  /// themselves never went anywhere: this store has owned all four collections
+  /// the entire time.
+  function homeEditorTab(): void {
+    const wtId = state.activeWorktreeId;
+    const item = state.editorActiveItemByWorktree[wtId];
+    if (!item) return;
+    switch (item.type) {
+      case "file": {
+        const tab = (state.openFilesByWorktree[wtId] ?? []).find((t) => t.id === item.id);
+        if (tab) actions.selectFileTab(wtId, tab.id, tab.path);
+        break;
+      }
+      case "diff":
+        actions.selectDiffTab(wtId, item.id);
+        break;
+      case "conflict":
+        actions.selectConflictTab(wtId, item.id);
+        break;
+      case "preview":
+        actions.selectPreviewTab(wtId, item.id);
+        break;
+      default:
+        // A kind the editor window does not host. Nothing to bring forward,
+        // and nothing wrong either — the window simply had nothing focused
+        // that this workbench draws differently.
+        break;
+    }
+  }
+
+  // Detached sidebars: reopen the windows a previous session left detached, and
+  // dock a panel back when its window closes. See `commands/sidebarWindows.ts`.
+  useSidebarWindows(store, { onEditorHome: homeEditorTab });
+
   createEffect(() => {
     if (!isStackedMode()) {
       setStackedViewRouter(null);
-      // Back to windows: leave the workbench showing, and open nothing. The
-      // satellites reappear when the user next asks for one.
+      // Back to windows: leave the workbench showing, and open nothing.
+      //
+      // Deliberately *not* reopening what stacked mode pulled in. Switching
+      // modes is not an undo — the user gets a workbench with everything inside
+      // it and reopens whichever surfaces they want. Silently repopulating the
+      // screen with three windows they last saw an hour ago is the opposite of
+      // what "put it all in one window" was asking for.
       setStackedView("workbench");
       return;
     }
+    // Asked *before* the router goes in, and read synchronously: from the next
+    // line on, `isEditorWindowOpen` answers "there are no windows here" — which
+    // is the right answer for every other caller and the wrong one for the
+    // transition itself.
+    const editorWasOpen = isEditorWindowOpen();
+
     setStackedViewRouter({
       showWorkbench: () => setStackedView("workbench"),
       showEditor: () => setStackedView("editor"),
       showGit: () => setStackedView("git"),
     });
-    // Any satellite still open would now be a second copy of a view we host —
-    // two editors over one tab list, with only one of them in front of the user.
-    void closeEditorWindow().catch(() => {});
-    void closeGitWindow().catch(() => {});
+
+    // Every satellite still open would now be a second copy of a view we host —
+    // two editors over one tab list, with only one of them in front of the
+    // user. So this closes them *and re-homes their content*: stacked mode
+    // means "everything is a view in one window", which is a promise about
+    // where the content is, not merely about which windows exist.
+    void (async () => {
+      for (const id of [...state.detachedSidebars]) await dockSidebarBack(store, id);
+      // Only if it was actually open. `homeEditorTab` changes which tab is in
+      // front, and doing that to a user who never had an editor window is a
+      // workbench that reshuffles itself over an unrelated setting.
+      if (await editorWasOpen.catch(() => false)) homeEditorTab();
+      await closeEditorWindow().catch(() => {});
+      await closeGitWindow().catch(() => {});
+    })();
   });
   onCleanup(() => setStackedViewRouter(null));
 
@@ -616,10 +691,61 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       run: () => actions.toggleLeftSidebar(),
     },
     {
+      // Kept its id and its ⌘\ chord: the gesture is unchanged from the user's
+      // side — everything swaps sides — and only its implementation moved from
+      // a two-state boolean to mirroring a per-sidebar arrangement. Renaming it
+      // would have taken a chord out of the hands of everyone who has it.
       id: "ui.swap-sidebars",
-      label: "Swap left/right sidebars",
+      label: "Mirror the sidebar layout",
+      description: "Every docked panel moves to the opposite edge",
       group: "View",
-      run: () => actions.toggleSidebarsSwapped(),
+      run: () => actions.mirrorSidebars(),
+    },
+    {
+      id: "ui.toggle-workspace-rail",
+      label: "Toggle the workspace rail",
+      description: "Collapse the workspace rail to its icon rail, or bring it back",
+      group: "View",
+      run: () => actions.toggleWorkspaceRail(),
+    },
+    // The agent board is behind `experimental.agentDashboard`, and a row that
+    // detaches a panel the workbench is not drawing would open a window for a
+    // surface the user has switched off. Absent, not disabled — the experiment
+    // being off is not a reason to show them the door to it.
+    ...SIDEBAR_IDS.filter(
+      (id) => canDetachSidebar(id) && (id !== "agents" || settings.experimental.agentDashboard),
+    ).map((id): Action => ({
+      id: `ui.detach-${id}`,
+      label: state.detachedSidebars.includes(id)
+        ? `Dock the ${SIDEBAR_LABEL[id].toLowerCase()} panel back`
+        : `Detach the ${SIDEBAR_LABEL[id].toLowerCase()} panel into its own window`,
+      group: "View",
+      // Stacked mode has no satellite windows to detach into — it shows the
+      // other surfaces as views. A row that says why beats one that no-ops.
+      enabled: () => !isStackedMode() || state.detachedSidebars.includes(id),
+      run: () =>
+        state.detachedSidebars.includes(id)
+          ? void dockSidebarBack(store, id)
+          : void detachSidebar(store, id),
+    })),
+    {
+      // The editor window's counterpart to the `ui.detach-*` rows above. Not a
+      // toggle: nothing "detaches" the editor — it is opened by whatever puts a
+      // file in it — so the only half worth a row is the way back.
+      //
+      // Same code path as the button in that window's own chrome
+      // (`commands/attachHome.ts` → `requestEditorDockBack` → the workbench's
+      // `homeEditorTab`); this row is the one that reaches it from over here,
+      // for a user whose editor is on a display they are not looking at.
+      id: "ui.attach-editor",
+      label: "Attach the editor to this window",
+      description: "Close the editor window and bring its tab back into the workbench",
+      group: "View",
+      enabled: () => !isStackedMode(),
+      run: () => {
+        homeEditorTab();
+        void closeEditorWindow().catch(() => {});
+      },
     },
     {
       id: "ui.toggle-diff-mode",
@@ -1230,83 +1356,116 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
 
   // ── Where the file explorer lives ────────────────────────────────────────
   //
-  // Under horizontal tabs, exactly where it always has: the first section of
-  // the left sidebar, above the terminals list.
+  // The explorer is now a sidebar in its own right (`FilesSidebar`), rendered
+  // identically regardless of tab orientation — its own edge, its own width,
+  // its own splitter, its own collapse.
   //
-  // Under **vertical** tabs it moves to the right column, above the git panel,
-  // and the left sidebar goes away entirely. That is not decoration; it is the
-  // consequence of the preference. A vertical tab strip is a third navigation
-  // column at the left edge, behind the workspace rail and the file tree, and
-  // three parallel vertical lists at one edge is one more than the eye scans.
-  // Splitting them by *kind* is what the window has room for: the left edge
-  // answers "which thing am I looking at" (workspaces, then tabs) and the
-  // right edge answers "what is in this repo" (its files, then its changes).
+  // It used to be *stacked inside the git panel's column* under vertical tabs,
+  // and inside the terminals column under horizontal tabs — two different
+  // components (`FilesSidebar` and the old `TerminalSidebar`) rendering the
+  // same tree, with the panel renaming itself ("Files" under horizontal,
+  // "Explorer" under vertical) as a side effect of an unrelated preference.
+  // That was a limitation, not a design: the shell had a single global
+  // `sidebarsSwapped` boolean, so panels that wanted the same edge had to share
+  // a column to get there. With a per-sidebar dock side they do not. The
+  // explorer, the terminals list, the agent dashboard and the git panel are
+  // four ordinary sidebars now: independent widths, independent collapse,
+  // either edge, and none nested in another.
   //
-  // The left sidebar's other two sections survive the move because neither is
-  // lost. The terminals list is a second rendering of the terminal *tabs*, and
-  // a vertical strip shows those with their full labels — better than the list
-  // it duplicates. "Compare branches" is a row in the "+" menu and an action
-  // in the palette. The repo picker is on the workspace rail.
-  //
-  // `Mod+B` keeps meaning "show or hide the file explorer" in both layouts,
-  // which is why `leftSidebarCollapsed` gates the right-column placement too:
-  // the binding names an intent, not a screen edge.
-  const verticalTabs = () => settings.ui.tabOrientation === "vertical";
+  // `Mod+B` keeps meaning "show or hide the file explorer", which is why
+  // `leftSidebarCollapsed` still gates it: the binding names an intent, not a
+  // screen edge.
 
-  const leftPane = () =>
-    verticalTabs() || state.leftSidebarCollapsed ? null : (
-      <TerminalSidebar onOpenFile={(path) => void openInEditorWindow(path)} />
-    );
+  /// Whether a sidebar renders in the shell at all. Zen takes every panel away;
+  /// a detached panel is in a window of its own and its slot collapses.
+  const shows = (id: SidebarId) =>
+    !isZen() && !state.detachedSidebars.includes(id);
+
+  const explorerPane = () => (
+    <Show when={shows("explorer") && !state.leftSidebarCollapsed}>
+      <FilesSidebar
+        dock={state.dockSide.explorer}
+        onOpenFile={(path) => void openInEditorWindow(path)}
+      />
+    </Show>
+  );
+
+  const terminalsPane = () => (
+    <Show when={shows("terminals")}>
+      <TerminalsSidebar dock={state.dockSide.terminals} />
+    </Show>
+  );
+
+  /// Experimental, like the section it replaced: absent, not hidden, while
+  /// `experimental.agentDashboard` is off. The `<Show>` is what keeps
+  /// `AgentDashboard` — and the poll `useAgentSessions` attaches on mount —
+  /// out of existence entirely rather than merely out of sight.
+  const agentsPane = () => (
+    <Show when={shows("agents") && settings.experimental.agentDashboard}>
+      <AgentsSidebar dock={state.dockSide.agents} />
+    </Show>
+  );
 
   const gitPane = () => (
-    <Show when={activeRepoPath()}>
+    <Show when={shows("git") && activeRepoPath()}>
       {(repo) => (
         <Show
           when={!state.gitSidebarCollapsed}
-          fallback={<GitSidebarCollapsed onExpand={actions.toggleGitSidebar} />}
+          fallback={
+            <GitSidebarCollapsed
+              dock={state.dockSide.git}
+              onExpand={actions.toggleGitSidebar}
+            />
+          }
         >
-          <GitSidebar repoPath={repo()} worktreeId={state.activeWorktreeId} />
+          <GitSidebar
+            repoPath={repo()}
+            worktreeId={state.activeWorktreeId}
+            dock={state.dockSide.git}
+          />
         </Show>
       )}
     </Show>
   );
 
-  const rightPane = () => (
-    <Show when={verticalTabs()} fallback={gitPane()}>
-      {/* One column, two stacked panels. It takes its width from whichever
-          child declares one — `GitSidebar` does, off `panels.gitSidebar`, and
-          its splitter therefore resizes the column as a whole. `FilesPanel`
-          is `w-full` inside it rather than carrying a width of its own, so
-          the two can never disagree about how wide the column is. */}
-      <div class="flex flex-col min-h-0 bg-sidebar">
-        <Show when={!state.leftSidebarCollapsed}>
-          {/* `flex-1` only while the explorer is open. The column's *width*
-              belongs to the git panel here, so what a collapse gives back is
-              vertical space — and a wrapper that stayed `flex-1` around a
-              collapsed `FilesPanel` would hold half the column open for a
-              header row, which is the disclosure-that-buys-you-nothing this
-              feature exists to remove. */}
-          <div
-            class="min-h-0 flex flex-col border-b border-border/60 w-full"
-            classList={{
-              "flex-1": state.sidebarSections.files,
-              "shrink-0": !state.sidebarSections.files,
-            }}
-          >
-            <FilesPanel onOpenFile={(path) => void openInEditorWindow(path)} />
-          </div>
-        </Show>
-        {/* `flex` rather than `contents`: the git panel is an `<aside>` with
-            its own width and expects to be laid out as a flex child. */}
-        <div class="flex-1 min-h-0 flex">{gitPane()}</div>
-      </div>
+  const railPane = () => (
+    <Show when={shows("workspaces")}>
+      <WorkspaceRail dock={state.dockSide.workspaces} />
     </Show>
   );
+
+  /// The shell's slots, built **once**.
+  ///
+  /// The array is a constant and every panel below it is created here exactly
+  /// once; what changes when a sidebar is docked elsewhere is the `order`
+  /// accessor `AppShell` reads. That is the whole no-remount story: a dock
+  /// change rewrites one CSS property on elements that are already in the DOM,
+  /// so nothing beside them — least of all `MainSurface` and the PTYs hanging
+  /// off it — is torn down and rebuilt because the user moved a panel.
+  const shellSidebars: AppShellSidebar[] = [
+    { id: "workspaces", content: railPane() },
+    { id: "explorer", content: explorerPane() },
+    { id: "terminals", content: terminalsPane() },
+    { id: "agents", content: agentsPane() },
+    { id: "git", content: gitPane() },
+  ].map(({ id, content }) => ({
+    id,
+    // A right-click anywhere in the body opens the same move/detach menu the
+    // ⋮ button does — see `SidebarBodyMenuScope`.
+    content: <SidebarBodyMenuScope id={id as SidebarId}>{content}</SidebarBodyMenuScope>,
+    side: () => state.dockSide[id as SidebarId],
+    order: () =>
+      slotOrder(
+        state.dockSide[id as SidebarId],
+        state.dockOrder.indexOf(id as SidebarId),
+      ),
+  }));
 
   /// The workbench body. Note what is *not* conditional here: this tree is
   /// rendered exactly once, in both modes, because flipping the environment mode
   /// must not remount it — the terminals hanging off it own live PTYs that do
-  /// not come back.
+  /// not come back. A sidebar changing edge must not either; see
+  /// `shellSidebars` and `AppShellSidebar`.
   const workbench = (
     <>
     {/* The agent board's one writer. Outside `AppShell` because it renders
@@ -1325,17 +1484,18 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       // Zen removes the panels rather than sliding them away — a
       // keyboard-initiated geometry change never animates (MASTER §7.1), and
       // the pane tree underneath is untouched, so the way back is exact.
-      rail={isZen() ? null : <WorkspaceRail />}
-      sidebar={isZen() ? null : state.sidebarsSwapped ? rightPane() : leftPane()}
+      sidebars={shellSidebars}
       main={
         <MainSurface
           onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
           onOpenSettings={props.onOpenSettings}
         />
       }
-      rightSidebar={isZen() ? null : state.sidebarsSwapped ? leftPane() : rightPane()}
       statusBar={<StatusBar />}
     />
+    {/* The drop zone for a sidebar drag, over the whole workbench. Draws only
+        while a panel is in flight and never captures the pointer. */}
+    <SidebarDockOverlay />
     </>
   );
 
@@ -1422,6 +1582,10 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         open={isBoardOpen()}
         repoPath={activeWorkspace()?.repoRoot ?? ""}
         onClose={closeBoard}
+        // A card is a markdown file, so opening one is the same open as the
+        // file finder's and the tree's — through `openInEditorWindow`, which
+        // is where every "open a file" in the workbench already funnels.
+        onOpenCard={(path) => void openInEditorWindow(path)}
       />
       <AgentPanel onOpenSettings={props.onOpenSettings} />
       <NewWorktreeWizard />

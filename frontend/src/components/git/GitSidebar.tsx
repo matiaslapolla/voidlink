@@ -72,7 +72,8 @@ import {
 import { FuzzyText } from "@/commands/QuickPick";
 import { fuzzyMatch, type FuzzyMatch, type MatchRange } from "@/commands/fuzzy";
 import { createRowIdentity } from "@/store/stableRows";
-import { PANEL_BOUNDS } from "@/store/layout";
+import { PANEL_BOUNDS, type DockSide } from "@/store/layout";
+import { SidebarGrip, SidebarMenuButton } from "@/components/layout/SidebarDock";
 
 import { useAppStore } from "@/store/LayoutContext";
 import { samePath, type GitSectionKey } from "@/store/layout";
@@ -182,6 +183,9 @@ function sectionIcon(key: GitSectionKey): JSX.Element {
 interface GitSidebarProps {
   repoPath: string;
   worktreeId: string;
+  /// Which edge this panel is docked to. Used for one thing: which side the
+  /// resize handle sits on — a panel docked left is resized by its right edge.
+  dock?: DockSide;
 }
 
 /// One collapsible section of the git sidebar.
@@ -586,7 +590,7 @@ export function GitSidebar(props: GitSidebarProps) {
       style={{ width: `${state.panels.gitSidebar}px` }}
     >
       <Splitter
-        side="start"
+        side={(props.dock ?? "right") === "left" ? "end" : "start"}
         label="Git sidebar width"
         value={state.panels.gitSidebar}
         min={PANEL_BOUNDS.gitSidebar.min}
@@ -595,8 +599,10 @@ export function GitSidebar(props: GitSidebarProps) {
         onResize={(w) => actions.setPanelWidth("gitSidebar", w)}
       />
 
-      {/* Header */}
-      <div class="px-3 h-9 border-b border-border flex items-center gap-2 text-body shrink-0">
+      {/* Header — also this panel's title row, so it carries the dock grip and
+          the panel menu (move to the other edge, detach into the git window). */}
+      <div class="pl-1.5 pr-1 h-9 border-b border-border flex items-center gap-1.5 text-body shrink-0">
+        <SidebarGrip id="git" />
         <GitBranch class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
         <span
           class={`font-medium truncate ${freshnessClass(freshness())}`}
@@ -677,6 +683,7 @@ export function GitSidebar(props: GitSidebarProps) {
           <IconBtn label="Refresh" onClick={() => void refreshAll()}>
             <RefreshCw class={`w-3 h-3 ${isRefreshing() ? "animate-spin" : ""}`} />
           </IconBtn>
+          <SidebarMenuButton id="git" />
           <IconBtn label="Collapse git panel" expanded onClick={() => actions.toggleGitSidebar()}>
             <ChevronRight class="w-3.5 h-3.5" />
           </IconBtn>
@@ -700,8 +707,15 @@ export function GitSidebar(props: GitSidebarProps) {
           The order is a preference (`prefs.gitSectionOrder`) rather than a
           constant because the sidebar is seven sections tall in a 320px
           column: whichever two you actually use should be reachable without
-          scrolling past the five you don't. */}
-      <div class="flex-1 flex flex-col overflow-y-auto scrollbar-thin">
+          scrolling past the five you don't.
+
+          `px-2` here — not per-section — is the panel's one horizontal inset
+          (matching the `p-2` the Compare-branches footer below already uses):
+          every section's full-width row used to run edge to edge, leaving no
+          strip of the panel's own background to grab. One inset on the
+          container the sections share means every section agrees with it by
+          construction rather than by each one repeating the same padding. */}
+      <div class="flex-1 flex flex-col overflow-y-auto scrollbar-thin px-2">
         <For each={state.gitSectionOrder}>
           {(key, i) => {
             // One per section, created inside the row's own reactive scope so
@@ -733,19 +747,14 @@ export function GitSidebar(props: GitSidebarProps) {
         </For>
       </div>
 
-      {/* Pinned footer. Compare is a destination rather than a view of repo
-          state, so it sits below the collapsible sections instead of
-          competing with them for vertical space. */}
-      <div class="shrink-0 border-t border-border p-2">
-        <button
-          onClick={() => actions.openCompareTab(props.worktreeId)}
-          class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed border-border text-body text-muted-foreground hover:text-foreground hover:bg-accent/40 hover:border-border/80 transition-colors"
-          title="Compare two branches, tags, or commits"
-        >
-          <GitCompare class="w-3.5 h-3.5 shrink-0" />
-          Compare branches
-        </button>
-      </div>
+      {/* Compare used to be pinned here, under a comment that conceded the
+          point: it is a *destination* rather than a view of repo state, and
+          everything else in this panel is a live view of the repository. It now
+          lives in the `+` new-tab menu with the other things that open tabs
+          (`MainSurface`'s `NewTabMenu`), and in the palette as `git.compare`.
+          The upstream compare stays — it is a different affordance, about the
+          current branch's relationship to its upstream, and belongs next to the
+          branch it is about. */}
     </aside>
   );
 }
@@ -3921,7 +3930,7 @@ function FileRow(props: {
 }
 
 /** Collapsed rail */
-export function GitSidebarCollapsed(props: { onExpand: () => void }) {
+export function GitSidebarCollapsed(props: { onExpand: () => void; dock?: DockSide }) {
   const { state } = useAppStore();
   return (
     <div class="flex flex-col items-center w-8 bg-sidebar py-2 gap-2 h-full relative">
@@ -3935,7 +3944,7 @@ export function GitSidebarCollapsed(props: { onExpand: () => void }) {
           a render-time width that is never written to the store, which is what
           makes expanding come back to the width the user dragged to. */}
       <Splitter
-        side="start"
+        side={(props.dock ?? "right") === "left" ? "end" : "start"}
         label="Git sidebar width"
         value={state.panels.gitSidebar}
         min={PANEL_BOUNDS.gitSidebar.min}
@@ -3957,6 +3966,7 @@ export function GitSidebarCollapsed(props: { onExpand: () => void }) {
         <ChevronLeft class="w-3.5 h-3.5" />
       </button>
       <GitBranch class="w-4 h-4 text-muted-foreground" />
+      <SidebarGrip id="git" />
     </div>
   );
 }

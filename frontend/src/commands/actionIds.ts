@@ -48,6 +48,7 @@ export const ACTION_IDS = [
   "editor.close-group",
   "editor.focus-next-group",
   "editor.go-to-symbol",
+  "editor.go-to-definition",
   // Terminal
   "terminal.new",
   "terminal.repeat-last",
@@ -69,7 +70,30 @@ export const ACTION_IDS = [
   // View
   "ui.toggle-git-sidebar",
   "ui.toggle-left-sidebar",
+  // The ⌘\ mirror. Kept its id through the dock rework: from the user's side
+  // the gesture is unchanged — every panel moves to the opposite edge — and a
+  // rename would take the chord away from everyone who already has it.
   "ui.swap-sidebars",
+  "ui.toggle-workspace-rail",
+  // Detach, per sidebar. Palette-only: which panel you want in a window is a
+  // choice, and more chords for rare choices is how a keymap stops being
+  // learnable. `ui.detach-workspaces` and `ui.detach-terminals` are
+  // deliberately absent — neither is detachable (see `SIDEBAR_WINDOW_LABEL`),
+  // and these ids are generated from that same table in `App.tsx`, so this
+  // list has to name exactly what it can produce.
+  //
+  // `ui.detach-files` became `ui.detach-explorer` with the sidebar's rename.
+  // Unlike `ui.swap-sidebars`, which kept its id to keep its chord, nothing was
+  // ever bound to this one — so there is no chord to protect and no reason to
+  // keep a name that no longer matches the panel.
+  "ui.detach-explorer",
+  "ui.detach-git",
+  "ui.detach-agents",
+  // The editor window's way home. The sidebars get theirs from the
+  // `ui.detach-*` rows above, which toggle; the editor has no detach of its
+  // own — it is opened by whatever puts a file in it — so re-attaching is the
+  // only half of that pair it needs.
+  "ui.attach-editor",
   "ui.toggle-diff-mode",
   "ui.toggle-ignore-ws",
   "ui.maximize-pane",

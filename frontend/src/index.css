@@ -80,6 +80,45 @@
   --elev-2: var(--popover); /* raised: palette, popovers, menus      */
   --elev-3: color-mix(in oklab, var(--popover) 94%, white); /* modal */
 
+  /* ── Region surfaces ─────────────────────────────────────────────────
+   * Before this, `--sidebar` meant three unrelated things at once — the
+   * rail, both docked panels, *and* the tab strip — so all three (plus the
+   * status bar, which also just borrowed `--sidebar`) painted the exact
+   * same lightness. Geometrically four separate regions; visually one grey
+   * field with `--island-gap` cut into it. `--sidebar` now means only what
+   * its name says (the docked panels — `FilesSidebar`, `TerminalsSidebar`,
+   * `AgentsSidebar`, `GitSidebar`),
+   * `--background` still means the editor/main surface (elev-1, unchanged),
+   * and these three take back the identity the rail, tab strip and status
+   * bar never should have shared.
+   *
+   * Derived from `--background`, same mechanism as `--canvas`: one
+   * `color-mix()` per mode in this file, never restated in `themes.css`, so
+   * every named theme inherits a coherent set for free the moment it
+   * redefines `--background` (`--canvas`'s header above explains why the
+   * `var()` indirection makes that true). Dark and light use different
+   * ratios for the reason `--canvas` does — the *available* headroom near
+   * `L=1.0` is a smaller absolute step than near `L=0.2` for the same
+   * percentage.
+   *
+   * Ratios are picked to keep every step >= 0.01 of lightness apart in the
+   * default themes (dark: canvas .170 / statusbar .180 / rail+tabstrip .190
+   * / background .200 / sidebar .213 — a clean ladder). Light mode has far
+   * less headroom between `--canvas` (96%) and `--background` (100%) to
+   * split three ways without crowding the hand-tuned `--sidebar` some
+   * themes place in that same narrow band; ratios here stay just above the
+   * canvas ratio so the ordering (canvas < statusbar < rail/tabstrip <
+   * background) holds for every theme, including `github-light`'s pure
+   * white, even where the resulting gap to that theme's own `--sidebar` is
+   * tighter than the dark-mode ladder. `canvasTokens.test.ts` checks the
+   * ordering invariant for all ten blocks; it does not (and structurally
+   * cannot) guard against every theme's independently hand-tuned
+   * `--sidebar` landing close to one of these — see MASTER.md §3 for the
+   * measured contrast and the themes where that gap is tightest. */
+  --surface-statusbar: color-mix(in oklab, var(--background) 90%, black);
+  --surface-rail: color-mix(in oklab, var(--background) 95%, black);
+  --surface-tabstrip: color-mix(in oklab, var(--background) 95%, black);
+
   /* ── Island geometry ──────────────────────────────────────────────────
    * These four are the *only* place D1's geometry is expressed as a number.
    * `AppShell.tsx` / `MainSurface.tsx` and the `.island` class below consume
@@ -90,6 +129,13 @@
   --island-inset: 8px;
   --island-radius: var(--radius); /* 10px — the existing lg base */
   --island-radius-inner: 6px; /* tab cards, rows seated on an island */
+
+  /* Background image + island translucency (Stream E). Set from
+   * `store/settings.ts`'s effect, in lockstep with `data-bg-image` /
+   * `data-bg-fit` on `<html>` — see the block near the bottom of this file
+   * for the actual mixing. The fallback here only matters for the instant
+   * before that effect's first run. */
+  --ui-surface-opacity: 100%;
 
   /* ── Spacing scale (4pt base, MASTER.md §5) ────────────────────────────
    * Names for the paddings that recur across chrome. This is orthogonal to
@@ -192,6 +238,15 @@
    * `#ffffff` and `#f6f8fa`. Still strictly darker, so the invariant holds. */
   --canvas: color-mix(in oklab, var(--background) 96%, black);
 
+  /* Region surfaces (see the `:root` block above for the full derivation
+   * rationale). Ratios sit just above `--canvas`'s 96% — 97.5% and 99% —
+   * because light mode's canvas-to-background span is only 4% of lightness
+   * to begin with, shared with whatever a theme's own `--sidebar` occupies
+   * in that band. */
+  --surface-statusbar: color-mix(in oklab, var(--background) 97.5%, black);
+  --surface-rail: color-mix(in oklab, var(--background) 99%, black);
+  --surface-tabstrip: color-mix(in oklab, var(--background) 99%, black);
+
   --background: oklch(0.980 0.006 270);
   --foreground: oklch(0.145 0.012 270);
   --card: oklch(0.965 0.006 270);
@@ -274,7 +329,6 @@ body {
   --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -297,20 +351,53 @@ body {
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
   --color-foreground: var(--foreground);
-  --color-background: var(--background);
-  --color-canvas: var(--canvas);
   --color-elev-0: var(--elev-0);
-  --color-elev-1: var(--elev-1);
-  --color-elev-2: var(--elev-2);
-  --color-elev-3: var(--elev-3);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
+}
+
+/* ── The surface tokens, deliberately NOT `inline` ───────────────────────────
+ * These eleven sit in their own block, and the missing `inline` is the whole
+ * point of the block.
+ *
+ * `@theme inline` does what its name says: it substitutes the alias away, so
+ * `bg-canvas` compiles to `background-color: var(--canvas)` and the
+ * `--color-canvas` name never reaches the stylesheet. That is fine for a token
+ * nothing retargets — and fatal for these, because the background-image
+ * feature at the bottom of this file works by overriding exactly these
+ * `--color-*` names under `html[data-bg-image]`. Against `inline` aliases those
+ * overrides bound to nothing: every `bg-*` utility read the underlying token
+ * directly and stayed fully opaque, which is the *second* reason the opacity
+ * slider looked inert (the first being the opaque canvas element over the
+ * image; see that block).
+ *
+ * Without `inline`, Tailwind emits `--color-canvas: var(--canvas)` on `:root`
+ * and `bg-canvas` compiles to `background-color: var(--color-canvas)` — one
+ * more indirection, identical value, and a name the cascade can retarget.
+ * Retargeting the underlying `--canvas` / `--background` instead is not an
+ * option: `--elev-1`, `--canvas` and the three region surfaces are all derived
+ * from `--background`, and `monacoTheme.ts` reads `--elev-1` and `--background`
+ * to build the editor theme — a translucent value there is a transparent
+ * editor, not a translucent island.
+ *
+ * Anything painted on a *region* or an island belongs in this block. Anything
+ * that is a text, border or accent colour belongs above, in the inline one. */
+@theme {
+  --color-canvas: var(--canvas);
+  --color-background: var(--background);
+  --color-sidebar: var(--sidebar);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-elev-1: var(--elev-1);
+  --color-elev-2: var(--elev-2);
+  --color-elev-3: var(--elev-3);
+  --color-surface-statusbar: var(--surface-statusbar);
+  --color-surface-rail: var(--surface-rail);
+  --color-surface-tabstrip: var(--surface-tabstrip);
 }
 
 @layer base {
@@ -424,7 +511,8 @@ html:not([data-density]) {
 
 /* Coverage audit (MASTER §5). Every *row-shaped* surface in the shell opts in:
  *   • rail worktree rows            — WorkspaceRail
- *   • terminal rows + file section  — TerminalSidebar
+ *   • terminal rows                  — TerminalsSidebar
+ *   • file tree rows                 — FilesSidebar
  *   • change/branch/worktree/stash/tag rows and section headers — GitSidebar
  * Four surfaces are deliberately *excluded*, and adding a second density
  * mechanism for them would be the wrong fix:
@@ -698,6 +786,160 @@ html:not([data-density]) {
     background-color: var(--elev-3);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
+  }
+}
+
+/* ── Background image + island translucency (Stream E) ───────────────────────
+ * Settings → UI: a user-picked image painted on `#root`'s own background,
+ * with the island surfaces (`bg-background`, `bg-sidebar`, `bg-card`,
+ * `bg-popover`, `bg-elev-*`) mixed toward transparent over it via
+ * `color-mix()`. `store/settings.ts`'s effect is the only place that writes
+ * `--ui-bg-image`, `--ui-surface-opacity` and `data-bg-fit` — this is that
+ * feature's half of the "geometry lives in one place" rule `AppShell.tsx`
+ * states for the island inset. No component reads the image path itself.
+ *
+ * **Retargeting note (Stream D):** this mixes the CURRENT surface tokens
+ * (`--background`, `--sidebar`, `--card`, `--popover`, `--elev-1/2/3`) via
+ * the `--color-*` aliases `@theme inline` (above) already points every
+ * `bg-*` utility at — not Stream D's new per-region surface tokens, which
+ * don't exist on this branch yet. When D lands, the `--color-*` overrides
+ * just below are the only edit needed: point each one at its region token
+ * instead of the token it mixes today.
+ *
+ * **The canvas must get out of the way.** `#root` paints the image, but
+ * `AppShell.tsx`'s root element carries `bg-canvas` and fills the viewport
+ * directly on top of it — as does the title bar. While `--color-canvas` stayed
+ * opaque the image was behind an opaque rectangle and had never once been
+ * visible, which is also why the opacity slider looked inert: the islands did
+ * mix toward transparent, but what they revealed was that opaque canvas, whose
+ * colour is a near neighbour of theirs.
+ *
+ * So `--color-canvas` goes fully `transparent` here rather than joining the
+ * slider mix below. It is not a surface the user is adjusting — it is the hole
+ * the image shows through, and the scrim underneath it is what protects the
+ * text that sits on it. Putting it on the slider instead would mean a user who
+ * sets an image at the default `surfaceOpacity: 100` still sees nothing, which
+ * is the bug rather than a fix for it.
+ *
+ * **The scrim.** Two layers sit between the image and everything above it, both
+ * painted as one `background-image` stack on `#root`:
+ *   1. The image itself (`--ui-bg-image`), full strength.
+ *   2. A SCRIM on top of it — a fixed, non-adjustable 95%-opaque `--canvas`
+ *      layer (a `linear-gradient` of one flat colour, which is the standard
+ *      way to paint a translucent fill as a background-image layer). It is
+ *      what keeps a busy photo from reaching the islands at anything close
+ *      to full strength, and it is fixed rather than a second slider on
+ *      purpose: the AA guarantee below only holds because it cannot be
+ *      turned down.
+ * The islands then mix toward transparent *on top of* that already-dampened
+ * surface.
+ *
+ * **Measured contrast** (`oklch → oklab → linear sRGB`, composited as CSS
+ * actually will: the scrim over a worst-case pure-white or pure-black photo,
+ * then the island at the opacity slider's floor — `SURFACE_OPACITY_MIN` in
+ * `settings.ts`, 20%; the slider never reaches literal 0). `--foreground`
+ * against the result, for all ten themes, in the two places text lands:
+ *
+ *   • on an island: worst 4.77:1 (`solarized-dark`), defaults 15.0:1 / 17.2:1
+ *   • on the canvas — the title bar, which paints `bg-canvas` directly on the
+ *     scrim: worst 4.74:1 (`solarized-dark`), defaults 14.8:1 / 16.8:1
+ *
+ * The same worst cases with no scrim at all measure 1.3:1 and 1.5:1 — an
+ * outright failure — which is the whole reason this exists as a fixed layer
+ * instead of leaving the user's own slider to cover it.
+ *
+ * The scrim was 92% and is now 95%. At 92% the canvas layer becoming visible
+ * (above) dropped `solarized-dark` to 4.34:1 on the title bar and 4.46:1 on an
+ * island — under AA, where its no-image baseline is 5.37:1 / 4.90:1. 95% is the
+ * lowest whole percent at which every theme that clears 4.5:1 with no image
+ * still clears it with one.
+ *
+ * **The one theme this does not save is `solarized-light`**, which measures
+ * 3.82:1 on the canvas and 4.00:1 on an island. That is not this feature's
+ * doing: its `--foreground` on its own `--canvas` is 4.26:1 with no image
+ * present at all, so no scrim value and no opacity floor can lift it — at the
+ * slider's floor an island *is* the canvas. MASTER.md §10.13 already names
+ * `solarized-light` as one of the two extreme themes to validate against; the
+ * theme's own text/canvas pair is the thing to fix, in a stream that is allowed
+ * to retune tokens. */
+html[data-bg-image] {
+  /* Not on the slider — see "The canvas must get out of the way" above. */
+  --color-canvas: transparent;
+  --color-background: color-mix(in oklab, var(--background) var(--ui-surface-opacity), transparent);
+  --color-sidebar: color-mix(in oklab, var(--sidebar) var(--ui-surface-opacity), transparent);
+  --color-card: color-mix(in oklab, var(--card) var(--ui-surface-opacity), transparent);
+  --color-popover: color-mix(in oklab, var(--popover) var(--ui-surface-opacity), transparent);
+  --color-elev-1: color-mix(in oklab, var(--elev-1) var(--ui-surface-opacity), transparent);
+  --color-elev-2: color-mix(in oklab, var(--elev-2) var(--ui-surface-opacity), transparent);
+  --color-elev-3: color-mix(in oklab, var(--elev-3) var(--ui-surface-opacity), transparent);
+  /* The three region surfaces. Added when the docking and token streams met:
+   * without them the rail, the tab strip and the status bar would stay opaque
+   * while every surface around them went translucent, which reads as three
+   * panels that failed to load rather than as a deliberate arrangement. Every
+   * token painted on a *region* belongs in this list. */
+  --color-surface-rail: color-mix(in oklab, var(--surface-rail) var(--ui-surface-opacity), transparent);
+  --color-surface-tabstrip: color-mix(
+    in oklab,
+    var(--surface-tabstrip) var(--ui-surface-opacity),
+    transparent
+  );
+  --color-surface-statusbar: color-mix(
+    in oklab,
+    var(--surface-statusbar) var(--ui-surface-opacity),
+    transparent
+  );
+}
+
+html[data-bg-image] #root {
+  /* The scrim (`linear-gradient` of a single translucent colour) is listed
+   * first, so it paints over the image beneath it — CSS stacks
+   * `background-image` layers with the first listed on top. */
+  background-image:
+    linear-gradient(
+      color-mix(in oklab, var(--canvas) 95%, transparent),
+      color-mix(in oklab, var(--canvas) 95%, transparent)
+    ),
+    var(--ui-bg-image);
+  background-color: transparent;
+  background-position: center, center;
+  background-repeat: no-repeat, no-repeat;
+  background-size: cover, cover;
+}
+
+html[data-bg-image][data-bg-fit="contain"] #root {
+  background-size: cover, contain;
+}
+
+html[data-bg-image][data-bg-fit="tile"] #root {
+  background-repeat: no-repeat, repeat;
+  background-size: cover, auto;
+}
+
+/* Same rule as `.material-chrome` / `.material-structural` above: a request
+ * for less transparency gets full opacity back, not a softened version of
+ * the effect. The image itself is dropped too — at full island opacity there
+ * is nothing left for it to show through except the canvas gaps, and this is
+ * simpler and more predictable than tuning the scrim up to compensate. */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-bg-image] {
+    /* The canvas comes back opaque with the rest — without this line it would
+     * stay `transparent` and the shell would show the page through itself. */
+    --color-canvas: var(--canvas);
+    --color-background: var(--background);
+    --color-sidebar: var(--sidebar);
+    --color-card: var(--card);
+    --color-popover: var(--popover);
+    --color-elev-1: var(--elev-1);
+    --color-elev-2: var(--elev-2);
+    --color-elev-3: var(--elev-3);
+    --color-surface-rail: var(--surface-rail);
+    --color-surface-tabstrip: var(--surface-tabstrip);
+    --color-surface-statusbar: var(--surface-statusbar);
+  }
+
+  html[data-bg-image] #root {
+    background-image: none;
+    background-color: var(--canvas);
   }
 }
 

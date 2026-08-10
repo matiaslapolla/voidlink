@@ -18,6 +18,14 @@ export interface BoardCard {
   order: number;
   labels: string[];
   created: string | null;
+  /// When the card is due, as an ISO `YYYY-MM-DD` date, or `null`.
+  ///
+  /// Optional in both directions: a card written before this field existed has
+  /// no `due:` line and parses as `null` rather than as an error, and an older
+  /// build reading a card written with one ignores the line. See
+  /// `boardModel.ts` for the serialised form and `board/mod.rs` for the parser
+  /// that has to agree with it.
+  due: string | null;
   /** Board-relative path, e.g. "2026-08-04-wire-the-watcher.md". */
   path: string;
   /// What was on disk when this was read. Opaque — compare it, never parse it.

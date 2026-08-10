@@ -16,9 +16,13 @@
       // and `solarized-light` are light themes that are not the string
       // "light", so they got `.dark` and inverted until Solid booted.
       //
-      // LIGHT_THEMES must match the `mode: "light"` entries in
-      // `frontend/src/store/theme.ts`. It cannot import them — this runs before
-      // any module — so it is duplicated here and nowhere else.
+      // LIGHT_THEMES must match `LIGHT_THEME_IDS` in
+      // `frontend/src/store/themeTable.ts` — the `mode: "light"` entries of the
+      // theme table. It cannot import them (this runs before any module), so it
+      // is duplicated here and nowhere else, and
+      // `src/store/themeTable.test.ts` parses this very array out of this file
+      // and asserts the two are equal. Edit one without the other and that test
+      // goes red; it is not a comment asking you to remember.
       try {
         var LIGHT_THEMES = ["light", "github-light", "solarized-light"];
         var t = localStorage.getItem("voidlink-theme") || "dark";

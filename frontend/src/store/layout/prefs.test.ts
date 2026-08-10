@@ -4,14 +4,19 @@
 /// drag back — the failure this file exists to prevent.
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_EDITOR_PREFS,
   DEFAULT_PREFS,
+  EDITOR_PANEL_BOUNDS,
   GIT_SECTION_KEYS,
   PANEL_BOUNDS,
   SIDEBAR_RAIL_WIDTH,
+  clampEditorPanelWidth,
   clampPanelWidth,
+  parseEditorPrefs,
   parseGitSectionOrder,
   parsePrefs,
 } from "./prefs";
+import { MIN_SPLIT_FRACTION, DEFAULT_SPLIT_FRACTION } from "@/components/editor/editorGroups";
 
 describe("panel widths", () => {
   it("defaults to today's layout", () => {
@@ -19,6 +24,10 @@ describe("panel widths", () => {
       rail: PANEL_BOUNDS.rail.default,
       sidebar: PANEL_BOUNDS.sidebar.default,
       gitSidebar: PANEL_BOUNDS.gitSidebar.default,
+      terminalsSidebar: PANEL_BOUNDS.terminalsSidebar.default,
+      agentsSidebar: PANEL_BOUNDS.agentsSidebar.default,
+      sidebarTerminalsHeight: PANEL_BOUNDS.sidebarTerminalsHeight.default,
+      sidebarAgentsHeight: PANEL_BOUNDS.sidebarAgentsHeight.default,
     });
   });
 
@@ -26,6 +35,46 @@ describe("panel widths", () => {
     expect(clampPanelWidth("rail", 10)).toBe(PANEL_BOUNDS.rail.min);
     expect(clampPanelWidth("rail", 4000)).toBe(PANEL_BOUNDS.rail.max);
     expect(clampPanelWidth("gitSidebar", 400)).toBe(400);
+  });
+
+  /// The sidebar's stacked disclosures (Files/Terminals/Agents) grew their own
+  /// resizable heights alongside the shell's three widths — same table, same
+  /// clamp, same hydration-repairs-rather-than-rejects discipline.
+  describe("sidebar section heights", () => {
+    it("clamps to their own bounds", () => {
+      expect(clampPanelWidth("sidebarTerminalsHeight", 10)).toBe(
+        PANEL_BOUNDS.sidebarTerminalsHeight.min,
+      );
+      expect(clampPanelWidth("sidebarTerminalsHeight", 9000)).toBe(
+        PANEL_BOUNDS.sidebarTerminalsHeight.max,
+      );
+      expect(clampPanelWidth("sidebarAgentsHeight", 10)).toBe(
+        PANEL_BOUNDS.sidebarAgentsHeight.min,
+      );
+      expect(clampPanelWidth("sidebarAgentsHeight", 9000)).toBe(
+        PANEL_BOUNDS.sidebarAgentsHeight.max,
+      );
+    });
+
+    it("default when absent from a persisted blob written before they existed", () => {
+      const prefs = parsePrefs({ panels: { rail: 200, sidebar: 300, gitSidebar: 400 } } as never);
+      expect(prefs.panels.sidebarTerminalsHeight).toBe(PANEL_BOUNDS.sidebarTerminalsHeight.default);
+      expect(prefs.panels.sidebarAgentsHeight).toBe(PANEL_BOUNDS.sidebarAgentsHeight.default);
+    });
+
+    it("clamps an out-of-range persisted value to the new bounds", () => {
+      const prefs = parsePrefs({
+        panels: {
+          rail: 200,
+          sidebar: 300,
+          gitSidebar: 400,
+          sidebarTerminalsHeight: 9000,
+          sidebarAgentsHeight: -5,
+        },
+      } as never);
+      expect(prefs.panels.sidebarTerminalsHeight).toBe(PANEL_BOUNDS.sidebarTerminalsHeight.max);
+      expect(prefs.panels.sidebarAgentsHeight).toBe(PANEL_BOUNDS.sidebarAgentsHeight.min);
+    });
   });
 
   it("falls back to the default rather than trusting a non-number", () => {
@@ -212,5 +261,166 @@ describe("collapsed workspaces", () => {
     expect(parsePrefs({ collapsedWorkspaces: [1, null, "a"] as never }).collapsedWorkspaces).toEqual(
       ["a"],
     );
+  });
+});
+
+/// The editor window's own geometry (`EditorPrefs`) lives outside `gitPrefs`
+/// on purpose — see that interface's header — but is shaped and clamped the
+/// same way, and hydrates the same way: repaired, never rejected.
+describe("editor window geometry", () => {
+  it("defaults to the file tree's old constant width and an even split", () => {
+    expect(DEFAULT_EDITOR_PREFS).toEqual({
+      panels: { tree: EDITOR_PANEL_BOUNDS.tree.default },
+      splitFraction: DEFAULT_SPLIT_FRACTION,
+    });
+  });
+
+  it("clamps the tree width to its own bounds", () => {
+    expect(clampEditorPanelWidth("tree", 10)).toBe(EDITOR_PANEL_BOUNDS.tree.min);
+    expect(clampEditorPanelWidth("tree", 9000)).toBe(EDITOR_PANEL_BOUNDS.tree.max);
+    expect(clampEditorPanelWidth("tree", 300)).toBe(300);
+  });
+
+  it("defaults both keys when absent from a persisted blob", () => {
+    expect(parseEditorPrefs(null)).toEqual(DEFAULT_EDITOR_PREFS);
+    expect(parseEditorPrefs({})).toEqual(DEFAULT_EDITOR_PREFS);
+  });
+
+  it("clamps an out-of-range persisted tree width to the new bounds", () => {
+    const prefs = parseEditorPrefs({ panels: { tree: 9000 }, splitFraction: 0.5 });
+    expect(prefs.panels.tree).toBe(EDITOR_PANEL_BOUNDS.tree.max);
+  });
+
+  it("clamps an out-of-range persisted split fraction to editorGroups.ts's own bounds", () => {
+    expect(parseEditorPrefs({ panels: { tree: 240 }, splitFraction: 0 }).splitFraction).toBe(
+      MIN_SPLIT_FRACTION,
+    );
+    expect(parseEditorPrefs({ panels: { tree: 240 }, splitFraction: 1 }).splitFraction).toBe(
+      1 - MIN_SPLIT_FRACTION,
+    );
+  });
+});
+
+/// The dock arrangement, through the parser every hydration goes through.
+///
+/// `dock.test.ts` covers `parseDockSide` itself; this is the same migration
+/// asserted where it actually runs — a persisted blob turning into `UiPrefs` —
+/// because that is the path a user's storage takes on the build that lands this.
+describe("sidebar docking", () => {
+  it("ships with the layout the shell has always had", () => {
+    expect(DEFAULT_PREFS.dockSide).toEqual({
+      workspaces: "left",
+      explorer: "left",
+      terminals: "left",
+      agents: "left",
+      git: "right",
+    });
+    expect(DEFAULT_PREFS.dockOrder).toEqual([
+      "workspaces",
+      "explorer",
+      "terminals",
+      "agents",
+      "git",
+    ]);
+    expect(DEFAULT_PREFS.detachedSidebars).toEqual([]);
+    expect(DEFAULT_PREFS.workspaceRailCollapsed).toBe(false);
+  });
+
+  it("migrates a blob with sidebarsSwapped:true to the arrangement it produced", () => {
+    expect(parsePrefs({ sidebarsSwapped: true } as never).dockSide).toEqual({
+      workspaces: "left",
+      explorer: "right",
+      terminals: "right",
+      agents: "right",
+      git: "left",
+    });
+  });
+
+  it("migrates sidebarsSwapped:false to the default", () => {
+    expect(parsePrefs({ sidebarsSwapped: false } as never).dockSide).toEqual(
+      DEFAULT_PREFS.dockSide,
+    );
+  });
+
+  it("leaves a blob already in the new shape alone, however often it is parsed", () => {
+    const saved = {
+      dockSide: { workspaces: "right", explorer: "left", git: "left" },
+      dockOrder: ["git", "explorer", "workspaces"],
+      detachedSidebars: ["git"],
+    } as never;
+    const once = parsePrefs(saved);
+    expect(once.dockSide).toEqual({
+      workspaces: "right",
+      explorer: "left",
+      terminals: "left",
+      agents: "left",
+      git: "left",
+    });
+    expect(once.dockOrder).toEqual(["git", "explorer", "workspaces", "terminals", "agents"]);
+    expect(once.detachedSidebars).toEqual(["git"]);
+    const twice = parsePrefs(once as never);
+    expect(twice.dockSide).toEqual(once.dockSide);
+    expect(twice.dockOrder).toEqual(once.dockOrder);
+    expect(twice.detachedSidebars).toEqual(once.detachedSidebars);
+  });
+
+  it("drops a sidebar id this build does not know, rather than throwing", () => {
+    expect(() =>
+      parsePrefs({
+        dockSide: { explorer: "right", outline: "left" },
+        dockOrder: ["outline", "git"],
+        detachedSidebars: ["outline"],
+      } as never),
+    ).not.toThrow();
+    const prefs = parsePrefs({
+      dockSide: { explorer: "right", outline: "left" },
+      dockOrder: ["outline", "git"],
+      detachedSidebars: ["outline"],
+    } as never);
+    expect(prefs.dockSide).toEqual({ ...DEFAULT_PREFS.dockSide, explorer: "right" });
+    expect(prefs.dockOrder).toEqual(["git", "workspaces", "explorer", "terminals", "agents"]);
+    expect(prefs.detachedSidebars).toEqual([]);
+  });
+
+  it("migrates a persisted `files` id to `explorer`, at the edge and position it had", () => {
+    const prefs = parsePrefs({
+      dockSide: { workspaces: "left", files: "right", git: "left" },
+      dockOrder: ["git", "files", "workspaces"],
+      detachedSidebars: ["files"],
+    } as never);
+    expect(prefs.dockSide.explorer).toBe("right");
+    expect("files" in prefs.dockSide).toBe(false);
+    expect(prefs.dockOrder).toEqual(["git", "explorer", "workspaces", "terminals", "agents"]);
+    expect(prefs.detachedSidebars).toEqual(["explorer"]);
+  });
+
+  it("does not hand out the module-level defaults to be mutated", () => {
+    const prefs = parsePrefs(null);
+    expect(prefs.dockSide).not.toBe(DEFAULT_PREFS.dockSide);
+    expect(prefs.dockOrder).not.toBe(DEFAULT_PREFS.dockOrder);
+    prefs.dockSide.git = "left";
+    expect(DEFAULT_PREFS.dockSide.git).toBe("right");
+  });
+});
+
+/// The screencast-privacy blur (Stream E), persisted the same array-not-Set
+/// way as `collapsedWorkspaces` above and for the same reason.
+describe("blurred workspaces", () => {
+  it("starts with nothing blurred when the key is absent", () => {
+    expect(parsePrefs({}).blurredWorkspaces).toEqual([]);
+  });
+
+  it("round-trips ids and drops duplicates", () => {
+    expect(parsePrefs({ blurredWorkspaces: ["a", "b", "a"] }).blurredWorkspaces).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("drops entries that are not strings", () => {
+    expect(parsePrefs({ blurredWorkspaces: {} as never }).blurredWorkspaces).toEqual([]);
+    expect(parsePrefs({ blurredWorkspaces: [1, null, "a"] as never }).blurredWorkspaces).toEqual([
+      "a",
+    ]);
   });
 });

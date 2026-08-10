@@ -106,6 +106,10 @@ interface PtyState {
   windowStart: number;
   windowBytes: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /// When silence should be declared, as an absolute timestamp. Postponed by
+  /// every chunk; read (not reset) by the single `idleTimer`, which is what
+  /// keeps a flood from allocating a timer per chunk.
+  idleDeadline: number;
   /// When the last byte arrived from this PTY, or `null` if none ever has.
   /// The clock the agent quiet-window is measured against; see `AGENT_QUIET_MS`.
   lastOutputAt: number | null;
@@ -184,6 +188,7 @@ function stateFor(ptyId: string): PtyState {
     windowStart: 0,
     windowBytes: 0,
     idleTimer: null,
+    idleDeadline: 0,
     lastOutputAt: null,
     waiting,
     setWaiting,
@@ -260,14 +265,33 @@ export function noteTerminalOutput(ptyId: string, byteLength: number): void {
 
   // Any output at all postpones the silence deadline. Bytes below the rate
   // threshold cannot *start* working, but they are not silence either.
-  if (state.idleTimer) clearTimeout(state.idleTimer);
+  //
+  // The deadline is a *number*, re-read by one timer, rather than a timer
+  // cancelled and re-armed per chunk. A shell under load calls this thousands of
+  // times a second, and `clearTimeout` + `setTimeout` per call allocated a timer
+  // per chunk on the same thread that has to keep xterm's parser fed. The timer
+  // below re-arms itself for whatever is left of the postponed deadline, so
+  // silence is still detected `OUTPUT_IDLE_MS` after the last byte — it just
+  // costs one timer per idle transition instead of one per chunk.
+  state.idleDeadline = now + OUTPUT_IDLE_MS;
+  if (state.idleTimer === null) armIdleTimer(state);
+}
+
+/// Fire once the silence deadline has actually passed, re-arming for the
+/// remainder if output arrived while we were waiting.
+function armIdleTimer(state: PtyState): void {
+  const delay = Math.max(0, state.idleDeadline - Date.now());
   state.idleTimer = setTimeout(() => {
     state.idleTimer = null;
+    if (Date.now() < state.idleDeadline) {
+      armIdleTimer(state);
+      return;
+    }
     state.windowBytes = 0;
     if (!state.outputActive()) return;
     state.setOutputActive(false);
     pushWorking(state);
-  }, OUTPUT_IDLE_MS);
+  }, delay);
 }
 
 /// Report whether the emulator is in the alternate screen buffer — i.e. whether a

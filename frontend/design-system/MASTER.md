@@ -70,8 +70,11 @@ Defined in `src/index.css` (dark = `:root`, light = `:root.light`) and overridde
 | Token | Tailwind | Purpose |
 |---|---|---|
 | `--canvas` | `bg-canvas` | **The recessed surface islands float on.** The window body, the shell inset, the gaps between panes. Never a reading surface. |
-| `--background` | `bg-background` | The **island** surface: editor body, terminal pane box, diff body, pane group |
-| `--sidebar` | `bg-sidebar` | Bands inside an island — the rail, both sidebars, the tab strip |
+| `--background` | `bg-background` | The **editor/main surface**: editor body, terminal pane box, diff body, pane group |
+| `--sidebar` | `bg-sidebar` | The **docked panels** — `TerminalSidebar`, `GitSidebar`, and other side panels (`FindPanel`, `FilesPanel`, `AgentDashboard`, `BrowserPane`'s toolbar). Nothing else reads this token — see the region surfaces below for what used to share it. |
+| `--surface-rail` | `bg-surface-rail` | The workspace rail (`WorkspaceRail.tsx`) |
+| `--surface-tabstrip` | `bg-surface-tabstrip` | The tab strip band atop a pane group (`TabStrip.tsx`) |
+| `--surface-statusbar` | `bg-surface-statusbar` | The status bar (`StatusBar.tsx`) |
 | `--card` | `bg-card` | Inner elevated blocks. Still unclaimed; `--popover` covers today's floating surfaces. |
 | `--popover` | `bg-popover` | Overlay body — palette, menus, popovers. Aliased as `--elev-2`. |
 | `--muted` | `bg-muted` | Input backgrounds, hunk headers |
@@ -103,6 +106,82 @@ Its `--background` is `oklch(1.000 0.000 0)`: pure white, with nowhere to go
 up. Every theme can go down. `src/canvasTokens.test.ts` asserts the invariant
 for all ten surface-defining blocks (the two base roots plus the eight themes)
 without needing a DOM. Adding a ninth theme fails that test until it is listed.
+
+### Region surfaces, and why they are derived too
+
+Before this scale existed, `--sidebar` meant four different things — the
+rail, both docked panels, and the tab strip — so those four regions, plus the
+status bar (which also just borrowed `--sidebar`), all painted the exact same
+lightness. Geometrically five separate regions; visually one grey field with
+only `--island-gap` cutting into it.
+
+`--surface-rail`, `--surface-tabstrip` and `--surface-statusbar` give the
+rail, the tab strip and the status bar back an identity `--sidebar` never
+should have lent them. `--sidebar` itself is unchanged and now means only the
+docked panels (`TerminalSidebar`, `GitSidebar`, `FindPanel`, `FilesPanel`,
+`AgentDashboard`, `BrowserPane`'s toolbar); `--background` is unchanged and
+still means the editor/main surface.
+
+Same derivation mechanism as `--canvas` — one `color-mix()` per mode in
+`index.css`, never restated in `themes.css`:
+
+```css
+:root       {
+  --surface-statusbar: color-mix(in oklab, var(--background) 90%,   black);
+  --surface-rail:      color-mix(in oklab, var(--background) 95%,   black);
+  --surface-tabstrip:  color-mix(in oklab, var(--background) 95%,   black);
+}
+:root.light {
+  --surface-statusbar: color-mix(in oklab, var(--background) 97.5%, black);
+  --surface-rail:      color-mix(in oklab, var(--background) 99%,   black);
+  --surface-tabstrip:  color-mix(in oklab, var(--background) 99%,   black);
+}
+```
+
+Because these reference `var(--background)` and are declared only once, at
+`:root`/`:root.light`, every named theme inherits a coherent, ordered set the
+moment it redefines `--background` — the same `var()` cascade indirection
+`--canvas` relies on, extended by `src/canvasTokens.test.ts`'s new invariant
+(`keeps every region strictly between canvas and island`) to all ten
+surface-defining blocks.
+
+**Measured, default dark** (`--background` L = 0.200, `--canvas` L = 0.170):
+
+| Token | L | vs `--canvas` | vs `--background` | `--muted-foreground` contrast | `--foreground` contrast |
+|---|---|---|---|---|---|
+| `--surface-statusbar` | 0.180 | +0.010 | −0.020 | 5.59:1 | 16.25:1 |
+| `--surface-rail` | 0.190 | +0.020 | −0.010 | 5.49:1 | 15.96:1 |
+| `--surface-tabstrip` | 0.190 | +0.020 | −0.010 | 5.49:1 | 15.96:1 |
+
+**Measured, default light** (`--background` L = 0.980, `--canvas` L = 0.9408):
+
+| Token | L | vs `--canvas` | vs `--background` | `--muted-foreground` contrast | `--foreground` contrast |
+|---|---|---|---|---|---|
+| `--surface-statusbar` | 0.9555 | +0.0147 | −0.0245 | 6.73:1 | 17.14:1 |
+| `--surface-rail` | 0.9702 | +0.0294 | −0.0098 | 7.13:1 | 18.16:1 |
+| `--surface-tabstrip` | 0.9702 | +0.0294 | −0.0098 | 7.13:1 | 18.16:1 |
+
+All six pairs clear WCAG AA for both the 12px status-bar/tab-strip text
+(4.5:1) and the 13px rail text (also held to 4.5:1 here, though 3:1 would
+suffice at that size) by a wide margin — every one is at least 5.4:1. Ratios
+computed from the actual oklch → linear-sRGB conversion (Björn Ottosson's
+OKLab matrices), not lightness alone, since `--foreground` and
+`--muted-foreground` carry nonzero chroma.
+
+**Light mode's known limitation.** `--canvas` only recedes 4% of lightness in
+light mode (vs. dark mode's 15%), and that 4% band is where a theme's
+independently hand-tuned `--sidebar` often already sits (default light
+`--sidebar` is 2% below `--background`; `github-light`'s is 3% below). The
+new region tokens' light-mode ratios (97.5% / 99%) are chosen to guarantee
+the ordering `canvas < statusbar < rail/tabstrip < background` holds for
+every theme — that part is a structural invariant, checked by
+`canvasTokens.test.ts`. What is **not** guaranteed is clearance from each
+theme's own `--sidebar` value: in `github-light`, `--surface-statusbar`
+(L=0.975) sits 0.005 above that theme's `--sidebar` (L=0.970) — distinct,
+but the closest gap in the whole scale. This is a judgment call made under
+the format's real headroom limit, not an oversight; visually confirm the
+light themes rather than trusting the numbers alone (see the unverified note
+in the stream's report).
 
 ### Elevation tiers
 

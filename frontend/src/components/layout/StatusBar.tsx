@@ -55,10 +55,12 @@ import { primaryChordFor } from "@/commands/keymap";
 import { isZen, maximizedGroupId, toggleMaximizedGroup, toggleZen } from "@/store/focusMode";
 import { hiddenActivity, hiddenWorktreeActivity } from "@/store/activity";
 import { StatusLed } from "@/components/layout/StatusLed";
+import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 import {
   STATUS_PRIORITY,
   orderSegments,
   planOverflow,
+  statusBarMenuItems,
   type StatusSegment,
 } from "@/components/layout/statusSegments";
 import {
@@ -76,7 +78,7 @@ export const STATUS_BAR_ROW =
   // No `border-t`: under D1 the status bar is its own island and the canvas
   // gap above it is the separator. The editor window's scoped bar reuses this
   // string, so both windows lose the rule together.
-  "flex items-center h-6 px-2 gap-3 text-label text-muted-foreground bg-sidebar shrink-0 select-none overflow-hidden";
+  "flex items-center h-6 px-2 gap-3 text-label text-muted-foreground bg-surface-statusbar shrink-0 select-none overflow-hidden";
 
 /// One chip. Every status-bar control is this shape: `text-micro`, an optional
 /// LED, an optional click action, and an accessible name whether or not the
@@ -481,6 +483,12 @@ export function StatusBar() {
 
   const ordered = createMemo(() => orderSegments(segments()));
 
+  // ── Context menu (Stream D) ────────────────────────────────────────────
+  // Row selection is `statusBarMenuItems` in `statusSegments.ts`, pure and
+  // unit-tested there; this is only the wiring.
+  const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
+  const menuItems = (): ContextMenuItem[] => statusBarMenuItems(ordered());
+
   // ── Overflow ─────────────────────────────────────────────────────────────
   // Widths are measured from the rendered chips and cached by id, because a
   // segment that has collapsed into the popover measures zero and would
@@ -554,6 +562,11 @@ export function StatusBar() {
       class={STATUS_BAR_ROW}
       role="status"
       aria-label="Repository status"
+      onContextMenu={(e) => {
+        if (menuItems().length === 0) return;
+        e.preventDefault();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
     >
       <Show when={repoPath()} fallback={<span class="opacity-60 shrink-0">No repository</span>}>
         <For each={side("start")}>
@@ -576,6 +589,17 @@ export function StatusBar() {
       <span class="sr-only" aria-live="polite" aria-atomic="true">
         {announcement()}
       </span>
+
+      <Show when={menu()}>
+        {(m) => (
+          <ContextMenu
+            x={m().x}
+            y={m().y}
+            items={menuItems()}
+            onClose={() => setMenu(null)}
+          />
+        )}
+      </Show>
     </div>
   );
 }
