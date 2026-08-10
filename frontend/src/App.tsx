@@ -132,7 +132,7 @@ import {
   dockSidebarBack,
   useSidebarWindows,
 } from "@/commands/sidebarWindows";
-import { SIDEBAR_LABEL } from "@/components/layout/SidebarDock";
+import { SIDEBAR_LABEL, sidebarSuppressedReason } from "@/components/layout/SidebarDock";
 import { browserTabLabel } from "@/components/browser/BrowserPane";
 
 /// The other two surfaces, loaded only if stacked mode actually renders them.
@@ -1377,9 +1377,12 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // screen edge.
 
   /// Whether a sidebar renders in the shell at all. Zen takes every panel away;
-  /// a detached panel is in a window of its own and its slot collapses.
+  /// a detached panel is in a window of its own and its slot collapses; and a
+  /// panel the current arrangement makes redundant is suppressed — see
+  /// `sidebarSuppressedReason`, which is also what the title bar's edge buttons
+  /// read so the two cannot disagree about what is on screen.
   const shows = (id: SidebarId) =>
-    !isZen() && !state.detachedSidebars.includes(id);
+    !isZen() && !state.detachedSidebars.includes(id) && !sidebarSuppressedReason(id);
 
   const explorerPane = () => (
     <Show when={shows("explorer") && !state.leftSidebarCollapsed}>

@@ -43,6 +43,8 @@ import {
 } from "./gitConfig";
 import {
   useSettings,
+  SURFACE_BLUR_MAX,
+  SURFACE_BLUR_MIN,
   SURFACE_OPACITY_MAX,
   SURFACE_OPACITY_MIN,
   type BackgroundFit,
@@ -425,10 +427,11 @@ function UiPane() {
         <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
           Vertical runs the tab strip down the left edge of each pane, which
           gives a tab room for a whole path instead of 140px of it. It also
-          moves the <strong class="font-medium">file explorer</strong> to the
-          right of the window, above the git panel — three navigation columns
-          stacked against the left edge is one more than the eye can scan.
-          Both windows follow this setting.
+          hides the <strong class="font-medium">terminals sidebar</strong>:
+          that column already lists every terminal, down the same axis, so a
+          second one beside it is two copies of one list. Nothing is lost —
+          switch back and it returns at the width you left it. Both windows
+          follow this setting.
         </p>
         <Show when={settings.ui.tabOrientation === "vertical"}>
           <div class="mt-2">
@@ -474,6 +477,23 @@ function UiPane() {
               format={(v) => `${v}%`}
               onInput={(v) => updateUi({ surfaceOpacity: v })}
             />
+            <div>
+              <SliderRow
+                label="Blur"
+                value={settings.ui.surfaceBlur}
+                min={SURFACE_BLUR_MIN}
+                max={SURFACE_BLUR_MAX}
+                step={1}
+                format={(v) => (v === 0 ? "Off" : `${v}px`)}
+                onInput={(v) => updateUi({ surfaceBlur: v })}
+              />
+              <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
+                Frosts the image behind the panels so its detail stops
+                competing with the text on top of it. Off shows the image
+                through the chrome unblurred, which is what shipped before this
+                slider existed. Terminals stay opaque either way.
+              </p>
+            </div>
             <SegmentedRow
               label="Fit"
               value={settings.ui.backgroundFit}

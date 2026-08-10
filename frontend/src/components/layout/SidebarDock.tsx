@@ -12,7 +12,7 @@
 /// which edge it sits on; nothing else about docking is visible from inside a
 /// sidebar.
 import { For, Show, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
-import { GripVertical, MoreVertical } from "lucide-solid";
+import { ChevronLeft, ChevronRight, GripVertical, MoreVertical } from "lucide-solid";
 import { ContextMenu, type ContextMenuItem } from "@/components/git/ContextMenu";
 import { useAppStore } from "@/store/LayoutContext";
 import type { AppStore } from "@/store/layout";
@@ -25,6 +25,7 @@ import {
   type SidebarId,
 } from "@/store/layout";
 import { isStackedMode } from "@/commands/environment";
+import { useSettings } from "@/store/settings";
 import {
   canDetachSidebar,
   detachSidebar,
@@ -53,6 +54,69 @@ export const SIDEBAR_LABEL: Record<SidebarId, string> = {
   git: "Git",
   agents: "Agents",
 };
+
+/// The way *out* of an expanded sidebar: the chevron in its header that takes
+/// it down to its icon rail.
+///
+/// Every collapsed sidebar has always had a way back in — the rail is one big
+/// button. The explorer and the terminals list were the two with no way *out*
+/// from their own chrome: collapsing them meant the title bar's edge button or
+/// a right-click, both of which are somewhere other than the panel you are
+/// trying to put away. The workspace rail and the git panel have had this
+/// button since they were written (their own inline copies, which predate this
+/// one and are left where they are); this is that control, factored out at the
+/// point a third and fourth panel needed it.
+///
+/// The chevron points the way the panel goes — outward, toward its own edge —
+/// which is why it takes `dock` rather than assuming the left.
+export function SidebarCollapseButton(props: {
+  /// The edge this panel is docked to, so the glyph points at it.
+  dock: DockSide;
+  /// The panel, named for the tooltip: "Collapse the file explorer".
+  label: string;
+  onCollapse: () => void;
+}) {
+  return (
+    <button
+      onClick={props.onCollapse}
+      aria-label={`Collapse ${props.label}`}
+      // The chevron is the only thing reporting this panel's state, and a
+      // chevron is not a state a screen reader can read — the same contract
+      // the rail's rows and `Disclosure.tsx` state.
+      aria-expanded={true}
+      title={`Collapse ${props.label}\nThe sidebar returns to the width you left it at`}
+      class="p-0.5 rounded shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-[background-color,color] duration-[var(--dur-tint)] ease-out"
+    >
+      <Show when={props.dock === "right"} fallback={<ChevronLeft class="w-3.5 h-3.5" />}>
+        <ChevronRight class="w-3.5 h-3.5" />
+      </Show>
+    </button>
+  );
+}
+
+/// Why a sidebar is not in the shell at all right now — or `null` when it is.
+///
+/// A *third* reason a panel can be absent, alongside zen (everything goes) and
+/// detaching (it is in a window of its own): the arrangement itself makes it
+/// redundant. Today there is exactly one such rule, and it is the terminals
+/// list under vertical tabs — a vertical strip already lists every terminal in
+/// the pane, down the same axis, at the same width, with the same LEDs. Two
+/// columns of the same list against one edge is the arrangement the vertical
+/// option exists to avoid.
+///
+/// It returns a *reason* rather than a boolean because every caller has to say
+/// it out loud: the shell hides the panel, and the title bar's edge button
+/// stops claiming to toggle something the user cannot see. A suppressed panel
+/// is not collapsed — nothing was persisted, its width and its collapse state
+/// are exactly as they were, and switching back to horizontal tabs restores it
+/// with no state to migrate.
+export function sidebarSuppressedReason(id: SidebarId): string | null {
+  const { settings } = useSettings();
+  if (id === "terminals" && settings.ui.tabOrientation === "vertical") {
+    return "The terminals list is hidden while tabs run vertically — the tab column already lists every terminal";
+  }
+  return null;
+}
 
 /// The drag handle in a sidebar's header.
 ///

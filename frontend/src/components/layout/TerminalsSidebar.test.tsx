@@ -54,4 +54,22 @@ describe("TerminalsSidebar", () => {
     expect(screen.getByRole("button", { name: "Terminals panel options" })).toBeInTheDocument();
     expect(screen.getByRole("separator", { name: "Terminals sidebar width" })).toBeInTheDocument();
   });
+
+  /// The way *out* of the panel, which it did not have: expanding was a rail
+  /// you could click and collapsing was somewhere else entirely (the title
+  /// bar, or a right-click). Both halves belong to the panel.
+  it("collapses to its icon rail from its own header, and back", async () => {
+    const { store } = mount();
+    const collapse = screen.getByRole("button", { name: "Collapse the terminals sidebar" });
+    expect(collapse.getAttribute("aria-expanded")).toBe("true");
+
+    collapse.click();
+    expect(store.state.sidebarSections.terminals).toBe(false);
+    // The header is gone with the rest of the panel; the rail is what is left.
+    expect(screen.queryByText("Terminals")).toBeNull();
+
+    const expand = await screen.findByRole("button", { name: "Show the terminals sidebar" });
+    expand.click();
+    expect(store.state.sidebarSections.terminals).toBe(true);
+  });
 });

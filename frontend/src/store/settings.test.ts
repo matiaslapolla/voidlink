@@ -349,6 +349,17 @@ describe("background image + opacity settings", () => {
     expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: "62" } })).ui.surfaceOpacity).toBe(100);
   });
 
+  it("clamps an out-of-range blur, and keeps 0 as a real value", () => {
+    expect(parseSettings(JSON.stringify({ ui: { surfaceBlur: 500 } })).ui.surfaceBlur).toBe(40);
+    expect(parseSettings(JSON.stringify({ ui: { surfaceBlur: -8 } })).ui.surfaceBlur).toBe(0);
+    // Not the default: "no blur" is what shipped before the slider existed and
+    // has to survive a round trip, or the setting could never be turned off.
+    expect(parseSettings(JSON.stringify({ ui: { surfaceBlur: 0 } })).ui.surfaceBlur).toBe(0);
+    expect(parseSettings(JSON.stringify({ ui: { surfaceBlur: "12" } })).ui.surfaceBlur).toBe(
+      DEFAULT_SETTINGS.ui.surfaceBlur,
+    );
+  });
+
   it("falls back to null for a non-string or blank image path", () => {
     expect(parseSettings(JSON.stringify({ ui: { backgroundImage: 42 } })).ui.backgroundImage).toBeNull();
     expect(parseSettings(JSON.stringify({ ui: { backgroundImage: "" } })).ui.backgroundImage).toBeNull();

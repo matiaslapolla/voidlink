@@ -14,7 +14,11 @@
 import { Show, createSignal } from "solid-js";
 import { FilesPanel, FilesRail } from "@/components/files/FilesPanel";
 import { Splitter } from "@/components/layout/Splitter";
-import { SidebarGrip, SidebarMenuButton } from "@/components/layout/SidebarDock";
+import {
+  SidebarCollapseButton,
+  SidebarGrip,
+  SidebarMenuButton,
+} from "@/components/layout/SidebarDock";
 import { useAppStore } from "@/store/LayoutContext";
 import { PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH, type DockSide } from "@/store/layout";
 
@@ -56,6 +60,11 @@ export function FilesSidebar(props: {
             Explorer
           </span>
           <SidebarMenuButton id="explorer" />
+          <SidebarCollapseButton
+            dock={dock()}
+            label="the file explorer"
+            onCollapse={() => actions.toggleSidebarSection("files")}
+          />
         </div>
         <FilesPanel onOpenFile={props.onOpenFile} />
       </Show>
