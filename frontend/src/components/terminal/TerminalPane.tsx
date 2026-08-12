@@ -426,8 +426,23 @@ export function TerminalPane(props: TerminalPaneProps) {
     // character-joiner API, which the WebGL renderer honours (unlike the old
     // canvas renderer), so the existing opt-in ligatures path below is
     // unaffected and we don't need to gate it.
+    //
+    // The one configuration the WebGL renderer cannot do is a *transparent
+    // grid*. It has no gl.clear — its "clear" is a full-viewport rectangle
+    // drawn in the theme background colour, with alpha blending enabled on the
+    // context. A fully transparent background quad is a no-op under that
+    // blend, and `preserveDrawingBuffer: true` (below) keeps the previous
+    // frame's pixels across presents — so nothing ever erases anything and
+    // every frame stacks glyphs onto the glyphs before them. Dropping
+    // `preserveDrawingBuffer` instead would trade the smear for its dual:
+    // the pane's text vanishing to transparent on blur/occlusion, the very
+    // bug that flag exists to fix. So translucent surfaces run the DOM
+    // renderer, and WebGL comes back when the surface is opaque again —
+    // the effect that flips `allowTransparency` below owns that swap.
     let webglAddon: WebglAddon | null = null;
-    if (t.gpuAcceleration !== "off" && webgl2Available()) {
+    const webglAllowed = t.gpuAcceleration !== "off" && webgl2Available();
+    const enableWebgl = () => {
+      if (webglAddon) return;
       try {
         // `preserveDrawingBuffer` is the fix for the pane going black when the
         // app loses focus. By default a WebGL drawing buffer's contents are
@@ -468,7 +483,8 @@ export function TerminalPane(props: TerminalPaneProps) {
         // Construction failed (no context, driver quirk) — keep DOM renderer.
         webglAddon = null;
       }
-    }
+    };
+    if (webglAllowed && !surface().allowTransparency) enableWebgl();
 
     // First sizing, deliberately after the renderer is settled: fitting with
     // the DOM renderer and then again once WebGL swaps the cell metrics would
@@ -702,16 +718,34 @@ export function TerminalPane(props: TerminalPaneProps) {
     // change.
     //
     // `allowTransparency` moves with it, and has to be assigned *before* the
-    // theme: the WebGL texture atlas caches whether backgrounds are opaque, so
-    // a theme applied while the old flag is still in force would be cached
-    // stripped of its alpha. Clearing the atlas is what makes the flip take on
-    // an already-mounted pane rather than at the next glyph it has never
-    // drawn.
+    // theme: the DOM renderer decides from it whether the theme background's
+    // alpha channel is honoured, so a theme applied while the old flag is
+    // still in force would paint opaque.
+    //
+    // The renderer moves with it too. WebGL cannot draw a transparent grid
+    // (the smear explained at `enableWebgl`), so flipping translucency on
+    // swaps the pane to the DOM renderer and flipping it off brings WebGL
+    // back. The swap re-fits for the same reason the context-loss path does:
+    // the two renderers disagree about how many columns fit, by a lot, so
+    // keeping the old grid width would leave the shell wrapping where the new
+    // renderer doesn't.
     ownedEffect(() => {
       const wantsTransparency = surface().allowTransparency;
       if (term.options.allowTransparency !== wantsTransparency) {
         term.options.allowTransparency = wantsTransparency;
-        webglAddon?.clearTextureAtlas();
+        if (wantsTransparency) {
+          if (webglAddon) {
+            try { webglAddon.dispose(); } catch { /* ignore */ }
+            webglAddon = null;
+            // Same pair as onContextLoss: disposing swaps the DOM renderer in
+            // but it only paints on the next damage, so force one.
+            repaint();
+            refit();
+          }
+        } else if (webglAllowed) {
+          enableWebgl();
+          refit();
+        }
       }
       term.options.theme = palette();
     });
