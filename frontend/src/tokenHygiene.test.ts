@@ -31,15 +31,16 @@ function isComment(line: string): boolean {
   return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
 }
 
-/// The terminal's ANSI palette.
+/// The terminal's ANSI palette (`TerminalPane.tsx`) and the two background
+/// colours it sits on (`terminalSurface.ts`).
 ///
 /// Deliberately literal and deliberately exempt: an xterm colour table is a
 /// readability decision about *someone else's output*, not chrome, and routing
 /// sixteen ANSI slots through VoidLink's six semantic colours would produce a
-/// terminal that lies about what a program printed. The file's header states
-/// the D1 contract it does have to keep — nothing in it may ever read
-/// `--background` or `--canvas`.
-const EXEMPT = new Set(["terminal/TerminalPane.tsx"]);
+/// terminal that lies about what a program printed. Both files state the D1
+/// contract they do have to keep — neither may ever read `--background` or
+/// `--canvas` — and `terminalSurface.test.ts` asserts it.
+const EXEMPT = new Set(["terminal/TerminalPane.tsx", "terminal/terminalSurface.ts"]);
 
 function scan(pattern: RegExp): string[] {
   const offenders: string[] = [];

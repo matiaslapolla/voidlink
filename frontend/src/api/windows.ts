@@ -628,7 +628,8 @@ export function onBlameEnabled(handler: (enabled: boolean) => void): Promise<Unl
 
 const UI_VISUAL_EVENT = "voidlink://ui-visual-changed";
 
-/// The background image, its opacity mix, its blur radius and its fit mode —
+/// The background image, its opacity mix, its blur radius, its strength and
+/// its fit mode —
 /// one payload because they are set together from Settings → UI and there is
 /// no useful state in which one arrives without the others. Typed here rather
 /// than imported from `store/settings.ts`: this module defines its own payload
@@ -638,6 +639,7 @@ export interface UiVisualSettings {
   backgroundImage: string | null;
   surfaceOpacity: number;
   surfaceBlur: number;
+  backgroundStrength: number;
   backgroundFit: "cover" | "contain" | "tile";
 }
 

@@ -10,7 +10,8 @@ import "@xterm/xterm/css/xterm.css";
 import { ContextMenu } from "@/components/git/ContextMenu";
 import { terminalMenuItems } from "@/components/terminal/terminalMenu";
 import { registerDropZone } from "@/components/layout/dragDrop";
-import { useSettings } from "@/store/settings";
+import { surfacesAreTranslucent, useSettings } from "@/store/settings";
+import { DARK_BG, LIGHT_BG, terminalSurface } from "./terminalSurface";
 import { useTheme } from "@/store/theme";
 import { markActive, recordKeystroke } from "@/commands/terminalHistory";
 import {
@@ -122,24 +123,8 @@ interface TerminalPaneProps {
   onClose?: () => void;
 }
 
-// xterm canvas is always rendered opaque: canvas-transparency is unreliable
-// across WebKitGTK and caused visible gaps around the grid.
-//
-// **Direction D1 audit (islands).** The one thing that must be true after the
-// canvas recedes is that the terminal body renders at *island* lightness, not
-// at canvas lightness — otherwise the pane reads as a hole punched in the
-// shell rather than a panel floating on it. These two constants are literals
-// on purpose (a terminal palette is a readability decision, not a chrome
-// one), which means they are structurally immune: nothing here reads
-// `--background`, so nothing here can inherit the recession. `paneBg()` below
-// paints the pane box behind the grid with the *same* literal, so the island's
-// rounded corners show terminal black rather than a strip of canvas.
-//
-// If this file ever starts deriving its palette from the tokens — MASTER §12
-// lists that as a TODO — it must read `--elev-1`, never `--background` and
-// never `--canvas`. `monacoTheme.ts` has the same contract and a test for it.
-const DARK_BG = "#09090b";
-const LIGHT_BG = "#fdf6e3"; // solarized-base3
+// The grid's own colours, and the D1 island contract they answer to, live in
+// `terminalSurface.ts` — see that file for both.
 
 /// `path/to/file.ext:line[:column]`. The path can include letters, digits,
 /// `.`, `_`, `-`, `+`, `/`, `@`, and `~`. Requires a `:` followed by a
@@ -215,8 +200,16 @@ export function TerminalPane(props: TerminalPaneProps) {
   let container!: HTMLDivElement;
   const { settings } = useSettings();
   const { mode } = useTheme();
-  const palette = () => (mode() === "light" ? LIGHT_THEME : DARK_THEME);
-  const paneBg = () => (mode() === "light" ? LIGHT_BG : DARK_BG);
+  /// The surface decision — see `terminalSurface.ts`. `surfacesAreTranslucent()`
+  /// is the policy (an image is painted, the user asked the surfaces to let it
+  /// through, the OS is not overriding that); this component honours it in TS
+  /// rather than CSS because the grid is a canvas, not a styled box.
+  const surface = () => terminalSurface(mode(), surfacesAreTranslucent());
+  const paneBg = () => surface().paneBg;
+  const palette = () => ({
+    ...(mode() === "light" ? LIGHT_THEME : DARK_THEME),
+    background: surface().gridBg,
+  });
   // Highlight ring while a file is dragged over the pane.
   const [dragOver, setDragOver] = createSignal(false);
 
@@ -326,6 +319,7 @@ export function TerminalPane(props: TerminalPaneProps) {
       // release build has no consumer and in dev is noise on the same thread
       // that has to keep up with the parser.
       logLevel: "warn",
+      allowTransparency: surface().allowTransparency,
       theme: palette(),
       fontFamily: t.fontFamily,
       fontSize: t.fontSize,
@@ -702,10 +696,23 @@ export function TerminalPane(props: TerminalPaneProps) {
     // Theme swap on app light/dark toggle. Assigning `options.theme` is enough:
     // xterm rebuilds its colour cache and the renderer redraws off the back of
     // that (the WebGL renderer refreshes its char atlas and clears its model).
-    // This effect only reads `mode()`, so it runs on a theme toggle and nowhere
-    // else — an explicit `refresh` here would be a second full-grid repaint for
-    // the same change.
+    // This effect reads `mode()` and the translucency policy, so it runs on a
+    // theme toggle or a change to the background sliders and nowhere else — an
+    // explicit `refresh` here would be a second full-grid repaint for the same
+    // change.
+    //
+    // `allowTransparency` moves with it, and has to be assigned *before* the
+    // theme: the WebGL texture atlas caches whether backgrounds are opaque, so
+    // a theme applied while the old flag is still in force would be cached
+    // stripped of its alpha. Clearing the atlas is what makes the flip take on
+    // an already-mounted pane rather than at the next glyph it has never
+    // drawn.
     ownedEffect(() => {
+      const wantsTransparency = surface().allowTransparency;
+      if (term.options.allowTransparency !== wantsTransparency) {
+        term.options.allowTransparency = wantsTransparency;
+        webglAddon?.clearTextureAtlas();
+      }
       term.options.theme = palette();
     });
 

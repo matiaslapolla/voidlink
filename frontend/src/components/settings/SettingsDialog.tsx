@@ -43,6 +43,9 @@ import {
 } from "./gitConfig";
 import {
   useSettings,
+  aaStrengthCeilingFor,
+  BACKGROUND_STRENGTH_MAX,
+  BACKGROUND_STRENGTH_MIN,
   SURFACE_BLUR_MAX,
   SURFACE_BLUR_MIN,
   SURFACE_OPACITY_MAX,
@@ -387,6 +390,14 @@ function BackgroundImageRow() {
 
 function UiPane() {
   const { settings, updateUi } = useSettings();
+  const { theme } = useTheme();
+  /// The strength past which the *current* theme's title-bar text drops under
+  /// AA over a worst-case photo. Read live: switching theme moves the line.
+  const aaCeiling = () => aaStrengthCeilingFor(theme());
+  const belowAa = () => {
+    const ceiling = aaCeiling();
+    return ceiling === null || settings.ui.backgroundStrength > ceiling;
+  };
   return (
     <div class="space-y-4">
       <SegmentedRow
@@ -468,6 +479,50 @@ function UiPane() {
         </p>
         <Show when={settings.ui.backgroundImage}>
           <div class="mt-2 space-y-2">
+            <div>
+              <SliderRow
+                label="Image strength"
+                value={settings.ui.backgroundStrength}
+                min={BACKGROUND_STRENGTH_MIN}
+                max={BACKGROUND_STRENGTH_MAX}
+                step={1}
+                format={(v) => `${v}%`}
+                onInput={(v) => updateUi({ backgroundStrength: v })}
+              />
+              <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
+                How much of the photo survives the scrim between it and the
+                shell — the control for “I set an image and can barely see it”.
+                Opacity below is a different question: how translucent the
+                panels on top of it are.
+              </p>
+              <p
+                class="mt-1 ml-[7.75rem] text-label"
+                classList={{
+                  "text-warning": belowAa(),
+                  "text-muted-foreground/80": !belowAa(),
+                }}
+              >
+                <Show
+                  when={aaCeiling() !== null}
+                  fallback={
+                    <>
+                      This theme’s text does not reach AA contrast over a
+                      background image at any strength — its own text and
+                      canvas colours are too close to begin with.
+                    </>
+                  }
+                >
+                  <Show
+                    when={belowAa()}
+                    fallback={<>Text stays above AA contrast up to {aaCeiling()}%.</>}
+                  >
+                    Above {aaCeiling()}% the title bar’s text can drop under AA
+                    contrast on a bright or dark photo in this theme. Panels at
+                    full opacity are unaffected.
+                  </Show>
+                </Show>
+              </p>
+            </div>
             <SliderRow
               label="Opacity"
               value={settings.ui.surfaceOpacity}
@@ -491,7 +546,8 @@ function UiPane() {
                 Frosts the image behind the panels so its detail stops
                 competing with the text on top of it. Off shows the image
                 through the chrome unblurred, which is what shipped before this
-                slider existed. Terminals stay opaque either way.
+                slider existed. Terminal panes follow Opacity along with every
+                other panel.
               </p>
             </div>
             <SegmentedRow

@@ -14,14 +14,42 @@
 import { describe, expect, it, afterEach } from "vitest";
 import { render } from "@solidjs/testing-library";
 import { AppShell } from "./AppShell";
+import { DEFAULT_SETTINGS, scrimOpacityFor } from "@/store/settings";
+
+const DEFAULT_STRENGTH = DEFAULT_SETTINGS.ui.backgroundStrength;
 
 const html = () => document.documentElement;
 
-function withBackgroundImage(opacityPercent: number) {
+function withBackgroundImage(opacityPercent: number, strengthPercent = DEFAULT_STRENGTH) {
   html().style.setProperty("--ui-bg-image", 'url("data:image/gif;base64,R0lGODlhAQABAAAAACw=")');
   html().style.setProperty("--ui-surface-opacity", `${opacityPercent}%`);
+  html().style.setProperty("--ui-bg-scrim", `${scrimOpacityFor(strengthPercent)}%`);
   html().setAttribute("data-bg-image", "");
   html().setAttribute("data-bg-fit", "cover");
+}
+
+/// A `#root` in the document, so the scrim rule (`html[data-bg-image] #root`)
+/// has something to match.
+function withRoot<T>(fn: (root: HTMLElement) => T): T {
+  const root = document.createElement("div");
+  root.id = "root";
+  document.body.appendChild(root);
+  try {
+    return fn(root);
+  } finally {
+    root.remove();
+  }
+}
+
+/// Alpha of the scrim gradient `#root` paints over the photo. The gradient's
+/// stops are `color-mix(in oklab, var(--canvas) var(--ui-bg-scrim), transparent)`,
+/// resolved by the engine into the computed `background-image` — so the alpha
+/// is read out of the first colour the layer names.
+function scrimAlpha(root: HTMLElement): number {
+  const layer = getComputedStyle(root).backgroundImage;
+  const color = layer.match(/linear-gradient\((?:[^,]*,\s*)?((?:oklab|rgba?|color)\([^)]*\))/);
+  if (!color) throw new Error(`no gradient colour in: ${layer}`);
+  return alphaOf(color[1]);
 }
 
 /// Alpha of a computed colour, whichever notation the engine reports it in.
@@ -61,6 +89,7 @@ afterEach(() => {
   html().removeAttribute("data-bg-fit");
   html().style.removeProperty("--ui-bg-image");
   html().style.removeProperty("--ui-surface-opacity");
+  html().style.removeProperty("--ui-bg-scrim");
 });
 
 describe("the background image is actually visible", () => {
@@ -79,18 +108,50 @@ describe("the background image is actually visible", () => {
 
   it("paints the image on #root, under the scrim", () => {
     withBackgroundImage(100);
-    const root = document.createElement("div");
-    root.id = "root";
-    document.body.appendChild(root);
-    try {
+    withRoot((root) => {
       const bg = getComputedStyle(root).backgroundImage;
       // Two layers, scrim first (it paints over the image beneath it).
       expect(bg).toMatch(/^linear-gradient/);
       expect(bg).toContain("url(");
       expect(getComputedStyle(root).backgroundColor).toBe("rgba(0, 0, 0, 0)");
-    } finally {
-      root.remove();
+    });
+  });
+
+  /// The second half of the fix, and the one the *user* was asking for: the
+  /// island slider only ever revealed the scrim, so with the scrim fixed the
+  /// photo could not be brought forward at all. These lock down that the
+  /// strength slider moves it and that the two ends are the measured band.
+  it("thins the scrim as the image strength rises", () => {
+    const alphas = [0, 25, 50, 75, 100].map((strength) =>
+      withRoot((root) => {
+        withBackgroundImage(100, strength);
+        return scrimAlpha(root);
+      }),
+    );
+    // Strictly decreasing: every position on the slider is a position.
+    for (let i = 1; i < alphas.length; i++) {
+      expect(alphas[i], `strength step ${i}`).toBeLessThan(alphas[i - 1]);
     }
+    expect(alphas[0]).toBeCloseTo(0.95, 2);
+    expect(alphas[alphas.length - 1]).toBeCloseTo(0.25, 2);
+  });
+
+  it("falls back to the safe scrim when the property has not been applied yet", () => {
+    // A window between module eval and the store's first effect. Painting no
+    // scrim there would flash the photo at full strength under the chrome.
+    withBackgroundImage(100);
+    html().style.removeProperty("--ui-bg-scrim");
+    withRoot((root) => expect(scrimAlpha(root)).toBeCloseTo(0.95, 2));
+  });
+
+  it("leaves the image visible at the default strength with the islands opaque", () => {
+    // The default install: an image is picked and nothing else is touched. If
+    // this ever goes back to ~0.95 the feature is inert again.
+    withBackgroundImage(100);
+    withRoot((root) => {
+      expect(scrimAlpha(root)).toBeLessThan(0.7);
+      expect(scrimAlpha(root)).toBeGreaterThan(0.5);
+    });
   });
 
   it("gives the AppShell root a see-through background at every slider position", () => {

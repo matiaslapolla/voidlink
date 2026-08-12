@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store";
-import { createEffect } from "solid-js";
+import { createEffect, createSignal } from "solid-js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { onUiVisualChange, publishUiVisualChange } from "@/api/windows";
@@ -262,6 +262,24 @@ export interface UiSettings {
   /// reduce` (`index.css`). 0 is a real value and removes the compositing
   /// pass altogether — see `data-surface-blur` in the effect below.
   surfaceBlur: number;
+  /// How strongly the image itself comes through, 0-100 — the *other* half of
+  /// the transparency feature, and a different question from `surfaceOpacity`.
+  /// That slider says how translucent the islands are; this one says how much
+  /// photo is behind them to see. They are separate because the scrim between
+  /// the image and the shell is what protects text contrast, so turning the
+  /// islands down while the scrim stays put reveals nothing but the scrim —
+  /// which is exactly how this feature read as inert.
+  ///
+  /// Drives `--ui-bg-scrim` (the scrim's own opacity) in the effect below:
+  /// 0 → a 95%-opaque scrim, the near-invisible image this shipped with;
+  /// 100 → 25%, the photo plainly present. Linear in between; `index.css`'s
+  /// scrim comment has the measured contrast at both ends and names where AA
+  /// stops holding.
+  ///
+  /// Same two conditions as the two above: ignored while `backgroundImage` is
+  /// unset, and irrelevant under `prefers-reduced-transparency: reduce`, where
+  /// the image is dropped altogether.
+  backgroundStrength: number;
   /// How the background image is scaled and positioned. See `BackgroundFit`.
   backgroundFit: BackgroundFit;
 }
@@ -469,6 +487,12 @@ const DEFAULTS: AppSettings = {
     backgroundImage: null,
     surfaceOpacity: 100,
     surfaceBlur: 18,
+    // Not 0: an install that picks an image is asking to see one, and 0 is
+    // exactly the near-invisible image this setting exists to fix. 45 puts the
+    // scrim at 63.5%, the highest round value at which both shipped default
+    // themes still clear AA at the opacity floor — see the measured table in
+    // `index.css` and `aaStrengthCeilingFor` below.
+    backgroundStrength: 45,
     backgroundFit: "cover",
   },
   terminal: {
@@ -547,11 +571,11 @@ function mergeDefaults<T extends object>(defaults: T, partial: Partial<T> | unde
 /// tint is gone and an island *is* the canvas — which is a coherent thing to
 /// ask for, because the canvas is not bare. `index.css`'s scrim comment
 /// (search that file for "Background image + island translucency") has the
-/// measured worst-case contrast: a fixed 95%-opaque `--canvas` layer under
-/// everything keeps foreground text ≥ AA against the two extremes a photo can
-/// present, and its canvas-side numbers are exactly the 0% case. Weakening
-/// that scrim without re-checking the math would silently invalidate the
-/// guarantee.
+/// measured worst-case contrast: a `--canvas` scrim under everything keeps
+/// foreground text ≥ AA against the two extremes a photo can present, and its
+/// canvas-side numbers are exactly the 0% case. That scrim is no longer fixed
+/// — `backgroundStrength` sets it — so the numbers there are a table over both
+/// sliders rather than a single guarantee.
 export const SURFACE_OPACITY_MIN = 0;
 export const SURFACE_OPACITY_MAX = 100;
 
@@ -574,7 +598,70 @@ function clampSurfaceBlur(v: unknown): number {
   return Math.max(SURFACE_BLUR_MIN, Math.min(SURFACE_BLUR_MAX, Math.round(v)));
 }
 
-/// Validate the four background/translucency keys field by field, same
+/// Bounds of the `backgroundStrength` slider. Both ends are real settings
+/// rather than guard rails: 0 is the fully-dampened image this feature
+/// shipped with, and 100 is a photo at the strongest the scrim math still
+/// leaves room for.
+export const BACKGROUND_STRENGTH_MIN = 0;
+export const BACKGROUND_STRENGTH_MAX = 100;
+
+/// The scrim's opacity at each end of the slider, in percent. Not a straight
+/// inversion of the slider: the scrim is a *contrast floor*, so its useful
+/// range is the narrow band between "the photo may as well not be there"
+/// (95%, where the ten themes were originally measured) and "the photo is
+/// present and the darkest theme is at the edge of AA" (25%). Mapping the
+/// slider onto that band rather than onto 100→0 is what keeps every position
+/// on it a position someone would actually choose.
+const SCRIM_AT_STRENGTH_MIN = 95;
+const SCRIM_AT_STRENGTH_MAX = 25;
+
+/// Scrim opacity, in percent, for a strength value. Exported for the settings
+/// row, which marks where AA is lost, and for the tests.
+export function scrimOpacityFor(strength: number): number {
+  const t = (strength - BACKGROUND_STRENGTH_MIN) / (BACKGROUND_STRENGTH_MAX - BACKGROUND_STRENGTH_MIN);
+  return SCRIM_AT_STRENGTH_MIN + t * (SCRIM_AT_STRENGTH_MAX - SCRIM_AT_STRENGTH_MIN);
+}
+
+/// Lowest whole-percent scrim at which each theme's `--foreground` still
+/// clears AA (4.5:1) over a worst-case pure-white or pure-black photo, with
+/// the island at `SURFACE_OPACITY_MIN` — the title bar's case at any opacity,
+/// since it paints `bg-canvas` and `bg-canvas` is `transparent` under an
+/// image. Measured, not derived: `index.css`'s scrim comment states the
+/// method, and a theme whose `--foreground` or `--background` is retuned needs
+/// its number recomputed. `null` is a theme no scrim value saves.
+const AA_SCRIM_FLOOR: Record<string, number | null> = {
+  dark: 62,
+  light: 52,
+  "github-dark": 60,
+  "github-light": 53,
+  monokai: 61,
+  "solarized-dark": 94,
+  "solarized-light": null,
+  nord: 66,
+  dracula: 61,
+  "one-dark": 82,
+};
+
+/// Highest `backgroundStrength` at which `themeId` still clears AA, or `null`
+/// if it never does (`solarized-light`, and any theme absent from the table —
+/// an unknown id is not a licence to promise a guarantee that was never
+/// measured). The settings row marks this position rather than clamping to
+/// it: a user reading code on an opaque island is not harmed by a title bar
+/// at 4.2:1, and past this point it is their call.
+export function aaStrengthCeilingFor(themeId: string): number | null {
+  const floor = AA_SCRIM_FLOOR[themeId];
+  if (floor == null) return null;
+  const t = (SCRIM_AT_STRENGTH_MIN - floor) / (SCRIM_AT_STRENGTH_MIN - SCRIM_AT_STRENGTH_MAX);
+  const strength = Math.floor(BACKGROUND_STRENGTH_MIN + t * (BACKGROUND_STRENGTH_MAX - BACKGROUND_STRENGTH_MIN));
+  return Math.max(BACKGROUND_STRENGTH_MIN, Math.min(BACKGROUND_STRENGTH_MAX, strength));
+}
+
+function clampBackgroundStrength(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return DEFAULTS.ui.backgroundStrength;
+  return Math.max(BACKGROUND_STRENGTH_MIN, Math.min(BACKGROUND_STRENGTH_MAX, Math.round(v)));
+}
+
+/// Validate the five background/translucency keys field by field, same
 /// policy as `parseExperimentalSettings`: a hand-edited or stale value falls
 /// back to its default rather than reaching Monaco-adjacent code with a shape
 /// nothing here has a branch for.
@@ -588,6 +675,7 @@ function parseUiSettings(partial: Partial<UiSettings> | undefined): UiSettings {
         : null,
     surfaceOpacity: clampSurfaceOpacity(partial?.surfaceOpacity),
     surfaceBlur: clampSurfaceBlur(partial?.surfaceBlur),
+    backgroundStrength: clampBackgroundStrength(partial?.backgroundStrength),
     backgroundFit: BACKGROUND_FITS.includes(partial?.backgroundFit as BackgroundFit)
       ? (partial!.backgroundFit as BackgroundFit)
       : DEFAULTS.ui.backgroundFit,
@@ -760,17 +848,48 @@ createEffect(() => {
 /// rather than `blur(0px)`: a zero-radius `backdrop-filter` still promotes
 /// every surface carrying it to its own compositing layer and still costs a
 /// readback per frame, which is the whole expense with none of the effect.
+///
+/// The image-strength half is `--ui-bg-scrim`, the opacity of the scrim the
+/// `#root` rule paints over the photo. It is a property rather than an
+/// attribute because unlike the blur it has no free value: every position on
+/// the slider costs the same one gradient.
+
+/// Whether an image is actually *painted*, as opposed to merely configured —
+/// the JS mirror of the `data-bg-image` attribute the effect below toggles.
+/// The two differ for the whole span of the `Image()` probe, and permanently
+/// for a path that no longer resolves, which is exactly the case a component
+/// reading `settings.ui.backgroundImage` directly would get wrong. Declared
+/// above the effect that writes it: module-scope effects run on creation, so
+/// a `const` below would be in its temporal dead zone on the first pass.
+const [bgImageActive, setBgImageActive] = createSignal(false);
+
+/// `prefers-reduced-transparency: reduce`, reactively. `index.css` answers
+/// this preference for everything it paints; anything painted from TS (the
+/// terminal grid, which is a canvas and not a CSS surface) has to ask.
+const [reducedTransparency, setReducedTransparency] = createSignal(
+  typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-transparency: reduce)").matches === true,
+);
+if (typeof window !== "undefined" && window.matchMedia) {
+  const mq = window.matchMedia("(prefers-reduced-transparency: reduce)");
+  // No teardown: this is module scope, one listener per window for the life
+  // of the process, same as the effects around it.
+  mq.addEventListener("change", (e) => setReducedTransparency(e.matches));
+}
+
 createEffect(() => {
   const html = document.documentElement;
   const path = settings.ui.backgroundImage;
   html.style.setProperty("--ui-surface-opacity", `${settings.ui.surfaceOpacity}%`);
   html.style.setProperty("--ui-surface-blur", `${settings.ui.surfaceBlur}px`);
+  html.style.setProperty("--ui-bg-scrim", `${scrimOpacityFor(settings.ui.backgroundStrength)}%`);
   html.toggleAttribute("data-surface-blur", settings.ui.surfaceBlur > 0);
   html.setAttribute("data-bg-fit", settings.ui.backgroundFit);
 
   if (!path) {
     html.style.removeProperty("--ui-bg-image");
     html.removeAttribute("data-bg-image");
+    setBgImageActive(false);
     return;
   }
   const src = convertFileSrc(path);
@@ -782,14 +901,33 @@ createEffect(() => {
     if (settings.ui.backgroundImage !== path) return;
     html.style.setProperty("--ui-bg-image", `url("${src}")`);
     html.setAttribute("data-bg-image", "");
+    setBgImageActive(true);
   };
   probe.onerror = () => {
     if (settings.ui.backgroundImage !== path) return;
     html.style.removeProperty("--ui-bg-image");
     html.removeAttribute("data-bg-image");
+    setBgImageActive(false);
   };
   probe.src = src;
 });
+
+/// Whether surfaces that are painted from TS rather than CSS should let the
+/// background image through right now. One accessor rather than three reads at
+/// each call site, because the *policy* — an image is actually up, the user
+/// asked for translucency, and the OS is not overriding it — is the thing that
+/// has to stay in step with `index.css`, and a component re-deriving it is how
+/// the two fall apart.
+///
+/// Reactive: reads a store field and two signals, so a caller inside an effect
+/// or a JSX expression re-runs when any of them moves.
+export function surfacesAreTranslucent(): boolean {
+  if (!bgImageActive()) return false;
+  if (reducedTransparency()) return false;
+  // At full opacity there is nothing to see through, and the cheapest way to
+  // paint that is the opaque path every install without an image is on.
+  return settings.ui.surfaceOpacity < SURFACE_OPACITY_MAX;
+}
 
 /// Tell the other windows the background/opacity/fit changed, and mirror
 /// changes they broadcast. Same symmetric shape as `bridgeThemeAcrossWindows`
@@ -822,6 +960,7 @@ export function bridgeUiVisualAcrossWindows(): () => void {
       backgroundImage: settings.ui.backgroundImage,
       surfaceOpacity: settings.ui.surfaceOpacity,
       surfaceBlur: settings.ui.surfaceBlur,
+      backgroundStrength: settings.ui.backgroundStrength,
       backgroundFit: settings.ui.backgroundFit,
     };
     if (first) {
@@ -841,6 +980,7 @@ export function bridgeUiVisualAcrossWindows(): () => void {
       // no `surfaceBlur` in it at all — lands on the default rather than on
       // `undefined`, which the store would happily write through.
       surfaceBlur: clampSurfaceBlur(value.surfaceBlur),
+      backgroundStrength: clampBackgroundStrength(value.backgroundStrength),
       backgroundFit: BACKGROUND_FITS.includes(value.backgroundFit)
         ? value.backgroundFit
         : DEFAULTS.ui.backgroundFit,

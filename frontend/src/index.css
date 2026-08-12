@@ -824,48 +824,58 @@ html:not([data-density]) {
  * **The scrim.** Two layers sit between the image and everything above it, both
  * painted as one `background-image` stack on `#root`:
  *   1. The image itself (`--ui-bg-image`), full strength.
- *   2. A SCRIM on top of it — a fixed, non-adjustable 95%-opaque `--canvas`
- *      layer (a `linear-gradient` of one flat colour, which is the standard
- *      way to paint a translucent fill as a background-image layer). It is
- *      what keeps a busy photo from reaching the islands at anything close
- *      to full strength, and it is fixed rather than a second slider on
- *      purpose: the AA guarantee below only holds because it cannot be
- *      turned down.
+ *   2. A SCRIM on top of it — a `--canvas` layer at `--ui-bg-scrim` (a
+ *      `linear-gradient` of one flat colour, which is the standard way to
+ *      paint a translucent fill as a background-image layer). It is what
+ *      keeps a busy photo from reaching the islands at anything close to full
+ *      strength.
  * The islands then mix toward transparent *on top of* that already-dampened
  * surface.
+ *
+ * **The scrim used to be fixed at 95%, and that was the bug.** At 95% about a
+ * twentieth of the photo survives; a user who picked an image and then pulled
+ * `surfaceOpacity` all the way down watched the islands go clear and reveal —
+ * the scrim. The feature read as inert because the only slider it exposed was
+ * the one that could not answer the question being asked. So the scrim is now
+ * the second slider, `backgroundStrength` (`settings.ts`), mapped onto the
+ * band 95% → 25%, and the AA guarantee below becomes a table with a boundary
+ * on it rather than a promise.
  *
  * **Measured contrast** (`oklch → oklab → linear sRGB`, composited as CSS
  * actually will: the scrim over a worst-case pure-white or pure-black photo,
  * then the island at the opacity slider's floor — `SURFACE_OPACITY_MIN` in
  * `settings.ts`, 0%, where an island's own tint is gone and what text sits on
- * is the scrim itself). `--foreground` against the result, for all ten themes,
- * in the two places text lands:
+ * is the scrim itself). This is also the title bar's case at *any* island
+ * opacity: it paints `bg-canvas` straight onto the scrim, and `bg-canvas` is
+ * `transparent` here. `--foreground` against the result, per theme, as the
+ * lowest whole-percent scrim that still clears AA (4.5:1):
  *
- *   • on an island at 20%: worst 4.77:1 (`solarized-dark`), defaults 15.0:1 /
- *     17.2:1
- *   • on the canvas — the title bar, which paints `bg-canvas` directly on the
- *     scrim: worst 4.74:1 (`solarized-dark`), defaults 14.8:1 / 16.8:1. This
- *     row is also the island's own worst case at the 0% floor: with no tint
- *     left, an island and the canvas are the same surface.
+ *     solarized-light  never    │  nord              66%
+ *     solarized-dark   94%      │  default-dark      62%
+ *     one-dark         82%      │  monokai / dracula 61%
+ *     default-light    52%      │  github-dark       60%
+ *     github-light     53%      │
  *
- * The same worst cases with no scrim at all measure 1.3:1 and 1.5:1 — an
- * outright failure — which is the whole reason this exists as a fixed layer
- * instead of leaving the user's own slider to cover it.
+ * With no scrim at all every one of them lands near 1.3:1 — an outright
+ * failure — which is why the band stops at 25% rather than at 0.
  *
- * The scrim was 92% and is now 95%. At 92% the canvas layer becoming visible
- * (above) dropped `solarized-dark` to 4.34:1 on the title bar and 4.46:1 on an
- * island — under AA, where its no-image baseline is 5.37:1 / 4.90:1. 95% is the
- * lowest whole percent at which every theme that clears 4.5:1 with no image
- * still clears it with one.
+ * `backgroundStrength` defaults to 45, i.e. a 63.5% scrim: the highest round
+ * value at which BOTH shipped default themes still clear AA at the opacity
+ * floor (`default-dark` is the binding one, at 62%). Past that the settings
+ * row says so, per theme, rather than the slider silently refusing to move —
+ * a user who wants their photograph and is reading code on an opaque island
+ * is not being harmed by a title bar at 4.2:1, and that is their call to make.
+ * `aaStrengthCeilingFor` in `settings.ts` is where those per-theme numbers
+ * live; if a theme's `--foreground` or `--background` is retuned, recompute
+ * them with the method named above.
  *
- * **The one theme this does not save is `solarized-light`**, which measures
- * 3.82:1 on the canvas and 4.00:1 on an island. That is not this feature's
- * doing: its `--foreground` on its own `--canvas` is 4.26:1 with no image
- * present at all, so no scrim value can lift it — at the slider's floor an
- * island *is* the canvas. MASTER.md §10.13 already names
- * `solarized-light` as one of the two extreme themes to validate against; the
- * theme's own text/canvas pair is the thing to fix, in a stream that is allowed
- * to retune tokens. */
+ * **The one theme no scrim value saves is `solarized-light`**, which peaks at
+ * 3.82:1. That is not this feature's doing: its `--foreground` on its own
+ * `--canvas` is 4.26:1 with no image present at all — at the slider's floor an
+ * island *is* the canvas. MASTER.md §10.13 already names `solarized-light` as
+ * one of the two extreme themes to validate against; the theme's own
+ * text/canvas pair is the thing to fix, in a stream that is allowed to retune
+ * tokens. */
 html[data-bg-image] {
   /* Not on the slider — see "The canvas must get out of the way" above. */
   --color-canvas: transparent;
@@ -898,10 +908,12 @@ html[data-bg-image] #root {
   /* The scrim (`linear-gradient` of a single translucent colour) is listed
    * first, so it paints over the image beneath it — CSS stacks
    * `background-image` layers with the first listed on top. */
+  /* The fallback is the pre-slider value, so a window whose store has not
+   * applied `--ui-bg-scrim` yet paints the safe scrim rather than none. */
   background-image:
     linear-gradient(
-      color-mix(in oklab, var(--canvas) 95%, transparent),
-      color-mix(in oklab, var(--canvas) 95%, transparent)
+      color-mix(in oklab, var(--canvas) var(--ui-bg-scrim, 95%), transparent),
+      color-mix(in oklab, var(--canvas) var(--ui-bg-scrim, 95%), transparent)
     ),
     var(--ui-bg-image);
   background-color: transparent;

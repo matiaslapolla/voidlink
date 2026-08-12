@@ -374,4 +374,47 @@ describe("background image + opacity settings", () => {
     );
     expect(parseSettings(JSON.stringify({ ui: { backgroundFit: 1 } })).ui.backgroundFit).toBe("cover");
   });
+
+  it("defaults, clamps and round-trips the image strength", () => {
+    // A payload written before the key existed — the case an older window
+    // broadcasts across `bridgeUiVisualAcrossWindows` — lands on the default,
+    // never on `undefined`.
+    expect(parseSettings(JSON.stringify({ ui: { surfaceOpacity: 80 } })).ui.backgroundStrength).toBe(
+      DEFAULT_SETTINGS.ui.backgroundStrength,
+    );
+    expect(parseSettings(JSON.stringify({ ui: { backgroundStrength: 140 } })).ui.backgroundStrength).toBe(100);
+    expect(parseSettings(JSON.stringify({ ui: { backgroundStrength: -9 } })).ui.backgroundStrength).toBe(0);
+    // 0 is a real position, not a missing value: it is the fully-dampened
+    // image this setting was added to give people a way out of.
+    expect(parseSettings(JSON.stringify({ ui: { backgroundStrength: 0 } })).ui.backgroundStrength).toBe(0);
+    expect(parseSettings(JSON.stringify({ ui: { backgroundStrength: 30 } })).ui.backgroundStrength).toBe(30);
+    expect(parseSettings(JSON.stringify({ ui: { backgroundStrength: "30" } })).ui.backgroundStrength).toBe(
+      DEFAULT_SETTINGS.ui.backgroundStrength,
+    );
+  });
+
+  it("maps strength onto the scrim band, ends included", () => {
+    // The two ends are the measured band in `index.css`, and the whole point
+    // of the setting is that the slider spans them rather than sitting at one.
+    expect(mod.scrimOpacityFor(0)).toBe(95);
+    expect(mod.scrimOpacityFor(100)).toBe(25);
+    expect(mod.scrimOpacityFor(50)).toBe(60);
+    // The shipped default has to stay on the safe side of the binding default
+    // theme's AA floor (62% scrim, `default-dark`), or an install that picks
+    // an image gets an inaccessible title bar without touching a slider.
+    expect(mod.scrimOpacityFor(DEFAULT_SETTINGS.ui.backgroundStrength)).toBeGreaterThan(62);
+  });
+
+  it("reports the AA ceiling per theme, and refuses to promise one it never measured", () => {
+    expect(mod.aaStrengthCeilingFor("dark")).toBe(47);
+    // Solarized dark's own text/canvas pair is tight enough that almost any
+    // image costs it AA.
+    expect(mod.aaStrengthCeilingFor("solarized-dark")).toBe(1);
+    // No scrim value saves it — see the note in `index.css`.
+    expect(mod.aaStrengthCeilingFor("solarized-light")).toBeNull();
+    // An id from an older build is not a licence to claim a guarantee.
+    expect(mod.aaStrengthCeilingFor("some-future-theme")).toBeNull();
+    // The default must sit at or under the default theme's ceiling.
+    expect(DEFAULT_SETTINGS.ui.backgroundStrength).toBeLessThanOrEqual(mod.aaStrengthCeilingFor("dark")!);
+  });
 });

@@ -267,8 +267,8 @@ export interface TabStripProps {
   onTogglePin: (id: string) => void;
   /// Buttons pinned to the right edge, after the overflow chevron — the "+"
   /// menu in the workbench, the markdown-preview eye in the editor window.
-  /// A vertical strip puts them in a footer row along its bottom edge instead,
-  /// which is the same place relative to the *reading order* of the strip.
+  /// A vertical strip puts them in a bar across its top edge instead — where
+  /// the column starts, rather than trailing a list that grows away from them.
   trailing?: JSX.Element;
 
   /// Which way the strip runs. Absent means horizontal, so every existing
@@ -966,6 +966,83 @@ export function TabStrip(props: TabStripProps) {
   /// groups reorders no store array.
   const canDrag = (tab: TabDescriptor) => isReorderable(tab) || props.groupId != null;
 
+  /// The strip's controls: the "+" menu, the group's aggregate mark, the
+  /// overflow chevron, the close-pane button.
+  ///
+  /// A row keeps them inline at its right end. A column cannot — they would
+  /// each become a full-width row in the tab list — so it gives them a fixed
+  /// bar of their own, at the TOP of the column. The footer they used to sit
+  /// in was the same position in the *row's* reading order, read around the
+  /// corner; in a column it is not, because a column of tabs grows downward
+  /// and a control pinned under it moves further from the tabs the more tabs
+  /// there are. "+" belongs where the list starts.
+  ///
+  /// One definition rendered from one of two places rather than a CSS `order`
+  /// swap: `order` moves the box and leaves the DOM — and with it the tab
+  /// sequence and the reading order for anyone not looking at the pixels —
+  /// pointing the old way.
+  ///
+  /// The hairline is the only border either orientation draws inside the
+  /// strip, and it exists because this bar is a different kind of thing from
+  /// the tabs beside it. It follows the bar to whichever edge faces them.
+  const controls = () => (
+    <div
+      data-testid="tab-strip-controls"
+      class="flex items-center shrink-0"
+      classList={{
+        // `h-full` in a row so the overflow chevron's `self-end mb-1` still
+        // measures against the strip's own 9-unit height, exactly as it did
+        // when these three were direct children of it.
+        "h-full": !vertical(),
+        "justify-end gap-0.5 h-9 px-1 border-b border-border/50 w-full": vertical(),
+      }}
+    >
+      {props.trailing}
+
+      {/* The group's aggregate activity mark. Reserved, not conditional: it
+          occupies its 8px whether or not a signal is live, so a background
+          pane lighting up never nudges the "+" button sideways (§7.5.3 rule
+          3). Wave 5 is what starts passing `groupActivity`. */}
+      <Show when={props.groupHeader}>
+        <LedSlot signal={props.groupActivity} class="mx-1.5" />
+      </Show>
+
+      <Show when={overflowing()}>
+        <TabOverflowMenu
+          tabs={props.tabs}
+          activeId={props.activeId}
+          onJump={(tab) => props.onSelect(tab)}
+        />
+      </Show>
+
+      {/* Undoing a split, in the place the split happened. Last in the
+          trailing row so it sits at the pane's outside corner, away from the
+          "+" — closing the pane and opening a tab in it are opposite
+          intents and adjacency invites the wrong one. `PanelRightClose`
+          rather than an `×`: an × in a tab strip already means "close the
+          tab", and two glyphs a few pixels apart meaning different closes is
+          the confusion §7.6 is about. */}
+      <Show when={props.groupHeader && props.onClosePane}>
+        <button
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onClosePane?.();
+          }}
+          class="ml-0.5 p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-accent/40 hover:text-foreground transition-[opacity,background-color,color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Close this pane"
+          // §7.6: the control says what it does, including the part a user
+          // would otherwise have to risk a click to find out — that the tabs
+          // survive. Losing a terminal to a layout tweak is the fear that
+          // stops people using splits at all.
+          use:tooltip="Close this pane — its tabs move to the first pane"
+        >
+          <PanelRightClose class="w-3 h-3" />
+        </button>
+      </Show>
+    </div>
+  );
+
   return (
     <div
       // No `border-b`: the strip sits at the top of an island whose body is a
@@ -991,6 +1068,8 @@ export function TabStrip(props: TabStripProps) {
       style={vertical() ? { width: `${props.width ?? VERTICAL_TAB_WIDTH.default}px` } : undefined}
       onMouseDown={() => props.onFocusGroup?.()}
     >
+      <Show when={vertical()}>{controls()}</Show>
+
       <div
         ref={(el) => (scrollRef = el)}
         data-testid="tab-strip-scroller"
@@ -1076,69 +1155,7 @@ export function TabStrip(props: TabStripProps) {
         />
       </div>
 
-      {/* The strip's controls: the "+" menu, the group's aggregate mark, the
-          overflow chevron.
-          A row keeps them inline at its right end. A column cannot — they would
-          each become a full-width row in the tab list — so it gives them a
-          fixed footer along its bottom edge, which is the same position in the
-          strip's own reading order and lands them beside the status bar rather
-          than adrift in the tab column. The hairline is the only border either
-          orientation draws inside the strip, and it exists because the footer
-          is a different kind of thing from the tabs above it. */}
-      <div
-        class="flex items-center shrink-0"
-        classList={{
-          // `h-full` in a row so the overflow chevron's `self-end mb-1` still
-          // measures against the strip's own 9-unit height, exactly as it did
-          // when these three were direct children of it.
-          "h-full": !vertical(),
-          "justify-end gap-0.5 h-9 px-1 border-t border-border/50 w-full": vertical(),
-        }}
-      >
-        {props.trailing}
-
-        {/* The group's aggregate activity mark. Reserved, not conditional: it
-            occupies its 8px whether or not a signal is live, so a background
-            pane lighting up never nudges the "+" button sideways (§7.5.3 rule
-            3). Wave 5 is what starts passing `groupActivity`. */}
-        <Show when={props.groupHeader}>
-          <LedSlot signal={props.groupActivity} class="mx-1.5" />
-        </Show>
-
-        <Show when={overflowing()}>
-          <TabOverflowMenu
-            tabs={props.tabs}
-            activeId={props.activeId}
-            onJump={(tab) => props.onSelect(tab)}
-          />
-        </Show>
-
-        {/* Undoing a split, in the place the split happened. Last in the
-            trailing row so it sits at the pane's outside corner, away from the
-            "+" — closing the pane and opening a tab in it are opposite
-            intents and adjacency invites the wrong one. `PanelRightClose`
-            rather than an `×`: an × in a tab strip already means "close the
-            tab", and two glyphs a few pixels apart meaning different closes is
-            the confusion §7.6 is about. */}
-        <Show when={props.groupHeader && props.onClosePane}>
-          <button
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              props.onClosePane?.();
-            }}
-            class="ml-0.5 p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-accent/40 hover:text-foreground transition-[opacity,background-color,color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Close this pane"
-            // §7.6: the control says what it does, including the part a user
-            // would otherwise have to risk a click to find out — that the tabs
-            // survive. Losing a terminal to a layout tweak is the fear that
-            // stops people using splits at all.
-            use:tooltip="Close this pane — its tabs move to the first pane"
-          >
-            <PanelRightClose class="w-3 h-3" />
-          </button>
-        </Show>
-      </div>
+      <Show when={!vertical()}>{controls()}</Show>
 
       <TabGroupContextMenu
         ctx={groupCtx()}

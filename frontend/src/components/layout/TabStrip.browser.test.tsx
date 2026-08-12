@@ -206,6 +206,50 @@ describe("vertical orientation", () => {
     // in a 300px column it must be free to use what is there.
     expect(label.getBoundingClientRect().width).toBeGreaterThan(140);
   });
+
+  /// The "+" used to be pinned under the tab list. In a column that is the
+  /// wrong end: the list grows downward, so the control the user reaches for
+  /// to add to it moves further away the more they have added.
+  it("puts the controls above the tabs in a column, and after them in a row", async () => {
+    const tabs = [tab("first.ts"), tab("second.ts")];
+    const trailing = <button aria-label="New tab">+</button>;
+
+    const vertical = render(() => (
+      <div style={{ width: "220px", height: "600px", display: "flex" }}>
+        <TabStrip {...baseProps(tabs)} orientation="vertical" width={220} trailing={trailing} />
+      </div>
+    ));
+    const vControls = await waitFor(() =>
+      vertical.container.querySelector<HTMLElement>('[data-testid="tab-strip-controls"]')!,
+    );
+    const vScroller = vertical.container.querySelector<HTMLElement>(
+      '[data-testid="tab-strip-scroller"]',
+    )!;
+    expect(vControls.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      vScroller.getBoundingClientRect().top,
+    );
+    // DOM order, not just pixels: a CSS `order` swap would satisfy the rect
+    // above while leaving tab order and screen readers pointing the old way.
+    expect(vControls.compareDocumentPosition(vScroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    vertical.unmount();
+
+    // A row is unchanged: the controls still trail the tabs at its right end.
+    const horizontal = render(() => (
+      <div style={{ width: "600px", display: "flex" }}>
+        <TabStrip {...baseProps(tabs)} trailing={trailing} />
+      </div>
+    ));
+    const hControls = await waitFor(() =>
+      horizontal.container.querySelector<HTMLElement>('[data-testid="tab-strip-controls"]')!,
+    );
+    const hScroller = horizontal.container.querySelector<HTMLElement>(
+      '[data-testid="tab-strip-scroller"]',
+    )!;
+    expect(hControls.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      hScroller.getBoundingClientRect().left,
+    );
+    expect(hScroller.compareDocumentPosition(hControls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });
 
 describe("drag between groups", () => {
