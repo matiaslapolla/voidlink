@@ -19,6 +19,12 @@ export const DOCK_EDGE_ZONE = 0.2;
 /// Which edge a pointer inside the workbench is asking for, or `null` for the
 /// middle band. `point` is relative to the workbench's top-left.
 ///
+/// Left and right only, and it stays that way now that `DockSide` has a third
+/// member: `bottom` is the dock strip's edge, not a sidebar's, because a
+/// sidebar is a full-height column the shell places in one horizontal flex row
+/// (`SIDEBAR_DOCK_SIDES` in `store/layout/dock.ts` states the narrowing). The
+/// strip's own hit-test is `dockStripEdgeAt`, beside that narrowing.
+///
 /// A degenerate box (zero width, which is what a hidden view measures at) has
 /// no edges to be near, so it refuses rather than picking one.
 export function dockEdgeAt(
@@ -40,6 +46,11 @@ export function dockEdgeAt(
 /// resulting layout before releasing. Clamped to half the workbench so a panel
 /// whose persisted width is wider than the window still previews as something
 /// the window can hold.
+///
+/// `side` is a sidebar's edge, so it is left or right by construction (see
+/// `dockEdgeAt`); a `bottom` that reached here would preview at the right edge,
+/// which is the same total-function stance `slotOrder` takes and for the same
+/// reason.
 export function dockPreviewRect(
   size: { width: number; height: number },
   side: DockSide,

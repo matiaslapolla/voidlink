@@ -11,12 +11,22 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DOCK_ORDER,
   DEFAULT_DOCK_SIDE,
+  DEFAULT_DOCK_STRIP_SIDE,
+  DOCK_SIDES,
+  DOCK_STRIP_EDGE_ZONE,
   SWAPPED_DOCK_SIDE,
+  dockStripAxis,
+  dockStripEdgeAt,
+  dockStripPreviewRect,
+  dockStripReservation,
+  isDockSide,
+  isSidebarDockSide,
   mirrorArrangement,
   moveInDockOrder,
   parseDetachedSidebars,
   parseDockOrder,
   parseDockSide,
+  parseDockStripSide,
   sidebarsOnSide,
   slotOrder,
   type SidebarId,
@@ -283,5 +293,158 @@ describe("slotOrder", () => {
   it("preserves screen order within an edge", () => {
     expect(slotOrder("left", 0)).toBeLessThan(slotOrder("left", 1));
     expect(slotOrder("right", 0)).toBeLessThan(slotOrder("right", 1));
+  });
+});
+
+// ── The dock strip ───────────────────────────────────────────────────────────
+//
+// `DockSide` grew a third member with docked mode, and the interesting thing
+// about that member is what it must *not* reach: a sidebar is a column in a
+// horizontal flex row, so `bottom` belongs to the strip and to nothing else.
+// The tests below fix both halves — the strip can be at the bottom, and a
+// sidebar still cannot get there however the value arrives.
+
+describe("bottom as a member of DockSide", () => {
+  it("round-trips through parseDockStripSide", () => {
+    for (const side of DOCK_SIDES) {
+      expect(parseDockStripSide(side)).toBe(side);
+      expect(parseDockStripSide(parseDockStripSide(side))).toBe(side);
+    }
+  });
+
+  it("defaults an absent, unknown or malformed edge to the left", () => {
+    // A first run in docked mode, a blob from a build that grew a `top`, and
+    // the usual assortment of things a hand-edited or corrupt blob can hold.
+    for (const junk of [undefined, null, "top", "", 3, [], {}, true]) {
+      expect(parseDockStripSide(junk)).toBe(DEFAULT_DOCK_STRIP_SIDE);
+    }
+    expect(DEFAULT_DOCK_STRIP_SIDE).toBe("left");
+  });
+
+  it("is refused for a sidebar, whichever way it arrives", () => {
+    // The narrowing `SIDEBAR_DOCK_SIDES` states, checked at the one place a raw
+    // value becomes a sidebar's edge. A blob naming it repairs to that
+    // sidebar's default rather than to a column the flex row cannot place.
+    expect(parseDockSide({ git: "bottom", explorer: "right" })).toEqual({
+      ...DEFAULT_DOCK_SIDE,
+      explorer: "right",
+    });
+    expect(isSidebarDockSide("bottom")).toBe(false);
+    expect(isDockSide("bottom")).toBe(true);
+  });
+});
+
+describe("slotOrder for a bottom edge", () => {
+  it("bands it past every right-edge panel rather than folding it in", () => {
+    // No slot the shell composes can reach this today; the point is that a
+    // value that somehow does lands somewhere deterministic and visibly
+    // outermost, instead of silently interleaving with real right-edge panels.
+    for (let i = 0; i < 5; i++) {
+      expect(slotOrder("bottom", i)).toBeGreaterThan(slotOrder("right", 4));
+    }
+  });
+
+  it("still preserves screen order within the band, and never collides with the workbench", () => {
+    expect(slotOrder("bottom", 0)).toBeLessThan(slotOrder("bottom", 1));
+    for (const side of DOCK_SIDES) {
+      for (let i = 0; i < 5; i++) expect(slotOrder(side, i)).not.toBe(0);
+    }
+  });
+});
+
+describe("dockStripAxis", () => {
+  it("runs the strip down a side edge and across the bottom", () => {
+    expect(dockStripAxis("left")).toBe("vertical");
+    expect(dockStripAxis("right")).toBe("vertical");
+    expect(dockStripAxis("bottom")).toBe("horizontal");
+  });
+});
+
+describe("dockStripReservation", () => {
+  it("reserves the strip's lane on exactly the edge it is on", () => {
+    expect(dockStripReservation("left", 40, 6)).toEqual({ left: 46, right: 0, bottom: 0 });
+    expect(dockStripReservation("right", 40, 6)).toEqual({ left: 0, right: 46, bottom: 0 });
+    expect(dockStripReservation("bottom", 40, 6)).toEqual({ left: 0, right: 0, bottom: 46 });
+  });
+
+  it("never reserves negative room", () => {
+    // A `thickness` of 0 is what a strip measures at before its first layout;
+    // negative would be a padding the browser refuses and a lane the islands
+    // then overlap.
+    expect(dockStripReservation("left", -40, -6)).toEqual({ left: 0, right: 0, bottom: 0 });
+  });
+});
+
+describe("dockStripEdgeAt", () => {
+  const BOX = { width: 1000, height: 600 };
+
+  it("reads the outer fifth of each of the three edges as that edge", () => {
+    expect(dockStripEdgeAt(BOX, { x: 10, y: 300 })).toBe("left");
+    expect(dockStripEdgeAt(BOX, { x: 990, y: 300 })).toBe("right");
+    expect(dockStripEdgeAt(BOX, { x: 500, y: 595 })).toBe("bottom");
+  });
+
+  it("refuses the middle, so a release there leaves the strip where it was", () => {
+    for (const x of [300, 500, 700]) {
+      expect(dockStripEdgeAt(BOX, { x, y: 200 })).toBeNull();
+    }
+  });
+
+  it("has no top edge — the title bar and the tab strips own that band", () => {
+    for (const x of [300, 500, 700]) {
+      expect(dockStripEdgeAt(BOX, { x, y: 0 })).toBeNull();
+    }
+  });
+
+  it("resolves a corner to whichever edge is proportionally nearer", () => {
+    // Bottom-left, but well inside the bottom band and only just inside the
+    // left one: fractionally the floor is closer, so the floor wins.
+    expect(dockStripEdgeAt(BOX, { x: 190, y: 599 })).toBe("bottom");
+    // The same corner with the pointer pinned to the left wall.
+    expect(dockStripEdgeAt(BOX, { x: 0, y: 599 })).toBe("left");
+  });
+
+  it("keeps the zone a fraction of each axis, not a pixel count", () => {
+    const narrow = { width: 400, height: 200 };
+    expect(dockStripEdgeAt(narrow, { x: 200, y: 200 * (1 - DOCK_STRIP_EDGE_ZONE) + 1 })).toBe(
+      "bottom",
+    );
+    expect(dockStripEdgeAt(narrow, { x: 200, y: 200 * (1 - DOCK_STRIP_EDGE_ZONE) - 1 })).toBeNull();
+  });
+
+  it("refuses a degenerate box rather than picking an edge of nothing", () => {
+    expect(dockStripEdgeAt({ width: 0, height: 0 }, { x: 0, y: 0 })).toBeNull();
+    expect(dockStripEdgeAt({ width: 1000, height: 0 }, { x: 5, y: 0 })).toBeNull();
+  });
+});
+
+describe("dockStripPreviewRect", () => {
+  const BOX = { width: 1000, height: 600 };
+
+  it("draws the strip where it will actually be, centred on its own axis", () => {
+    expect(dockStripPreviewRect(BOX, "left", 40, 300)).toEqual({
+      x: 0,
+      y: 150,
+      width: 40,
+      height: 300,
+    });
+    expect(dockStripPreviewRect(BOX, "right", 40, 300)).toEqual({
+      x: 960,
+      y: 150,
+      width: 40,
+      height: 300,
+    });
+    expect(dockStripPreviewRect(BOX, "bottom", 40, 300)).toEqual({
+      x: 350,
+      y: 560,
+      width: 300,
+      height: 40,
+    });
+  });
+
+  it("never previews a strip longer than the box holding it", () => {
+    // A dock with twenty terminals in it, previewed against a short window.
+    expect(dockStripPreviewRect(BOX, "left", 40, 4000).height).toBe(600);
+    expect(dockStripPreviewRect(BOX, "bottom", 40, 4000).width).toBe(1000);
   });
 });

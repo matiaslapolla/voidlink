@@ -213,9 +213,20 @@ export type { DockSide, SidebarCollapse, SidebarId } from "./dock";
 export {
   DEFAULT_DOCK_ORDER,
   DEFAULT_DOCK_SIDE,
+  DEFAULT_DOCK_STRIP_SIDE,
+  DOCK_SIDES,
+  DOCK_STRIP_EDGE_ZONE,
+  DOCK_STRIP_THICKNESS,
   SIDEBAR_COLLAPSE,
+  SIDEBAR_DOCK_SIDES,
   SIDEBAR_IDS,
   SWAPPED_DOCK_SIDE,
+  dockStripAxis,
+  dockStripEdgeAt,
+  dockStripPreviewRect,
+  dockStripReservation,
+  isDockSide,
+  isSidebarDockSide,
   isSidebarId,
   mirrorArrangement,
   moveInDockOrder,
@@ -223,6 +234,7 @@ export {
   parseDetachedSidebars,
   parseDockOrder,
   parseDockSide,
+  parseDockStripSide,
   sidebarsOnSide,
   slotOrder,
 } from "./dock";
@@ -476,6 +488,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     workspaceRailCollapsed: prefs.workspaceRailCollapsed,
     dockSide: prefs.dockSide,
     dockOrder: prefs.dockOrder,
+    dockStripSide: prefs.dockStripSide,
     detachedSidebars: prefs.detachedSidebars,
     diffMode: prefs.diffMode,
     diffLineNumbers: prefs.diffLineNumbers,
@@ -585,6 +598,7 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       // the next mutation rather than at the value this effect ran on.
       dockSide: { ...state.dockSide },
       dockOrder: [...state.dockOrder],
+      dockStripSide: state.dockStripSide,
       detachedSidebars: [...state.detachedSidebars],
       diffMode: state.diffMode,
       diffLineNumbers: state.diffLineNumbers,
@@ -1553,6 +1567,16 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
           s.dockOrder = moveInDockOrder(s.dockOrder, id, beforeId);
         }),
       );
+    },
+
+    /// Pin the dock strip to `side` (docked mode's floating strip, not a
+    /// sidebar's edge — see `DockSide` in `store/layout/dock.ts`).
+    ///
+    /// A plain assignment rather than a cycle: the drag, the strip's own menu
+    /// and the settings row all know the edge they want, and a `nextDockEdge()`
+    /// would give the drag a value it has to fight.
+    setDockStripSide(side: DockSide) {
+      setState("dockStripSide", side);
     },
 
     /// Flip the arrangement across the window's axis. What `toggleSidebarsSwapped`

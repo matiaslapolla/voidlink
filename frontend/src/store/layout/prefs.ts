@@ -10,8 +10,10 @@ import {
   parseDetachedSidebars,
   parseDockOrder,
   parseDockSide,
+  parseDockStripSide,
   DEFAULT_DOCK_ORDER,
   DEFAULT_DOCK_SIDE,
+  DEFAULT_DOCK_STRIP_SIDE,
   type DockSide,
   type SidebarId,
 } from "./dock";
@@ -162,6 +164,20 @@ export interface UiPrefs {
   dockSide: Record<SidebarId, DockSide>;
   /// Every sidebar in screen order, left to right, across both edges.
   dockOrder: SidebarId[];
+  /// Which edge the dock strip is pinned to under `environmentMode: "docked"`.
+  ///
+  /// One global preference and not one per workspace: the strip is where the
+  /// user's hand goes, and a dock that jumped edges when you switched project
+  /// would be a worse affordance than one on the wrong side.
+  ///
+  /// Persisted here rather than beside `environmentMode` in the settings blob
+  /// for the same reason `dockOrder` is: it is *geometry*, it is written by
+  /// exactly one window, and "Reset layout" should take it back to the default
+  /// along with the panel widths and the arrangement it belongs to. It survives
+  /// a round trip through another mode untouched — nothing outside docked mode
+  /// reads or writes it, so switching to stacked and back returns the strip to
+  /// the edge it was left on.
+  dockStripSide: DockSide;
   /// The sidebars living in their own window right now. Persisted so a relaunch
   /// reopens them rather than silently pulling them back into the shell.
   detachedSidebars: SidebarId[];
@@ -224,6 +240,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   workspaceRailCollapsed: false,
   dockSide: { ...DEFAULT_DOCK_SIDE },
   dockOrder: [...DEFAULT_DOCK_ORDER],
+  dockStripSide: DEFAULT_DOCK_STRIP_SIDE,
   detachedSidebars: [],
   diffMode: "inline",
   diffLineNumbers: true,
@@ -318,6 +335,7 @@ export function parsePrefs(parsed: PersistedPrefs | null): UiPrefs {
     // matter how many times it happens.
     dockSide: parseDockSide(parsed.dockSide, parsed.sidebarsSwapped),
     dockOrder: parseDockOrder(parsed.dockOrder),
+    dockStripSide: parseDockStripSide(parsed.dockStripSide),
     detachedSidebars: parseDetachedSidebars(parsed.detachedSidebars),
     diffMode: parsed.diffMode === "split" ? "split" : "inline",
     diffLineNumbers: parsed.diffLineNumbers ?? d.diffLineNumbers,
