@@ -108,25 +108,6 @@ impl FlowGate {
 
 pub(crate) type PtyStore = Arc<DashMap<String, PtySession>>;
 
-/// Which window is currently rendering each PTY session, by window label.
-///
-/// A session with no entry belongs to `main`, which is the case for every
-/// session this app has ever had until a workspace is detached. The map exists
-/// for one question and one only: **when `main` closes, whose shells is it
-/// allowed to reap?**
-///
-/// Closing `main` used to mean `kill_all_ptys`, and that was exactly right while
-/// `main` was the only window with terminals in it. A detached workspace window
-/// (`workspace-<id>`) has terminals of its own and outlives `main` — the app
-/// keeps running as long as any window is open — so the unconditional kill would
-/// have taken the shells out from under a window still on screen.
-///
-/// Stale entries are self-healing rather than released explicitly: ownership is
-/// resolved against the windows that are *actually open* at the moment `main`
-/// closes, so a workspace window that has already gone leaves entries that read
-/// as `main`'s again. That is what makes dock-back need no counterpart call.
-pub(crate) type PtyOwners = Arc<DashMap<String, String>>;
-
 /// Raw PTY bytes retained per session so a re-subscribing frontend can rebuild
 /// its screen. Sized to cover a screenful of a busy TUI several times over
 /// while staying bounded per session.
@@ -703,50 +684,6 @@ async fn pty_unsubscribe(
         }
     }
     Ok(())
-}
-
-/// "These sessions, and no others, are mine."
-///
-/// Sent by a detached workspace window whenever its set of live terminals
-/// changes. Declarative rather than incremental — the whole set each time —
-/// because the alternative is a claim/release pair whose halves can be lost
-/// independently, and a lost release is a shell `main` may no longer reap.
-///
-/// Sync, like `write_pty` and `pty_set_paused`: it is one map update, and the
-/// window that sends it is about to render those sessions.
-#[tauri::command]
-fn pty_set_owner(
-    session_ids: Vec<String>,
-    label: String,
-    owners: tauri::State<'_, PtyOwners>,
-) -> Result<(), String> {
-    owners.retain(|_, owner| owner != &label);
-    for id in session_ids {
-        owners.insert(id, label.clone());
-    }
-    Ok(())
-}
-
-/// The sessions `main` may reap as it closes.
-///
-/// A session is `main`'s unless a window that is *still open* has claimed it.
-/// Pure, and taking the live labels as a set, so the policy is testable without
-/// a running app — the part worth testing is precisely the "owner named a window
-/// that has since gone" case, which is otherwise reachable only by racing two
-/// window closes.
-fn sessions_main_may_reap(
-    owners: &PtyOwners,
-    sessions: &[String],
-    live_windows: &std::collections::HashSet<String>,
-) -> Vec<String> {
-    sessions
-        .iter()
-        .filter(|id| match owners.get(id.as_str()) {
-            Some(owner) => !live_windows.contains(owner.value()),
-            None => true,
-        })
-        .cloned()
-        .collect()
 }
 
 #[tauri::command]
@@ -1436,31 +1373,12 @@ fn kill_all_ptys(store: &PtyStore) {
     store.clear();
 }
 
-/// Kill exactly the named sessions, leaving the rest of the store running.
-///
-/// `kill_all_ptys`'s selective form, for the one caller that has to be
-/// selective: `main` closing while a detached workspace window is still on
-/// screen. Sessions the store does not have are skipped, so a shell that exited
-/// between the decision and the kill costs nothing.
-fn kill_ptys(store: &PtyStore, session_ids: &[String]) {
-    for id in session_ids {
-        if let Some((_, session)) = store.remove(id) {
-            session.shutdown.store(true, Ordering::Relaxed);
-            session.flow.set(false);
-            if let Ok(mut child) = session.child.lock() {
-                let _ = child.kill();
-            }
-        }
-    }
-}
-
 // ─── App entry point ──────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let pty_store: PtyStore = Arc::new(DashMap::new());
     let pty_channels: PtyChannels = Arc::new(DashMap::new());
-    let pty_owners: PtyOwners = Arc::new(DashMap::new());
     let git_state = git::GitState::new();
 
     tauri::Builder::default()
@@ -1476,7 +1394,6 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(pty_store.clone())
         .manage(pty_channels)
-        .manage(pty_owners)
         .manage(git_state)
         .manage(browser::new_store())
         .manage(watch::WatchState::default())
@@ -1538,32 +1455,9 @@ pub fn run() {
                 // Only the main window owns the terminals. Without this label
                 // check, closing a satellite window (git, editor) would kill
                 // every PTY in the workbench that is still open behind it.
-                //
-                // And not *all* of them any more. A detached workspace window
-                // renders terminals of its own and outlives `main` — the app
-                // runs while any window is open — so the sessions it has claimed
-                // are left alone and the rest are reaped, which is what "close
-                // main without orphaning shells or leaving windows behind"
-                // actually means once there is more than one workbench. See
-                // `PtyOwners`. When the last window goes, `RunEvent::Exit` still
-                // runs `kill_all_ptys` and nothing survives the process.
                 if window.label() == "main" {
                     let store = window.state::<PtyStore>().inner().clone();
-                    let owners = window.state::<PtyOwners>().inner().clone();
-                    // Only workspace windows are counted, not every satellite:
-                    // a detached workspace is the one kind of window that
-                    // renders terminals of its own, so a claim naming anything
-                    // else is a claim nothing could have made and reads as
-                    // `main`'s again.
-                    let live: std::collections::HashSet<String> = window
-                        .app_handle()
-                        .webview_windows()
-                        .into_keys()
-                        .filter(|label| window::workspace_id_from_label(label).is_some())
-                        .collect();
-                    let sessions: Vec<String> =
-                        store.iter().map(|e| e.key().clone()).collect();
-                    kill_ptys(&store, &sessions_main_may_reap(&owners, &sessions, &live));
+                    kill_all_ptys(&store);
                 }
             }
         })
@@ -1580,17 +1474,12 @@ pub fn run() {
             window::open_panel_window,
             window::close_panel_window,
             window::is_panel_window_open,
-            window::open_workspace_window,
-            window::close_workspace_window,
-            window::is_workspace_window_open,
-            window::focus_workspace_window,
             window::focus_main_window,
             create_pty,
             write_pty,
             resize_pty,
             pty_subscribe,
             pty_unsubscribe,
-            pty_set_owner,
             pty_set_paused,
             close_pty,
             pty_process_info,
@@ -1749,54 +1638,6 @@ mod tests {
     fn get_home_dir_returns_string() {
         let home = get_home_dir();
         assert!(!home.is_empty());
-    }
-
-    fn owners_of(pairs: &[(&str, &str)]) -> PtyOwners {
-        let owners: PtyOwners = Arc::new(DashMap::new());
-        for (session, label) in pairs {
-            owners.insert((*session).to_string(), (*label).to_string());
-        }
-        owners
-    }
-
-    fn labels(names: &[&str]) -> std::collections::HashSet<String> {
-        names.iter().map(|n| (*n).to_string()).collect()
-    }
-
-    fn ids(names: &[&str]) -> Vec<String> {
-        names.iter().map(|n| (*n).to_string()).collect()
-    }
-
-    /// The case this whole map exists for: `main` closes, a workspace window is
-    /// still on screen, and its shells have to survive.
-    #[test]
-    fn a_live_workspace_windows_sessions_are_spared() {
-        let owners = owners_of(&[("b", "workspace-ws1"), ("c", "workspace-ws1")]);
-        let reap = sessions_main_may_reap(
-            &owners,
-            &ids(&["a", "b", "c"]),
-            &labels(&["workspace-ws1"]),
-        );
-        assert_eq!(reap, ids(&["a"]));
-    }
-
-    /// No entry means `main`, which is every session in the app until something
-    /// is detached.
-    #[test]
-    fn an_unclaimed_session_is_mains() {
-        let owners = owners_of(&[]);
-        let reap = sessions_main_may_reap(&owners, &ids(&["a", "b"]), &labels(&[]));
-        assert_eq!(reap, ids(&["a", "b"]));
-    }
-
-    /// Ownership is resolved against the windows that are actually open, so a
-    /// claim left behind by a window that has already closed reads as `main`'s
-    /// again. That self-healing is why docking back needs no release call.
-    #[test]
-    fn a_claim_by_a_window_that_is_gone_is_stale() {
-        let owners = owners_of(&[("a", "workspace-ws1")]);
-        let reap = sessions_main_may_reap(&owners, &ids(&["a"]), &labels(&["workspace-ws2"]));
-        assert_eq!(reap, ids(&["a"]));
     }
 
     /// A sink holding `chunks`, marked truncated or not.

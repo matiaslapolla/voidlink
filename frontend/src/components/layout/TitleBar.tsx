@@ -18,8 +18,7 @@ import {
 } from "lucide-solid";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isMac } from "@/api/platform";
-import { currentWorkspaceWindowId, openEditorWindow, openGitWindow } from "@/api/windows";
-import { AttachHomeButton } from "@/components/layout/AttachHomeButton";
+import { openEditorWindow, openGitWindow } from "@/api/windows";
 import { pushToast } from "@/commands/toast";
 import { useTheme } from "@/store/theme";
 import { DEV_CHROME_CLASS, DevBadge } from "@/components/layout/devChrome";
@@ -315,19 +314,6 @@ export function TitleBar(props: TitleBarProps) {
           <ArrowLeftRight class="w-3.5 h-3.5" />
         </NavButton>
         <div class="w-px self-center h-4 bg-border mx-1" />
-        {/* Only a detached workspace's window draws this: it is the one window
-            that renders this whole title bar and is not `main`. The way home
-            that does not require knowing that closing the window is the way
-            home — same control, and same action, as every other detached
-            window's (`commands/attachHome.ts`). */}
-        <Show when={currentWorkspaceWindowId()}>
-          {(id) => (
-            <AttachHomeButton
-              class="self-center mr-1"
-              surface={{ kind: "workspace", workspaceId: id() }}
-            />
-          )}
-        </Show>
         <button
           onClick={toggleTheme}
           aria-label={mode() === "dark" ? "Switch to light theme" : "Switch to dark theme"}

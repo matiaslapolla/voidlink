@@ -24,7 +24,6 @@ import {
   focusMainWindow,
   requestEditorDockBack,
   requestSidebarDockBack,
-  requestWorkspaceDockBack,
 } from "@/api/windows";
 import { pushToast } from "@/commands/toast";
 
@@ -33,11 +32,7 @@ import { pushToast } from "@/commands/toast";
 export type DetachedSurface =
   | { kind: "panel"; sidebarId: string }
   | { kind: "editor" }
-  | { kind: "git" }
-  /// A whole workbench scoped to one workspace. The only surface here that the
-  /// user *works in* rather than reads, which is why its title says the
-  /// workspace becomes active again rather than that it comes back collapsed.
-  | { kind: "workspace"; workspaceId: string };
+  | { kind: "git" };
 
 /// The label the control carries, per MASTER §7.6 — it says what it does, and
 /// it says where the content is going, because "attach" alone does not answer
@@ -52,8 +47,6 @@ export function attachHomeTitle(surface: DetachedSurface): string {
       return "Attach to main window\nCloses this window and brings the git panel back into the workbench, collapsed";
     case "panel":
       return "Attach to main window\nCloses this window and brings the panel back into the workbench, collapsed";
-    case "workspace":
-      return "Attach to main window\nCloses this window and makes this workspace active in the workbench again. Terminals keep running.";
   }
 }
 
@@ -69,8 +62,6 @@ export async function attachHome(surface: DetachedSurface): Promise<void> {
   try {
     if (surface.kind === "editor") await requestEditorDockBack();
     else if (surface.kind === "git") await requestSidebarDockBack("git");
-    else if (surface.kind === "workspace")
-      await requestWorkspaceDockBack(surface.workspaceId);
     else await requestSidebarDockBack(surface.sidebarId);
 
     await focusMainWindow();

@@ -9,7 +9,6 @@ import {
   FolderOpen,
   GitBranch,
   Lock,
-  PanelsTopLeft,
   Plus,
   X,
 } from "lucide-solid";
@@ -42,8 +41,6 @@ import {
 import { EmptyState } from "@/components/layout/EmptyState";
 import { PANEL_BOUNDS, SIDEBAR_RAIL_WIDTH, type DockSide } from "@/store/layout";
 import { SidebarGrip, SidebarMenuButton } from "@/components/layout/SidebarDock";
-import { currentWorkspaceWindowId, focusWorkspaceWindow } from "@/api/windows";
-import { detachWorkspace, dockWorkspaceBack } from "@/commands/workspaceWindows";
 
 /// The far-left vertical rail: every workspace, and under each one its
 /// worktrees. Replaces the old horizontal workspace tab bar — the tab strip in
@@ -58,12 +55,8 @@ export function WorkspaceRail(props: {
   /// by a handle against the window frame.
   dock?: DockSide;
 }) {
-  const store = useAppStore();
-  const { state, actions } = store;
+  const { state, actions } = useAppStore();
   const dock = (): DockSide => props.dock ?? "left";
-  /// Handed off to a window of its own, so this window renders none of its
-  /// worktrees and cannot select it. See `commands/workspaceWindows.ts`.
-  const isDetached = (id: string) => state.detachedWorkspaces.includes(id);
   /// Collapsed to its icon rail — the same idiom the other two sidebars have
   /// (`GitSidebarCollapsed`, `FilesRail`), which is why the rail collapses to
   /// `SIDEBAR_RAIL_WIDTH` rather than to nothing. `panels.rail` is deliberately
@@ -87,11 +80,7 @@ export function WorkspaceRail(props: {
     x: number;
     y: number;
     workspace: Workspace;
-    /// `null` when the menu was opened on the *workspace* header rather than on
-    /// one of its worktrees. One signal for both, rather than a second menu
-    /// beside it: they open at the same coordinates from the same gesture, and
-    /// the workspace half of the item list is common to them.
-    worktree: Worktree | null;
+    worktree: Worktree;
   } | null>(null);
 
   // Any git mutation anywhere can add or remove a worktree, or move a branch.
@@ -231,34 +220,7 @@ export function WorkspaceRail(props: {
     if (removed) actions.removeWorktree(ws.id, wt.id);
   }
 
-  /// Detach / attach, for one workspace.
-  ///
-  /// Appears on both the workspace header's menu and each worktree's, because a
-  /// worktree row is a row *of* that workspace and "put this in its own window"
-  /// is a reasonable thing to want from either. The label flips rather than the
-  /// row disappearing: a detached workspace's row is how the user gets it back
-  /// without going to find the window first.
-  ///
-  /// Absent in a detached window rather than disabled — that window has its own
-  /// "Attach to main window" in the title bar, and a second control for it in a
-  /// rail listing one workspace would be two doors to one room.
-  function detachItem(ws: Workspace): ContextMenuItem[] {
-    if (currentWorkspaceWindowId()) return [];
-    const detached = state.detachedWorkspaces.includes(ws.id);
-    return [
-      {
-        label: detached
-          ? "Attach to this window"
-          : "Detach into its own window",
-        separatorBefore: true,
-        onSelect: () =>
-          void (detached ? dockWorkspaceBack(store, ws.id) : detachWorkspace(store, ws.id)),
-      },
-    ];
-  }
-
-  function menuItems(ws: Workspace, wt: Worktree | null): ContextMenuItem[] {
-    if (!wt) return detachItem(ws).map((item) => ({ ...item, separatorBefore: false }));
+  function menuItems(ws: Workspace, wt: Worktree): ContextMenuItem[] {
     return [
       {
         label: "Open in this workspace",
@@ -268,7 +230,6 @@ export function WorkspaceRail(props: {
         label: "Copy path",
         onSelect: () => void navigator.clipboard.writeText(wt.path).catch(() => {}),
       },
-      ...detachItem(ws),
       {
         label: "Remove worktree…",
         danger: true,
@@ -325,11 +286,6 @@ export function WorkspaceRail(props: {
               >
                 {/* Workspace header */}
                 <div
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setMenu({ x: e.clientX, y: e.clientY, workspace: ws, worktree: null });
-                  }}
                   class={`group flex items-center gap-1 pl-1 pr-1 h-7 text-body ${
                     isActiveWs() ? "text-foreground" : "text-muted-foreground"
                   }`}
@@ -361,24 +317,12 @@ export function WorkspaceRail(props: {
                     when={renaming() === ws.id}
                     fallback={
                       <button
-                        // A detached workspace is not selectable here — it is
-                        // interactive in exactly one window and this is not that
-                        // window (see `commands/workspaceWindows.ts`). Clicking
-                        // it goes *to* it, which is the only honest meaning the
-                        // gesture has left, and is what keeps the row from being
-                        // a control that appears to work and does nothing.
-                        onClick={() =>
-                          isDetached(ws.id)
-                            ? void focusWorkspaceWindow(ws.id)
-                            : actions.selectWorkspace(ws.id)
-                        }
+                        onClick={() => actions.selectWorkspace(ws.id)}
                         onDblClick={() => startRename(ws.id, ws.name)}
                         use:tooltip={
-                          isDetached(ws.id)
-                            ? `${ws.name}\nIn its own window — click to bring it forward`
-                            : isBlurred(ws.id)
-                              ? "Blurred for screen recording\nDouble-click to rename, drag to reorder"
-                              : `${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`
+                          isBlurred(ws.id)
+                            ? "Blurred for screen recording\nDouble-click to rename, drag to reorder"
+                            : `${ws.name}${ws.repoRoot ? ` — ${ws.repoRoot}` : ""}\nDouble-click to rename, drag to reorder`
                         }
                         aria-label={isBlurred(ws.id) ? "Workspace name hidden for screen recording" : undefined}
                         class="flex-1 min-w-0 text-left truncate font-medium hover:text-foreground"
@@ -408,18 +352,6 @@ export function WorkspaceRail(props: {
                       aria-label="Rename workspace"
                       class="flex-1 min-w-0 bg-background/60 rounded px-1 text-body outline-none"
                     />
-                  </Show>
-                  {/* The row's one piece of state that is not otherwise
-                      visible: this workspace is somewhere else. Not a button —
-                      the row itself is already the way there, and a second
-                      control for one destination is §7.6's "two doors to one
-                      room". The label carries it for a reader who has no icon. */}
-                  <Show when={isDetached(ws.id)}>
-                    <PanelsTopLeft
-                      class="w-3 h-3 shrink-0 text-primary"
-                      aria-hidden="true"
-                    />
-                    <span class="sr-only">In its own window</span>
                   </Show>
                   <button
                     onClick={(e) => {
@@ -496,11 +428,8 @@ export function WorkspaceRail(props: {
                   </button>
                 </div>
 
-                {/* Worktrees. A detached workspace lists none: its worktrees are
-                    selectable in the window that owns it, and rows here that
-                    cannot be selected would be exactly the silent no-op
-                    `requestOpenWorktreeOnMain` exists to prevent. */}
-                <Show when={!isCollapsed(ws.id) && !isDetached(ws.id)}>
+                {/* Worktrees */}
+                <Show when={!isCollapsed(ws.id)}>
                   {/* An expanded workspace with nothing under it is otherwise
                       indistinguishable from a collapsed one — the chevron is
                       the only difference, and it is 12px. §9.7. */}

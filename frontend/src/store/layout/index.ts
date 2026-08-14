@@ -143,11 +143,7 @@ import type {
   TabKind,
   TabTypes,
 } from "./tabs";
-import {
-  type AppStoreState,
-  CLOSED_TAB_HISTORY_LIMIT,
-  seedWorktreeCollections,
-} from "./state";
+import { type AppStoreState, CLOSED_TAB_HISTORY_LIMIT } from "./state";
 import {
   createWorkspaceActions,
   loadWorkspaces,
@@ -301,22 +297,6 @@ export interface CreateAppStoreOptions {
   /// tabs. A non-persisting store still *hydrates* from localStorage, so the
   /// git window opens on the right workspace.
   persist?: boolean;
-
-  /// Show only this workspace, and start on it.
-  ///
-  /// What makes a detached workspace window cheap: every tab collection in this
-  /// store is keyed by *worktree* id, never by workspace id, so restricting the
-  /// workspace list is the entire scoping mechanism — the tabs, the pane trees,
-  /// the terminals and the nav history all follow the worktrees that came with
-  /// it, and every component keeps reading `activeWorktreeId` exactly as it
-  /// does in `main`.
-  ///
-  /// Ignored when the id names no workspace on disk. The window root
-  /// (`WorkspaceApp`) compares `state.activeWorkspaceId` against what it asked
-  /// for and goes home when they disagree — repairing here by inventing a
-  /// workspace, or by leaving the list empty, would give it a shell with
-  /// nothing in it and no way to say why.
-  workspaceId?: string;
 }
 
 /// Load one kind's persisted collection through the registry. Kinds that share
@@ -427,17 +407,7 @@ function loadPinnedTabs(worktreeIds: string[]): Record<string, string[]> {
 
 export function createAppStore(options: CreateAppStoreOptions = {}) {
   const persist = options.persist ?? true;
-  const loaded = loadWorkspaces();
-  // Scoping is a filter over the hydrated list, applied before anything else
-  // reads it — the seed set of worktree ids below is derived from `workspaces`,
-  // so a scoped store never allocates collections for worktrees it will not
-  // render. An unknown id falls through unscoped on purpose; see
-  // `CreateAppStoreOptions.workspaceId`.
-  const scoped = options.workspaceId
-    ? loaded.workspaces.filter((w) => w.id === options.workspaceId)
-    : [];
-  const workspaces = scoped.length > 0 ? scoped : loaded.workspaces;
-  const activeId = scoped.length > 0 ? scoped[0].id : loaded.activeId;
+  const { workspaces, activeId } = loadWorkspaces();
   const prefs = loadPrefs();
   // Every tab collection is keyed by worktree id, so the seed set is the union
   // of every workspace's worktrees — not one slot per workspace.
@@ -520,7 +490,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
     dockOrder: prefs.dockOrder,
     dockStripSide: prefs.dockStripSide,
     detachedSidebars: prefs.detachedSidebars,
-    detachedWorkspaces: prefs.detachedWorkspaces,
     diffMode: prefs.diffMode,
     diffLineNumbers: prefs.diffLineNumbers,
     gitTab: prefs.gitTab,
@@ -631,7 +600,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
       dockOrder: [...state.dockOrder],
       dockStripSide: state.dockStripSide,
       detachedSidebars: [...state.detachedSidebars],
-      detachedWorkspaces: [...state.detachedWorkspaces],
       diffMode: state.diffMode,
       diffLineNumbers: state.diffLineNumbers,
       gitTab: state.gitTab,
@@ -1662,60 +1630,6 @@ export function createAppStore(options: CreateAppStoreOptions = {}) {
         }),
       );
     },
-    /// Mark a workspace as living in its own window.
-    ///
-    /// Store-only, like `setSidebarDetached` beside it: opening and closing the
-    /// window is `commands/workspaceWindows.ts`'s job, because the store must
-    /// stay free of IPC. Detaching the *active* workspace also moves the
-    /// selection off it — the whole point of the flag is that `main` renders
-    /// nothing for a workspace that is out, and an active workspace it renders
-    /// nothing for is a blank workbench.
-    setWorkspaceDetached(id: string, detached: boolean) {
-      setState(
-        produce((s) => {
-          const has = s.detachedWorkspaces.includes(id);
-          if (detached === has) return;
-          s.detachedWorkspaces = detached
-            ? [...s.detachedWorkspaces, id]
-            : s.detachedWorkspaces.filter((x) => x !== id);
-          if (!detached || s.activeWorkspaceId !== id) return;
-          const next = s.workspaces.find(
-            (w) => w.id !== id && !s.detachedWorkspaces.includes(w.id),
-          );
-          // Every workspace detached at once leaves nothing to select. The
-          // pointer is left where it is rather than invented: the rail still
-          // lists the windows, and docking any of them back lands somewhere
-          // real. A synthetic empty workspace here would be a workspace the
-          // user never made.
-          if (!next) return;
-          s.activeWorkspaceId = next.id;
-          s.activeWorktreeId = next.activeWorktreeId;
-        }),
-      );
-    },
-
-    /// Adopt terminal sessions that are **already running**.
-    ///
-    /// The reattach half of a workspace handoff, and the reason it is an action
-    /// rather than a variant of `restoreTerminalSessions`: that path spawns a
-    /// PTY per row, which is right on boot (a persisted `ptyId` names a process
-    /// that died with the app) and exactly wrong here (the processes are alive,
-    /// and spawning would leave the user's real shells running invisibly behind
-    /// a second set of empty ones). Nothing here calls `create_pty`; the pane
-    /// that renders each row subscribes to the `ptyId` it is handed.
-    ///
-    /// Replaces the worktree's list rather than merging: the handoff is the
-    /// whole truth about what is running there, and a merge would keep rows
-    /// whose sessions the workbench has since closed.
-    adoptTerminalSessions(wtId: string, sessions: TerminalSession[]) {
-      setState(
-        produce((s) => {
-          seedWorktreeCollections(s, wtId);
-          s.terminalsByWorktree[wtId] = sessions.map((t) => ({ ...t }));
-        }),
-      );
-    },
-
     setGitTab(tab: AppStoreState["gitTab"]) {
       setState("gitTab", tab);
     },

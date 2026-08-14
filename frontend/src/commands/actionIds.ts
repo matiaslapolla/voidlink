@@ -89,15 +89,6 @@ export const ACTION_IDS = [
   "ui.detach-explorer",
   "ui.detach-git",
   "ui.detach-agents",
-  // The workspace's own detach, and — in the window it detaches into — its
-  // attach. **Declared rather than generated**, which is the difference between
-  // it and the `ui.detach-*` rows above: those are produced from a table of five
-  // known sidebar ids, so this list has to name exactly what that table can
-  // produce. Workspaces are user data, so this row acts on "the workspace you
-  // are standing in" and there is one id no matter how many projects are open.
-  // Palette-only, like the sidebar detaches: which surface you want in a window
-  // is a rare choice, and rare choices are how a keymap stops being learnable.
-  "ui.detach-workspace",
   // The editor window's way home. The sidebars get theirs from the
   // `ui.detach-*` rows above, which toggle; the editor has no detach of its
   // own — it is opened by whatever puts a file in it — so re-attaching is the
