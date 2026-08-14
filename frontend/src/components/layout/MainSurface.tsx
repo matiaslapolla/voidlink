@@ -72,7 +72,6 @@ import {
   clearTabActivity,
   escalate,
   noteBell,
-  noteFinished,
   isWindowFocused,
   publishHiddenActivity,
   publishHiddenWorktreeActivity,
@@ -1553,17 +1552,16 @@ export function MainSurface(props: MainSurfaceProps) {
                 if (body) notifyReason.set(term.id, body);
                 noteBell(term.id);
               }}
-              onExit={(exitCode) => {
-                // A shell that exited cleanly is done and its tab goes with it.
-                // A non-zero exit is a *result*, and §7.5.3 says a failure is
-                // acknowledged rather than dismissed — so the tab stays, wearing
-                // the red mark, and closing it is the acknowledgement. Without
-                // this the `failed` signal had nowhere it could ever be seen:
-                // the tab was always removed in the same breath.
-                if (exitCode !== null && exitCode !== 0) {
-                  noteFinished(term.id, false);
-                  return;
-                }
+              onExit={() => {
+                // A shell that exited is done, whatever it exited *with*, and
+                // its tab goes with it. The exit code used to decide: a failure
+                // kept the tab alive wearing the red mark, on the theory that a
+                // bad result is acknowledged rather than dismissed. In practice
+                // that read as a bug — you type `exit` after a command that
+                // failed and the tab you just closed is still there, holding a
+                // shell that no longer exists. `exit` means exit. The same two
+                // calls the × and the context menu make, because closing is one
+                // thing however it was asked for.
                 clearTabActivity(term.id);
                 actions.removeTerminal(state.activeWorktreeId, term.id);
               }}
