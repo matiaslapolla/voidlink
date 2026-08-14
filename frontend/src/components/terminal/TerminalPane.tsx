@@ -8,7 +8,11 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
 import { ContextMenu } from "@/components/git/ContextMenu";
-import { terminalMenuItems } from "@/components/terminal/terminalMenu";
+import {
+  applicationOwnsMouse,
+  terminalMenuItems,
+  terminalMenuOpensOn,
+} from "@/components/terminal/terminalMenu";
 import { registerDropZone } from "@/components/layout/dragDrop";
 import { surfacesAreTranslucent, useSettings } from "@/store/settings";
 import { DARK_BG, LIGHT_BG, terminalSurface } from "./terminalSurface";
@@ -1180,11 +1184,30 @@ export function TerminalPane(props: TerminalPaneProps) {
       class={`${props.class ?? "w-full h-full"} ${dragOver() ? "ring-2 ring-inset ring-primary/70" : ""}`}
       style={{ "background-color": paneBg() }}
       onContextMenu={(e) => {
-        e.preventDefault();
         // The pane island underneath (`MainSurface.renderGroup`) has its own
         // menu for a pane's bare chrome — stopping here is what keeps a
-        // right-click on the terminal from opening both.
+        // right-click on the terminal from opening both. It stops in the
+        // pass-through case too: that menu is an overlay like ours and would
+        // swallow the button-up just the same. xterm is unaffected either way,
+        // because its own `contextmenu` listener sits on `term.element`, a
+        // descendant of this box, and has already run by the time we see this.
         e.stopPropagation();
+        // Read the mode off the live terminal, per event — a program turns
+        // reporting on and off mid-session and the answer changes with it.
+        const t = term();
+        const opens =
+          !t ||
+          terminalMenuOpensOn({
+            mouseTrackingMode: t.modes.mouseTrackingMode,
+            shiftKey: e.shiftKey,
+          });
+        if (!opens) {
+          // No `preventDefault`: the gesture belongs to the application. The
+          // document-level suppressor in `main.tsx` still keeps the OS menu
+          // from appearing, which is all `preventDefault` was buying here.
+          return;
+        }
+        e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
@@ -1255,7 +1278,9 @@ function quoteForShell(p: string): string {
 /// Skipping both also takes the per-row `translateToString` and regex scan off
 /// the hover path for exactly the TUIs that repaint most.
 function linkifyAllowed(term: Terminal): boolean {
-  return term.buffer.active.type !== "alternate" && term.modes.mouseTrackingMode === "none";
+  return (
+    term.buffer.active.type !== "alternate" && !applicationOwnsMouse(term.modes.mouseTrackingMode)
+  );
 }
 
 /// Build an xterm link provider that matches `regex` against each

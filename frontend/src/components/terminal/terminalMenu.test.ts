@@ -1,5 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
-import { terminalMenuItems } from "./terminalMenu";
+import { applicationOwnsMouse, terminalMenuItems, terminalMenuOpensOn } from "./terminalMenu";
+
+describe("applicationOwnsMouse", () => {
+  it("is false only for 'none'", () => {
+    expect(applicationOwnsMouse("none")).toBe(false);
+    for (const mode of ["x10", "vt200", "drag", "any"] as const) {
+      expect(applicationOwnsMouse(mode)).toBe(true);
+    }
+  });
+});
+
+describe("terminalMenuOpensOn", () => {
+  it("opens on a plain right-click when nothing is tracking the mouse", () => {
+    expect(terminalMenuOpensOn({ mouseTrackingMode: "none", shiftKey: false })).toBe(true);
+  });
+
+  it("stands aside for a plain right-click while the application tracks the mouse", () => {
+    for (const mode of ["x10", "vt200", "drag", "any"] as const) {
+      expect(terminalMenuOpensOn({ mouseTrackingMode: mode, shiftKey: false })).toBe(false);
+    }
+  });
+
+  it("opens on Shift+right-click even while the application tracks the mouse", () => {
+    for (const mode of ["x10", "vt200", "drag", "any"] as const) {
+      expect(terminalMenuOpensOn({ mouseTrackingMode: mode, shiftKey: true })).toBe(true);
+    }
+  });
+});
 
 describe("terminalMenuItems", () => {
   it("disables Copy with a reason when nothing is selected", () => {
