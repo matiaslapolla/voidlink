@@ -4,7 +4,12 @@ import GitApp from "./GitApp.tsx";
 import EditorApp from "./EditorApp.tsx";
 import PanelApp from "./PanelApp.tsx";
 import { initPlatform } from "@/api/platform";
-import { currentPanelSidebar, isEditorWindow, isGitWindow } from "@/api/windows";
+import {
+  currentPanelSidebar,
+  currentWorkspaceWindowId,
+  isEditorWindow,
+  isGitWindow,
+} from "@/api/windows";
 import { SIDEBAR_LABEL } from "@/components/layout/SidebarDock";
 import { isSidebarId } from "@/store/layout";
 import { bridgeThemeAcrossWindows } from "@/store/theme";
@@ -83,6 +88,14 @@ void initPlatform().then(() => {
       ? `Voidlink ${SIDEBAR_LABEL[sidebarId]}`
       : "Voidlink";
     render(() => <PanelApp sidebarId={sidebarId} />, root);
+  } else if (currentWorkspaceWindowId()) {
+    // A detached workspace. The one root that is not a *different* app: it is
+    // the workbench itself, scoped to one workspace, so it renders `App` with
+    // the id off the label rather than a shell of its own. The title comes from
+    // Rust (`open_workspace_window` names the window after the workspace), so
+    // there is nothing to set here — and setting it would overwrite the
+    // workspace's name with a generic one on every reload.
+    render(() => <App workspaceId={currentWorkspaceWindowId()!} />, root);
   } else {
     render(() => <App />, root);
   }

@@ -111,6 +111,77 @@ fn panel_spec(label: &str) -> Option<&'static SatelliteSpec> {
     PANEL_SPECS.iter().copied().find(|spec| spec.label == label)
 }
 
+/// Prefix every detached-workspace window's label carries.
+///
+/// The other five windows above are singletons with a constant label each, and
+/// the allowlist works because there is a fixed set of them. A workspace window
+/// is one *per workspace*, so its label is built at runtime — which is the case
+/// `PANEL_SPECS`'s comment warns about, and the reason the validation below is a
+/// **prefix plus a checked id** rather than a label passed straight through. The
+/// capability entry is granted to the glob `workspace-*`
+/// (`src-tauri/capabilities/workspace-windows.json`), so anything this function
+/// admits gets those permissions and nothing else may wear the prefix.
+pub(crate) const WORKSPACE_WINDOW_PREFIX: &str = "workspace-";
+
+/// Geometry for a detached workspace window, and the title it falls back to.
+///
+/// A whole workbench — rail, both sidebars, the pane tree, a status bar — so it
+/// opens at roughly the size the `main` window does rather than at a panel's.
+/// The `label` field holds the *prefix* rather than a label: this spec describes
+/// a family of windows, and the per-workspace half is `workspace_window_label`'s
+/// to produce.
+const WORKSPACE_SPEC: SatelliteSpec = SatelliteSpec {
+    label: WORKSPACE_WINDOW_PREFIX,
+    title: "Voidlink Workspace",
+    width: 1280.0,
+    height: 840.0,
+    min_width: 900.0,
+    min_height: 600.0,
+};
+
+/// Whether `id` may be pasted into a window label.
+///
+/// Deliberately narrower than "a string the frontend sent": workspace ids are
+/// `crypto.randomUUID()`, so alphanumerics with `-` and `_` covers every id this
+/// app has ever minted, and everything outside that — a path, a wildcard, a
+/// label belonging to another window, an empty string that would collapse the
+/// label to the bare prefix — is rejected. The bound is what keeps a hostile or
+/// merely buggy caller from turning a label into an unbounded allocation.
+fn is_workspace_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The window label for a workspace, or an error naming why it is not one.
+///
+/// An error rather than a silently-built window, for exactly the reason
+/// `PANEL_SPECS` gives: the label decides which capability entry applies, and a
+/// label outside `workspace-*` would come up with none.
+pub(crate) fn workspace_window_label(workspace_id: &str) -> Result<String, String> {
+    if !is_workspace_id(workspace_id) {
+        return Err(format!("not a workspace id: {workspace_id:?}"));
+    }
+    Ok(format!("{WORKSPACE_WINDOW_PREFIX}{workspace_id}"))
+}
+
+/// The workspace id inside a window label, or `None` when the label is not one
+/// of ours.
+///
+/// The inverse of `workspace_window_label`, and it re-runs `is_workspace_id`
+/// rather than trusting the prefix — a label that merely *starts* with
+/// `workspace-` is not proof this app built it.
+pub(crate) fn workspace_id_from_label(label: &str) -> Option<&str> {
+    let id = label.strip_prefix(WORKSPACE_WINDOW_PREFIX)?;
+    if is_workspace_id(id) {
+        Some(id)
+    } else {
+        None
+    }
+}
+
 /// Window title, with a dev marker appended when this is a `cargo tauri dev`
 /// run.
 ///
@@ -180,7 +251,26 @@ fn traffic_light_position<R: Runtime>(app: &AppHandle<R>) -> tauri::LogicalPosit
 /// Returns `true` when a new window was created, so the caller can tell
 /// "opened" from "brought to front" without querying window state.
 fn open_satellite<R: Runtime>(app: &AppHandle<R>, spec: &SatelliteSpec) -> Result<bool, String> {
-    if let Some(existing) = app.get_webview_window(spec.label) {
+    open_labelled(app, spec.label, &dev_title(spec.title), spec)
+}
+
+/// `open_satellite`'s body, with the label and the title passed in rather than
+/// read off the spec.
+///
+/// The split exists for the workspace windows: their label and title are per
+/// workspace while their geometry is one constant, so the two strings have to
+/// come from the caller. Everything under them — size, chrome, the traffic-light
+/// inset — is identical for every window this app builds, and stating that twice
+/// is exactly how the traffic-light literal drifted the last time (see
+/// `traffic_light_position`).
+fn open_labelled<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    title: &str,
+    geometry: &SatelliteSpec,
+) -> Result<bool, String> {
+    let spec = geometry;
+    if let Some(existing) = app.get_webview_window(label) {
         // Unminimise first — `set_focus` on a minimised window is a no-op on
         // macOS and the user would see nothing happen.
         let _ = existing.unminimize();
@@ -188,8 +278,8 @@ fn open_satellite<R: Runtime>(app: &AppHandle<R>, spec: &SatelliteSpec) -> Resul
         return Ok(false);
     }
 
-    let builder = WebviewWindowBuilder::new(app, spec.label, WebviewUrl::App("index.html".into()))
-        .title(dev_title(spec.title))
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+        .title(title)
         .inner_size(spec.width, spec.height)
         .min_inner_size(spec.min_width, spec.min_height)
         .resizable(true)
@@ -352,6 +442,60 @@ pub async fn is_panel_window_open<R: Runtime>(
     Ok(app.get_webview_window(spec.label).is_some())
 }
 
+// ─── Detached workspace windows ──────────────────────────────────────────────
+
+/// Open (or focus) the window a detached workspace lives in.
+///
+/// `name` is only the window's title — the label comes from `workspace_id`
+/// alone, so a renamed workspace cannot change which window it owns. An unknown
+/// or malformed id is an error rather than a window with no capability entry;
+/// see `workspace_window_label`.
+#[tauri::command]
+pub async fn open_workspace_window<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_id: String,
+    name: Option<String>,
+) -> Result<bool, String> {
+    let label = workspace_window_label(&workspace_id)?;
+    let title = match name.as_deref().map(str::trim) {
+        Some(n) if !n.is_empty() => dev_title(&format!("Voidlink — {n}")),
+        _ => dev_title(WORKSPACE_SPEC.title),
+    };
+    open_labelled(&app, &label, &title, &WORKSPACE_SPEC)
+}
+
+#[tauri::command]
+pub async fn close_workspace_window<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let label = workspace_window_label(&workspace_id)?;
+    close_satellite(&app, &label)
+}
+
+#[tauri::command]
+pub async fn is_workspace_window_open<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_id: String,
+) -> Result<bool, String> {
+    let label = workspace_window_label(&workspace_id)?;
+    Ok(app.get_webview_window(&label).is_some())
+}
+
+/// Bring a workspace's window to the front.
+///
+/// The rail's row for a detached workspace is a "go to it" affordance rather
+/// than a selection — the workspace is not interactive in `main` while it is
+/// out — so this is what that click does.
+#[tauri::command]
+pub async fn focus_workspace_window<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let label = workspace_window_label(&workspace_id)?;
+    focus_window(&app, &label)
+}
+
 // ─── Workbench ───────────────────────────────────────────────────────────────
 
 /// Bring the workbench window to the front.
@@ -363,4 +507,62 @@ pub async fn is_panel_window_open<R: Runtime>(
 #[tauri::command]
 pub async fn focus_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     focus_window(&app, "main")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_workspace_id_becomes_a_prefixed_label() {
+        assert_eq!(
+            workspace_window_label("0f3a1c2e-8b4d-4a19-9f77-1b2c3d4e5f60").unwrap(),
+            "workspace-0f3a1c2e-8b4d-4a19-9f77-1b2c3d4e5f60"
+        );
+    }
+
+    /// The two halves have to agree, or a window could come up under a label
+    /// `main.tsx` then fails to recognise as a workspace root — a webview with
+    /// permissions and no app in it.
+    #[test]
+    fn the_label_round_trips_back_to_its_id() {
+        let id = "0f3a1c2e-8b4d-4a19-9f77-1b2c3d4e5f60";
+        let label = workspace_window_label(id).unwrap();
+        assert_eq!(workspace_id_from_label(&label), Some(id));
+    }
+
+    #[test]
+    fn a_malformed_id_is_an_error_not_a_window() {
+        let too_long = "x".repeat(65);
+        let cases: [&str; 7] = [
+            "",                // would collapse the label to the bare prefix
+            "../main",         // path-ish
+            "*",               // the capability glob itself
+            "has space",       //
+            "semi;colon",      //
+            "emoji-\u{1f600}", // non-ascii
+            &too_long,         // an unbounded label
+        ];
+        for bad in cases {
+            assert!(
+                workspace_window_label(bad).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    /// A label belonging to another window — or to no window this app builds —
+    /// must not read back as a workspace. This is what keeps the main-close PTY
+    /// guard from mistaking a satellite for a detached workspace.
+    #[test]
+    fn a_foreign_label_is_not_a_workspace_label() {
+        for foreign in ["main", "git", "editor", "panel-files", "panel-agents"] {
+            assert_eq!(workspace_id_from_label(foreign), None);
+        }
+        // The prefix alone is not a workspace either: there is no id in it.
+        assert_eq!(workspace_id_from_label(WORKSPACE_WINDOW_PREFIX), None);
+        // Nor is a prefixed label whose id would have been rejected on the way
+        // out — this revalidates rather than trusting the prefix.
+        assert_eq!(workspace_id_from_label("workspace-../main"), None);
+    }
 }

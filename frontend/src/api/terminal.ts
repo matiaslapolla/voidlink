@@ -31,4 +31,14 @@ export const terminalApi = {
   writePty(sessionId: string, data: string): Promise<void> {
     return invoke<void>("write_pty", { sessionId, data });
   },
+
+  /// Declare which sessions this window is rendering.
+  ///
+  /// Only a detached workspace window sends this, and only so that closing
+  /// `main` does not reap shells a window still on screen is showing — see
+  /// `PtyOwners` in `src-tauri/src/lib.rs`. The whole set each time, not a
+  /// delta: a lost release would be a shell `main` may no longer collect.
+  setPtyOwner(sessionIds: string[], label: string): Promise<void> {
+    return invoke<void>("pty_set_owner", { sessionIds, label });
+  },
 };
