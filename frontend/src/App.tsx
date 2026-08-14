@@ -29,7 +29,6 @@ import {
 import { isMac } from "@/api/platform";
 import { isZen, toggleMaximizedGroup, toggleZen } from "@/store/focusMode";
 import { CommandPalette } from "@/commands/CommandPalette";
-import { FileFinder } from "@/commands/FileFinder";
 import { TabCycleOverlay } from "@/commands/TabCycleOverlay";
 import { TabSwitcher } from "@/commands/TabSwitcher";
 import { WorktreeSwitcher } from "@/commands/WorktreeSwitcher";
@@ -43,19 +42,16 @@ import {
   closeCheatSheet,
   closeBoard,
   closeBrain,
-  closeFileFinder,
   closePalette,
   getActions,
   isCheatSheetOpen,
   isBoardOpen,
   isBrainOpen,
-  isFileFinderOpen,
   isPaletteOpen,
   isTabSwitcherOpen,
   openBoard,
   openBrain,
   openCheatSheet,
-  openFileFinder,
   openPalette,
   openTabSwitcher,
   closeTabSwitcher,
@@ -566,7 +562,10 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       // Toggling lives in the action, not the binding, so ⌘K and the palette
       // row are the same code path. Picking this row *from* the palette is a
       // no-op by construction: the palette closes first, so `run` reopens it.
-      run: () => (isPaletteOpen() ? closePalette() : openPalette()),
+      //
+      // `"commands"` is what makes ⌘K different from ⌘P: same overlay, seeded
+      // with the `>` the user would otherwise have typed.
+      run: () => (isPaletteOpen() ? closePalette() : openPalette("commands")),
     },
     {
       id: "help.shortcuts",
@@ -583,7 +582,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       {
         id: "file.open",
         label: "Open file…",
-        description: "Fuzzy search tracked files in the active repo",
+        description: "Fuzzy search tracked files, open tabs and recently closed files",
         group: "File",
         enabled: () => !!repo,
         run: () => {
@@ -593,8 +592,10 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
             pushToast("Open a folder first", "warning");
             return;
           }
-          if (isFileFinderOpen()) closeFileFinder();
-          else openFileFinder();
+          // The palette's file mode *is* the file finder now — same overlay as
+          // `palette.open`, opened with an empty query instead of a `>`.
+          if (isPaletteOpen()) closePalette();
+          else openPalette("files");
         },
       },
     ];
@@ -1560,12 +1561,16 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
           </Show>
         </div>
       </div>
-      <CommandPalette openTabs={workbenchTargets} recentFiles={recentFileTargets} />
-      <ShortcutsCheatSheet />
-      <FileFinder
+      {/* One palette for both chords: ⌘P lands in its file mode, ⌘K in its
+          command mode. The file finder used to be a second overlay rendered
+          beside this one. */}
+      <CommandPalette
+        openTabs={workbenchTargets}
+        recentFiles={recentFileTargets}
         repoPath={activeRepoPath()}
         onOpenFile={(p) => void openInEditorWindow(p)}
       />
+      <ShortcutsCheatSheet />
       <WorktreeSwitcher />
       <TabSwitcher tabs={workbenchTargets} />
       {/* Held-modifier UI: no scrim, no transition, gone on the keyup. */}

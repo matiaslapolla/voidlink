@@ -1,6 +1,7 @@
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import { textPrompt } from "./prompt";
 import { createOverlay } from "./overlay";
+import { COMMAND_PREFIX, type PaletteMode } from "./paletteMode";
 
 /// A user-invokable action surfaced by the Cmd+K palette and (optionally)
 /// bound to a global keyboard shortcut. Actions are registered once at app
@@ -150,7 +151,6 @@ export function useActionSourceCatalog(): void {
 /// unregistered overlay that nobody had hit yet, and exactly the failure mode
 /// BR-O1 describes.
 const paletteOverlay = createOverlay("palette");
-const fileFinderOverlay = createOverlay("file-finder");
 const cheatSheetOverlay = createOverlay("cheat-sheet");
 const worktreeSwitcherOverlay = createOverlay("worktree-switcher");
 const tabSwitcherOverlay = createOverlay("tab-switcher");
@@ -200,16 +200,30 @@ export function isPaletteOpen() {
   return paletteOverlay.isOpen();
 }
 
-export function openPalette() {
+/// The query the palette starts with, set by whoever opened it.
+///
+/// This is how one overlay serves two chords. ⌘P wants files, which is the
+/// empty query; ⌘K wants commands, which is the same picker with a `>` already
+/// typed. Seeding the *query* rather than carrying a mode flag beside it means
+/// the two entry points differ by one character and nothing else — and the
+/// user's first backspace lands them in the other mode, which is the whole
+/// point of the `>` convention.
+const [paletteSeed, setPaletteSeed] = createSignal("");
+
+export function openPalette(mode: PaletteMode = "files") {
+  setPaletteSeed(mode === "commands" ? COMMAND_PREFIX : "");
   paletteOverlay.open();
+}
+
+/// Read once, when the palette's content mounts. Not reactive after that: the
+/// seed is where the user *started*, and the input owns the query from the
+/// first keystroke on.
+export function paletteSeedQuery(): string {
+  return paletteSeed();
 }
 
 export function closePalette() {
   paletteOverlay.close();
-}
-
-export function isFileFinderOpen() {
-  return fileFinderOverlay.isOpen();
 }
 
 // ─── Built-in commands ────────────────────────────────────────────────────
@@ -229,14 +243,6 @@ registerActions([
     },
   },
 ]);
-
-export function openFileFinder() {
-  fileFinderOverlay.open();
-}
-
-export function closeFileFinder() {
-  fileFinderOverlay.close();
-}
 
 export function isCheatSheetOpen() {
   return cheatSheetOverlay.isOpen();

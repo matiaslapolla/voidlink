@@ -112,6 +112,18 @@ export const ACTION_IDS = [
   "ui.navigate-back",
   "ui.navigate-forward",
   "view.toggle-blame",
+  // The two surfaces you open rather than toggle. Declared here — with no
+  // keymap entry — because ⌘P now reaches commands as well as files, and these
+  // are two of the "open a thing" answers a user types into it: without a
+  // declaration a typo in a future binding for either would be a shortcut that
+  // silently does nothing, which is the whole reason this list exists.
+  //
+  // Deliberately chordless. Both are rare enough that a chord would cost more
+  // than it buys — the same call `ui.detach-*` and `stack.restack-all` already
+  // make — and `primaryChordFor` returning `undefined` renders as a palette row
+  // with no accelerator, which is a supported state.
+  "board.open",
+  "browser.new",
   // AI
   "agent.toggle",
   "agent.newTab",

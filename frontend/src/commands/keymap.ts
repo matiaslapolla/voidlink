@@ -97,7 +97,12 @@ export type KeymapWindow = "main" | "editor";
 /// is kept as an alternate for layouts that report it the other way.
 export const KEYMAP: readonly KeymapEntry[] = [
   // ── App ───────────────────────────────────────────────────────────────
-  { actionId: "palette.open", group: "App", binding: { meta: true, key: "k" } },
+  {
+    actionId: "palette.open",
+    group: "App",
+    binding: { meta: true, key: "k" },
+    note: "Opens the same palette ⌘P does, with the `>` already typed. One overlay, two ways in — see `CommandPalette.tsx`.",
+  },
   {
     actionId: "help.shortcuts",
     group: "App",
@@ -116,7 +121,12 @@ export const KEYMAP: readonly KeymapEntry[] = [
   },
 
   // ── File ──────────────────────────────────────────────────────────────
-  { actionId: "file.open", group: "File", binding: { meta: true, key: "p" } },
+  {
+    actionId: "file.open",
+    group: "File",
+    binding: { meta: true, key: "p" },
+    note: "Unchanged chord, wider reach: it opens the palette in file mode rather than a file finder of its own, so typing `>` from here lands on the commands ⌘K shows.",
+  },
   {
     actionId: "file.new",
     group: "File",
