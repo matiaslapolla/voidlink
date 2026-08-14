@@ -96,6 +96,38 @@ const [openPanel, setOpenPanel] = createSignal<SidebarId | null>(null);
 
 export { openPanel };
 
+/// The panel that is on its way out, and the only reason it still exists.
+///
+/// An exit animation needs the thing it animates, and `openPanel` going to
+/// `null` unmounts the panel in the same update — there is nothing left to
+/// animate by the next frame. So the two are split: `openPanel` flips
+/// immediately, because the button's pressed state is press feedback and §7.1
+/// gives that no delay, and `closingPanel` keeps the panel mounted for the
+/// 135ms it takes to leave. `shows()` in `App.tsx` reads both.
+const [closingPanel, setClosingPanel] = createSignal<SidebarId | null>(null);
+
+export { closingPanel };
+
+/// The morph in flight, if any, so it can be cancelled.
+///
+/// One handle rather than one per panel: at most one panel is ever open, so at
+/// most one is ever animating, and a second handle would only exist to describe
+/// a state the mode forbids.
+let inFlight: Animation | null = null;
+
+/// Drop whatever is animating and unmount whatever was leaving, now.
+///
+/// Every interruption lands here — opening a second panel mid-exit, leaving
+/// docked mode, a panel being detached out from under the dock. `cancel()`
+/// rather than `finish()`: the exit holds its last frame (`fill: "forwards"`),
+/// and finishing it would leave an invisible panel behind on an element that is
+/// about to be shown again.
+function settleMorph(): void {
+  inFlight?.cancel();
+  inFlight = null;
+  setClosingPanel(null);
+}
+
 /// Open `id`, or close it if it is already the open one. The dock's buttons are
 /// toggles: pressing the panel you are looking at is how you get the space
 /// back, and it is the only way that does not need a second control.
@@ -107,8 +139,14 @@ export { openPanel };
 /// the difference between 180ms and 0.
 export function toggleDockPanel(id: SidebarId, from: MorphPoint | null = null): void {
   const opening = openPanel() !== id;
+  // Whatever was leaving is gone the moment anything else is asked for. An exit
+  // that kept playing under a panel that is now opening would put two floated
+  // panels on one edge, stacked, for the length of the animation.
+  settleMorph();
   setOpenPanel((current) => (current === id ? null : id));
-  if (opening && from) morphPanelOpen(id, from);
+  if (!from) return;
+  if (opening) morphPanelOpen(id, from);
+  else morphPanelClosed(id, from);
 }
 
 /// Grow the panel `id` out of `from`, once it exists.
@@ -127,15 +165,59 @@ function morphPanelOpen(id: SidebarId, from: MorphPoint): void {
   if (typeof requestAnimationFrame !== "function") return;
   requestAnimationFrame(() => {
     if (openPanel() !== id) return;
-    const el = document.querySelector<HTMLElement>(`[data-sidebar="${id}"]`);
-    if (el) runDockMorph(el, from);
+    const el = panelSlot(id);
+    if (el) inFlight = runDockMorph(el, from, "in");
   });
+}
+
+/// Collapse the panel `id` back into `from`, then unmount it.
+///
+/// The mirror of `morphPanelOpen`, with the mount/unmount at the other end: the
+/// panel is already on screen, so there is no frame to wait for, and what has to
+/// wait is the teardown. `closingPanel` is what holds it there until `finished`
+/// resolves.
+///
+/// A `null` animation — no box, or a platform without WAAPI — means there is
+/// nothing to wait for, so the panel goes immediately rather than being left
+/// mounted forever by a promise that never arrives.
+function morphPanelClosed(id: SidebarId, from: MorphPoint): void {
+  const el = panelSlot(id);
+  const animation = el && runDockMorph(el, from, "out");
+  if (!animation) return;
+  setClosingPanel(id);
+  inFlight = animation;
+  void animation.finished
+    .then(() => {
+      // Only settle the exit that is still the current one. A cancel already
+      // ran `settleMorph`, and by now `inFlight` may belong to an entrance that
+      // started after this one was interrupted.
+      if (inFlight === animation) settleMorph();
+    })
+    .catch(() => {
+      // `cancel()` rejects `finished`. The interruption path already settled.
+    });
+}
+
+/// The slot `AppShell` renders for `id`.
+///
+/// Found by `data-sidebar` — the attribute the shell already puts on every slot
+/// — rather than by a ref threaded down through it. The alternative is an
+/// animation-shaped hole in `AppShellProps`, and `AppShell` is deliberately
+/// store-free geometry (see its header); "which panel just opened, and from
+/// where" is the dock's business, not the shell's.
+function panelSlot(id: SidebarId): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  return document.querySelector<HTMLElement>(`[data-sidebar="${id}"]`);
 }
 
 /// Close whatever the dock has open. Called when the mode leaves `docked`, so
 /// a panel does not stay expanded as a floating overlay in a shell that no
 /// longer draws a dock beside it.
 export function closeDockPanel(): void {
+  // No exit animation: this is not a user closing a panel, it is the panel
+  // losing the shell it was anchored to. Animating a collapse toward a strip
+  // that is no longer drawn would be motion describing geometry that is gone.
+  settleMorph();
   setOpenPanel(null);
 }
 

@@ -8,7 +8,13 @@
 /// clamped rather than swung through.
 import { describe, expect, it } from "vitest";
 
-import { morphOrigin, shouldMorph, type MorphBox } from "./dockMorph";
+import {
+  morphDurationMs,
+  morphEasing,
+  morphOrigin,
+  shouldMorph,
+  type MorphBox,
+} from "./dockMorph";
 
 /// A panel on the left edge, clear of a 40px strip plus the 6px island gap —
 /// the geometry `AppShell`'s `room()` actually produces in docked mode.
@@ -54,5 +60,31 @@ describe("shouldMorph", () => {
     // `index.css` flattens transitions, but a WAAPI animation is not a
     // transition and that block cannot reach it — so it is asked here.
     expect(shouldMorph({ pointer: true, reducedMotion: true })).toBe(false);
+  });
+});
+
+describe("the two directions", () => {
+  /// §7.1's out is 75% of its in, and the curves are not each other's reverse.
+  /// Asserted as a relationship rather than against two literals: the numbers
+  /// are tokens, and a test that restated them would just be a third place they
+  /// could drift from `index.css`.
+  it("leaves faster than it arrives", () => {
+    expect(morphDurationMs("out")).toBeLessThan(morphDurationMs("in"));
+  });
+
+  it("stays inside the motion budget in both directions", () => {
+    // §7.1 budgets 120–240ms. A morph outside it is not a slower morph, it is a
+    // different doctrine.
+    for (const direction of ["in", "out"] as const) {
+      expect(morphDurationMs(direction)).toBeGreaterThanOrEqual(120);
+      expect(morphDurationMs(direction)).toBeLessThanOrEqual(240);
+    }
+  });
+
+  it("decelerates in and accelerates out", () => {
+    // Not the same curve reversed — entering settles, leaving gets out of the
+    // way. Equal curves here would mean the token lookup silently fell through
+    // to one fallback for both.
+    expect(morphEasing("in")).not.toBe(morphEasing("out"));
   });
 });

@@ -67,7 +67,7 @@ import { AppStoreContext } from "@/store/LayoutContext";
 import { createAppStore } from "@/store/layout";
 import { TooltipLayer } from "@/components/ui/Tooltip";
 
-import { DockStrip } from "./DockStrip";
+import { DockStrip, closeDockPanel, closingPanel, openPanel } from "./DockStrip";
 
 let ptyCounter = 1;
 const fakeWatch = terminalWatch as unknown as {
@@ -260,5 +260,104 @@ describe("DockStrip", () => {
     expect(container.querySelector("[data-dock-divider]")?.getAttribute("aria-orientation")).toBe(
       "vertical",
     );
+  });
+});
+
+/// The exit animation's *state machine*, not its pixels.
+///
+/// jsdom implements neither WAAPI nor layout, so both are stubbed — deliberately
+/// and narrowly. What is under test is the thing that has a wrong answer: a
+/// panel has to outlive the signal that closed it for exactly as long as it
+/// takes to leave, and not one interruption longer. The keyframes are the
+/// browser's problem and `dockMorph.test.ts` owns the tokens.
+describe("closing a panel", () => {
+  /// A slot for `AppShell`'s `data-sidebar` hook, with a box — `runDockMorph`
+  /// bails on a zero-size element, which every jsdom element is.
+  function fakeSlot(id: string): HTMLElement {
+    const el = document.createElement("div");
+    el.setAttribute("data-sidebar", id);
+    el.getBoundingClientRect = () =>
+      ({ left: 46, top: 0, width: 256, height: 800 }) as DOMRect;
+    document.body.appendChild(el);
+    return el;
+  }
+
+  /// A controllable `Element.animate`. `finished` is resolved by the test, so
+  /// the window in which the panel is still mounted is explicit rather than a
+  /// timer the test has to outwait.
+  function fakeWaapi() {
+    let settle!: () => void;
+    const finished = new Promise<void>((resolve) => (settle = resolve));
+    const cancel = vi.fn();
+    const animate = vi.fn(() => ({ finished, cancel }));
+    (Element.prototype as unknown as { animate: unknown }).animate = animate;
+    return { settle, cancel, animate };
+  }
+
+  // `openPanel` is module state by design (see `DockStrip.tsx`), so it carries
+  // across tests in this file. Reset explicitly rather than relying on the
+  // order these run in.
+  beforeEach(() => closeDockPanel());
+
+  afterEach(() => {
+    closeDockPanel();
+    delete (Element.prototype as unknown as { animate?: unknown }).animate;
+    document.querySelectorAll("[data-sidebar]").forEach((el) => el.remove());
+  });
+
+  /// `detail: 1` is a pointer click. A `0` there is the keyboard, which §7.1
+  /// gives no motion at all — the case `dockMorph.test.ts` covers.
+  const press = (container: HTMLElement, id: string) => {
+    const button = container.querySelector<HTMLElement>(`[data-dock-panel="${id}"]`)!;
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+  };
+
+  it("keeps the panel mounted until its exit finishes", async () => {
+    const waapi = fakeWaapi();
+    fakeSlot("explorer");
+    const { container } = mount();
+
+    press(container, "explorer");
+    expect(openPanel()).toBe("explorer");
+    expect(closingPanel()).toBe(null);
+
+    press(container, "explorer");
+    // The button is unpressed immediately — press feedback gets no delay — but
+    // the panel is still there, which is the whole point.
+    expect(openPanel()).toBe(null);
+    expect(closingPanel()).toBe("explorer");
+
+    waapi.settle();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(closingPanel()).toBe(null);
+  });
+
+  it("drops a panel that is still leaving when another opens", async () => {
+    const waapi = fakeWaapi();
+    fakeSlot("explorer");
+    fakeSlot("git");
+    const { container } = mount();
+
+    press(container, "explorer");
+    press(container, "explorer");
+    expect(closingPanel()).toBe("explorer");
+
+    // Two floated panels on one edge, stacked, is what this prevents.
+    press(container, "git");
+    expect(closingPanel()).toBe(null);
+    expect(openPanel()).toBe("git");
+    expect(waapi.cancel).toHaveBeenCalled();
+  });
+
+  it("unmounts immediately when there is nothing to animate", () => {
+    // No WAAPI stub and no slot: `runDockMorph` returns null, and a null
+    // animation must mean "already done" rather than a panel left mounted
+    // forever waiting on a promise that never arrives.
+    const { container } = mount();
+    press(container, "explorer");
+    press(container, "explorer");
+    expect(openPanel()).toBe(null);
+    expect(closingPanel()).toBe(null);
   });
 });

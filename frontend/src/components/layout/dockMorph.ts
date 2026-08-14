@@ -36,14 +36,27 @@ export interface MorphBox {
   height: number;
 }
 
-/// `--dur-short`, and `--ease-out` for an entrance. Read as authored values
-/// rather than retyped: §7.1's budget is a token, and a number here that drifted
-/// from it would be a second opinion about how fast the app moves.
+/// Which way the panel is going. Not a boolean, because the two directions do
+/// not share a duration *or* a curve and a `reverse` flag would imply they do:
+/// §7.1's out is 75% of its in (`--dur-short-out`), and leaving accelerates
+/// away (`--ease-in`) where arriving decelerates into place (`--ease-out`).
+export type MorphDirection = "in" | "out";
+
+/// Read as authored values rather than retyped: §7.1's budget is a token, and a
+/// number here that drifted from it would be a second opinion about how fast the
+/// app moves.
 ///
 /// The fallbacks are the authored values from `index.css`, for the same reason
 /// `islandGapPx()` carries one — unit tests have no cascade to compute.
-const DUR_SHORT_FALLBACK = 180;
-const EASE_OUT_FALLBACK = "cubic-bezier(0.16, 1, 0.3, 1)";
+const FALLBACK: Record<MorphDirection, { duration: number; easing: string }> = {
+  in: { duration: 180, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
+  out: { duration: 135, easing: "cubic-bezier(0.7, 0, 0.84, 0)" },
+};
+
+const TOKENS: Record<MorphDirection, { duration: string; easing: string }> = {
+  in: { duration: "--dur-short", easing: "--ease-out" },
+  out: { duration: "--dur-short-out", easing: "--ease-in" },
+};
 
 function token(name: string, fallback: string): string {
   if (typeof document === "undefined") return fallback;
@@ -51,13 +64,14 @@ function token(name: string, fallback: string): string {
   return raw || fallback;
 }
 
-export function morphDurationMs(): number {
-  const n = Number.parseFloat(token("--dur-short", `${DUR_SHORT_FALLBACK}ms`));
-  return Number.isFinite(n) ? n : DUR_SHORT_FALLBACK;
+export function morphDurationMs(direction: MorphDirection): number {
+  const fallback = FALLBACK[direction].duration;
+  const n = Number.parseFloat(token(TOKENS[direction].duration, `${fallback}ms`));
+  return Number.isFinite(n) ? n : fallback;
 }
 
-export function morphEasing(): string {
-  return token("--ease-out", EASE_OUT_FALLBACK);
+export function morphEasing(direction: MorphDirection): string {
+  return token(TOKENS[direction].easing, FALLBACK[direction].easing);
 }
 
 /// The panel's `transform-origin`, in px relative to its own top-left.
@@ -104,9 +118,37 @@ export function prefersReducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-/// Grow `el` out of `from`. No-op when the element has no box yet (a panel that
-/// rendered nothing) or when the platform has no WAAPI.
-export function runDockMorph(el: HTMLElement, from: MorphPoint): Animation | null {
+/// The two ends of the gesture, as one keyframe pair read in either order.
+///
+/// Written once because the panel has to leave along the path it arrived on —
+/// §7.3.11's "same path both ways". Two hand-written keyframe lists is how those
+/// silently diverge into an entrance that grows from the button and an exit that
+/// shrinks toward somewhere else.
+///
+/// `scale(0.92)`, never from zero (MOTION-PLAN F6: "never from `scale(0)`"). The
+/// panel is already the right shape at the first frame; it is arriving, not
+/// being constructed.
+const SEATED = { opacity: 1, transform: "scale(1)" };
+const AT_BUTTON = { opacity: 0, transform: "scale(0.92)" };
+
+/// Grow `el` out of `from`, or collapse it back into `from`.
+///
+/// No-op when the element has no box (a panel that rendered nothing) or when the
+/// platform has no WAAPI — in both cases the caller's `finished` promise never
+/// arrives, which is why the caller must treat `null` as "already done" rather
+/// than waiting on it.
+///
+/// `fill` differs by direction and the asymmetry is load-bearing. An entrance
+/// ends on the element's own resting style, so holding the last frame would be
+/// pinning it to a value it already has. An exit ends *invisible*, on an element
+/// that has not unmounted yet — without `forwards` it flashes back to full
+/// opacity for the frame between the animation finishing and the caller
+/// dropping it.
+export function runDockMorph(
+  el: HTMLElement,
+  from: MorphPoint,
+  direction: MorphDirection = "in",
+): Animation | null {
   const rect = el.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return null;
   if (typeof el.animate !== "function") return null;
@@ -114,14 +156,9 @@ export function runDockMorph(el: HTMLElement, from: MorphPoint): Animation | nul
   const origin = morphOrigin(rect, from);
   el.style.transformOrigin = `${origin.x}px ${origin.y}px`;
 
-  // `scale(0.92)`, never from zero (F6 in MOTION-PLAN: "never from `scale(0)`").
-  // The panel is already the right shape at the first frame; it is arriving,
-  // not being constructed.
-  return el.animate(
-    [
-      { opacity: 0, transform: "scale(0.92)" },
-      { opacity: 1, transform: "scale(1)" },
-    ],
-    { duration: morphDurationMs(), easing: morphEasing(), fill: "none" },
-  );
+  return el.animate(direction === "in" ? [AT_BUTTON, SEATED] : [SEATED, AT_BUTTON], {
+    duration: morphDurationMs(direction),
+    easing: morphEasing(direction),
+    fill: direction === "in" ? "none" : "forwards",
+  });
 }

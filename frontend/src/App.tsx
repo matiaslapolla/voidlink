@@ -133,6 +133,7 @@ import {
   DockStrip,
   DockStripOverlay,
   closeDockPanel,
+  closingPanel,
   openPanel,
 } from "@/components/layout/DockStrip";
 import {
@@ -1403,11 +1404,18 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   /// consulted here. Those flags answer "is this panel railed", and docked mode
   /// has no rails; the strip's own single `openPanel` is the state, and it is
   /// module state in `DockStrip.tsx` for the reason stated there.
+  ///
+  /// `closingPanel` is the one place this says yes to a panel the dock has
+  /// already closed: an exit animation needs something to animate, and
+  /// `openPanel` going to `null` would unmount it in the same update. It holds
+  /// for the 135ms the panel takes to collapse and then goes. The other three
+  /// clauses still win over it — a panel that is detached, suppressed or hidden
+  /// by zen mid-exit goes now, without its animation.
   const shows = (id: SidebarId) =>
     !isZen() &&
     !state.detachedSidebars.includes(id) &&
     !sidebarSuppressedReason(id) &&
-    (!isDockedMode() || openPanel() === id);
+    (!isDockedMode() || openPanel() === id || closingPanel() === id);
 
   /// Leaving docked mode closes whatever the dock had open.
   ///
@@ -1417,10 +1425,16 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   /// from under the dock: `shows()` would already hide it, and leaving
   /// `openPanel` pointing at it would make the strip's button read as pressed
   /// for a panel that is not there.
+  ///
+  /// A panel mid-exit counts as one the dock has, for the same reason `shows()`
+  /// keeps it mounted. Leaving docked mode during those 135ms would otherwise
+  /// drop its `float` and let it finish collapsing as an ordinary column — the
+  /// flash this effect exists to prevent, arriving by the one route the original
+  /// `openPanel`-only read could not see.
   createEffect(() => {
-    const open = openPanel();
-    if (!open) return;
-    if (!isDockedMode() || !shows(open)) closeDockPanel();
+    const active = openPanel() ?? closingPanel();
+    if (!active) return;
+    if (!isDockedMode() || !shows(active)) closeDockPanel();
   });
 
   /// `leftSidebarCollapsed` is what `Mod+B` means and it still gates the
