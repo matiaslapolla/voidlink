@@ -142,6 +142,21 @@ function anchorFor(side: DockSide): Record<string, string> {
 }
 
 export function AppShell(props: AppShellProps) {
+  /// The strip's lane, in px per edge — `0` on all three with no dock.
+  ///
+  /// Read by *both* consumers of the reservation, which is the point of hoisting
+  /// it: the flex container turns it into padding, and every floated panel
+  /// turns it into an offset. Those two have to agree, and they did not when the
+  /// padding was the only expression of it — an absolutely positioned panel
+  /// resolves `left: 0` against the container's **padding box**, so the lane the
+  /// padding reserves is exactly the strip of space a floated panel was free to
+  /// slide underneath. In docked mode every sidebar floats (`float`), so that was
+  /// every opened panel overlapping the strip that opened it.
+  const room = () =>
+    props.dock
+      ? dockStripReservation(props.dock.side(), props.dock.thickness(), ISLAND_GAP_FALLBACK)
+      : { left: 0, right: 0, bottom: 0 };
+
   return (
     <div
       class="flex flex-col w-full text-foreground bg-canvas overflow-hidden"
@@ -167,19 +182,11 @@ export function AppShell(props: AppShellProps) {
           class="relative flex flex-1 overflow-hidden min-h-0"
           style={{
             gap: "var(--island-gap)",
-            ...(props.dock
-              ? paddingFor(
-                  dockStripReservation(
-                    props.dock.side(),
-                    props.dock.thickness(),
-                    // The gap between the strip and the first island is the
-                    // same gap that separates any two islands. `--island-gap`
-                    // is 6px; it is read here rather than retyped because §5
-                    // permits exactly this file to compose it.
-                    ISLAND_GAP_FALLBACK,
-                  ),
-                )
-              : {}),
+            // The gap between the strip and the first island is the same gap
+            // that separates any two islands. `--island-gap` is 6px; it is read
+            // as a number in `room()` rather than retyped because §5 permits
+            // exactly this file to compose it.
+            ...paddingFor(room()),
           }}
         >
           <For each={props.sidebars}>
@@ -196,11 +203,16 @@ export function AppShell(props: AppShellProps) {
                       // workbench, above the panes but below the window frame
                       // — `--z-panel` is the layer for "chrome the user
                       // opened, not an overlay that blocks them" (§6).
+                      //
+                      // Offset by the strip's lane on the two edges that can
+                      // collide with it: its own, and the bottom. A panel and
+                      // the dock never share space — see `room()`.
                       {
                         order: String(sidebar.order()),
                         top: "0",
-                        bottom: "0",
-                        [sidebar.side() === "right" ? "right" : "left"]: "0",
+                        bottom: `${room().bottom}px`,
+                        [sidebar.side() === "right" ? "right" : "left"]:
+                          `${sidebar.side() === "right" ? room().right : room().left}px`,
                         "z-index": "var(--z-panel)",
                       }
                     : { order: String(sidebar.order()) }

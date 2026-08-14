@@ -68,6 +68,13 @@ import {
 import { terminalSignal } from "./activitySignal";
 import { SIDEBAR_LABEL, sidebarSuppressedReason } from "./SidebarDock";
 import { activeDrag, beginDrag, registerDropZone, type Point } from "./dragDrop";
+import {
+  centreOf,
+  prefersReducedMotion,
+  runDockMorph,
+  shouldMorph,
+  type MorphPoint,
+} from "./dockMorph";
 
 // `tooltip` is a `use:` directive; TypeScript prunes an import it thinks is
 // unused, and the directive is only ever referenced in JSX attribute position.
@@ -92,8 +99,37 @@ export { openPanel };
 /// Open `id`, or close it if it is already the open one. The dock's buttons are
 /// toggles: pressing the panel you are looking at is how you get the space
 /// back, and it is the only way that does not need a second control.
-export function toggleDockPanel(id: SidebarId): void {
+///
+/// `from` is where the panel should grow out of — the centre of the button that
+/// was pressed — and `null` means "appear finished" (keyboard, reduced motion).
+/// It is a parameter rather than something the dock reads off the DOM later
+/// because only the caller knows *which* control was used, and §7.1 makes that
+/// the difference between 180ms and 0.
+export function toggleDockPanel(id: SidebarId, from: MorphPoint | null = null): void {
+  const opening = openPanel() !== id;
   setOpenPanel((current) => (current === id ? null : id));
+  if (opening && from) morphPanelOpen(id, from);
+}
+
+/// Grow the panel `id` out of `from`, once it exists.
+///
+/// The slot is found by `data-sidebar` — the attribute `AppShell` already puts
+/// on every slot — rather than by a ref threaded down through the shell. The
+/// alternative is an animation-shaped hole in `AppShellProps`, and `AppShell` is
+/// deliberately store-free geometry (see its header); "which panel just opened
+/// and from where" is the dock's business, not the shell's.
+///
+/// One frame of delay, and it is required rather than defensive: the panel's
+/// content mounts as part of the same update that set `openPanel`, so at the end
+/// of this call the slot is still the empty, zero-height box it was before, and
+/// `runDockMorph` would measure nothing and bail.
+function morphPanelOpen(id: SidebarId, from: MorphPoint): void {
+  if (typeof requestAnimationFrame !== "function") return;
+  requestAnimationFrame(() => {
+    if (openPanel() !== id) return;
+    const el = document.querySelector<HTMLElement>(`[data-sidebar="${id}"]`);
+    if (el) runDockMorph(el, from);
+  });
 }
 
 /// Close whatever the dock has open. Called when the mode leaves `docked`, so
@@ -357,7 +393,18 @@ export function DockStrip() {
                 aria-label={SIDEBAR_LABEL[id]}
                 aria-pressed={open()}
                 use:tooltip={`${SIDEBAR_LABEL[id]}\nOpens against the dock's edge; press again to close`}
-                onClick={() => toggleDockPanel(id)}
+                // `detail === 0` is a click the keyboard produced (Enter or
+                // Space on the focused button). §7.1 gives those no motion at
+                // all, so the origin is withheld rather than the animation
+                // being cancelled somewhere further down.
+                onClick={(e) =>
+                  toggleDockPanel(
+                    id,
+                    shouldMorph({ pointer: e.detail !== 0, reducedMotion: prefersReducedMotion() })
+                      ? centreOf(e.currentTarget)
+                      : null,
+                  )
+                }
                 // §11.5's one "this is active" idiom, and a tint-only hover
                 // (§7.3.5). `border` at a constant width in every state so
                 // nothing reflows on hover (§7.6).

@@ -157,3 +157,51 @@ describe("island geometry", () => {
     expect(slot.childElementCount).toBe(0);
   });
 });
+
+describe("the dock strip's lane", () => {
+  /// A floated panel resolves its offsets against the container's **padding
+  /// box**, so the padding that reserves the strip's lane does nothing to hold
+  /// it back — the lane is precisely the space it was free to slide under. In
+  /// docked mode every sidebar floats, so this was every opened panel
+  /// overlapping the strip that opened it.
+  ///
+  /// Asserted as the offset on the panel's *own* edge rather than by measuring
+  /// rectangles: jsdom lays nothing out, and the offset is the whole mechanism.
+  const dockedShell = (side: DockSide, panelSide: DockSide = side) => {
+    const sidebars: AppShellSidebar[] = [
+      {
+        id: "files",
+        side: () => panelSide,
+        order: () => slotOrder(panelSide, 0),
+        float: () => true,
+        content: <div data-testid="files" />,
+      },
+    ];
+    const { container } = render(() => (
+      <AppShell
+        fill
+        titleBar={null}
+        sidebars={sidebars}
+        main={<div />}
+        statusBar={<div />}
+        dock={{ side: () => side, thickness: () => 40, content: <div data-testid="strip" /> }}
+      />
+    ));
+    return container.querySelector('[data-sidebar="files"]') as HTMLElement;
+  };
+
+  it("keeps a floated panel clear of a strip on the same edge", () => {
+    // 40px strip + the 6px island gap.
+    expect(dockedShell("left").style.left).toBe("46px");
+    expect(dockedShell("right").style.right).toBe("46px");
+  });
+
+  it("stops a floated panel short of a strip along the bottom", () => {
+    expect(dockedShell("bottom", "left").style.bottom).toBe("46px");
+  });
+
+  it("costs a panel nothing on an edge the strip is not on", () => {
+    expect(dockedShell("right", "left").style.left).toBe("0px");
+    expect(dockedShell("left").style.bottom).toBe("0px");
+  });
+});
