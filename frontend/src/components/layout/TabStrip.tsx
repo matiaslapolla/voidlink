@@ -1045,16 +1045,20 @@ export function TabStrip(props: TabStripProps) {
 
   return (
     <div
-      // No `border-b`: the strip sits at the top of an island whose body is a
-      // different surface, and that colour step is the separation. A hairline
-      // here would be a second edge competing with the tab cards' (D1).
+      // No surface and no `border-b`. The strip used to paint
+      // `bg-surface-tabstrip` over the group island's own `bg-background`, and
+      // two translucent layers stacked is what made the tab row read as an
+      // opaque grey band across the top of the window while the rail beside it
+      // showed the wallpaper. Both are gone: the row is the island, the only
+      // boundary in the region is the active tab's card (D1), and a hairline
+      // here would be a second edge competing with it.
       //
       // The group-focus rule follows the strip: it is the strip's *outer* edge
       // in both orientations — the top of a row, the left of a column — so it
       // still reads as the pane's own frame rather than as a divider between
       // the strip and the body. Same 2px either way, so focus moving between
       // groups still costs no layout.
-      class="flex bg-surface-tabstrip shrink-0"
+      class="flex shrink-0"
       classList={{
         "items-center h-9": !vertical(),
         "flex-col h-full": vertical(),

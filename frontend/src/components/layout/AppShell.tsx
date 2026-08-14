@@ -23,9 +23,11 @@ import { dockStripReservation, type DockSide } from "@/store/layout";
 ///     sidebar renders nothing at all without a repo; `.island-slot:empty`
 ///     collapses those so the gap goes with them.
 ///   • **A slot is never moved, only reordered.** See `AppShellSidebar`. Docked
-///     mode does not break this: a floated panel and the dock strip are
-///     *positioned* differently, in the same DOM position they always had, so
-///     the environment mode is one more CSS change rather than a re-parent.
+///     mode does not break this: the dock strip is *positioned* differently, in
+///     the same DOM position it always had, so the environment mode is one more
+///     CSS change rather than a re-parent. The panel the dock opens is an
+///     ordinary slot in the row — it takes its width out of the workbench like
+///     every other sidebar, so the tab under it is resized rather than covered.
 ///
 /// Docked mode adds one axis the flex row cannot express — the bottom edge is
 /// perpendicular to it — so the strip is absolutely positioned inside the
@@ -58,20 +60,6 @@ export interface AppShellSidebar {
   /// Rendered once. A panel that is collapsed, hidden or detached renders
   /// nothing *from inside here*, which leaves the slot empty and collapses it.
   content: JSX.Element;
-  /// Take this slot out of the flex row and float it against `side()` instead.
-  ///
-  /// Docked mode's expanded panel: the dock strip is what the user is
-  /// navigating from, and a panel that pushed the workbench sideways every time
-  /// they glanced at the file tree would reflow the editor — and, under it,
-  /// re-measure every terminal grid — on a gesture that is meant to be as cheap
-  /// as a hover. Floating it costs the workbench nothing.
-  ///
-  /// **It is still the same element in the same DOM position.** This flips
-  /// `position` and the insets on a slot that is already there, which is the
-  /// no-remount contract this whole interface exists to keep (see the header
-  /// above): a panel does not unmount because the environment mode changed, any
-  /// more than it does because its edge did.
-  float?: () => boolean;
 }
 
 /// The floating dock strip (`environmentMode: "docked"`).
@@ -144,14 +132,10 @@ function anchorFor(side: DockSide): Record<string, string> {
 export function AppShell(props: AppShellProps) {
   /// The strip's lane, in px per edge — `0` on all three with no dock.
   ///
-  /// Read by *both* consumers of the reservation, which is the point of hoisting
-  /// it: the flex container turns it into padding, and every floated panel
-  /// turns it into an offset. Those two have to agree, and they did not when the
-  /// padding was the only expression of it — an absolutely positioned panel
-  /// resolves `left: 0` against the container's **padding box**, so the lane the
-  /// padding reserves is exactly the strip of space a floated panel was free to
-  /// slide underneath. In docked mode every sidebar floats (`float`), so that was
-  /// every opened panel overlapping the strip that opened it.
+  /// Padding on the flex container, which is what keeps every island — the
+  /// opened panel included — clear of the strip without any of them restating
+  /// the number. The panel is an ordinary row item, so the lane holds it back
+  /// the same way it holds back the workbench.
   const room = () =>
     props.dock
       ? dockStripReservation(props.dock.side(), props.dock.thickness(), ISLAND_GAP_FALLBACK)
@@ -193,30 +177,9 @@ export function AppShell(props: AppShellProps) {
             {(sidebar) => (
               <div
                 class="island island-slot flex-shrink-0 flex"
-                classList={{ absolute: sidebar.float?.() }}
                 data-sidebar={sidebar.id}
                 data-dock={sidebar.side()}
-                data-float={sidebar.float?.() ? "" : undefined}
-                style={
-                  sidebar.float?.()
-                    ? // Floated: pinned to its own edge, full height of the
-                      // workbench, above the panes but below the window frame
-                      // — `--z-panel` is the layer for "chrome the user
-                      // opened, not an overlay that blocks them" (§6).
-                      //
-                      // Offset by the strip's lane on the two edges that can
-                      // collide with it: its own, and the bottom. A panel and
-                      // the dock never share space — see `room()`.
-                      {
-                        order: String(sidebar.order()),
-                        top: "0",
-                        bottom: `${room().bottom}px`,
-                        [sidebar.side() === "right" ? "right" : "left"]:
-                          `${sidebar.side() === "right" ? room().right : room().left}px`,
-                        "z-index": "var(--z-panel)",
-                      }
-                    : { order: String(sidebar.order()) }
-                }
+                style={{ order: String(sidebar.order()) }}
               >
                 {sidebar.content}
               </div>

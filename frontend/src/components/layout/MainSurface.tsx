@@ -1224,7 +1224,7 @@ export function MainSurface(props: MainSurfaceProps) {
       // instead of top-to-bottom. The island itself is unchanged, so a split
       // still looks like the diagram in the directions spec.
       <div
-        class="island flex-1 flex min-w-0 min-h-0 bg-background"
+        class="island flex-1 flex min-w-0 min-h-0"
         classList={{
           "flex-col": !verticalTabs(),
           "flex-row": verticalTabs(),

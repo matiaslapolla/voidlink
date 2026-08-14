@@ -159,21 +159,18 @@ describe("island geometry", () => {
 });
 
 describe("the dock strip's lane", () => {
-  /// A floated panel resolves its offsets against the container's **padding
-  /// box**, so the padding that reserves the strip's lane does nothing to hold
-  /// it back — the lane is precisely the space it was free to slide under. In
-  /// docked mode every sidebar floats, so this was every opened panel
-  /// overlapping the strip that opened it.
+  /// The lane is padding on the row, and it is the *only* expression of the
+  /// reservation: the panel the dock opens is an ordinary row item, so the same
+  /// padding that stops the workbench short of the strip stops the panel too.
   ///
-  /// Asserted as the offset on the panel's *own* edge rather than by measuring
-  /// rectangles: jsdom lays nothing out, and the offset is the whole mechanism.
-  const dockedShell = (side: DockSide, panelSide: DockSide = side) => {
+  /// Asserted on the row's padding rather than by measuring rectangles: jsdom
+  /// lays nothing out, and the padding is the whole mechanism.
+  const dockedShell = (side: DockSide, panelSide: DockSide = "left") => {
     const sidebars: AppShellSidebar[] = [
       {
         id: "files",
         side: () => panelSide,
         order: () => slotOrder(panelSide, 0),
-        float: () => true,
         content: <div data-testid="files" />,
       },
     ];
@@ -187,21 +184,24 @@ describe("the dock strip's lane", () => {
         dock={{ side: () => side, thickness: () => 40, content: <div data-testid="strip" /> }}
       />
     ));
-    return container.querySelector('[data-sidebar="files"]') as HTMLElement;
+    const row = container.querySelector("[data-dock-slot]")!.parentElement as HTMLElement;
+    return { row, slot: container.querySelector('[data-sidebar="files"]') as HTMLElement };
   };
 
-  it("keeps a floated panel clear of a strip on the same edge", () => {
+  it("reserves the strip's edge, and only that edge", () => {
     // 40px strip + the 6px island gap.
-    expect(dockedShell("left").style.left).toBe("46px");
-    expect(dockedShell("right").style.right).toBe("46px");
+    expect(dockedShell("left").row.style.paddingLeft).toBe("46px");
+    expect(dockedShell("left").row.style.paddingRight).toBe("0px");
+    expect(dockedShell("right").row.style.paddingRight).toBe("46px");
+    expect(dockedShell("bottom").row.style.paddingBottom).toBe("46px");
   });
 
-  it("stops a floated panel short of a strip along the bottom", () => {
-    expect(dockedShell("bottom", "left").style.bottom).toBe("46px");
-  });
-
-  it("costs a panel nothing on an edge the strip is not on", () => {
-    expect(dockedShell("right", "left").style.left).toBe("0px");
-    expect(dockedShell("left").style.bottom).toBe("0px");
+  /// The panel takes its width out of the workbench instead of covering it —
+  /// which is what makes the tab under it resize when the dock opens one.
+  it("keeps the opened panel in the flex row rather than over it", () => {
+    const { slot } = dockedShell("left");
+    expect(slot.classList.contains("absolute")).toBe(false);
+    expect(slot.style.position).toBe("");
+    expect(slot.style.order).toBe(String(slotOrder("left", 0)));
   });
 });

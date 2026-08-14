@@ -1399,11 +1399,12 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   ///
   /// Docked mode narrows it to one more rule, and it is the mode's whole
   /// premise: the dock decides. Exactly the panel the strip has open renders,
-  /// and it renders floated (see `float` below) rather than pushing the
-  /// workbench aside — which is why the five per-panel collapse flags are not
-  /// consulted here. Those flags answer "is this panel railed", and docked mode
-  /// has no rails; the strip's own single `openPanel` is the state, and it is
-  /// module state in `DockStrip.tsx` for the reason stated there.
+  /// as an ordinary column in the row — it takes its width out of the workbench
+  /// rather than covering it, so the tab underneath is resized and nothing is
+  /// hidden behind the panel. Which is why the five per-panel collapse flags are
+  /// not consulted here. Those flags answer "is this panel railed", and docked
+  /// mode has no rails; the strip's own single `openPanel` is the state, and it
+  /// is module state in `DockStrip.tsx` for the reason stated there.
   ///
   /// `closingPanel` is the one place this says yes to a panel the dock has
   /// already closed: an exit animation needs something to animate, and
@@ -1419,18 +1420,15 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
 
   /// Leaving docked mode closes whatever the dock had open.
   ///
-  /// Without it the panel keeps its `float` style in a shell with no strip
-  /// beside it — a sidebar hovering over the workbench, anchored to an edge
-  /// nothing else is on. Also covers the panel being detached or suppressed out
+  /// Without it a panel the dock opened would stay in the row of a shell with
+  /// no strip beside it, on top of whatever the other mode's own collapse flags
+  /// say should be there. Also covers the panel being detached or suppressed out
   /// from under the dock: `shows()` would already hide it, and leaving
   /// `openPanel` pointing at it would make the strip's button read as pressed
   /// for a panel that is not there.
   ///
   /// A panel mid-exit counts as one the dock has, for the same reason `shows()`
-  /// keeps it mounted. Leaving docked mode during those 135ms would otherwise
-  /// drop its `float` and let it finish collapsing as an ordinary column — the
-  /// flash this effect exists to prevent, arriving by the one route the original
-  /// `openPanel`-only read could not see.
+  /// keeps it mounted.
   createEffect(() => {
     const active = openPanel() ?? closingPanel();
     if (!active) return;
@@ -1522,10 +1520,6 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         state.dockSide[id as SidebarId],
         state.dockOrder.indexOf(id as SidebarId),
       ),
-    // An accessor like `side` and `order`, and for the same reason: docked mode
-    // must be a style change on a slot that is already in the DOM, not a
-    // different array of slots. See `AppShellSidebar.float`.
-    float: () => isDockedMode(),
   }));
 
   /// The dock strip's slot. Built **once**, like `shellSidebars` and for the
