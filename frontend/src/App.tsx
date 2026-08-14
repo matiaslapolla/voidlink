@@ -10,6 +10,7 @@ import {
   untrack,
   type JSX,
 } from "solid-js";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppShell, type AppShellSidebar } from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
@@ -107,6 +108,7 @@ import {
   openEditorWindow,
   publishEditorTabs,
   publishWindowContext,
+  requestWorkspaceDockBack,
   setStackedViewRouter,
   showEditorWindow,
   type EditorReveal,
@@ -132,6 +134,13 @@ import {
   dockSidebarBack,
   useSidebarWindows,
 } from "@/commands/sidebarWindows";
+import {
+  detachWorkspace,
+  dockWorkspaceBack,
+  useWorkspaceHandoff,
+  useWorkspaceWindows,
+} from "@/commands/workspaceWindows";
+import { attachHome } from "@/commands/attachHome";
 import { SIDEBAR_LABEL, sidebarSuppressedReason } from "@/components/layout/SidebarDock";
 import { browserTabLabel } from "@/components/browser/BrowserPane";
 
@@ -143,7 +152,16 @@ const EditorView = lazy(() =>
 );
 const GitView = lazy(() => import("@/GitApp").then((m) => ({ default: m.GitSurface })));
 
-function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => void }) {
+function AppInner(props: {
+  onOpenSettings: () => void;
+  onOpenSnapshots: () => void;
+  /// Set only in a detached workspace's window (`workspace-<id>`). Its presence
+  /// is what distinguishes the two roles this component now plays, and it is
+  /// read rather than `isMainWindow()` because it is the *scope* that decides
+  /// them, not the label: a scoped store persists nothing, publishes nothing and
+  /// owns no cross-window channel, and every guard below says so in those terms.
+  workspaceId?: string;
+}) {
   const {
     state,
     activeWorkspace,
@@ -158,6 +176,13 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     actions,
   } = useAppStore();
   const { settings } = useSettings();
+
+  /// True in `main`: the window that persists, publishes and owns every
+  /// cross-window channel. False in a detached workspace's window, which is the
+  /// same shell doing the same work over one workspace and none of the
+  /// bookkeeping. See `commands/workspaceWindows.ts` for the ownership rule this
+  /// is the implementation of — every guard below is one clause of it.
+  const ownsWorkbench = () => !props.workspaceId;
 
   /// Every pane group in the active worktree, in visual order. The pane actions
   /// below all need it — to know whether there is more than one pane, and to
@@ -228,14 +253,24 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     workspaceName: activeWorkspace()?.name ?? "",
     worktreeLabel: activeWorktree()?.branch ?? activeWorktree()?.path ?? "",
   });
-  createEffect(() => void publishWindowContext(satelliteContext()));
+  // Only `main` publishes. A detached workspace window has an active worktree of
+  // its own, and broadcasting it would make the git and editor windows follow
+  // whichever workbench moved last — two windows answering one question is
+  // precisely what this channel's header rules out.
+  createEffect(() => {
+    if (!ownsWorkbench()) return;
+    void publishWindowContext(satelliteContext());
+  });
 
   // The repository events default to when the recorder has no better idea —
   // `store/journal.ts` explains why an ambient value is accurate here rather
   // than a guess. Same source as the satellite context above, deliberately: a
   // recorded event and the git window must never disagree about which repo the
   // workbench is showing.
-  createEffect(() => setJournalRepo(activeRepoPath() || null));
+  createEffect(() => {
+    if (!ownsWorkbench()) return;
+    setJournalRepo(activeRepoPath() || null);
+  });
 
   // The reconnect half of fan-out outliving its window: whenever this window
   // shows a different repository (including the first time it shows one at
@@ -243,6 +278,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // still driving for it and reconcile. See `store/fanout.ts`'s module
   // comment and `reconcileFanoutRuns` for what this can and cannot recover.
   createEffect(() => {
+    if (!ownsWorkbench()) return;
     const repo = activeRepoPath();
     if (repo) void reconcileFanoutRuns(repo);
   });
@@ -256,6 +292,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // process started on the user's behalf that leaves no window behind is one
   // they cannot read, cancel, or learn from.
   onMount(() => {
+    if (!ownsWorkbench()) return;
     setTriggerRunner((firing) => {
       const wtId = state.activeWorktreeId;
       const agent = agentById(firing.rule.agentId);
@@ -286,7 +323,12 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // events it derives itself and answer cross-repo queries. From the workbench
   // only: it is the window that owns the workspace model, and having all three
   // publish would mean the satellites' narrower views racing to overwrite it.
-  createEffect(() => publishRepos(state.workspaces));
+  createEffect(() => {
+    // A scoped window knows about one workspace, and publishing that narrower
+    // view would overwrite the whole map Rust stamps its events against.
+    if (!ownsWorkbench()) return;
+    publishRepos(state.workspaces);
+  });
 
   // ── Standalone editor window ─────────────────────────────────────────────
   // The workbench owns the editor's four tab collections — it is the only
@@ -313,7 +355,10 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       reveal: reveal(),
     };
   };
-  createEffect(() => void publishEditorTabs(editorTabs()));
+  createEffect(() => {
+    if (!ownsWorkbench()) return;
+    void publishEditorTabs(editorTabs());
+  });
 
   /// Open `path` in the editor window: register the tab here (we own the tab
   /// list), attach an optional line to jump to, then make sure the window
@@ -342,6 +387,10 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   }
 
   onMount(() => {
+    // Every listener below answers a question only `main` can answer — which
+    // repo is active, what the editor's tabs are, where a forwarded worktree
+    // action should land. A second responder is a second answer.
+    if (!ownsWorkbench()) return;
     // A git window that opened after our last broadcast has no context yet
     // and asks for one.
     const unlisteners: (() => void)[] = [];
@@ -422,6 +471,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   // the editor or git window sending its own idea of it would unwatch
   // everything the workbench asked for.
   createEffect(() => {
+    if (!ownsWorkbench()) return;
     const paths = Array.from(
       new Set(
         useAppStore()
@@ -483,9 +533,58 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
 
   // Detached sidebars: reopen the windows a previous session left detached, and
   // dock a panel back when its window closes. See `commands/sidebarWindows.ts`.
-  useSidebarWindows(store, { onEditorHome: homeEditorTab });
+  //
+  // Guarded, and both halves of the guard matter. A scoped window must not
+  // reopen the panel windows — it would open a second `panel-files` over a
+  // detachment it does not own — and it must not answer a dock-back either,
+  // since its store is not the one whose slot collapsed.
+  if (ownsWorkbench()) {
+    useSidebarWindows(store, { onEditorHome: homeEditorTab });
+    // The same three jobs for detached workspaces: home one whose window closed,
+    // answer a window asking for its live PTYs, and reopen (or reconcile away)
+    // whatever a previous session left detached.
+    useWorkspaceWindows(store);
+  }
+
+  // ── This window *is* a detached workspace ────────────────────────────────
+  //
+  // Two things, and deliberately no more: take the live sessions, and know how
+  // to go home. Everything else on screen is the ordinary workbench running
+  // against a store scoped to one workspace.
+  if (props.workspaceId) {
+    const scoped = props.workspaceId;
+    useWorkspaceHandoff(store, scoped);
+
+    onMount(() => {
+      // The workspace was removed while this detachment sat on disk, so the
+      // scope found nothing and the store hydrated unfiltered — a window
+      // showing a workbench it was never asked for. It goes home instead of
+      // pretending, which is the same repair boot reconciliation makes on the
+      // other side of the gap for the case where `main` is the one that noticed.
+      if (state.activeWorkspaceId !== scoped) {
+        void attachHome({ kind: "workspace", workspaceId: scoped });
+        return;
+      }
+      // Closing this window *is* docking the workspace back. Async with the
+      // emit awaited, for the reason `PanelApp` spells out: tauri's
+      // `onCloseRequested` wrapper awaits the handler and then destroys the
+      // webview, and a synchronous handler loses the message it just posted.
+      try {
+        void getCurrentWindow().onCloseRequested(async () => {
+          await requestWorkspaceDockBack(scoped);
+        });
+      } catch {
+        // Not running under Tauri (a plain browser, a test). No window to
+        // close, and nothing to dock back into.
+      }
+    });
+  }
 
   createEffect(() => {
+    // Stacked mode is `main`'s arrangement of `main`'s surfaces. A scoped window
+    // installing the router would redirect its own "show the editor" calls into
+    // a view it does not render.
+    if (!ownsWorkbench()) return;
     if (!isStackedMode()) {
       setStackedViewRouter(null);
       // Back to windows: leave the workbench showing, and open nothing.
@@ -728,6 +827,41 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
           ? void dockSidebarBack(store, id)
           : void detachSidebar(store, id),
     })),
+    {
+      // The active workspace, into a window of its own — and, in that window,
+      // the way back. **One row, both directions**, and the direction is decided
+      // by which window is asking rather than by a flag: in `main` it detaches
+      // the workspace you are standing in, and in a detached window there is
+      // exactly one workspace to act on and only one thing to do with it.
+      //
+      // Declared in `actionIds.ts` rather than generated per workspace, unlike
+      // `ui.detach-<sidebar>`: the sidebars are a fixed list of five known ids,
+      // and workspaces are user data. A row per workspace would be a palette
+      // that grows with the project list — the same bargain the nine workspace
+      // slots already refuse.
+      id: "ui.detach-workspace",
+      label: props.workspaceId
+        ? "Attach this workspace to the main window"
+        : "Detach this workspace into its own window",
+      description: props.workspaceId
+        ? "Closes this window and makes the workspace active in the workbench again"
+        : "A second workbench, scoped to this workspace. Its terminals keep running and move with it.",
+      group: "View",
+      // Stacked mode is the "everything in one window" arrangement, and there is
+      // nothing to detach into. A row that says why beats one that no-ops.
+      enabled: () => !isStackedMode() && !!activeWorkspace(),
+      run: () => {
+        const ws = activeWorkspace();
+        if (!ws) return;
+        if (props.workspaceId) {
+          void attachHome({ kind: "workspace", workspaceId: props.workspaceId });
+          return;
+        }
+        void (state.detachedWorkspaces.includes(ws.id)
+          ? dockWorkspaceBack(store, ws.id)
+          : detachWorkspace(store, ws.id));
+      },
+    },
     {
       // The editor window's counterpart to the `ui.detach-*` rows above. Not a
       // toggle: nothing "detaches" the editor — it is opened by whatever puts a
@@ -1628,8 +1762,23 @@ setPersistenceErrorHandler((key) =>
   ),
 );
 
-export default function App() {
-  const store = createAppStore();
+/// The workbench, in either of the two windows that render it.
+///
+/// With no `workspaceId` this is `main`: the persisting, publishing workbench
+/// every other window is a satellite of. With one, it is a detached workspace's
+/// window — the same shell, the same components, scoped to one workspace and
+/// persisting nothing. That the two share a root rather than having a
+/// `WorkspaceApp` beside `GitApp` and `EditorApp` is the point: a detached
+/// workspace is not another surface, it is *this* surface with a narrower store,
+/// and a second copy would be sixteen hundred lines to keep in step.
+export default function App(props: { workspaceId?: string }) {
+  // `persist: false` in a scoped window, and it is the ownership rule rather
+  // than a precaution: the tab blobs are keyed by worktree id across every
+  // workspace at once, so a store that hydrated one of them and then wrote would
+  // erase the rest. `commands/workspaceWindows.ts` states the whole rule.
+  const store = createAppStore(
+    props.workspaceId ? { persist: false, workspaceId: props.workspaceId } : {},
+  );
   // `createOverlay`, not a bare `createSignal`: both dialogs are modal
   // surfaces the embedded browser has to hide behind (see
   // `commands/overlay.ts`). Snapshots was never wired into the old
@@ -1654,7 +1803,11 @@ export default function App() {
 
   return (
     <AppStoreContext.Provider value={store}>
-      <AppInner onOpenSettings={settings.open} onOpenSnapshots={snapshots.open} />
+      <AppInner
+        onOpenSettings={settings.open}
+        onOpenSnapshots={snapshots.open}
+        workspaceId={props.workspaceId}
+      />
       <SettingsDialog
         open={settings.isOpen()}
         onClose={() => {

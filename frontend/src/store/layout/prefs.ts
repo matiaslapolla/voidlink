@@ -165,6 +165,14 @@ export interface UiPrefs {
   /// The sidebars living in their own window right now. Persisted so a relaunch
   /// reopens them rather than silently pulling them back into the shell.
   detachedSidebars: SidebarId[];
+  /// Workspace ids that have been handed off to a window of their own. Persisted
+  /// for the same reason `detachedSidebars` is — a relaunch reopens the window
+  /// rather than quietly pulling the workspace back — and unvalidated against the
+  /// workspace list here for the same reason `collapsedWorkspaces` is: prefs are
+  /// parsed before the workspaces are. Boot reconciliation in
+  /// `commands/workspaceWindows.ts` is what drops an id that no longer names a
+  /// workspace.
+  detachedWorkspaces: string[];
   diffMode: DiffMode;
   /// Whether the hunk renderer prints old/new line numbers in its gutters.
   ///
@@ -225,6 +233,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   dockSide: { ...DEFAULT_DOCK_SIDE },
   dockOrder: [...DEFAULT_DOCK_ORDER],
   detachedSidebars: [],
+  detachedWorkspaces: [],
   diffMode: "inline",
   diffLineNumbers: true,
   gitTab: "changes",
@@ -319,6 +328,17 @@ export function parsePrefs(parsed: PersistedPrefs | null): UiPrefs {
     dockSide: parseDockSide(parsed.dockSide, parsed.sidebarsSwapped),
     dockOrder: parseDockOrder(parsed.dockOrder),
     detachedSidebars: parseDetachedSidebars(parsed.detachedSidebars),
+    // Deduplicated strings and nothing more. There is no allowlist to repair
+    // against — a workspace id is user data, not one of five known names — so
+    // the check that matters ("does this still name a workspace?") happens at
+    // boot reconciliation, where the workspace list exists to check against.
+    detachedWorkspaces: Array.isArray(parsed.detachedWorkspaces)
+      ? [
+          ...new Set(
+            parsed.detachedWorkspaces.filter((id): id is string => typeof id === "string"),
+          ),
+        ]
+      : [...d.detachedWorkspaces],
     diffMode: parsed.diffMode === "split" ? "split" : "inline",
     diffLineNumbers: parsed.diffLineNumbers ?? d.diffLineNumbers,
     gitTab:

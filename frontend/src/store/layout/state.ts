@@ -125,6 +125,11 @@ export interface AppStoreState {
   dockSide: Record<SidebarId, DockSide>;
   dockOrder: SidebarId[];
   detachedSidebars: SidebarId[];
+  /// Workspace ids handed off to a window of their own. The rail draws these as
+  /// "over there" rather than as selectable rows, and `main` renders none of
+  /// their tabs — see `commands/workspaceWindows.ts` for why the rule is
+  /// hand-off and not mirroring.
+  detachedWorkspaces: string[];
   diffMode: DiffMode;
   diffLineNumbers: boolean;
   gitTab: GitTab;

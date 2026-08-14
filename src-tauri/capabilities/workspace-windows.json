@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "workspace-windows",
+  "description": "Permissions for a detached workspace's webview — a second full workbench, scoped to one workspace, at label `workspace-<workspaceId>`. Matched by **glob** rather than by an exact label, because there is one of these windows per workspace and the labels are built at runtime; `workspace_window_label` in `src-tauri/src/window.rs` is the validation that decides what may wear the prefix, and it rejects anything outside `[A-Za-z0-9_-]{1,64}` precisely so this pattern cannot be widened from the frontend. Scoped as `webviews`, not `windows`, for the same reason `default.json` is: a browser tab is a child webview of the same window, and scoping by window would hand every permission below to whatever page the user loads. Grants exactly what the workbench (`default.json`) and the panel windows (`panel-windows.json`) already have between them — `core:default` for events and IPC, the window controls this window's own title bar draws, the dialog plugin, and the two `fs:` grants the workbench needs to save a file — plus `core:window:allow-destroy`. That last is not redundant beside `allow-close`: `close()` only *requests* a close, and tauri prevents it outright for any window carrying a JS `tauri://close-requested` listener, which this window has because closing it is how the workspace docks back. See `close_satellite` in `src-tauri/src/window.rs`. No `core:webview:*` — browser-tab webviews are built and driven from Rust — and no `notification:*`, which stays a Rust-only dispatch so one event cannot become N banners across N windows.",
+  "webviews": [
+    "workspace-*"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-confirm",
+    "dialog:allow-message",
+    "fs:allow-write-text-file",
+    "fs:allow-app-write-recursive"
+  ]
+}
