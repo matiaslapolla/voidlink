@@ -10,7 +10,11 @@ import {
   untrack,
   type JSX,
 } from "solid-js";
-import { AppShell, type AppShellSidebar } from "@/components/layout/AppShell";
+import {
+  AppShell,
+  type AppShellDock,
+  type AppShellSidebar,
+} from "@/components/layout/AppShell";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { WindowFrame } from "@/components/layout/WindowFrame";
 import { WorkspaceRail } from "@/components/layout/WorkspaceRail";
@@ -90,7 +94,9 @@ import { reconcileFanoutRuns } from "@/store/fanout";
 import { armTriggers, setTriggerRunner } from "@/store/triggers";
 import {
   currentStackedView,
+  isDockedMode,
   isStackedMode,
+  isWindowedMode,
   setStackedView,
   type StackedView,
 } from "@/commands/environment";
@@ -117,6 +123,7 @@ import { normalizeUrl } from "@/components/browser/BrowserPane";
 import { NewWorktreeWizard } from "@/components/git/worktree/NewWorktreeWizard";
 import { samePath } from "@/store/layout/tabs";
 import {
+  DOCK_STRIP_THICKNESS,
   SIDEBAR_IDS,
   groupList,
   resolveGroupTabs,
@@ -126,6 +133,12 @@ import {
   type SplitOrientation,
 } from "@/store/layout";
 import { SidebarDockOverlay, SidebarBodyMenuScope } from "@/components/layout/SidebarDock";
+import {
+  DockStrip,
+  DockStripOverlay,
+  closeDockPanel,
+  openPanel,
+} from "@/components/layout/DockStrip";
 import {
   canDetachSidebar,
   detachSidebar,
@@ -722,7 +735,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       group: "View",
       // Stacked mode has no satellite windows to detach into — it shows the
       // other surfaces as views. A row that says why beats one that no-ops.
-      enabled: () => !isStackedMode() || state.detachedSidebars.includes(id),
+      enabled: () => isWindowedMode() || state.detachedSidebars.includes(id),
       run: () =>
         state.detachedSidebars.includes(id)
           ? void dockSidebarBack(store, id)
@@ -741,7 +754,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       label: "Attach the editor to this window",
       description: "Close the editor window and bring its tab back into the workbench",
       group: "View",
-      enabled: () => !isStackedMode(),
+      enabled: () => isWindowedMode(),
       run: () => {
         homeEditorTab();
         void closeEditorWindow().catch(() => {});
@@ -1003,7 +1016,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     untrack(() => {
       // Stacked mode registers the editor's actions in this window too, so
       // the audit must not skip the entries the editor owns — they are ours.
-      for (const problem of validateKeymap(ids, isStackedMode() ? {} : { window: "main" })) {
+      for (const problem of validateKeymap(ids, isWindowedMode() ? { window: "main" } : {})) {
         console.error(`[keymap] ${problem.kind}: ${problem.detail}`);
       }
     });
@@ -1381,11 +1394,40 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   /// panel the current arrangement makes redundant is suppressed — see
   /// `sidebarSuppressedReason`, which is also what the title bar's edge buttons
   /// read so the two cannot disagree about what is on screen.
+  ///
+  /// Docked mode narrows it to one more rule, and it is the mode's whole
+  /// premise: the dock decides. Exactly the panel the strip has open renders,
+  /// and it renders floated (see `float` below) rather than pushing the
+  /// workbench aside — which is why the five per-panel collapse flags are not
+  /// consulted here. Those flags answer "is this panel railed", and docked mode
+  /// has no rails; the strip's own single `openPanel` is the state, and it is
+  /// module state in `DockStrip.tsx` for the reason stated there.
   const shows = (id: SidebarId) =>
-    !isZen() && !state.detachedSidebars.includes(id) && !sidebarSuppressedReason(id);
+    !isZen() &&
+    !state.detachedSidebars.includes(id) &&
+    !sidebarSuppressedReason(id) &&
+    (!isDockedMode() || openPanel() === id);
 
+  /// Leaving docked mode closes whatever the dock had open.
+  ///
+  /// Without it the panel keeps its `float` style in a shell with no strip
+  /// beside it — a sidebar hovering over the workbench, anchored to an edge
+  /// nothing else is on. Also covers the panel being detached or suppressed out
+  /// from under the dock: `shows()` would already hide it, and leaving
+  /// `openPanel` pointing at it would make the strip's button read as pressed
+  /// for a panel that is not there.
+  createEffect(() => {
+    const open = openPanel();
+    if (!open) return;
+    if (!isDockedMode() || !shows(open)) closeDockPanel();
+  });
+
+  /// `leftSidebarCollapsed` is what `Mod+B` means and it still gates the
+  /// explorer — except in docked mode, where the dock's own button is the
+  /// show/hide and consulting a second flag would make that button appear inert
+  /// for a user who last pressed `Mod+B` in another mode.
   const explorerPane = () => (
-    <Show when={shows("explorer") && !state.leftSidebarCollapsed}>
+    <Show when={shows("explorer") && (isDockedMode() || !state.leftSidebarCollapsed)}>
       <FilesSidebar
         dock={state.dockSide.explorer}
         onOpenFile={(path) => void openInEditorWindow(path)}
@@ -1412,8 +1454,11 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   const gitPane = () => (
     <Show when={shows("git") && activeRepoPath()}>
       {(repo) => (
+        // The collapsed rail is the *rail*, and docked mode has none — the
+        // strip's git button is the way back in. Rendering it here would put a
+        // second 32px column beside the strip that replaced it.
         <Show
-          when={!state.gitSidebarCollapsed}
+          when={!state.gitSidebarCollapsed || isDockedMode()}
           fallback={
             <GitSidebarCollapsed
               dock={state.dockSide.git}
@@ -1462,7 +1507,31 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         state.dockSide[id as SidebarId],
         state.dockOrder.indexOf(id as SidebarId),
       ),
+    // An accessor like `side` and `order`, and for the same reason: docked mode
+    // must be a style change on a slot that is already in the DOM, not a
+    // different array of slots. See `AppShellSidebar.float`.
+    float: () => isDockedMode(),
   }));
+
+  /// The dock strip's slot. Built **once**, like `shellSidebars` and for the
+  /// same reason — `AppShell` reads `side`/`thickness` as accessors, so moving
+  /// the strip between edges rewrites CSS on an element that is already there.
+  ///
+  /// `content` carries its own `<Show>` rather than being built conditionally:
+  /// the object has to keep a stable identity for the shell's `<Show>` not to
+  /// tear it down, and `DockStrip` has to be genuinely absent outside docked
+  /// mode — it subscribes to every running shell through `watchTerminal`, and a
+  /// mounted-but-invisible dock would hold those subscriptions in a mode that
+  /// does not draw it.
+  const dockSlot: AppShellDock = {
+    side: () => state.dockStripSide,
+    thickness: () => DOCK_STRIP_THICKNESS,
+    content: (
+      <Show when={isDockedMode()}>
+        <DockStrip />
+      </Show>
+    ),
+  };
 
   /// The workbench body. Note what is *not* conditional here: this tree is
   /// rendered exactly once, in both modes, because flipping the environment mode
@@ -1488,6 +1557,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       // keyboard-initiated geometry change never animates (MASTER §7.1), and
       // the pane tree underneath is untouched, so the way back is exact.
       sidebars={shellSidebars}
+      dock={isDockedMode() ? dockSlot : null}
       main={
         <MainSurface
           onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
@@ -1499,6 +1569,11 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     {/* The drop zone for a sidebar drag, over the whole workbench. Draws only
         while a panel is in flight and never captures the pointer. */}
     <SidebarDockOverlay />
+    {/* The strip's own drop zone, a sibling of the sidebars' and never a
+        competitor: each refuses the other's payload. */}
+    <Show when={isDockedMode()}>
+      <DockStripOverlay />
+    </Show>
     </>
   );
 

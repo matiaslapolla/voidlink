@@ -25,8 +25,12 @@ export type UiDensity = "compact" | "normal" | "comfortable";
 
 /// Whether the git client and the code editor get their own OS windows
 /// ("detached", the default) or live inside the main window as switchable views
-/// ("stacked"). See `commands/environment.ts` for how the choice is routed.
-export type EnvironmentMode = "stacked" | "detached";
+/// ("stacked") — and, with "docked", whether the workbench's own five sidebars
+/// collapse into a floating strip pinned to one edge instead of five icon
+/// rails. See `commands/environment.ts` for how the choice is routed, and why
+/// `isStackedMode()` / `isDockedMode()` / `isWindowedMode()` are three named
+/// questions rather than one enum comparison at every call site.
+export type EnvironmentMode = "stacked" | "detached" | "docked";
 
 /// Which way a pane's tab strip runs. `horizontal` is the row above the pane
 /// body that shipped; `vertical` is a column down its left edge.

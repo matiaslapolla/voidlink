@@ -90,6 +90,7 @@ import { MONACO_LANGUAGE_IDS } from "@/components/editor/monaco";
 import { LSP_SERVERS } from "@/components/editor/lspServers";
 import { useTheme } from "@/store/theme";
 import { useAppStore } from "@/store/LayoutContext";
+import type { DockSide } from "@/store/layout";
 import { resetLayoutStorage } from "@/store/layout";
 import { stackApi } from "@/api/stack";
 import { pushToast } from "@/commands/toast";
@@ -317,6 +318,7 @@ const TEXT_SIZES: { id: UiTextSize; label: string }[] = [
 const ENVIRONMENT_MODES: { id: EnvironmentMode; label: string }[] = [
   { id: "detached", label: "Detached" },
   { id: "stacked", label: "Stacked" },
+  { id: "docked", label: "Docked" },
 ];
 const TAB_ORIENTATIONS: { id: TabOrientation; label: string }[] = [
   { id: "horizontal", label: "Horizontal" },
@@ -332,6 +334,38 @@ const BACKGROUND_FIT_OPTIONS: { id: BackgroundFit; label: string }[] = [
   { id: "contain", label: "Contain" },
   { id: "tile", label: "Tile" },
 ];
+
+const DOCK_EDGES: { id: DockSide; label: string }[] = [
+  { id: "left", label: "Left" },
+  { id: "right", label: "Right" },
+  { id: "bottom", label: "Bottom" },
+];
+
+/// Which edge the dock strip is pinned to, in docked mode.
+///
+/// A row of its own rather than a field on the settings blob, because the edge
+/// is *layout* and lives in the layout store beside `dockSide`/`dockOrder`
+/// (`UiPrefs.dockStripSide` states why). This row is therefore the one place in
+/// the settings dialog that writes through `useAppStore()` rather than
+/// `updateUi` — the alternative was a second copy of the value in a second
+/// storage key, and two writers of one preference is the bug that shape always
+/// turns into.
+///
+/// It is also the strip's **keyboard path** (§2.2: every mouse action has one).
+/// Dragging the strip between edges is the fast way; this is the way that does
+/// not require a pointer.
+function DockEdgeRow() {
+  const { state, actions } = useAppStore();
+  return (
+    <SegmentedRow
+      label="Dock edge"
+      hint="Or drag the strip"
+      value={state.dockStripSide}
+      options={DOCK_EDGES}
+      onChange={(v) => actions.setDockStripSide(v)}
+    />
+  );
+}
 
 /// "Choose image…" / "Change…" plus the current file's name and a clear
 /// button. No existing row shape fits a file picker, so this is the one place
@@ -468,8 +502,20 @@ function UiPane() {
         <p class="mt-1 ml-[7.75rem] text-label text-muted-foreground/80">
           Detached gives the git client and the editor their own windows.
           Stacked keeps all three in this window, switched from the title bar —
-          switching to it closes any satellite window already open.
+          switching to it closes any satellite window already open. Docked keeps
+          the windows and collapses this window's five sidebars into one strip
+          on the edge, with a button per panel and an icon per running process.
         </p>
+        {/* The edge only exists to be set in docked mode, so the row only
+            exists there — a control for a thing that is not on screen is the
+            §7.6 disabled-with-no-reason case one indirection removed. Dragging
+            the strip is the other way to set it, and both write the same
+            store action so the two cannot disagree. */}
+        <Show when={settings.ui.environmentMode === "docked"}>
+          <div class="mt-2">
+            <DockEdgeRow />
+          </div>
+        </Show>
       </div>
       <div>
         <BackgroundImageRow />

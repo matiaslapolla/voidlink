@@ -124,6 +124,10 @@ export interface AppStoreState {
   /// which of them are in a window of their own. See `store/layout/dock.ts`.
   dockSide: Record<SidebarId, DockSide>;
   dockOrder: SidebarId[];
+  /// Which edge the dock strip is pinned to in `environmentMode: "docked"`.
+  /// Read by nothing outside that mode, which is what lets it survive a round
+  /// trip through the other two untouched — see `UiPrefs.dockStripSide`.
+  dockStripSide: DockSide;
   detachedSidebars: SidebarId[];
   diffMode: DiffMode;
   diffLineNumbers: boolean;

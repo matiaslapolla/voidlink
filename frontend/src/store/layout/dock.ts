@@ -36,7 +36,41 @@
 /// against the *list*, not against three hardcoded names.
 export type SidebarId = "workspaces" | "explorer" | "terminals" | "git" | "agents";
 
-export type DockSide = "left" | "right";
+/// Every edge of the workbench a docked thing can be pinned to.
+///
+/// `bottom` arrived with the dock strip (`environmentMode: "docked"`) and is
+/// deliberately a member of *this* union rather than of a second one beside it.
+/// There is one vocabulary for "which edge", and the moment there were two the
+/// drag code, the preview arithmetic and the persisted values would each have
+/// to say which enum they meant.
+///
+/// It is not, however, an edge a **sidebar** may occupy. A sidebar is a
+/// full-height column and the shell arranges the five of them in one horizontal
+/// flex row (see `slotOrder`); the bottom edge is a different axis and putting
+/// a column there is a rework of the shell, not a value. So the narrowing is
+/// stated once, in `SIDEBAR_DOCK_SIDES`, and the two places a raw value becomes
+/// a sidebar's edge — `parseDockSide` and the drag hit-test `dockEdgeAt` — both
+/// check against it. Everything else in this file is total over `DockSide`.
+///
+/// There is no `top`. The title bar, the tab strips and the workspace switcher
+/// all live along the top of the window; a dock there would be the fourth
+/// horizontal band in 80px of chrome.
+export type DockSide = "left" | "right" | "bottom";
+
+/// Every edge, in the order a picker should offer them.
+export const DOCK_SIDES: DockSide[] = ["left", "right", "bottom"];
+
+/// The edges a *sidebar* may be docked to — see `DockSide`'s header for why
+/// this is a narrowing of one union rather than a union of its own.
+export const SIDEBAR_DOCK_SIDES: DockSide[] = ["left", "right"];
+
+export function isDockSide(value: unknown): value is DockSide {
+  return typeof value === "string" && (DOCK_SIDES as string[]).includes(value);
+}
+
+export function isSidebarDockSide(value: unknown): value is DockSide {
+  return typeof value === "string" && (SIDEBAR_DOCK_SIDES as string[]).includes(value);
+}
 
 export const SIDEBAR_IDS: SidebarId[] = [
   "workspaces",
@@ -125,7 +159,12 @@ export function parseDockSide(
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     const id = normalizeSidebarId(key);
     if (!id) continue;
-    if (value !== "left" && value !== "right") continue;
+    // `SIDEBAR_DOCK_SIDES`, not `DOCK_SIDES`: `bottom` is a real edge, but not
+    // one a sidebar column can occupy (see `DockSide`). A blob that names it
+    // for a sidebar — hand-edited, or written by a build that grew a bottom
+    // sidebar rail — is repaired to that sidebar's default rather than
+    // rendering a column the shell's flex row cannot place.
+    if (!isSidebarDockSide(value)) continue;
     out[id] = value;
   }
   return out;
@@ -245,6 +284,146 @@ export const SIDEBAR_COLLAPSE: Record<SidebarId, SidebarCollapse> = {
 /// which is what keeps the workbench (and the live PTYs hanging off it) from
 /// being torn down and rebuilt by a layout preference. The main surface sits at
 /// 0; left-edge panels are negative, right-edge panels positive.
+/// The main surface is 0; left-edge panels are negative, right-edge panels
+/// positive, and a `bottom` slot is banded past every right-edge one.
+///
+/// `bottom` is the dock strip's edge and never a sidebar's (`DockSide`), so no
+/// slot the shell composes today can reach that band. It is defined anyway
+/// because this function has to be *total*: a `Record<SidebarId, DockSide>`
+/// that somehow held `bottom` — a hand-edited blob, a future build's — would
+/// otherwise fall through the ternary onto the right-hand branch and render a
+/// panel at an edge nothing asked for. Banded rather than folded into the right
+/// edge so that when it does happen it is visible as "outermost, on its own"
+/// rather than silently interleaved with real right-edge panels.
+export const SLOT_ORDER_BAND = 100;
+
 export function slotOrder(side: DockSide, index: number): number {
-  return side === "left" ? index - 100 : index + 100;
+  if (side === "bottom") return index + 2 * SLOT_ORDER_BAND;
+  return side === "left" ? index - SLOT_ORDER_BAND : index + SLOT_ORDER_BAND;
+}
+
+// ── The dock strip's placement ──────────────────────────────────────────────
+//
+// `environmentMode: "docked"` collapses the five sidebars into one floating
+// strip pinned to an edge (`components/layout/DockStrip.tsx`). Which edge is a
+// single global preference, persisted in `gitPrefs` beside `dockSide` — the
+// arithmetic that resolves it lives here, with the rest of the pure placement
+// logic and away from the DOM, for the reason `sidebarDrop.ts`'s header gives:
+// a drag that resolves to the wrong edge is a bug a screenshot cannot see.
+
+/// The strip's thickness across its own axis, in px.
+///
+/// Beside `SIDEBAR_RAIL_WIDTH` in spirit and for the same reason it is a
+/// constant rather than a `PANEL_BOUNDS` entry: the strip is content-sized
+/// along its length and fixed across it, so there is no min, no max and nothing
+/// to drag. 40px is `SIDEBAR_RAIL_WIDTH` (32) plus the strip's own padding, so
+/// the buttons inside it land at exactly the size the icon rails it replaces
+/// had — a mode switch changes the arrangement, not the target size.
+export const DOCK_STRIP_THICKNESS = 40;
+
+/// Where a first run in docked mode puts the strip.
+///
+/// Left, because that is the edge four of the five sidebars already default to
+/// (`DEFAULT_DOCK_SIDE`) — the strip appears where the panels it replaces were.
+export const DEFAULT_DOCK_STRIP_SIDE: DockSide = "left";
+
+/// Repair a persisted dock-strip edge. Anything that is not an edge this build
+/// can place — a `top` from a build that grew one, garbage, `undefined` on the
+/// first run in docked mode — comes back as the default rather than throwing,
+/// which is this file's rule for every persisted value (`parseDockOrder`).
+export function parseDockStripSide(raw: unknown): DockSide {
+  return isDockSide(raw) ? raw : DEFAULT_DOCK_STRIP_SIDE;
+}
+
+/// Which axis the strip runs along at a given edge. The buttons stack down a
+/// left/right strip and across a bottom one, and so does everything that
+/// measures it — the extent below, the drag's insertion arithmetic.
+export function dockStripAxis(side: DockSide): "vertical" | "horizontal" {
+  return side === "bottom" ? "horizontal" : "vertical";
+}
+
+/// How much room the shell reserves along `side` for the strip: the strip's own
+/// thickness plus one island gap, so the floating strip clears the islands
+/// rather than overlapping them.
+///
+/// A number rather than a CSS string because it is arithmetic the tests can
+/// check; `AppShell` turns it into padding. `thickness` and `gap` are handed in
+/// so that this module keeps knowing nothing about `--island-gap` — geometry
+/// tokens are `AppShell`'s to read (see its header), and a second reader of
+/// them is the thing that file's "geometry lives here" rule exists to prevent.
+export function dockStripReservation(
+  side: DockSide,
+  thickness: number,
+  gap: number,
+): { left: number; right: number; bottom: number } {
+  const room = Math.max(0, thickness) + Math.max(0, gap);
+  return {
+    left: side === "left" ? room : 0,
+    right: side === "right" ? room : 0,
+    bottom: side === "bottom" ? room : 0,
+  };
+}
+
+/// Which edge a pointer inside the workbench is asking the *strip* to move to,
+/// or `null` for the middle — where a release does nothing, so "put it back" is
+/// possible without a modifier key.
+///
+/// Deliberately not `dockEdgeAt` with a third branch. That function answers the
+/// same question for a **sidebar**, which has only two legal edges, and its
+/// own test asserts as much ("there is no top or bottom edge"); teaching it
+/// `bottom` would make every sidebar dropped near the floor land somewhere the
+/// shell cannot render it. Two questions, two functions, one `DockSide`.
+///
+/// The nearest qualifying edge wins, measured as a *fraction* of the axis it is
+/// on rather than in pixels: the bands then stay proportionate in a window the
+/// user has resized, which is the same reason `DOCK_EDGE_ZONE` is a fraction.
+/// Ties resolve in `DOCK_SIDES` order, which only matters in the two corners.
+///
+/// A degenerate box has no edges to be near and refuses rather than picking
+/// one, exactly as `dockEdgeAt` does.
+export const DOCK_STRIP_EDGE_ZONE = 0.2;
+
+export function dockStripEdgeAt(
+  size: { width: number; height: number },
+  point: { x: number; y: number },
+): DockSide | null {
+  if (size.width <= 0 || size.height <= 0) return null;
+  const distance: Record<DockSide, number> = {
+    left: point.x / size.width,
+    right: 1 - point.x / size.width,
+    bottom: 1 - point.y / size.height,
+  };
+  let best: DockSide | null = null;
+  for (const side of DOCK_SIDES) {
+    if (distance[side] >= DOCK_STRIP_EDGE_ZONE) continue;
+    if (best === null || distance[side] < distance[best]) best = side;
+  }
+  return best;
+}
+
+/// The rectangle the strip would occupy after the drop, in the workbench's own
+/// coordinates — the real landing geometry, not a hint, for the reason
+/// `dockPreviewRect` gives about sidebars.
+///
+/// `length` is how long the strip is along its own axis (it is content-sized,
+/// so the caller measures it); it is clamped to the box, which is what keeps a
+/// dock holding twenty terminals from previewing past the window.
+export function dockStripPreviewRect(
+  size: { width: number; height: number },
+  side: DockSide,
+  thickness: number,
+  length: number,
+): { x: number; y: number; width: number; height: number } {
+  const t = Math.max(0, thickness);
+  if (side === "bottom") {
+    const w = Math.max(0, Math.min(length, size.width));
+    return { x: (size.width - w) / 2, y: size.height - t, width: w, height: t };
+  }
+  const h = Math.max(0, Math.min(length, size.height));
+  return {
+    x: side === "left" ? 0 : size.width - t,
+    y: (size.height - h) / 2,
+    width: t,
+    height: h,
+  };
 }

@@ -47,7 +47,13 @@ export interface DragPayload {
   /// `sidebar` is a whole docked panel travelling to another edge; its `id` is
   /// a `SidebarId`. It is a separate family from `workspace` (a row *inside*
   /// the rail) precisely so the rail's own reorder zone cannot accept the rail.
-  kind: "tab" | "tabgroup" | "workspace" | "card" | "path" | "sidebar";
+  ///
+  /// `dock` is the whole dock strip (docked mode) travelling to another edge —
+  /// a separate family from `sidebar` for the same reason, one level up: the
+  /// strip has three legal edges where a sidebar has two, so a strip dropped
+  /// near the floor must not be resolved by the sidebar zone's arithmetic. See
+  /// `dockStripEdgeAt` beside `dockEdgeAt` in `store/layout/dock.ts`.
+  kind: "tab" | "tabgroup" | "workspace" | "card" | "path" | "sidebar" | "dock";
   /// The dragged thing's own id — a tab id, a workspace id, a card id.
   id: string;
   /// What the ghost calls it.
