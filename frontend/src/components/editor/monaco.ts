@@ -11,6 +11,18 @@ import type * as Monaco from "monaco-editor";
 import type { EditorSettings } from "@/store/settings";
 
 let loading: Promise<typeof Monaco> | null = null;
+let loaded: typeof Monaco | null = null;
+
+/// Monaco, but only if something has already loaded it.
+///
+/// The counterpart to `loadMonaco` for callers that must not *cause* the
+/// import. `main.tsx`'s Undo/Redo router is the one such caller: it runs in
+/// every window, including ones that will never show an editor, and awaiting
+/// `loadMonaco()` there would pull the whole editor chunk into a terminal-only
+/// workbench to answer a question whose answer is "no editor has focus".
+export function loadedMonaco(): typeof Monaco | null {
+  return loaded;
+}
 
 /// Import Monaco, configuring its worker resolution on the first call.
 ///
@@ -50,6 +62,7 @@ export function loadMonaco(): Promise<typeof Monaco> {
     };
     const monaco = await import("monaco-editor");
     standDownTypescriptWorker(monaco);
+    loaded = monaco;
     return monaco;
   })();
   return loading;

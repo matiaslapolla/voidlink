@@ -10,6 +10,7 @@ import { isSidebarId } from "@/store/layout";
 import { bridgeThemeAcrossWindows } from "@/store/theme";
 import { bridgeUiVisualAcrossWindows } from "@/store/settings";
 import { shouldSuppressContextMenu } from "@/commands/contextMenuSuppression";
+import { runUndoRedo } from "@/components/editor/undoRouting";
 import { listen } from "@tauri-apps/api/event";
 import "./index.css";
 
@@ -61,8 +62,12 @@ window.addEventListener(
 // `execCommand` forwarding either, so Rust asks whichever window is focused
 // to run it here. One listener per window root, same reasoning as the
 // `contextmenu` suppressor above.
+//
+// Through `runUndoRedo` rather than straight to `document.execCommand`: the
+// editor is invisible to the browser's editing history, so the plain call left
+// Edit > Undo doing nothing at all in the one surface people reach for it in.
 void listen<"undo" | "redo">("voidlink://menu-undo-redo", (event) => {
-  document.execCommand(event.payload);
+  runUndoRedo(event.payload);
 });
 
 // One bundle serves all three windows; the Tauri window label decides which

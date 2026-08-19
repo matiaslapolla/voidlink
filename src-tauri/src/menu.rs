@@ -34,9 +34,18 @@
 //! submenu in particular has to stay: on macOS, cut/copy/paste/select-all in a
 //! webview are driven by those menu items, and dropping the submenu silently
 //! breaks clipboard support everywhere in the app. Undo/Redo don't share that
-//! clipboard-permission restriction — `execCommand('undo'/'redo')` needs no
-//! native forwarding to work from a plain keydown handler — so only their
-//! accelerator needed to move, not their whole mechanism.
+//! clipboard-permission restriction, so only their accelerator needed to move,
+//! not their whole mechanism.
+//!
+//! What the click path is forwarded *to* is not `execCommand`, though, and the
+//! first version of this said it was. `execCommand('undo')` drives the
+//! browser's editing history for the focused element, and the paragraph above
+//! already says why that is the wrong stack for the surface that matters:
+//! Monaco's focused element is a hidden textarea it uses as an input funnel and
+//! its history lives in a model. So Edit > Undo did nothing whenever an editor
+//! had focus, which is every time anyone actually reaches for it. The webview
+//! routes the command instead — see `frontend/src/components/editor/
+//! undoRouting.ts`, and `undoRouting.browser.test.tsx` for the measurement.
 
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
