@@ -12,6 +12,7 @@ import {
   type JSX,
 } from "solid-js";
 import { Portal } from "solid-js/web";
+import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import {
   TerminalSquare,
   GitBranchPlus,
@@ -111,6 +112,10 @@ interface MainSurfaceProps {
   /// send the user somewhere; the pane body is not allowed to reach for the
   /// settings dialog itself.
   onOpenSettings: () => void;
+  /// Run a find-across-files query in the editor window. The workbench has no
+  /// search surface of its own — a terminal's "Search selection in files"
+  /// context menu row is the one caller, the same reason `onOpenFile` exists.
+  onSearchInFiles: (query: string) => void;
 }
 
 /// The workbench's tab surface: terminals, branch compares, stacks, the commit
@@ -1014,7 +1019,22 @@ export function MainSurface(props: MainSurfaceProps) {
     const root = repoRoot();
     if (!root) return;
     try {
-      const result = await gitApi.safeCheckout(root, branch);
+      // Probe first: `allowStash: false` never stashes or switches, so a
+      // dirty tree comes back as `dirty: true` and nothing has happened yet.
+      let result = await gitApi.safeCheckout(root, branch, undefined, false);
+      if (result.dirty) {
+        const ok = await dialogConfirm(
+          "Your working tree has uncommitted changes. Stash them and switch?",
+          {
+            title: "Uncommitted changes",
+            kind: "warning",
+            okLabel: "Stash changes and switch",
+            cancelLabel: "Cancel",
+          },
+        );
+        if (!ok) return;
+        result = await gitApi.safeCheckout(root, branch, undefined, true);
+      }
       recordBranchUse(root, branch);
       if (result.autoStashed) {
         pushToast(
@@ -1589,6 +1609,8 @@ export function MainSurface(props: MainSurfaceProps) {
               }}
               branchNames={branchNames}
               onOpenBranch={(branch) => void openBranchFromTerminal(branch)}
+              workspaceRoot={repoRoot()}
+              onSearchInFiles={props.onSearchInFiles}
             />
           </div>
           );

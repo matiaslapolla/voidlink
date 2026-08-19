@@ -1862,7 +1862,22 @@ export function BranchesPane(props: {
     setError("");
     await run(async () => {
       try {
-        const result = await gitApi.safeCheckout(props.repoPath, name);
+        // Probe first: `allowStash: false` never stashes or switches, so a
+        // dirty tree comes back as `dirty: true` and nothing has happened yet.
+        let result = await gitApi.safeCheckout(props.repoPath, name, undefined, false);
+        if (result.dirty) {
+          const ok = await dialogConfirm(
+            "Your working tree has uncommitted changes. Stash them and switch?",
+            {
+              title: "Uncommitted changes",
+              kind: "warning",
+              okLabel: "Stash changes and switch",
+              cancelLabel: "Cancel",
+            },
+          );
+          if (!ok) return;
+          result = await gitApi.safeCheckout(props.repoPath, name, undefined, true);
+        }
         recordBranchUse(props.repoPath, result.branch);
         if (result.branch !== name) {
           pushToast(`Created local branch ${result.branch} tracking ${name}`, "success", 4000);

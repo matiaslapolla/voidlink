@@ -5,11 +5,21 @@ use super::repo::open_repo;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SafeCheckoutResult {
+    /// The branch now checked out. Unchanged from before the call when
+    /// `dirty` is true below — nothing was switched.
     pub branch: String,
     /// Set when the working tree was dirty and we created an auto-stash before
     /// switching. The frontend can show "Stashed N changes" or offer to pop it
     /// back later. The message is the stash message used by `git stash list`.
     pub auto_stashed: Option<String>,
+    /// True when the working tree was dirty and the caller passed
+    /// `allow_stash: false`: nothing was stashed and nothing was switched.
+    /// `branch` above is whatever was already checked out, and `auto_stashed`
+    /// is always `None` in this case — the frontend's job is to confirm with
+    /// the user (the same dialog pattern `FileTree`'s delete flow uses) and
+    /// retry with `allow_stash: true`.
+    #[serde(default)]
+    pub dirty: bool,
 }
 
 /// Checkout a branch, auto-stashing the working tree if it's dirty so the
@@ -18,10 +28,17 @@ pub struct SafeCheckoutResult {
 /// && git checkout B`. If `auto_pop` is true and the target branch has a
 /// matching auto-stash created against it, we pop it back so the user's
 /// changes survive a round-trip.
+///
+/// `allow_stash: false` turns the auto-stash off: a dirty tree returns
+/// immediately with `dirty: true` and touches nothing, so the frontend can ask
+/// first instead of the switch silently rewriting the working tree out from
+/// under the user (see `GitSidebar.tsx`'s `checkout` and `MainSurface.tsx`'s
+/// `openBranchFromTerminal` for the confirm-then-retry callers).
 pub(crate) fn git_safe_checkout_impl(
     repo_path: String,
     branch: String,
     create: bool,
+    allow_stash: bool,
 ) -> Result<SafeCheckoutResult, String> {
     let mut repo = open_repo(&repo_path)?;
 
@@ -33,6 +50,15 @@ pub(crate) fn git_safe_checkout_impl(
     super::opstate::ensure_no_operation(&repo, "switch branches")?;
 
     let dirty = is_dirty(&repo)?;
+
+    if dirty && !allow_stash {
+        return Ok(SafeCheckoutResult {
+            branch: current_branch.unwrap_or_default(),
+            auto_stashed: None,
+            dirty: true,
+        });
+    }
+
     let auto_stashed = if dirty {
         let from = current_branch.as_deref().unwrap_or("detached");
         let message = format!("voidlink-auto: pre-switch from {} → {}", from, branch);
@@ -80,6 +106,7 @@ pub(crate) fn git_safe_checkout_impl(
     Ok(SafeCheckoutResult {
         branch: switched_to,
         auto_stashed,
+        dirty: false,
     })
 }
 
@@ -202,6 +229,7 @@ mod tests {
             tmp.path().to_string_lossy().to_string(),
             "other".to_string(),
             false,
+            true,
         )
         .unwrap();
         assert!(result.auto_stashed.is_some(), "dirty tree should have stashed");
@@ -223,5 +251,66 @@ mod tests {
              is silent data loss. (Plain `git stash pop` collapses staged + unstaged \
              into the working tree, matching CLI git behavior; the user can re-stage.)"
         );
+    }
+
+    #[test]
+    fn dirty_tree_with_allow_stash_false_switches_nothing() {
+        // The regression this guards: a branch click used to auto-stash a dirty
+        // tree with no warning. `allow_stash: false` is the frontend's
+        // "ask first" probe — it must come back with `dirty: true` and leave
+        // the working tree, the index, and HEAD exactly as it found them, so a
+        // user who says no to the confirm dialog loses nothing and switches
+        // nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo(tmp.path());
+        let file_a = tmp.path().join("a.txt");
+        fs::write(&file_a, "original\n").unwrap();
+        commit_all(&repo, "init");
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("other", &head, false).unwrap();
+        // Not hardcoded: `init.defaultBranch` varies by environment (git2 falls
+        // back to "master", but a global config can override it), so the
+        // starting branch is whatever it actually is here.
+        let starting_branch = repo.head().unwrap().shorthand().unwrap().to_string();
+
+        // Dirty: an uncommitted, unstaged edit.
+        fs::write(&file_a, "dirty edit\n").unwrap();
+
+        let result = git_safe_checkout_impl(
+            tmp.path().to_string_lossy().to_string(),
+            "other".to_string(),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(result.dirty, "a dirty tree with allow_stash: false must report dirty");
+        assert!(
+            result.auto_stashed.is_none(),
+            "nothing should have been stashed"
+        );
+        assert_eq!(
+            result.branch, starting_branch,
+            "still on the branch we started from — nothing switched"
+        );
+
+        // No stash was created.
+        let mut repo_mut = Repository::open(tmp.path()).unwrap();
+        let mut stash_count = 0;
+        repo_mut
+            .stash_foreach(|_, _, _| {
+                stash_count += 1;
+                true
+            })
+            .unwrap();
+        assert_eq!(stash_count, 0, "declining to stash must not create one anyway");
+
+        // HEAD never moved off the starting branch.
+        assert_eq!(repo.head().unwrap().shorthand(), Some(starting_branch.as_str()));
+
+        // The dirty edit is still sitting in the working tree, untouched.
+        let after = fs::read_to_string(&file_a).unwrap();
+        assert_eq!(after, "dirty edit\n");
     }
 }

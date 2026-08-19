@@ -38,6 +38,7 @@ const SNAPSHOT: EditorTabsSnapshot = {
   pinned: [],
   active: { type: "file", id: "f1", path: `${REPO}/README.md` },
   reveal: null,
+  findRequest: null,
 };
 
 const CONTEXT: WindowContext = {

@@ -671,10 +671,15 @@ pub async fn git_safe_checkout(
     repo_path: String,
     branch: String,
     create: Option<bool>,
+    allow_stash: Option<bool>,
     state: tauri::State<'_, GitState>,
 ) -> Result<SafeCheckoutResult, String> {
     let c = create.unwrap_or(false);
-    blocking_git!(state, repo_path, git_safe_checkout_impl(repo_path, branch, c))
+    // Defaults to `false` — the safe answer for a caller that hasn't been
+    // updated to the confirm-first flow, and the whole point of this
+    // parameter: a dirty tree should never be stashed without being asked.
+    let s = allow_stash.unwrap_or(false);
+    blocking_git!(state, repo_path, git_safe_checkout_impl(repo_path, branch, c, s))
 }
 
 #[tauri::command]

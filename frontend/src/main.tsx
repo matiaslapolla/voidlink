@@ -10,6 +10,7 @@ import { isSidebarId } from "@/store/layout";
 import { bridgeThemeAcrossWindows } from "@/store/theme";
 import { bridgeUiVisualAcrossWindows } from "@/store/settings";
 import { shouldSuppressContextMenu } from "@/commands/contextMenuSuppression";
+import { listen } from "@tauri-apps/api/event";
 import "./index.css";
 
 // ── Right-click belongs to the app ──────────────────────────────────────────
@@ -49,6 +50,20 @@ window.addEventListener(
   },
   true,
 );
+
+// ── Menu-driven Undo/Redo ────────────────────────────────────────────────
+//
+// `menu.rs` strips the accelerator off the Edit menu's Undo/Redo items so
+// Cmd+Z/Cmd+Shift+Z reach whichever surface has focus (Monaco included)
+// directly, instead of AppKit resolving them before the keydown ever reaches
+// the webview — see that file's doc comment for the full story. Losing the
+// accelerator means a *click* on those items no longer gets native
+// `execCommand` forwarding either, so Rust asks whichever window is focused
+// to run it here. One listener per window root, same reasoning as the
+// `contextmenu` suppressor above.
+void listen<"undo" | "redo">("voidlink://menu-undo-redo", (event) => {
+  document.execCommand(event.payload);
+});
 
 // One bundle serves all three windows; the Tauri window label decides which
 // root mounts. Branching here rather than adding more HTML entry points keeps

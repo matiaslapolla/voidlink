@@ -23,10 +23,12 @@
 /// the left sidebar. That header is the sidebar's, not the explorer's, and the
 /// workspace rail offers the same "open a folder" affordance — a second picker
 /// in the right column would be a second control for one action (§7.6).
-import { Show } from "solid-js";
-import { ChevronDown, ChevronRight, Files } from "lucide-solid";
+import { For, Show } from "solid-js";
+import { ChevronDown, ChevronRight, Files, PlugZap, Server } from "lucide-solid";
 import { useAppStore } from "@/store/LayoutContext";
 import { FileTree } from "@/components/files/FileTree";
+import { remoteRoots, type RemoteRoot } from "@/store/remoteRoots";
+import { reconnectRemoteRoot } from "@/commands/remoteActions";
 // The rail's one icon carries no visible label, so its tooltip is information
 // rather than a restatement — the same argument that put `WorkspaceRail`'s
 // three `title`s onto the real tooltip. `void tooltip` keeps the import alive:
@@ -63,18 +65,78 @@ export function FilesPanel(props: {
         </span>
       </button>
       <Show when={filesOpen()}>
-        <div class="flex-1 overflow-hidden min-h-0">
+        <div class="flex-1 overflow-hidden min-h-0 flex flex-col">
           <Show
             when={activeRepoPath()}
             fallback={
-              <div class="px-2 py-4 text-center text-ui text-muted-foreground">
-                <Files class="w-5 h-5 mx-auto mb-2 opacity-60" />
-                Open a folder to browse its files.
-              </div>
+              <Show
+                when={remoteRoots().length === 0}
+                fallback={<div class="shrink-0" />}
+              >
+                <div class="px-2 py-4 text-center text-ui text-muted-foreground">
+                  <Files class="w-5 h-5 mx-auto mb-2 opacity-60" />
+                  Open a folder to browse its files.
+                </div>
+              </Show>
             }
           >
-            {(root) => <FileTree root={root()} onOpenFile={props.onOpenFile} />}
+            {(root) => (
+              <div class="flex-1 min-h-0">
+                <FileTree root={root()} onOpenFile={props.onOpenFile} />
+              </div>
+            )}
           </Show>
+          {/* SSH hosts sit *below* the local root rather than replacing it: a
+              remote root is an addition to the explorer, not a mode it enters,
+              and the local repo is still where the git panel is pointed. */}
+          <For each={remoteRoots()}>
+            {(remote) => <RemoteRootSection remote={remote} onOpenFile={props.onOpenFile} />}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+/// One SSH host in the explorer: a header naming it, the chip that says this is
+/// not your disk, and the tree under it.
+///
+/// A dead session keeps its header and loses its tree. Leaving the tree mounted
+/// over a session the app knows is gone would make every expand fail with a
+/// transport error, one toast at a time; the reconnect button is the one action
+/// that can actually resolve the state.
+function RemoteRootSection(props: {
+  remote: RemoteRoot;
+  onOpenFile?: (path: string) => void;
+}) {
+  return (
+    <div class="flex flex-col min-h-0" classList={{ "flex-1": !props.remote.dead }}>
+      <div class="shrink-0 flex items-center gap-1.5 px-2.5 py-1 border-t border-border/40">
+        <Server class="w-3 h-3 shrink-0 text-muted-foreground" />
+        <span class="flex-1 truncate text-body text-muted-foreground font-semibold">
+          {props.remote.alias}
+        </span>
+        <span class="shrink-0 px-1 py-px rounded text-micro tracking-wide bg-accent/60 text-muted-foreground">
+          remote
+        </span>
+      </div>
+      <Show
+        when={!props.remote.dead}
+        fallback={
+          <div class="shrink-0 px-2.5 py-2 flex items-center gap-2 text-ui text-muted-foreground">
+            <span class="flex-1">Connection lost.</span>
+            <button
+              onClick={() => void reconnectRemoteRoot(props.remote)}
+              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-micro tracking-wide text-foreground bg-accent/60 hover:bg-accent transition-colors"
+            >
+              <PlugZap class="w-3 h-3" />
+              Reconnect
+            </button>
+          </div>
+        }
+      >
+        <div class="flex-1 min-h-0">
+          <FileTree root={props.remote.root} onOpenFile={props.onOpenFile} />
         </div>
       </Show>
     </div>

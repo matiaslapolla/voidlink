@@ -696,6 +696,19 @@ export interface EditorReveal {
   seq: number;
 }
 
+/// A "run this search" ping riding along with the snapshot — the find-in-files
+/// analogue of `EditorReveal` above, and the same reason: the workbench has no
+/// find-across-files surface of its own (a terminal's "Search selection in
+/// files" row is the one sender today), so driving it means asking the editor
+/// window, which owns `FindPanel`.
+export interface EditorFindRequest {
+  query: string;
+  /// Same `seq` convention as `EditorReveal`: the editor window only runs a
+  /// request whose seq it hasn't applied yet, so a snapshot re-sent for any
+  /// other reason doesn't re-run the last search.
+  seq: number;
+}
+
 /// Everything the editor window needs to render its tab strip.
 export interface EditorTabsSnapshot {
   worktreeId: string;
@@ -712,6 +725,7 @@ export interface EditorTabsSnapshot {
   /// here must not blank out the terminal the user is watching there.
   active: ActiveItem | null;
   reveal: EditorReveal | null;
+  findRequest: EditorFindRequest | null;
 }
 
 /// A mutation the editor window asks the workbench to perform. Fire-and-forget:

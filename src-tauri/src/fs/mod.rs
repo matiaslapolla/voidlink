@@ -174,6 +174,43 @@ pub fn fs_delete(path: String) -> Result<(), String> {
     }
 }
 
+/// Copy `from` to `to`, recursing into directories.
+///
+/// `to` is the full destination path, not a directory to drop `from` into —
+/// the explorer's Duplicate and Paste both already know the name they want, and
+/// a "copy into" contract would make `Duplicate` compute the same join twice.
+///
+/// Deliberately refuses an existing destination. Both callers derive a free
+/// name first (`file copy.txt`, `file copy 2.txt`), so an occupied path here
+/// means the caller's idea of the directory is stale — and silently
+/// overwriting is the one outcome nobody can undo.
+#[tauri::command]
+pub fn fs_copy(from: String, to: String) -> Result<(), String> {
+    let (src, dst) = (Path::new(&from), Path::new(&to));
+    if dst.exists() {
+        return Err(format!("Already exists: {}", to));
+    }
+    copy_path(src, dst)
+}
+
+fn copy_path(src: &Path, dst: &Path) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(src).map_err(|e| e.to_string())?;
+    if meta.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            copy_path(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        // Symlinks are copied as their target's contents rather than relinked.
+        // `std::fs::copy` follows them, which is what a user duplicating a row
+        // in the tree means by "copy this file"; preserving the link would
+        // produce an entry pointing at the original, which is not a duplicate.
+        std::fs::copy(src, dst).map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
 /// Walk upward from `path` looking for a `.git` entry (directory or worktree
 /// file). Returns the directory containing it, or None if no repo is found
 /// before hitting filesystem root.
@@ -295,6 +332,33 @@ mod tests {
         let env = all.iter().find(|e| e.name == ".env").expect(".env listed");
         assert!(env.ignored);
         assert!(!all.iter().find(|e| e.name == "main.rs").unwrap().ignored);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Duplicate on a directory has to bring the tree with it, and must not
+    /// clobber a destination that already exists.
+    #[test]
+    fn copies_directories_recursively_and_refuses_an_occupied_target() {
+        let dir = std::env::temp_dir().join("voidlink-fs-copy-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/nested")).unwrap();
+        std::fs::write(dir.join("src/top.txt"), "top").unwrap();
+        std::fs::write(dir.join("src/nested/deep.txt"), "deep").unwrap();
+
+        let src = dir.join("src").to_string_lossy().to_string();
+        let dst = dir.join("copy").to_string_lossy().to_string();
+        fs_copy(src.clone(), dst.clone()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("copy/nested/deep.txt")).unwrap(),
+            "deep"
+        );
+        // The original is untouched — this is a copy, not a move.
+        assert!(dir.join("src/top.txt").exists());
+
+        let err = fs_copy(src, dst).unwrap_err();
+        assert!(err.contains("Already exists"), "{err}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

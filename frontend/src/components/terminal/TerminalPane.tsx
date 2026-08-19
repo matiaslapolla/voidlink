@@ -14,6 +14,7 @@ import {
   terminalMenuOpensOn,
 } from "@/components/terminal/terminalMenu";
 import { registerDropZone } from "@/components/layout/dragDrop";
+import { fsApi } from "@/api/fs";
 import { surfacesAreTranslucent, useSettings } from "@/store/settings";
 import { DARK_BG, LIGHT_BG, terminalSurface } from "./terminalSurface";
 import { useTheme } from "@/store/theme";
@@ -125,6 +126,16 @@ interface TerminalPaneProps {
   /// terminal" row — every real caller passes it; optional only so a future
   /// caller (a preview, a test) is not forced to invent one.
   onClose?: () => void;
+  /// Workspace root, for resolving the context menu's "Open path in editor"
+  /// row against a relative selection the same way `onOpenPath` above does
+  /// for scrollback deep-links. `null`/absent means only an already-absolute
+  /// selection can resolve.
+  workspaceRoot?: string | null;
+  /// Run "Search selection in files" from the context menu — the existing
+  /// find-across-files surface, pre-filled with the selection. Absent
+  /// disables the row the same way a missing `onClose` hides "Close
+  /// terminal".
+  onSearchInFiles?: (query: string) => void;
 }
 
 // The grid's own colours, and the D1 island contract they answer to, live in
@@ -224,6 +235,12 @@ export function TerminalPane(props: TerminalPaneProps) {
   // read during the synchronous render would still be `undefined`.
   const [term, setTerm] = createSignal<Terminal | null>(null);
   const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
+  /// The selection's resolved "Open path in editor" target, or `undefined`
+  /// while nothing has resolved (including "haven't checked yet" — the row
+  /// starts disabled and enables once the check below lands). Reset on every
+  /// menu open so a stale resolution from the last right-click can't outlive
+  /// a new selection.
+  const [openPathTarget, setOpenPathTarget] = createSignal<string | undefined>(undefined);
 
   /// Type the dropped paths onto the shell input line. Each path is
   /// shell-quoted (so spaces / parens don't break the command) and a
@@ -858,27 +875,72 @@ export function TerminalPane(props: TerminalPaneProps) {
       return false;
     });
 
-    // ── Shift+Enter → newline instead of submit ───────────────────────
-    // xterm.js sends a bare CR for Shift+Enter, indistinguishable from
-    // Enter, so multiline input was impossible: zsh submitted the line and
-    // Ink-based TUIs (Claude Code, Codex, OpenCode) treated it as send.
-    // ESC+CR is the sequence every one of them already understands — it is
-    // what Claude Code's own `/terminal-setup` writes into iTerm2 and VS
-    // Code, and zsh's emacs keymap binds `^[^M` to self-insert-unmeta, so
-    // the shell inserts a literal newline and keeps editing.
-    //
-    // Alt/Option+Enter is mapped to the same bytes on purpose: with
-    // `macOptionIsMeta` off xterm would otherwise send a plain CR there too,
-    // making the muscle-memory alternative silently submit.
+    // ── Custom key handling ─────────────────────────────────────────────
+    // xterm.js only ever honours the *last* `attachCustomKeyEventHandler`
+    // call — it stores one function, not a list — so every translated chord
+    // this pane needs lives in this one handler.
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== "keydown" || e.key !== "Enter") return true;
-      if (e.ctrlKey || e.metaKey) return true;
-      if (!e.shiftKey && !e.altKey) return true;
-      e.preventDefault();
-      // Deliberately not recorded as a keystroke: this never completes a
-      // command, so it must not disturb repeat-last-command tracking.
-      void invoke("write_pty", { sessionId: ptyId, data: "\x1b\r" });
-      return false;
+      if (e.type !== "keydown") return true;
+
+      // Shift+Enter / Alt+Enter → newline instead of submit.
+      //
+      // xterm.js sends a bare CR for Shift+Enter, indistinguishable from
+      // Enter, so multiline input was impossible: zsh submitted the line and
+      // Ink-based TUIs (Claude Code, Codex, OpenCode) treated it as send.
+      // ESC+CR is the sequence every one of them already understands — it is
+      // what Claude Code's own `/terminal-setup` writes into iTerm2 and VS
+      // Code, and zsh's emacs keymap binds `^[^M` to self-insert-unmeta, so
+      // the shell inserts a literal newline and keeps editing.
+      //
+      // Alt/Option+Enter is mapped to the same bytes on purpose: with
+      // `macOptionIsMeta` off xterm would otherwise send a plain CR there too,
+      // making the muscle-memory alternative silently submit.
+      if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && (e.shiftKey || e.altKey)) {
+        e.preventDefault();
+        // Deliberately not recorded as a keystroke: this never completes a
+        // command, so it must not disturb repeat-last-command tracking.
+        void invoke("write_pty", { sessionId: ptyId, data: "\x1b\r" });
+        return false;
+      }
+
+      // ── Word-wise navigation (iTerm2 / VS Code parity) ─────────────────
+      // xterm has no notion of "word" — only the shell's line editor does,
+      // via readline/zle — so these translate to the escape sequences every
+      // POSIX shell already binds, rather than trying to compute a word
+      // boundary here: ⌥←/⌥→ are the emacs word-jump bindings (ESC b / ESC
+      // f), ⌘←/⌘→ are start/end of line (Ctrl-A / Ctrl-E), and ⌥⌫ is delete
+      // word back (Ctrl-W). None of these chords are claimed in `keymap.ts`
+      // — checked as part of this change — so there is nothing to scope
+      // around; they only needed translating.
+      if (!e.ctrlKey && !e.shiftKey) {
+        if (e.altKey && !e.metaKey && e.key === "ArrowLeft") {
+          e.preventDefault();
+          void invoke("write_pty", { sessionId: ptyId, data: "\x1bb" });
+          return false;
+        }
+        if (e.altKey && !e.metaKey && e.key === "ArrowRight") {
+          e.preventDefault();
+          void invoke("write_pty", { sessionId: ptyId, data: "\x1bf" });
+          return false;
+        }
+        if (e.metaKey && !e.altKey && e.key === "ArrowLeft") {
+          e.preventDefault();
+          void invoke("write_pty", { sessionId: ptyId, data: "\x01" });
+          return false;
+        }
+        if (e.metaKey && !e.altKey && e.key === "ArrowRight") {
+          e.preventDefault();
+          void invoke("write_pty", { sessionId: ptyId, data: "\x05" });
+          return false;
+        }
+        if (e.altKey && !e.metaKey && e.key === "Backspace") {
+          e.preventDefault();
+          void invoke("write_pty", { sessionId: ptyId, data: "\x17" });
+          return false;
+        }
+      }
+
+      return true;
     });
 
     // First focus → mark as the "most recent" PTY so global Cmd+Shift+R
@@ -1157,14 +1219,36 @@ export function TerminalPane(props: TerminalPaneProps) {
     },
   });
 
-  /// Copy / paste / clear / close. xterm has no context menu of its own — its
-  /// `SelectionService` only special-cases a right-click button-down to leave
-  /// an existing selection alone (`handleMouseDown`, checked against
-  /// `@xterm/xterm` ^6.0.0 docs before this was written) — so the browser's
-  /// `contextmenu` event reaches this handler untouched and a selection made
-  /// just before right-clicking survives to be copied. Row *presence* and
-  /// `disabledReason` are `terminalMenuItems` in `terminalMenu.ts`; this is
-  /// only the wiring from a live `Terminal` to that pure builder.
+  /// Resolve `selection` to an absolute path if it names a file that actually
+  /// exists — relative to `props.workspaceRoot` or already absolute — for the
+  /// "Open path in editor" row. `undefined` covers every reason it can't:
+  /// nothing selected, a relative selection with no known root, or a
+  /// candidate that isn't there. The row's `disabledReason` in
+  /// `terminalMenu.ts` collapses those into what the user needs to know;
+  /// this only needs to know whether to enable it.
+  async function resolveOpenPathTarget(selection: string): Promise<string | undefined> {
+    const trimmed = selection.trim();
+    if (!trimmed) return undefined;
+    const root = props.workspaceRoot;
+    const candidate = trimmed.startsWith("/") ? trimmed : root ? `${root}/${trimmed}` : null;
+    if (!candidate) return undefined;
+    try {
+      const [stamp] = await fsApi.statFiles([candidate]);
+      return stamp?.exists ? candidate : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /// Copy / paste / search / open-path / clear / close. xterm has no context
+  /// menu of its own — its `SelectionService` only special-cases a right-click
+  /// button-down to leave an existing selection alone (`handleMouseDown`,
+  /// checked against `@xterm/xterm` ^6.0.0 docs before this was written) — so
+  /// the browser's `contextmenu` event reaches this handler untouched and a
+  /// selection made just before right-clicking survives to be copied. Row
+  /// *presence* and `disabledReason` are `terminalMenuItems` in
+  /// `terminalMenu.ts`; this is only the wiring from a live `Terminal` (and
+  /// this pane's props) to that pure builder.
   const menuItems = () =>
     terminalMenuItems({
       selection: term()?.getSelection() ?? "",
@@ -1175,6 +1259,9 @@ export function TerminalPane(props: TerminalPaneProps) {
         });
       },
       onClear: () => term()?.clear(),
+      onSearchInFiles: (query) => props.onSearchInFiles?.(query),
+      onOpenPath: (path) => props.onOpenPath?.(path),
+      openPathTarget: openPathTarget(),
       onClose: props.onClose,
     });
 
@@ -1195,20 +1282,33 @@ export function TerminalPane(props: TerminalPaneProps) {
         // Read the mode off the live terminal, per event — a program turns
         // reporting on and off mid-session and the answer changes with it.
         const t = term();
-        const opens =
-          !t ||
-          terminalMenuOpensOn({
-            mouseTrackingMode: t.modes.mouseTrackingMode,
-            shiftKey: e.shiftKey,
-          });
-        if (!opens) {
+        if (terminalMenuOpensOn({ shiftKey: e.shiftKey }) || !t) {
+          e.preventDefault();
+          const selection = t?.getSelection() ?? "";
+          setOpenPathTarget(undefined);
+          void resolveOpenPathTarget(selection).then(setOpenPathTarget);
+          setMenu({ x: e.clientX, y: e.clientY });
+          return;
+        }
+        if (applicationOwnsMouse(t.modes.mouseTrackingMode)) {
           // No `preventDefault`: the gesture belongs to the application. The
           // document-level suppressor in `main.tsx` still keeps the OS menu
           // from appearing, which is all `preventDefault` was buying here.
           return;
         }
+        // Plain right-click, application not tracking the mouse: paste,
+        // the iTerm2/VS Code default. Shift is the way to the menu instead —
+        // handled above.
         e.preventDefault();
-        setMenu({ x: e.clientX, y: e.clientY });
+        navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text) void invoke("write_pty", { sessionId: props.ptyId, data: text });
+          })
+          // Denied permission, no focused document, an empty clipboard API in
+          // a context that has none — every reason this can fail reads the
+          // same to the user as "nothing to paste".
+          .catch(() => {});
       }}
     >
       <Show when={menu()}>

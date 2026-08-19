@@ -389,15 +389,21 @@ export const gitApi = {
     return invoke<string[]>("git_ls_files", { repoPath, includeIgnored: includeIgnored ?? false });
   },
 
+  /// `allowStash` defaults to `false` on the Rust side: omit it (or pass
+  /// `false` explicitly) to *probe* a dirty tree without touching it — a
+  /// `dirty: true` result means nothing was stashed or switched. Pass `true`
+  /// only after the user has confirmed the stash.
   safeCheckout(
     repoPath: string,
     branch: string,
     create?: boolean,
+    allowStash?: boolean,
   ): Promise<SafeCheckoutResult> {
     return invoke<SafeCheckoutResult>("git_safe_checkout", {
       repoPath,
       branch,
       create,
+      allowStash,
     });
   },
 

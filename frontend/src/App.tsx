@@ -68,6 +68,8 @@ import { registerStackActions } from "@/commands/stackActions";
 import { registerWorkspaceActions } from "@/commands/workspaceActions";
 import { registerSnapshotActions } from "@/commands/snapshotActions";
 import { registerLayoutPresetActions } from "@/commands/layoutPresetActions";
+import { registerRemoteActions } from "@/commands/remoteActions";
+import { RemoteHostPicker } from "@/commands/RemoteHostPicker";
 import { keymapBindings, useKeybindings, useModifierRelease } from "@/commands/keybindings";
 import { validateKeymap } from "@/commands/keymap";
 import { TAB_SELECT_COUNT, tabSelectId } from "@/commands/actionIds";
@@ -111,6 +113,7 @@ import {
   publishWindowContext,
   setStackedViewRouter,
   showEditorWindow,
+  type EditorFindRequest,
   type EditorReveal,
   type EditorTabsSnapshot,
 } from "@/api/windows";
@@ -215,6 +218,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   registerSnapshotActions(props.onOpenSnapshots);
   registerLayoutPresetActions();
   registerAgentActions();
+  registerRemoteActions();
 
   // Hydrate the real worktree list for every repo-backed workspace once, on
   // boot. Persisted state only knows what we last saw; git is the truth, and
@@ -309,6 +313,12 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
   const [reveal, setReveal] = createSignal<EditorReveal | null>(null);
   let revealSeq = 0;
 
+  /// A pending "run this search" ping, carried the same way `reveal` above is.
+  /// The one sender today is a terminal's "Search selection in files" context
+  /// menu row (`MainSurface.tsx` → `searchInEditorWindow` below).
+  const [findRequest, setFindRequest] = createSignal<EditorFindRequest | null>(null);
+  let findRequestSeq = 0;
+
   const editorTabs = (): EditorTabsSnapshot => {
     const wtId = state.activeWorktreeId;
     return {
@@ -321,6 +331,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       pinned: [...(state.pinnedTabsByWorktree[wtId] ?? [])],
       active: state.editorActiveItemByWorktree[wtId] ?? null,
       reveal: reveal(),
+      findRequest: findRequest(),
     };
   };
   createEffect(() => void publishEditorTabs(editorTabs()));
@@ -341,6 +352,23 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
     });
     revealSeq += 1;
     setReveal({ path, line, column, seq: revealSeq });
+    try {
+      await showEditorWindow();
+    } catch (e) {
+      pushToast(
+        `Could not open the editor window: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    }
+  }
+
+  /// Run `query` in the editor window's find-in-files panel: queue the ping,
+  /// then make sure the window exists and is in front. Mirrors
+  /// `openInEditorWindow` above; the one caller today is a terminal's "Search
+  /// selection in files" context menu row.
+  async function searchInEditorWindow(query: string) {
+    findRequestSeq += 1;
+    setFindRequest({ query, seq: findRequestSeq });
     try {
       await showEditorWindow();
     } catch (e) {
@@ -1571,6 +1599,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
         <MainSurface
           onOpenFile={(path, line, column) => void openInEditorWindow(path, line, column)}
           onOpenSettings={props.onOpenSettings}
+          onSearchInFiles={(query) => void searchInEditorWindow(query)}
         />
       }
       statusBar={<StatusBar />}
@@ -1655,6 +1684,7 @@ function AppInner(props: { onOpenSettings: () => void; onOpenSnapshots: () => vo
       />
       <ShortcutsCheatSheet />
       <WorktreeSwitcher />
+      <RemoteHostPicker />
       <TabSwitcher tabs={workbenchTargets} />
       {/* Held-modifier UI: no scrim, no transition, gone on the keyup. */}
       <TabCycleOverlay />

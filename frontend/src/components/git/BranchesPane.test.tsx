@@ -15,6 +15,11 @@ import { emitGitRefsChanged } from "@/commands/gitEvents";
 import type { AppStore } from "@/store/layout";
 import type { GitBranchInfo } from "@/types/git";
 
+const confirmDialog = vi.fn(async () => true);
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  confirm: (...args: unknown[]) => confirmDialog(...(args as [])),
+}));
+
 import { BranchesPane, relativeAge } from "./GitSidebar";
 
 const REPO = "/repos/api";
@@ -55,6 +60,8 @@ function mount(props: { repoPath?: string } = {}) {
 beforeEach(() => {
   resetToasts();
   localStorage.clear();
+  confirmDialog.mockClear();
+  confirmDialog.mockResolvedValue(true);
 });
 
 describe("grouping local and remote rows", () => {
@@ -334,6 +341,89 @@ describe("staying honest across a refresh", () => {
     emitGitRefsChanged();
     await waitFor(() => expect(tauriCalls("git_list_branches").length).toBeGreaterThan(1));
     expect(screen.getByText("topic")).toBe(before);
+  });
+});
+
+describe("checking out a branch with a dirty tree", () => {
+  /// Regression guard for the silent-auto-stash report: clicking a branch used
+  /// to stash a dirty tree with no warning. `checkout` now probes with
+  /// `allowStash: false` first; a `dirty: true` result must surface the same
+  /// confirm dialog `FileTree`'s delete flow uses, and only *that* dialog's
+  /// "yes" should trigger a second call with `allowStash: true`.
+  function mockDirtyThenClean() {
+    let calls = 0;
+    mockTauri({
+      git_list_branches: [branch({ name: "other" })],
+      git_safe_checkout: ({ allowStash }: { allowStash?: boolean }) => {
+        calls += 1;
+        if (!allowStash) {
+          // The current branch never moved — nothing was touched.
+          return { branch: "main", autoStashed: null, dirty: true };
+        }
+        return { branch: "other", autoStashed: "voidlink-auto: pre-switch from main → other", dirty: false };
+      },
+    });
+    return { callCount: () => calls };
+  }
+
+  it("probes with allowStash: false, then asks before stashing", async () => {
+    mockDirtyThenClean();
+    mount();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Checkout other" }));
+
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1));
+    expect(tauriCalls("git_safe_checkout")[0].args.allowStash).toBe(false);
+    // Confirmed by default (`confirmDialog` resolves `true`); the retry
+    // carries `allowStash: true`.
+    await waitFor(() => expect(tauriCalls("git_safe_checkout")).toHaveLength(2));
+    expect(tauriCalls("git_safe_checkout")[1].args.allowStash).toBe(true);
+  });
+
+  it("stashes and switches only after the dialog is confirmed", async () => {
+    const onCheckout = vi.fn();
+    mockDirtyThenClean();
+    render(() => (
+      <AppStoreContext.Provider value={fakeStore()}>
+        <BranchesPane repoPath={REPO} worktreeId="wt1" onCheckout={onCheckout} showTags={false} />
+      </AppStoreContext.Provider>
+    ));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Checkout other" }));
+    await waitFor(() => expect(onCheckout).toHaveBeenCalledTimes(1));
+    expect(tauriCalls("git_safe_checkout")).toHaveLength(2);
+  });
+
+  it("switches nothing and never retries when the dialog is cancelled", async () => {
+    confirmDialog.mockResolvedValue(false);
+    const onCheckout = vi.fn();
+    mockDirtyThenClean();
+    render(() => (
+      <AppStoreContext.Provider value={fakeStore()}>
+        <BranchesPane repoPath={REPO} worktreeId="wt1" onCheckout={onCheckout} showTags={false} />
+      </AppStoreContext.Provider>
+    ));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Checkout other" }));
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1));
+
+    // Give any (wrongly-fired) retry a chance to land before asserting its
+    // absence.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(tauriCalls("git_safe_checkout")).toHaveLength(1);
+    expect(onCheckout).not.toHaveBeenCalled();
+  });
+
+  it("never probes with a stash-permitting default — allowStash is explicit", async () => {
+    // A caller that forgets to pass `allowStash` gets Rust's safe default
+    // (`false`), but the frontend must not rely on that: it always states its
+    // intent. Regression guard for reintroducing a bare `safeCheckout(repo,
+    // branch)` call on this path.
+    mockDirtyThenClean();
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Checkout other" }));
+    await waitFor(() => expect(tauriCalls("git_safe_checkout").length).toBeGreaterThan(0));
+    expect(tauriCalls("git_safe_checkout")[0].args).toHaveProperty("allowStash");
   });
 });
 

@@ -96,6 +96,13 @@ export const fsApi = {
     return invoke<void>("fs_delete", { path });
   },
 
+  /// Recursive for directories. `to` is the full destination path, and an
+  /// occupied one is refused rather than overwritten — the explorer derives a
+  /// free name before it calls this.
+  copy(from: string, to: string): Promise<void> {
+    return invoke<void>("fs_copy", { from, to });
+  },
+
   findRepoRoot(path: string): Promise<string | null> {
     return invoke<string | null>("fs_find_repo_root", { path });
   },

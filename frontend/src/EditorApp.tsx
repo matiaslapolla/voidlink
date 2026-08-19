@@ -111,6 +111,7 @@ import { ToastViewport } from "@/commands/ToastViewport";
 import { TooltipLayer } from "@/components/ui/Tooltip";
 import { keymapBindings, useKeybindings } from "@/commands/keybindings";
 import { registerActions, type Action } from "@/commands/registry";
+import { displayPath, isRemotePath } from "@/api/fsProvider";
 import { emitGitRefsChanged, onGitRefsChanged } from "@/commands/gitEvents";
 import { pushToast } from "@/commands/toast";
 import { AppStoreContext, useAppStore } from "@/store/LayoutContext";
@@ -136,6 +137,7 @@ const EMPTY_SNAPSHOT: EditorTabsSnapshot = {
   pinned: [],
   active: null,
   reveal: null,
+  findRequest: null,
 };
 
 export default function EditorApp() {
@@ -420,6 +422,18 @@ export function EditorSurface(props: {
     ),
   );
 
+  /// Swap to the search rail for a "run this search" ping from the workbench
+  /// (a terminal's "Search selection in files" row). Idempotent, unlike the
+  /// reveal effect above, so this doesn't need to dedupe by `seq` — only
+  /// `FindPanel` does, to avoid re-running the same query on every snapshot
+  /// rebroadcast.
+  createEffect(() => {
+    if (snapshot().findRequest) {
+      setTreeVisible(true);
+      setSearchVisible(true);
+    }
+  });
+
   /// One place a failed write is reported, whether the user pressed ⌘S or an
   /// autosave timer fired. The buffer stays dirty (the controller never clears
   /// the flag on a throw), so the toast's Retry is the only thing the user has
@@ -608,7 +622,11 @@ export function EditorSurface(props: {
       if (path) clearBlameFor(path);
       return;
     }
-    if (!path || !repo) return;
+    // A remote file has no worktree behind it in this slice, so there is
+    // nothing to blame it against — see the remote root's disabled surfaces in
+    // `components/files/fileTreeMenu.ts`. Skipping here rather than only
+    // hiding the tree's Blame row covers the palette toggle too.
+    if (!path || !repo || isRemotePath(path)) return;
     void refreshBlameFor(repo, path);
   });
 
@@ -840,12 +858,18 @@ export function EditorSurface(props: {
     const snap = snapshot();
     const out: TabDescriptor[] = [];
     for (const f of snap.files) {
+      // A remote file is read-only in this slice, and the tab is the only place
+      // that is visible before the user tries to type. Reusing the existing
+      // `prefix` channel rather than inventing a badge keeps it in the same
+      // vocabulary as the "diff · " and "conflict · " tabs beside it.
+      const remote = isRemotePath(f.path);
       out.push({
         kind: "file",
         id: f.id,
         label: baseName(f.path),
+        prefix: remote ? "remote · " : undefined,
         icon: <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />,
-        title: f.path,
+        title: remote ? `${displayPath(f.path)} — read-only` : f.path,
         dirty: dirtyPaths().has(f.path),
         saving: savingPaths().has(f.path),
         reloaded: reloadedPaths().has(f.path),
@@ -1087,6 +1111,7 @@ export function EditorSurface(props: {
                   <FindPanel
                     root={() => repoPath()}
                     onClose={() => setSearchVisible(false)}
+                    findRequest={() => snapshot().findRequest}
                     onOpen={(p, line, column) => {
                       send({ kind: "open-file", path: p });
                       // Queue behind the reconcile the request triggers, so the

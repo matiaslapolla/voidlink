@@ -57,7 +57,7 @@ function mount() {
   const utils = render(() => (
     <div style={{ width: "1000px", height: "700px", display: "flex" }}>
       <AppStoreContext.Provider value={store}>
-        <MainSurface onOpenFile={() => {}} onOpenSettings={() => {}} />
+        <MainSurface onOpenFile={() => {}} onOpenSettings={() => {}} onSearchInFiles={() => {}} />
       </AppStoreContext.Provider>
     </div>
   ));

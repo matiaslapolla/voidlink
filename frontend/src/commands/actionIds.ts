@@ -124,6 +124,12 @@ export const ACTION_IDS = [
   // with no accelerator, which is a supported state.
   "board.open",
   "browser.new",
+  // Remote roots. Chordless for the same reason `board.open` is: connecting to
+  // a machine is a once-a-session act, and the picker behind it is where the
+  // choice actually gets made. The per-session ids the disconnect flow works
+  // over are runtime data (like `snapshot.restore.<name>`) and stay out of here.
+  "remote.connect",
+  "remote.disconnect",
   // AI
   "agent.toggle",
   "agent.newTab",

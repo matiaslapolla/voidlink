@@ -225,6 +225,33 @@ describe("KEYMAP integrity", () => {
     );
   });
 
+  it("leaves bare ⌘Z/⌘⇧Z unclaimed, so Monaco's own undo/redo binding gets them", () => {
+    // Regression guard for the "Cmd+Z sometimes doesn't undo" report. The
+    // suspect was this table — a global binding here would swallow the chord
+    // in the capture-phase listener before Monaco ever saw it, the same way
+    // every other entry with a `scope` note explains. It turned out not to be:
+    // nothing in KEYMAP has ever claimed bare `z`, `ui.zen` binds ⌘⌥Z (an
+    // extra modifier), and this test would already fail if that changed.
+    //
+    // The actual interception was one layer up, in the native Edit menu
+    // (`src-tauri/src/menu.rs`): its Undo/Redo items hardwired the same
+    // accelerators, and AppKit resolves a menu accelerator before the keydown
+    // reaches the webview at all — this table, and the capture-phase handler
+    // built from it, never had a chance to run either way. That is a fact
+    // about window chrome outside anything vitest/jsdom models, so it has no
+    // failing-before/passing-after test here; `menu.rs`'s doc comment and the
+    // `voidlink://menu-undo-redo` listener in `main.tsx` are the fix, and
+    // "type, save, switch tabs, Cmd+Z" is what actually verifies it.
+    for (const entry of KEYMAP) {
+      for (const chord of chordsOf(entry)) {
+        if (chord.key.toLowerCase() !== "z") continue;
+        expect(chord.shift || chord.alt, `${entry.actionId} binds bare ${chordId(chord)}`).toBe(
+          true,
+        );
+      }
+    }
+  });
+
   it("gives every new binding a modifier beyond the platform key, or a scope", () => {
     // Bare ⌘<letter> is also Ctrl+<letter>, which is a readline binding in any
     // shell. The pre-existing bare chords are grandfathered; anything else has

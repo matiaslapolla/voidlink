@@ -1,5 +1,6 @@
 import type * as Monaco from "monaco-editor";
 import { fsApi } from "@/api/fs";
+import { REMOTE_SCHEME, isRemotePath, providerFor } from "@/api/fsProvider";
 import { applyModelSettings, editorOptions, inferLanguage, loadMonaco } from "./monaco";
 import { effectiveEditorSettings } from "@/store/settingsSchema";
 import { applyVoidlinkTheme, monacoThemeName } from "./monacoTheme";
@@ -17,6 +18,10 @@ type EditorModel = {
   path: string;
   model: Monaco.editor.ITextModel;
   dirty: boolean;
+  /// The buffer cannot be written back. True for every file on a remote root:
+  /// this slice reads over SFTP and does not write, and an editable buffer
+  /// whose save silently does nothing is worse than one that says so.
+  readOnly: boolean;
   /// A write is in flight. Distinct from `dirty`, which stays true throughout:
   /// the dot never disappears while the buffer differs from disk (MASTER
   /// §7.5.3), it just enters its pending form (§7.6).
@@ -350,21 +355,32 @@ class EditorController {
     if (cached) return cached;
     if (!this.monaco) return null;
 
+    const readOnly = isRemotePath(path);
+
     let content = "";
-    try { content = await fsApi.readFile(path); }
+    try { content = await providerFor(path).readFile(path); }
     catch (e) { console.warn("EditorController: failed to read", path, e); }
 
     // Another caller may have created the model while we were awaiting the read.
     const raced = this.models.get(path);
     if (raced) return raced;
 
-    const uri = this.monaco.Uri.file(path);
+    // A remote buffer gets a non-`file` URI on purpose. `lspBridge.trackModel`
+    // already ignores every scheme but `file` — the diff and merge surfaces
+    // rely on that — so spelling the scheme is the whole of "no LSP on remote
+    // files": no server is started, no `didOpen` is sent, and a path that does
+    // not exist on this machine is never handed to one that would try to read
+    // it. Language inference still runs off the extension, so highlighting is
+    // unaffected.
+    const uri = readOnly
+      ? this.monaco.Uri.parse(`${REMOTE_SCHEME}${path.slice(REMOTE_SCHEME.length)}`)
+      : this.monaco.Uri.file(path);
     const model = this.monaco.editor.createModel(content, inferLanguage(path), uri);
     // Indentation is a model option, so a freshly-created model does not
     // inherit it from the editor it is about to be attached to — and resolving
     // it needs the model's language, which only exists once the model does.
     this.applyModelOptions(model);
-    const meta: EditorModel = { path, model, dirty: false, saving: false };
+    const meta: EditorModel = { path, model, dirty: false, saving: false, readOnly };
     this.models.set(path, meta);
 
     // A model whose language changes has to re-resolve: `[rust]` overrides are
@@ -377,19 +393,25 @@ class EditorController {
       }
     });
 
+    // Dirty tracking and autosave exist to get edits back to disk. A read-only
+    // buffer has no path back, so subscribing would arm a save that can only
+    // fail — and Monaco's own `readOnly` option keeps the content from moving
+    // in the first place.
     let dirtyTimer: ReturnType<typeof setTimeout> | null = null;
-    const disposable = model.onDidChangeContent(() => {
-      if (dirtyTimer) clearTimeout(dirtyTimer);
-      dirtyTimer = setTimeout(() => {
-        const m = this.models.get(path);
-        if (m && !m.dirty) { m.dirty = true; this.notify(); }
-        dirtyTimer = null;
-      }, 100);
-      // Autosave is scheduled off the raw change, not off the debounced dirty
-      // flag: the delay the user configured should start at their last
-      // keystroke, not 100ms after it.
-      this.scheduleAutoSave(path);
-    });
+    const disposable = readOnly
+      ? { dispose() {} }
+      : model.onDidChangeContent(() => {
+          if (dirtyTimer) clearTimeout(dirtyTimer);
+          dirtyTimer = setTimeout(() => {
+            const m = this.models.get(path);
+            if (m && !m.dirty) { m.dirty = true; this.notify(); }
+            dirtyTimer = null;
+          }, 100);
+          // Autosave is scheduled off the raw change, not off the debounced
+          // dirty flag: the delay the user configured should start at their
+          // last keystroke, not 100ms after it.
+          this.scheduleAutoSave(path);
+        });
     this.disposeMap.set(path, {
       dispose: () => {
         disposable.dispose();
@@ -468,6 +490,10 @@ class EditorController {
   async save(path: string) {
     const meta = this.models.get(path);
     if (!meta) return;
+    // Writing back over SFTP is a later slice. Returning silently is right
+    // here rather than throwing: `save` is reached by ⌘S and by autosave on
+    // every buffer, and a read-only tab is not an error the user made.
+    if (meta.readOnly) return;
     this.cancelAutoSave(path);
 
     meta.saving = true;
@@ -686,9 +712,13 @@ class EditorController {
   /// is why `attach` calls this too and not only `applyEditorSettings`.
   private applyGroupOptions(group: EditorGroup) {
     const language = group.editor.getModel()?.getLanguageId() ?? null;
-    group.editor.updateOptions(
-      editorOptions(effectiveEditorSettings(this.settings, language)),
-    );
+    group.editor.updateOptions({
+      ...editorOptions(effectiveEditorSettings(this.settings, language)),
+      // Set on the *editor*, not the model, because it follows what the pane is
+      // showing: the same editor is read-only over a remote file and editable
+      // the moment a local one is attached to it.
+      readOnly: group.activePath ? (this.models.get(group.activePath)?.readOnly ?? false) : false,
+    });
   }
 
   /// The model half, resolved for that model's own language. Every model in the
@@ -716,7 +746,12 @@ class EditorController {
   /// that wants one aggregated notice for a 200-file checkout has the number
   /// without having to count events.
   async checkExternalChanges(): Promise<{ reloaded: number; conflicted: number }> {
-    const paths = [...this.models.keys()];
+    // Remote buffers are excluded: `fs_stat_files` stats the local disk, so a
+    // remote path would come back `exists: false` and the reconcile would
+    // "notice" every open remote tab being deleted. Watching the far side is
+    // out of scope for this slice, and a read-only buffer has nothing to
+    // conflict with anyway.
+    const paths = [...this.models.keys()].filter((p) => !isRemotePath(p));
     if (paths.length === 0) return { reloaded: 0, conflicted: 0 };
 
     const stamps = await fsApi.statFiles(paths);

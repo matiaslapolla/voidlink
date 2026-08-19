@@ -21,26 +21,19 @@ export function applicationOwnsMouse(mouseTrackingMode: IModes["mouseTrackingMod
   return mouseTrackingMode !== "none";
 }
 
-/// Whether a `contextmenu` on the grid should open *our* menu, or be left for
-/// the application.
+/// Whether a plain right-click on the grid should open *our* menu.
 ///
-/// Taking it unconditionally is what wedged full-screen TUIs: xterm reports the
-/// button-3 press to the program, our overlay then takes the pointer, and the
-/// matching release never arrives — lazygit, btop and claude sit waiting for a
-/// button-up that cannot come and have to be killed. So when the application
-/// owns the mouse the gesture is its own, and Shift is the way back to our
-/// menu, the same escape hatch iTerm2 and VS Code use (and the same modifier
-/// xterm's own `SelectionService` already takes for forcing a selection through
-/// mouse reporting).
-///
-/// The alternate screen is deliberately *not* part of this. A full-screen app
-/// can run with reporting off — a pager, a `less` — and there the right-click
-/// is still ours to answer.
-export function terminalMenuOpensOn(opts: {
-  mouseTrackingMode: IModes["mouseTrackingMode"];
-  shiftKey: boolean;
-}): boolean {
-  return !applicationOwnsMouse(opts.mouseTrackingMode) || opts.shiftKey;
+/// The gesture used to be shared between "open our menu" and "yield to a
+/// full-screen app tracking the mouse", with Shift as the escape hatch back to
+/// our menu. It no longer is: a plain right-click now pastes (see
+/// `TerminalPane.tsx`'s `onContextMenu`, which is what actually applies
+/// `applicationOwnsMouse` to decide paste-vs-yield), and the menu moves
+/// wholesale to Shift+right-click — the same modifier that was already the
+/// way back to it, now the *only* way in, whether or not the application owns
+/// the mouse. Right-click-to-paste is the iTerm2/VS Code default; Shift for
+/// the menu is the escape hatch both already use.
+export function terminalMenuOpensOn(opts: { shiftKey: boolean }): boolean {
+  return opts.shiftKey;
 }
 
 export interface TerminalMenuActions {
@@ -50,20 +43,51 @@ export interface TerminalMenuActions {
   onCopy: (text: string) => void;
   onPaste: () => void;
   onClear: () => void;
+  /// Run "Search selection in files" — the existing find-across-files surface,
+  /// pre-filled with the trimmed selection.
+  onSearchInFiles: (query: string) => void;
+  /// Open `openPathTarget` (below) in the editor. Only ever called when it is
+  /// set, so the row's own `disabledReason` is the real guard.
+  onOpenPath: (path: string) => void;
+  /// The selection resolved to an absolute, *existing* file path — relative
+  /// to the workspace root or already absolute — or `undefined` when it
+  /// doesn't. Resolving this needs a filesystem check, which is the caller's
+  /// job (this builder stays pure); `undefined` also covers "haven't checked
+  /// yet", so the row simply starts disabled and enables once the check
+  /// lands.
+  openPathTarget?: string;
   /// Absent means the pane offers no "close terminal" row.
   onClose?: () => void;
 }
 
 export function terminalMenuItems(actions: TerminalMenuActions): ContextMenuItem[] {
+  const hasSelection = actions.selection.length > 0;
   const rows: ContextMenuItem[] = [
     {
       label: "Copy",
-      disabledReason: actions.selection ? undefined : "Nothing selected",
+      disabledReason: hasSelection ? undefined : "Nothing selected",
       onSelect: () => actions.onCopy(actions.selection),
     },
     {
       label: "Paste",
       onSelect: actions.onPaste,
+    },
+    {
+      label: "Search selection in files",
+      separatorBefore: true,
+      disabledReason: hasSelection ? undefined : "Nothing selected",
+      onSelect: () => actions.onSearchInFiles(actions.selection),
+    },
+    {
+      label: "Open path in editor",
+      disabledReason: !hasSelection
+        ? "Nothing selected"
+        : actions.openPathTarget
+          ? undefined
+          : "Selection is not an existing file path",
+      onSelect: () => {
+        if (actions.openPathTarget) actions.onOpenPath(actions.openPathTarget);
+      },
     },
     {
       label: "Clear",

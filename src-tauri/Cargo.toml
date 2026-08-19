@@ -52,6 +52,25 @@ keyring = "4.1"
 notify-debouncer-full = "0.7.0"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav"] }
 tauri-plugin-notification = "2.3.3"
+# Remote (SSH/SFTP) file roots. Pure-Rust rather than libssh2/`ssh2-rs` so
+# there is no C library to vendor beside the two we already carry, and because
+# russh is async — a remote `list_dir` is an `await` on the tokio runtime Tauri
+# already runs commands on, not a blocking call needing `spawn_blocking`.
+# Versions are the exact pair verified against each other: russh-sftp 2.4
+# requires russh >= 0.62.5, and 0.63 is a beta.
+russh = "0.62.7"
+russh-sftp = "2.4.0"
+# `~/.ssh/config` parsing. Named for `ssh2-rs`, but it is a standalone parser —
+# it returns resolved `HostParams`, and nothing here links against libssh2.
+ssh2-config = "0.7.2"
+# Shell quoting for the two remote operations that need a real shell (`cp -a`,
+# `rm -rf`). A dependency rather than eight hand-written lines because getting
+# the embedded-single-quote case wrong is a command injection, not a typo.
+shell-escape = "0.1.5"
+# Re-exported by tauri, but depended on directly for the same reason `url` is:
+# the remote session supervisor sleeps on a timer and the ssh-agent client
+# takes a `UnixStream`, both of which are tokio types this crate names.
+tokio = { version = "1.53.1", features = ["net", "io-util", "time", "macros", "rt"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

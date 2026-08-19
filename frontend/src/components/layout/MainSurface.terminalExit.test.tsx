@@ -74,7 +74,7 @@ async function mountWithTerminal() {
   const store = createAppStore({ persist: false });
   render(() => (
     <AppStoreContext.Provider value={store}>
-      <MainSurface onOpenFile={() => {}} onOpenSettings={() => {}} />
+      <MainSurface onOpenFile={() => {}} onOpenSettings={() => {}} onSearchInFiles={() => {}} />
     </AppStoreContext.Provider>
   ));
 

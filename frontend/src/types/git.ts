@@ -16,8 +16,15 @@ export interface GitRepoInfo {
 }
 
 export interface SafeCheckoutResult {
+  /** The branch now checked out. Unchanged from before the call when `dirty`
+   * is true below — nothing was switched. */
   branch: string;
   autoStashed: string | null;
+  /** True when the working tree was dirty and the call passed
+   * `allowStash: false`: nothing was stashed or switched. `branch` is
+   * whatever was already checked out, and `autoStashed` is always `null`.
+   * Confirm with the user and retry with `allowStash: true`. */
+  dirty: boolean;
 }
 
 /** Why a push did not land.

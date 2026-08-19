@@ -15,13 +15,31 @@
 //! shortcuts do. Closing the *window* moves to `Cmd+Shift+W`, which needs a
 //! custom item because the predefined one cannot be re-accelerated.
 //!
+//! `Cmd+Z` / `Cmd+Shift+Z` get the same treatment, for the same reason. The
+//! default menu's Undo/Redo items hardwire those accelerators, AppKit resolves
+//! them before the keydown ever reaches the webview, and — unlike a plain
+//! `<textarea>`, whose undo stack *is* `execCommand('undo')` — Monaco owns its
+//! own undo stack and never sees the key to run its own binding against it.
+//! Whether the accelerator actually fires depends on WKWebView's editing-action
+//! validation (`canPerformAction:withSender:` for the `undo:`/`redo:`
+//! selector), which is ambient state unrelated to which surface has focus —
+//! hence "sometimes". `keymap.ts` was already correctly leaving `z` unclaimed
+//! for exactly this reason (see its "Monaco's redo" note); the interception
+//! was happening one layer up. So: custom, unaccelerated Undo/Redo items,
+//! wired below to replicate the predefined ones' `execCommand` behaviour for
+//! anyone who still reaches for the Edit menu, while the keyboard chord now
+//! reaches Monaco (and every other surface) like any other key.
+//!
 //! Everything else is deliberately identical to Tauri's default. The Edit
 //! submenu in particular has to stay: on macOS, cut/copy/paste/select-all in a
 //! webview are driven by those menu items, and dropping the submenu silently
-//! breaks clipboard support everywhere in the app.
+//! breaks clipboard support everywhere in the app. Undo/Redo don't share that
+//! clipboard-permission restriction — `execCommand('undo'/'redo')` needs no
+//! native forwarding to work from a plain keydown handler — so only their
+//! accelerator needed to move, not their whole mechanism.
 
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Menu id for the window-closing item. Matched in [`handle_event`].
 pub(crate) const CLOSE_WINDOW_ID: &str = "voidlink:close-window";
@@ -31,6 +49,17 @@ pub(crate) const CLOSE_WINDOW_ID: &str = "voidlink:close-window";
 /// Shift is what keeps this off `Cmd+W`. Nothing in `keymap.ts` claims the
 /// shifted chord, so the two cannot collide.
 const CLOSE_WINDOW_ACCEL: &str = "CmdOrCtrl+Shift+W";
+
+/// Menu ids for the custom, unaccelerated Undo/Redo items. Matched in
+/// [`handle_event`].
+pub(crate) const UNDO_ID: &str = "voidlink:undo";
+pub(crate) const REDO_ID: &str = "voidlink:redo";
+
+/// Fired at the focused window when Undo/Redo is *clicked* in the Edit menu.
+/// The keyboard chord no longer needs this — see the module doc — but a click
+/// still has to do something, and running the command is JS's job, not
+/// Rust's. `main.tsx` listens, once, for every window.
+const MENU_UNDO_REDO_EVENT: &str = "voidlink://menu-undo-redo";
 
 /// Build the app menu.
 pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -51,6 +80,12 @@ pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some(CLOSE_WINDOW_ACCEL),
     )?;
+
+    // No accelerator on either — see the module doc for why. `None` here is
+    // what actually leaves `z`/`Z` unclaimed; `PredefinedMenuItem::undo/redo`
+    // cannot be built without one.
+    let undo = MenuItem::with_id(app, UNDO_ID, "Undo", true, None::<&str>)?;
+    let redo = MenuItem::with_id(app, REDO_ID, "Redo", true, None::<&str>)?;
 
     // No `close_window` here — the default menu's copy in this submenu is the
     // second place Cmd+W was bound.
@@ -109,8 +144,8 @@ pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 "Edit",
                 true,
                 &[
-                    &PredefinedMenuItem::undo(app, None)?,
-                    &PredefinedMenuItem::redo(app, None)?,
+                    &undo,
+                    &redo,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::cut(app, None)?,
                     &PredefinedMenuItem::copy(app, None)?,
@@ -141,6 +176,13 @@ pub(crate) fn handle_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::M
             w.is_focused().unwrap_or(false)
         }) {
             let _ = window.close();
+        }
+    } else if event.id() == UNDO_ID || event.id() == REDO_ID {
+        let cmd = if event.id() == UNDO_ID { "undo" } else { "redo" };
+        if let Some(window) = app.webview_windows().values().find(|w| {
+            w.is_focused().unwrap_or(false)
+        }) {
+            let _ = window.emit(MENU_UNDO_REDO_EVENT, cmd);
         }
     }
 }

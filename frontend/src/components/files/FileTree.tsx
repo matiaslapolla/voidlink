@@ -13,10 +13,22 @@ import {
 import { createStore, reconcile } from "solid-js/store";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Portal } from "solid-js/web";
-import { ChevronRight, ChevronDown, Eye, EyeOff, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare, ClipboardCopy, FileCode, Plus, Undo2, UserRound } from "lucide-solid";
+import { ChevronRight, ChevronDown, Eye, EyeOff, File, Folder, FolderOpen, FilePlus, FolderPlus, Pencil, Trash2, GitCompare, ClipboardCopy, FileCode, Plus, Undo2, UserRound, Copy, ClipboardPaste, Files as FilesIcon } from "lucide-solid";
 import { confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
 import { beginDrag } from "@/components/layout/dragDrop";
-import { fsApi, type FsEntry } from "@/api/fs";
+import { type FsEntry } from "@/api/fs";
+import { isRemotePath, providerFor } from "@/api/fsProvider";
+import {
+  copyToFileClipboard,
+  fileClipboard,
+  type FileClipboardEntry,
+} from "@/components/files/fileClipboard";
+import {
+  duplicateTargetPath,
+  fileTreeMenuState,
+  pasteTargetPath,
+  type FileTreeMenuState,
+} from "@/components/files/fileTreeMenu";
 import { gitApi } from "@/api/git";
 import { useAppStore } from "@/store/LayoutContext";
 import { useSettings } from "@/store/settings";
@@ -87,6 +99,15 @@ export function FileTree(props: {
   const refresh = () => setRefreshKey(k => k + 1);
   const closeMenu = () => setContextMenu(null);
 
+  /// Whether this tree is browsing an SSH host. A remote root has no
+  /// repository behind it in this slice, so everything git-shaped below is
+  /// skipped rather than failing per click: no trunk lookup, no decorations,
+  /// no staging, no blame.
+  const isRemote = () => isRemotePath(props.root);
+  /// The provider that owns one path. Chosen per path rather than per tree so
+  /// the tree never has to hold a provider — see `api/fsProvider.ts`.
+  const fs = (path: string) => providerFor(path);
+
   // The repo's trunk, used by "Compare with …" — prefer `main`, then `master`,
   // else the first local branch, falling back to "main" if the lookup fails (the
   // compare just errors visibly if wrong). Re-resolved whenever `root` changes:
@@ -96,6 +117,7 @@ export function FileTree(props: {
   const [defaultBranch, setDefaultBranch] = createSignal("main");
   createEffect(on(() => props.root, async (root) => {
     setDefaultBranch("main");
+    if (isRemotePath(root)) return;
     try {
       const branches = await gitApi.listBranches(root, false);
       const names = branches.map((b) => b.name);
@@ -201,18 +223,19 @@ export function FileTree(props: {
     try {
       if (e.kind === "newFile") {
         const path = `${e.parentDir}/${name}`;
-        await fsApi.createFile(path);
+        await fs(path).createFile(path);
         setEdit(null);
         refresh();
         props.onOpenFile?.(path);
       } else if (e.kind === "newFolder") {
-        await fsApi.createDir(`${e.parentDir}/${name}`);
+        const path = `${e.parentDir}/${name}`;
+        await fs(path).createDir(path);
         setEdit(null);
         refresh();
       } else {
         if (name === e.initialName) { cancelEdit(); return; }
         const parent = e.path.split("/").slice(0, -1).join("/");
-        await fsApi.rename(e.path, `${parent}/${name}`);
+        await fs(e.path).rename(e.path, `${parent}/${name}`);
         setEdit(null);
         refresh();
       }
@@ -231,8 +254,53 @@ export function FileTree(props: {
       kind: "warning",
     });
     if (!ok) return;
-    try { await fsApi.delete(path); refresh(); }
+    try { await fs(path).delete(path); refresh(); }
     catch (e) { pushToast(e instanceof Error ? e.message : String(e), "error", 6000); }
+  }
+
+  // ── Duplicate / Copy / Paste ────────────────────────────────────────────────
+  // The three rows tobar #28 asked for. All three are one `copy` call over the
+  // provider; what differs is only where the destination name comes from, which
+  // `fileTreeMenu.ts` works out from the names already in the directory.
+
+  /// Names already in `dir`, from the listing cache. A dir that has never been
+  /// expanded has no cache entry, in which case there is nothing to collide
+  /// with as far as we know and the backend's "already exists" is the backstop.
+  const namesIn = (dir: string) => (dirCache[dir] ?? []).map((e) => e.name);
+
+  const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/"));
+
+  async function handleDuplicate(path: string) {
+    closeMenu();
+    const dir = parentOf(path);
+    try {
+      await fs(path).copy(path, duplicateTargetPath(path, namesIn(dir)));
+      refresh();
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+    }
+  }
+
+  function handleCopy(entry: FileClipboardEntry) {
+    closeMenu();
+    copyToFileClipboard(entry);
+    pushToast(`Copied ${entry.name}`, "info", 1500);
+  }
+
+  async function handlePaste(dir: string) {
+    closeMenu();
+    const clip = fileClipboard();
+    if (!clip) return;
+    const target = pasteTargetPath(dir, clip.name, namesIn(dir));
+    try {
+      await fs(dir).copy(clip.path, target);
+      // Expand the destination so the pasted entry is visible where it landed
+      // rather than inside a folder the user now has to go find.
+      setExpanded((prev) => new Set(prev).add(dir));
+      refresh();
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
+    }
   }
 
   // ── Virtualized tree model ──────────────────────────────────────────────────
@@ -262,7 +330,7 @@ export function FileTree(props: {
   async function loadDir(path: string) {
     setLoadingDirs(s => new Set(s).add(path));
     try {
-      const entries = await fsApi.listDir(path, showIgnored());
+      const entries = await fs(path).listDir(path, showIgnored());
       setDirCache(path, entries);
     } catch (e) {
       pushToast(e instanceof Error ? e.message : String(e), "error", 6000);
@@ -447,25 +515,29 @@ export function FileTree(props: {
   return (
     <div class="flex-1 h-full min-h-0 flex flex-col">
       {/* Toggle strip. Gitignored files are hidden by default; this is the way
-          back to a repo's `.env` and friends without leaving voidlink. */}
-      <div class="shrink-0 flex items-center justify-end px-1.5 py-0.5 border-b border-border/40">
-        <button
-          onClick={() => updateUi({ showIgnoredFiles: !showIgnored() })}
-          title={
-            showIgnored()
-              ? "Hide gitignored files"
-              : "Show gitignored files, e.g. .env"
-          }
-          class={`flex items-center gap-1 px-1.5 py-0.5 rounded text-micro tracking-wide transition-colors ${
-            showIgnored()
-              ? "text-foreground bg-accent/60"
-              : "text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
-          }`}
-        >
-          {showIgnored() ? <Eye class="w-3 h-3" /> : <EyeOff class="w-3 h-3" />}
-          Ignored
-        </button>
-      </div>
+          back to a repo's `.env` and friends without leaving voidlink. Absent
+          on a remote root, which has no gitignore behind it — a toggle that
+          cannot change what is listed is a control that lies. */}
+      <Show when={!isRemote()}>
+        <div class="shrink-0 flex items-center justify-end px-1.5 py-0.5 border-b border-border/40">
+          <button
+            onClick={() => updateUi({ showIgnoredFiles: !showIgnored() })}
+            title={
+              showIgnored()
+                ? "Hide gitignored files"
+                : "Show gitignored files, e.g. .env"
+            }
+            class={`flex items-center gap-1 px-1.5 py-0.5 rounded text-micro tracking-wide transition-colors ${
+              showIgnored()
+                ? "text-foreground bg-accent/60"
+                : "text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
+            }`}
+          >
+            {showIgnored() ? <Eye class="w-3 h-3" /> : <EyeOff class="w-3 h-3" />}
+            Ignored
+          </button>
+        </div>
+      </Show>
 
       <div ref={scrollRef} class="flex-1 min-h-0 overflow-y-auto scrollbar-thin py-1">
         {/* Inner spacer sized to the full list so the native scrollbar thumb stays
@@ -493,6 +565,10 @@ export function FileTree(props: {
         {(m) => (
           <ContextMenuPopup
             state={m()}
+            menu={fileTreeMenuState({
+              target: { path: m().path, name: m().name, isDir: m().isDir },
+              clipboard: fileClipboard(),
+            })}
             defaultBranch={defaultBranch()}
             onClose={closeMenu}
             onOpen={
@@ -526,6 +602,11 @@ export function FileTree(props: {
             onStage={() => void stageFile(m().path)}
             onDiscard={() => void discardFile(m().path)}
             onCompareWithDefault={() => compareWithDefault(m().path)}
+            onDuplicate={() => void handleDuplicate(m().path)}
+            onCopy={() =>
+              handleCopy({ path: m().path, name: m().name, isDir: m().isDir })
+            }
+            onPaste={(dir) => void handlePaste(dir)}
             onNewFile={() => startNewFile(m().isDir ? m().path : m().path.split("/").slice(0, -1).join("/"))}
             onNewFolder={() => startNewFolder(m().isDir ? m().path : m().path.split("/").slice(0, -1).join("/"))}
             onRename={() => startRename(m().path, m().name)}
@@ -548,6 +629,8 @@ function relativeTo(root: string, absPath: string): string {
 
 function ContextMenuPopup(props: {
   state: ContextMenuState;
+  /// Which rows to offer and which to grey out, decided in `fileTreeMenu.ts`.
+  menu: FileTreeMenuState;
   defaultBranch: string;
   onClose: () => void;
   /// File-only entries. Absent handlers are not rendered — see `FileTreeActions`.
@@ -559,6 +642,9 @@ function ContextMenuPopup(props: {
   onStage: () => void;
   onDiscard: () => void;
   onCompareWithDefault: () => void;
+  onDuplicate: () => void;
+  onCopy: () => void;
+  onPaste: (dir: string) => void;
   onNewFile: () => void;
   onNewFolder: () => void;
   onRename: () => void;
@@ -595,30 +681,34 @@ function ContextMenuPopup(props: {
               </MenuBtn>
             )}
           </Show>
-          <Show when={props.onOpenDiff}>
-            {(openDiff) => (
-              <MenuBtn icon={GitCompare} onClick={openDiff()}>
-                Diff against HEAD
-              </MenuBtn>
-            )}
+          {/* Everything git-backed is one block, offered only where there is a
+              repository to back it. See `FileTreeMenuState.showGitRows`. */}
+          <Show when={props.menu.showGitRows}>
+            <Show when={props.onOpenDiff}>
+              {(openDiff) => (
+                <MenuBtn icon={GitCompare} onClick={openDiff()}>
+                  Diff against HEAD
+                </MenuBtn>
+              )}
+            </Show>
+            <MenuBtn icon={GitCompare} onClick={props.onCompareWithDefault}>
+              Compare with {props.defaultBranch}
+            </MenuBtn>
+            <Show when={props.onBlame}>
+              {(blame) => (
+                <MenuBtn icon={UserRound} onClick={blame()}>
+                  Blame
+                </MenuBtn>
+              )}
+            </Show>
+            <div class="my-1 h-px bg-border mx-2" />
+            <MenuBtn icon={Plus} onClick={props.onStage}>
+              Stage file
+            </MenuBtn>
+            <MenuBtn icon={Undo2} onClick={props.onDiscard} danger>
+              Discard changes
+            </MenuBtn>
           </Show>
-          <MenuBtn icon={GitCompare} onClick={props.onCompareWithDefault}>
-            Compare with {props.defaultBranch}
-          </MenuBtn>
-          <Show when={props.onBlame}>
-            {(blame) => (
-              <MenuBtn icon={UserRound} onClick={blame()}>
-                Blame
-              </MenuBtn>
-            )}
-          </Show>
-          <div class="my-1 h-px bg-border mx-2" />
-          <MenuBtn icon={Plus} onClick={props.onStage}>
-            Stage file
-          </MenuBtn>
-          <MenuBtn icon={Undo2} onClick={props.onDiscard} danger>
-            Discard changes
-          </MenuBtn>
           <div class="my-1 h-px bg-border mx-2" />
         </Show>
         <MenuBtn icon={ClipboardCopy} onClick={props.onCopyPath}>
@@ -626,6 +716,19 @@ function ContextMenuPopup(props: {
         </MenuBtn>
         <MenuBtn icon={ClipboardCopy} onClick={props.onCopyRelativePath}>
           Copy relative path
+        </MenuBtn>
+        <div class="my-1 h-px bg-border mx-2" />
+        <MenuBtn icon={FilesIcon} onClick={props.onDuplicate}>Duplicate</MenuBtn>
+        <MenuBtn icon={Copy} onClick={props.onCopy}>Copy</MenuBtn>
+        <MenuBtn
+          icon={ClipboardPaste}
+          onClick={() => {
+            const dir = props.menu.pasteDir;
+            if (dir) props.onPaste(dir);
+          }}
+          disabledReason={props.menu.paste.disabledReason}
+        >
+          Paste
         </MenuBtn>
         <div class="my-1 h-px bg-border mx-2" />
         <MenuBtn icon={FilePlus} onClick={props.onNewFile}>New File</MenuBtn>
@@ -643,14 +746,25 @@ function MenuBtn(props: {
   icon: Component<{ class?: string }>;
   onClick: () => void;
   danger?: boolean;
+  /// Present means the row is offered but not usable, and *why* — shown as the
+  /// row's tooltip, so a greyed row explains itself instead of being a dead
+  /// click with no account of itself.
+  disabledReason?: string;
   children: JSX.Element;
 }) {
   const Icon = props.icon;
+  const disabled = () => props.disabledReason !== undefined;
   return (
     <button
       onClick={props.onClick}
+      disabled={disabled()}
+      title={props.disabledReason}
       class={`w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
-        props.danger ? "text-destructive hover:bg-destructive/10" : "text-foreground hover:bg-accent/60"
+        disabled()
+          ? "text-muted-foreground/40 cursor-default"
+          : props.danger
+            ? "text-destructive hover:bg-destructive/10"
+            : "text-foreground hover:bg-accent/60"
       }`}
     >
       <Icon class="w-3.5 h-3.5 shrink-0 opacity-70" />

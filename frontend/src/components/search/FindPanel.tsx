@@ -11,10 +11,11 @@
 /// indication is right, a spinner per row is noise that also lies about which
 /// files are being read.
 
-import { For, Match, Show, Switch, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { AlertTriangle, Replace, Search, X } from "lucide-solid";
 import { fsApi, type SearchError, type SearchMatch, type SearchSummary } from "@/api/fs";
 import { pushToast } from "@/commands/toast";
+import type { EditorFindRequest } from "@/api/windows";
 import {
   applyReplacements,
   createFindController,
@@ -31,6 +32,11 @@ export interface FindPanelProps {
   /// Open a hit. Line and column are 1-based, straight from the walker.
   onOpen: (path: string, line: number, column: number) => void;
   onClose: () => void;
+  /// A pending "run this query" ping from outside (the workbench's terminal
+  /// context menu, over the cross-window channel `EditorApp.tsx` reads).
+  /// Optional so the palette-driven ⌘⇧F path, which has no query to seed,
+  /// isn't forced to pass one.
+  findRequest?: () => EditorFindRequest | null;
 }
 
 export function FindPanel(props: FindPanelProps) {
@@ -51,6 +57,19 @@ export function FindPanel(props: FindPanelProps) {
       void unlisten.then((fn) => fn());
       find.clear();
     });
+  });
+
+  /// Apply an incoming find request. Keyed on `seq`, the same reason
+  /// `EditorApp.tsx`'s reveal effect is: the panel can already be open with a
+  /// query of its own when a new ping lands, and a snapshot re-sent for any
+  /// other reason must not re-run whatever the last one asked for.
+  let lastFindRequestSeq = -1;
+  createEffect(() => {
+    const req = props.findRequest?.();
+    if (!req || req.seq === lastFindRequestSeq) return;
+    lastFindRequestSeq = req.seq;
+    setQuery(req.query);
+    submit();
   });
 
   function submit() {

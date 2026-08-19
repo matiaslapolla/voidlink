@@ -17,6 +17,7 @@ mod lsp;
 mod brain;
 mod board;
 mod menu;
+mod remote;
 mod secrets;
 mod watch;
 mod window;
@@ -1399,6 +1400,7 @@ pub fn run() {
         .manage(watch::WatchState::default())
         .manage(journal::JournalState::default())
         .manage(fanout::FanoutState::default())
+        .manage(remote::RemoteState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1580,7 +1582,18 @@ pub fn run() {
             fs::fs_create_dir,
             fs::fs_rename,
             fs::fs_delete,
+            fs::fs_copy,
             fs::fs_find_repo_root,
+            remote::remote_hosts,
+            remote::remote_connect,
+            remote::remote_list_dir,
+            remote::remote_read_file,
+            remote::remote_create_file,
+            remote::remote_create_dir,
+            remote::remote_rename,
+            remote::remote_delete,
+            remote::remote_copy,
+            remote::remote_disconnect,
             brain::brain_list_entries,
             brain::brain_read_entry,
             brain::brain_save_entry,

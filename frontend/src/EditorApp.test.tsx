@@ -45,6 +45,7 @@ const EMPTY: EditorTabsSnapshot = {
   pinned: [],
   active: null,
   reveal: null,
+  findRequest: null,
 };
 
 const CONTEXT: WindowContext = {
