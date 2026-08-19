@@ -8,16 +8,29 @@
 /// **Direction D1 audit (islands).** The one thing that must be true after the
 /// canvas recedes is that the terminal body renders at *island* lightness, not
 /// at canvas lightness — otherwise the pane reads as a hole punched in the
-/// shell rather than a panel floating on it. These two constants are literals
-/// on purpose (a terminal palette is a readability decision, not a chrome
-/// one), which means they are structurally immune: nothing here reads
-/// `--background`, so nothing here can inherit the recession.
+/// shell rather than a panel floating on it.
 ///
-/// If this ever starts deriving its palette from the tokens — MASTER §12 lists
-/// that as a TODO — it must read `--elev-1`, never `--background` and never
-/// `--canvas`. `monacoTheme.ts` has the same contract and a test for it.
-export const DARK_BG = "#09090b";
-export const LIGHT_BG = "#fdf6e3"; // solarized-base3
+/// This used to hold two hardcoded backgrounds — `#09090b` and `#fdf6e3` — and
+/// keep the contract by being structurally unable to read a token. It now
+/// states the contract positively instead: the pane box takes `--elev-1` by
+/// name, and the grid takes `--term-bg`, which `index.css` defines as
+/// `var(--elev-1)` and which no theme in `themes.css` overrides. `--background`
+/// and `--canvas` appear in neither, and are absent from
+/// `terminalTheme.ts`'s token list too, so neither can reach the grid — the
+/// same contract `monacoTheme.ts` keeps, now held by the token graph rather
+/// than by the absence of a lookup.
+///
+/// The pane box is a styled DOM element, so it takes the `var()` verbatim and
+/// the cascade resolves it: no parsing, no snapshot, nothing to go stale on a
+/// theme change. Only the grid needs a resolved colour, because it is a canvas
+/// — and that one already arrives parsed in `--term-bg`, which is why the
+/// opaque case here overrides nothing at all.
+
+/// The pane box's `background-color`, as a CSS value rather than a colour.
+///
+/// `--elev-1` and not `--background`: they resolve to the same colour today,
+/// and the whole point of D1 is that they are allowed to stop doing so.
+export const PANE_BG = "var(--elev-1)";
 
 /// Fully transparent, as `#rrggbbaa`. xterm only honours the alpha channel of
 /// a theme background with `allowTransparency` on: with it off the WebGL
@@ -27,8 +40,11 @@ export const TRANSPARENT = "#00000000";
 export interface TerminalSurface {
   /// `background-color` for the pane box behind the grid.
   paneBg: string;
-  /// `theme.background` for the xterm instance.
-  gridBg: string;
+  /// An override for `theme.background` on the xterm instance, or `undefined`
+  /// to leave the theme's own `--term-bg` in place. Undefined is the ordinary
+  /// case: a surface decision that has nothing to say about colour should not
+  /// be restating the colour.
+  gridBg: string | undefined;
   /// `allowTransparency`. Not free — with it on xterm can no longer assume a
   /// cell's background is opaque, so the renderer stops skipping cells it
   /// would otherwise leave to the clear colour — so it tracks the one case
@@ -36,9 +52,9 @@ export interface TerminalSurface {
   allowTransparency: boolean;
 }
 
-/// `translucent` is `surfacesAreTranslucent()` from `store/settings.ts`:
-/// an image is actually painted, the user asked the surfaces to let it
-/// through, and the OS is not overriding that.
+/// `translucent` is `surfacesAreTranslucent()` from `store/settings.ts`: an
+/// image is actually painted, the user asked the surfaces to let it through,
+/// and the OS is not overriding that.
 ///
 /// Both layers go fully transparent together rather than one of them carrying
 /// the island's tint. Two translucent layers at 50% do not read as 50%, they
@@ -53,10 +69,9 @@ export interface TerminalSurface {
 /// The D1 invariant above still holds under an image, and more exactly than
 /// before: the body renders at island lightness because it is now literally
 /// showing the island.
-export function terminalSurface(mode: "light" | "dark", translucent: boolean): TerminalSurface {
+export function terminalSurface(translucent: boolean): TerminalSurface {
   if (translucent) {
     return { paneBg: "transparent", gridBg: TRANSPARENT, allowTransparency: true };
   }
-  const bg = mode === "light" ? LIGHT_BG : DARK_BG;
-  return { paneBg: bg, gridBg: bg, allowTransparency: false };
+  return { paneBg: PANE_BG, gridBg: undefined, allowTransparency: false };
 }

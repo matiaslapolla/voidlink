@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onMount, onCleanup, getOwner, runWithOwner, untrack, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, onMount, onCleanup, getOwner, runWithOwner, untrack, Show } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
@@ -16,7 +16,8 @@ import {
 import { registerDropZone } from "@/components/layout/dragDrop";
 import { fsApi } from "@/api/fs";
 import { surfacesAreTranslucent, useSettings } from "@/store/settings";
-import { DARK_BG, LIGHT_BG, terminalSurface } from "./terminalSurface";
+import { terminalSurface } from "./terminalSurface";
+import { deriveXtermTheme, readTermTokens } from "./terminalTheme";
 import { useTheme } from "@/store/theme";
 import { markActive, recordKeystroke } from "@/commands/terminalHistory";
 import {
@@ -154,56 +155,6 @@ const PATH_LINE_REGEX =
 /// match inside e.g. a long hash-prefixed filename.
 const SHA_REGEX = /\b[0-9a-f]{7,40}\b/g;
 
-const DARK_THEME = {
-  background: DARK_BG,
-  foreground: "#e4e4e7",
-  cursor: "#e4e4e7",
-  selectionBackground: "#3f3f46",
-  black: "#18181b",
-  red: "#f87171",
-  green: "#86efac",
-  yellow: "#fde047",
-  blue: "#93c5fd",
-  magenta: "#c4b5fd",
-  cyan: "#67e8f9",
-  white: "#e4e4e7",
-  brightBlack: "#52525b",
-  brightRed: "#fca5a5",
-  brightGreen: "#bbf7d0",
-  brightYellow: "#fef08a",
-  brightBlue: "#bfdbfe",
-  brightMagenta: "#ddd6fe",
-  brightCyan: "#a5f3fc",
-  brightWhite: "#fafafa",
-} as const;
-
-/// Solarized-light tuned for terminal readability against the warm
-/// off-white background. ANSI 0–7 use the standard solarized accents at
-/// their darker (base0x) variants so they stay legible on the light bg;
-/// bright 8–15 brighten the same hues. base0/base00 control body text.
-const LIGHT_THEME = {
-  background: LIGHT_BG,
-  foreground: "#586e75",            // base01
-  cursor: "#586e75",
-  selectionBackground: "#eee8d5",   // base2
-  black: "#073642",                 // base02
-  red: "#dc322f",
-  green: "#859900",
-  yellow: "#b58900",
-  blue: "#268bd2",
-  magenta: "#d33682",
-  cyan: "#2aa198",
-  white: "#eee8d5",                 // base2
-  brightBlack: "#657b83",           // base00
-  brightRed: "#cb4b16",
-  brightGreen: "#586e75",           // base01
-  brightYellow: "#657b83",          // base00
-  brightBlue: "#839496",            // base0
-  brightMagenta: "#6c71c4",
-  brightCyan: "#93a1a1",            // base1
-  brightWhite: "#fdf6e3",           // base3
-} as const;
-
 /// Distinguishes two mounted panes on the same PTY, which the workbench and the
 /// editor window can genuinely have at once. Drop zone ids are per mounted
 /// component, and a PTY id is not.
@@ -214,17 +165,30 @@ export function TerminalPane(props: TerminalPaneProps) {
   const paneInstanceId = paneSeq;
   let container!: HTMLDivElement;
   const { settings } = useSettings();
-  const { mode } = useTheme();
-  /// The surface decision — see `terminalSurface.ts`. `surfacesAreTranslucent()`
-  /// is the policy (an image is painted, the user asked the surfaces to let it
-  /// through, the OS is not overriding that); this component honours it in TS
-  /// rather than CSS because the grid is a canvas, not a styled box.
-  const surface = () => terminalSurface(mode(), surfacesAreTranslucent());
-  const paneBg = () => surface().paneBg;
-  const palette = () => ({
-    ...(mode() === "light" ? LIGHT_THEME : DARK_THEME),
-    background: surface().gridBg,
+  const { theme } = useTheme();
+  /// The live palette, snapshotted from the cascade.
+  ///
+  /// Depends on `theme()` and *not* on `mode()`, which is the whole fix. Six of
+  /// the ten themes are dark, so `monokai` → `dracula` → `nord` never changes
+  /// the mode — and while this read `mode()` those switches left the grid
+  /// exactly as it was. That is the "theme no cambia terminal" report.
+  ///
+  /// Reading the cascade from an effect dependency is only safe because
+  /// `store/theme.ts` writes `<html>` *before* it writes the signal (see the
+  /// long comment on `setTheme`, which fixed the same ordering hazard for
+  /// Monaco). By the time this re-runs, `data-theme` already names the theme
+  /// whose tokens it is about to snapshot.
+  const tokens = createMemo(() => {
+    theme();
+    return readTermTokens();
   });
+  /// The surface decision — see `terminalSurface.ts`. `surfacesAreTranslucent()`
+  /// is the policy (an image is actually painted, the user asked the surfaces to
+  /// let it through, the OS is not overriding that); this component honours it in
+  /// TS rather than CSS because the grid is a canvas, not a styled box.
+  const surface = () => terminalSurface(surfacesAreTranslucent());
+  const paneBg = () => surface().paneBg;
+  const palette = () => deriveXtermTheme(tokens(), surface().gridBg);
   // Highlight ring while a file is dragged over the pane.
   const [dragOver, setDragOver] = createSignal(false);
 
@@ -730,13 +694,18 @@ export function TerminalPane(props: TerminalPaneProps) {
       term.options.scrollOnUserInput = s.scrollOnUserInput;
     });
 
-    // Theme swap on app light/dark toggle. Assigning `options.theme` is enough:
-    // xterm rebuilds its colour cache and the renderer redraws off the back of
-    // that (the WebGL renderer refreshes its char atlas and clears its model).
-    // This effect reads `mode()` and the translucency policy, so it runs on a
-    // theme toggle or a change to the background sliders and nowhere else — an
+    // Theme swap on ANY theme change, not only the light/dark toggle. Assigning
+    // `options.theme` is enough: xterm rebuilds its colour cache and the
+    // renderer redraws off the back of that (the WebGL renderer refreshes its
+    // char atlas and clears its model). This effect reads the token snapshot
+    // (keyed on the theme id) and the translucency policy, so it runs on a
+    // theme switch or a change to the background sliders and nowhere else — an
     // explicit `refresh` here would be a second full-grid repaint for the same
     // change.
+    //
+    // It used to read `mode()`, which is why picking a different dark theme
+    // repainted nothing: `deriveXtermTheme` now returns a different object for
+    // monokai than for dracula, so the assignment below has something to do.
     //
     // `allowTransparency` moves with it, and has to be assigned *before* the
     // theme: the DOM renderer decides from it whether the theme background's

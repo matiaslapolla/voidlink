@@ -435,3 +435,243 @@
   --sidebar-ring: oklch(0.700 0.120 240);
 
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Terminal ANSI palettes
+ *
+ * One canonical sixteen-colour table per named theme, plus the foreground,
+ * cursor and selection that come with it. `--term-bg` is deliberately absent
+ * from every block: it is `var(--elev-1)` from `index.css` and stays there, so
+ * the grid always sits at island lightness (the D1 contract that
+ * `terminalSurface.ts` used to keep by holding two literals). Read by
+ * `terminal/terminalTheme.ts`.
+ *
+ * Grouped here rather than folded into each theme's block above, against this
+ * file's "themes are self-contained" habit, on purpose: a palette is checked by
+ * being read *against the other palettes*. Sixteen slots scattered across eight
+ * blocks four hundred lines apart is how one theme quietly ends up with a green
+ * that is really a cyan.
+ *
+ * Hex, not oklch — see the `:root` block in `index.css` for why these sixteen
+ * are the one place the file's colour convention is dropped. Each table is the
+ * palette its theme actually publishes, not a re-derivation: the point of
+ * choosing Nord is getting nord11 when a program asks for red.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── GitHub Dark — primer terminal palette ────────────────────────────────── */
+:root.dark[data-theme="github-dark"] {
+  --term-fg: #e6edf3;
+  --term-cursor: #58a6ff;
+  --term-selection: #264f78;
+
+  --term-black: #484f58;
+  --term-red: #ff7b72;
+  --term-green: #3fb950;
+  --term-yellow: #d29922;
+  --term-blue: #58a6ff;
+  --term-magenta: #bc8cff;
+  --term-cyan: #39c5cf;
+  --term-white: #b1bac4;
+
+  --term-bright-black: #6e7681;
+  --term-bright-red: #ffa198;
+  --term-bright-green: #56d364;
+  --term-bright-yellow: #e3b341;
+  --term-bright-blue: #79c0ff;
+  --term-bright-magenta: #d2a8ff;
+  --term-bright-cyan: #56d4dd;
+  --term-bright-white: #f0f6fc;
+}
+
+/* ── GitHub Light ─────────────────────────────────────────────────────────── */
+:root.light[data-theme="github-light"] {
+  --term-fg: #1f2328;
+  --term-cursor: #0969da;
+  --term-selection: #b6d8fc;
+
+  --term-black: #24292f;
+  --term-red: #cf222e;
+  --term-green: #116329;
+  --term-yellow: #4d2d00;
+  --term-blue: #0969da;
+  --term-magenta: #8250df;
+  --term-cyan: #1b7c83;
+  --term-white: #6e7781;
+
+  --term-bright-black: #57606a;
+  --term-bright-red: #a40e26;
+  --term-bright-green: #1a7f37;
+  --term-bright-yellow: #633c01;
+  --term-bright-blue: #218bff;
+  --term-bright-magenta: #a475f9;
+  --term-bright-cyan: #3192aa;
+  --term-bright-white: #8c959f;
+}
+
+/* ── Monokai ──────────────────────────────────────────────────────────────
+ * Monokai's bright half is the normal half repeated — that is the palette as
+ * published, not an omission here. Only slots 0 and 15 differ, which is why
+ * `drawBoldTextInBrightColors` reads as "bold" rather than "brighter" under
+ * this theme. */
+:root.dark[data-theme="monokai"] {
+  --term-fg: #f8f8f2;
+  --term-cursor: #f8f8f0;
+  --term-selection: #49483e;
+
+  --term-black: #272822;
+  --term-red: #f92672;
+  --term-green: #a6e22e;
+  --term-yellow: #f4bf75;
+  --term-blue: #66d9ef;
+  --term-magenta: #ae81ff;
+  --term-cyan: #a1efe4;
+  --term-white: #f8f8f2;
+
+  --term-bright-black: #75715e;
+  --term-bright-red: #f92672;
+  --term-bright-green: #a6e22e;
+  --term-bright-yellow: #f4bf75;
+  --term-bright-blue: #66d9ef;
+  --term-bright-magenta: #ae81ff;
+  --term-bright-cyan: #a1efe4;
+  --term-bright-white: #f9f8f5;
+}
+
+/* ── Solarized Dark ───────────────────────────────────────────────────────
+ * Ethan Schoonover's sixteen, unmodified. Solarized is the palette that most
+ * rewards being quoted exactly: slots 8-15 are not "brighter" versions of
+ * 0-7 at all, they are the base0x greys and the two extra accents (orange,
+ * violet), which is the whole design. Both Solarized themes share the table
+ * and differ only in which end of the base ramp is body text. */
+:root.dark[data-theme="solarized-dark"] {
+  --term-fg: #839496;              /* base0 */
+  --term-cursor: #839496;
+  --term-selection: #073642;       /* base02 */
+
+  --term-black: #073642;           /* base02 */
+  --term-red: #dc322f;
+  --term-green: #859900;
+  --term-yellow: #b58900;
+  --term-blue: #268bd2;
+  --term-magenta: #d33682;
+  --term-cyan: #2aa198;
+  --term-white: #eee8d5;           /* base2 */
+
+  --term-bright-black: #002b36;    /* base03 */
+  --term-bright-red: #cb4b16;      /* orange */
+  --term-bright-green: #586e75;    /* base01 */
+  --term-bright-yellow: #657b83;   /* base00 */
+  --term-bright-blue: #839496;     /* base0 */
+  --term-bright-magenta: #6c71c4;  /* violet */
+  --term-bright-cyan: #93a1a1;     /* base1 */
+  --term-bright-white: #fdf6e3;    /* base3 */
+}
+
+/* ── Solarized Light ──────────────────────────────────────────────────────
+ * The same sixteen as Solarized Dark; only the body text moves to the other
+ * end of the base ramp. This is the palette the terminal used to show for
+ * *every* light theme, because it was the only light one that existed. */
+:root.light[data-theme="solarized-light"] {
+  --term-fg: #657b83;              /* base00 */
+  --term-cursor: #586e75;          /* base01 */
+  --term-selection: #eee8d5;       /* base2 */
+
+  --term-black: #073642;           /* base02 */
+  --term-red: #dc322f;
+  --term-green: #859900;
+  --term-yellow: #b58900;
+  --term-blue: #268bd2;
+  --term-magenta: #d33682;
+  --term-cyan: #2aa198;
+  --term-white: #eee8d5;           /* base2 */
+
+  --term-bright-black: #002b36;    /* base03 */
+  --term-bright-red: #cb4b16;      /* orange */
+  --term-bright-green: #586e75;    /* base01 */
+  --term-bright-yellow: #657b83;   /* base00 */
+  --term-bright-blue: #839496;     /* base0 */
+  --term-bright-magenta: #6c71c4;  /* violet */
+  --term-bright-cyan: #93a1a1;     /* base1 */
+  --term-bright-white: #fdf6e3;    /* base3 */
+}
+
+/* ── Nord — nord0-nord15 ──────────────────────────────────────────────────
+ * The Aurora five (nord11-nord15) carry the ANSI accents and the Frost four
+ * (nord7-nord10) the cools, so blue is nord9 and bright cyan is nord7. Nord's
+ * bright accents are its normal accents: the palette has exactly one red. */
+:root.dark[data-theme="nord"] {
+  --term-fg: #d8dee9;              /* nord4 */
+  --term-cursor: #d8dee9;
+  --term-selection: #434c5e;       /* nord2 */
+
+  --term-black: #3b4252;           /* nord1 */
+  --term-red: #bf616a;             /* nord11 */
+  --term-green: #a3be8c;           /* nord14 */
+  --term-yellow: #ebcb8b;          /* nord13 */
+  --term-blue: #81a1c1;            /* nord9 */
+  --term-magenta: #b48ead;         /* nord15 */
+  --term-cyan: #88c0d0;            /* nord8 */
+  --term-white: #e5e9f0;           /* nord5 */
+
+  --term-bright-black: #4c566a;    /* nord3 */
+  --term-bright-red: #bf616a;      /* nord11 */
+  --term-bright-green: #a3be8c;    /* nord14 */
+  --term-bright-yellow: #ebcb8b;   /* nord13 */
+  --term-bright-blue: #81a1c1;     /* nord9 */
+  --term-bright-magenta: #b48ead;  /* nord15 */
+  --term-bright-cyan: #8fbcbb;     /* nord7 */
+  --term-bright-white: #eceff4;    /* nord6 */
+}
+
+/* ── Dracula ──────────────────────────────────────────────────────────────
+ * Note blue is #bd93f9 (purple) and magenta is #ff79c6 (pink): Dracula maps
+ * its accents to ANSI slots by role, not by hue name, and quoting it any
+ * other way produces a theme that is recognisably not Dracula. */
+:root.dark[data-theme="dracula"] {
+  --term-fg: #f8f8f2;
+  --term-cursor: #f8f8f2;
+  --term-selection: #44475a;
+
+  --term-black: #21222c;
+  --term-red: #ff5555;
+  --term-green: #50fa7b;
+  --term-yellow: #f1fa8c;
+  --term-blue: #bd93f9;
+  --term-magenta: #ff79c6;
+  --term-cyan: #8be9fd;
+  --term-white: #f8f8f2;
+
+  --term-bright-black: #6272a4;
+  --term-bright-red: #ff6e6e;
+  --term-bright-green: #69ff94;
+  --term-bright-yellow: #ffffa5;
+  --term-bright-blue: #d6acff;
+  --term-bright-magenta: #ff92df;
+  --term-bright-cyan: #a4ffff;
+  --term-bright-white: #ffffff;
+}
+
+/* ── One Dark — Atom's palette ────────────────────────────────────────────── */
+:root.dark[data-theme="one-dark"] {
+  --term-fg: #abb2bf;
+  --term-cursor: #528bff;
+  --term-selection: #3e4451;
+
+  --term-black: #282c34;
+  --term-red: #e06c75;
+  --term-green: #98c379;
+  --term-yellow: #e5c07b;
+  --term-blue: #61afef;
+  --term-magenta: #c678dd;
+  --term-cyan: #56b6c2;
+  --term-white: #abb2bf;
+
+  --term-bright-black: #5c6370;
+  --term-bright-red: #e06c75;
+  --term-bright-green: #98c379;
+  --term-bright-yellow: #e5c07b;
+  --term-bright-blue: #61afef;
+  --term-bright-magenta: #c678dd;
+  --term-bright-cyan: #56b6c2;
+  --term-bright-white: #ffffff;
+}

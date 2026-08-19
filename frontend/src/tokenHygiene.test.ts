@@ -31,16 +31,24 @@ function isComment(line: string): boolean {
   return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
 }
 
-/// The terminal's ANSI palette (`TerminalPane.tsx`) and the two background
-/// colours it sits on (`terminalSurface.ts`).
+/// One file, one value: the fully-transparent `#00000000` in
+/// `terminalSurface.ts`.
 ///
-/// Deliberately literal and deliberately exempt: an xterm colour table is a
-/// readability decision about *someone else's output*, not chrome, and routing
-/// sixteen ANSI slots through VoidLink's six semantic colours would produce a
-/// terminal that lies about what a program printed. Both files state the D1
-/// contract they do have to keep — neither may ever read `--background` or
-/// `--canvas` — and `terminalSurface.test.ts` asserts it.
-const EXEMPT = new Set(["terminal/TerminalPane.tsx", "terminal/terminalSurface.ts"]);
+/// The exemption used to cover `TerminalPane.tsx` too, and the argument for it
+/// was sound as far as it went: an xterm colour table is a readability decision
+/// about *someone else's output*, not chrome, and routing sixteen ANSI slots
+/// through VoidLink's six semantic colours would produce a terminal that lies
+/// about what a program printed. Still true. But it justified the palette being
+/// *literal*, never the palette living in a component — and while it did, the
+/// component could only hold two of them, so six of the ten themes shared one
+/// grid and switching between them changed nothing.
+///
+/// The sixteen are now ten canonical tables in `themes.css`, which the header
+/// above already calls the place literals are supposed to live, and
+/// `terminalTheme.test.ts` asserts they stay distinct. What is left here is not
+/// a colour: `#00000000` is "no colour at all", the one thing a token cannot
+/// name, and xterm needs it in `#rrggbbaa` form specifically.
+const EXEMPT = new Set(["terminal/terminalSurface.ts"]);
 
 function scan(pattern: RegExp): string[] {
   const offenders: string[] = [];

@@ -49,6 +49,57 @@
   --chart-4: oklch(0.680 0.150 245);
   --chart-5: oklch(0.650 0.210 25);
 
+  /* ── Terminal palette (ANSI) ───────────────────────────────────────────
+   * The xterm grid, as tokens. Read by `terminal/terminalTheme.ts`, which is
+   * the twin of `editor/monacoTheme.ts` and exists for the same reason: the
+   * terminal used to carry two hardcoded palettes chosen by light/dark, so six
+   * of the ten themes rendered an identical zinc grid and switching between
+   * them did nothing.
+   *
+   * These sixteen are deliberately literal and deliberately NOT derived from
+   * `--destructive` / `--success` / `--chart-*`. `tokenHygiene.test.ts` states
+   * the reason and it still holds: an ANSI table is a claim about what a
+   * program printed, not a chrome decision, and routing sixteen slots through
+   * six semantic colours would make the terminal lie. What moved is only where
+   * the literals live — here, which that same test calls the right place.
+   *
+   * Written as hex rather than oklch, which is the one deviation from the
+   * convention the rest of this file keeps. An ANSI palette is a compatibility
+   * contract with the reference values programs were coloured against; a round
+   * trip through oklch would buy perceptual uniformity nobody asked for and
+   * cost exact fidelity to the palette being quoted.
+   *
+   * `--term-bg` is `--elev-1` and no theme overrides it: that is the D1 island
+   * contract from `terminalSurface.ts`, now held by the token graph.
+   * `--canvas` and `--background` are absent from the terminal's token list
+   * entirely, so neither can reach the grid.
+   *
+   * The default dark values below are byte-for-byte the old `DARK_THEME` from
+   * `TerminalPane.tsx`, so this theme renders exactly as it shipped. */
+  --term-bg: var(--elev-1);
+  --term-fg: #e4e4e7;
+  --term-cursor: #e4e4e7;
+  --term-cursor-accent: var(--term-bg);
+  --term-selection: #3f3f46;
+
+  --term-black: #18181b;
+  --term-red: #f87171;
+  --term-green: #86efac;
+  --term-yellow: #fde047;
+  --term-blue: #93c5fd;
+  --term-magenta: #c4b5fd;
+  --term-cyan: #67e8f9;
+  --term-white: #e4e4e7;
+
+  --term-bright-black: #52525b;
+  --term-bright-red: #fca5a5;
+  --term-bright-green: #bbf7d0;
+  --term-bright-yellow: #fef08a;
+  --term-bright-blue: #bfdbfe;
+  --term-bright-magenta: #ddd6fe;
+  --term-bright-cyan: #a5f3fc;
+  --term-bright-white: #fafafa;
+
   --radius: 0.625rem;
 
   /* ── Canvas & elevation (MASTER.md §3, §6) ─────────────────────────────
@@ -278,6 +329,45 @@
   --chart-3: oklch(0.620 0.170 75);
   --chart-4: oklch(0.560 0.160 245);
   --chart-5: oklch(0.570 0.220 25);
+
+  /* ── Terminal palette (ANSI) ───────────────────────────────────────────
+   * The neutral light counterpart of `:root`'s table. Normal 0-7 take the
+   * darker (700) step and bright 8-15 the 600 one, which is the usual
+   * light-terminal inversion: on a near-white body "brighter" has to mean
+   * *more* saturated rather than lighter, or half the palette stops being
+   * text.
+   *
+   * Slots 7 and 15 are greys, following GitHub Light rather than Solarized
+   * Light. Solarized answers `white` with base2 (#eee8d5), which is honest to
+   * its own design and near-invisible here; a program that prints white on a
+   * white body should still be readable, and `minimumContrastRatio` in
+   * settings is a backstop, not a plan.
+   *
+   * This is a visible change: the default light theme used to borrow
+   * Solarized's cream grid, because the old `LIGHT_THEME` was the only light
+   * palette the terminal had. `solarized-light` still gets it, in themes.css,
+   * where it belongs. */
+  --term-fg: #27272a;
+  --term-cursor: #27272a;
+  --term-selection: #d4d4d8;
+
+  --term-black: #18181b;
+  --term-red: #b91c1c;
+  --term-green: #15803d;
+  --term-yellow: #a16207;
+  --term-blue: #1d4ed8;
+  --term-magenta: #7e22ce;
+  --term-cyan: #0e7490;
+  --term-white: #71717a;
+
+  --term-bright-black: #52525b;
+  --term-bright-red: #dc2626;
+  --term-bright-green: #16a34a;
+  --term-bright-yellow: #ca8a04;
+  --term-bright-blue: #2563eb;
+  --term-bright-magenta: #9333ea;
+  --term-bright-cyan: #0891b2;
+  --term-bright-white: #a1a1aa;
 
   --sidebar: oklch(0.960 0.008 270);
   --sidebar-foreground: oklch(0.145 0.012 270);
