@@ -87,6 +87,12 @@ export const THEMES: ThemeDef[] = [
     mode: "dark",
     preview: ["#282c34", "#abb2bf", "#61afef", "#3e4452"],
   },
+  {
+    id: "burn-in",
+    label: "Burn-In",
+    mode: "dark",
+    preview: ["oklch(0.165 0.016 175)", "oklch(0.930 0.030 115)", "oklch(0.740 0.170 115)", "oklch(0.740 0.150 115 / 25%)"],
+  },
 ];
 
 export type ThemeId = (typeof THEMES)[number]["id"];

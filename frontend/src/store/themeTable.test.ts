@@ -37,8 +37,8 @@ function prePaintLightThemes(): string[] {
 }
 
 describe("the theme table", () => {
-  it("ships ten themes", () => {
-    expect(THEMES).toHaveLength(10);
+  it("ships eleven themes", () => {
+    expect(THEMES).toHaveLength(11);
   });
 
   it("has a default that is in the table", () => {

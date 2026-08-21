@@ -1,5 +1,11 @@
 @import "tailwindcss";
 @import "@fontsource-variable/geist";
+/* Burn-In's UI face. @font-face downloads are lazy — these cost nothing
+ * unless the theme actually uses the family. */
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+@import "@fontsource/ibm-plex-mono/700.css";
 @import "./themes.css";
 
 :root {
@@ -10,6 +16,13 @@
    * MOTION-PLAN F24. */
   line-height: 1.5;
   color-scheme: dark;
+
+  /* The UI typeface, as a token a theme can retarget. `@theme inline`
+   * substitutes `--font-sans`'s value straight into the `font-sans` utility,
+   * so a `data-theme` override of `--font-sans` itself would bind to nothing —
+   * only a `var()` surviving inside the substituted value stays live. This is
+   * that var. Burn-In is the first theme to override it. */
+  --font-ui: 'Geist Variable', sans-serif;
 
   /* ── Surfaces ─────────────────────────────────────────────────────────── */
   --background: oklch(0.200 0.005 270);
@@ -396,7 +409,8 @@ body {
 }
 
 @theme inline {
-  --font-sans: 'Geist Variable', sans-serif;
+  /* `var(--font-ui)`, not a literal — see `--font-ui` in `:root` for why. */
+  --font-sans: var(--font-ui);
 
   /* The named type scale — see `--text-scale` above for why these are px×scale
    * rather than rem or raw px. `--text-*` is Tailwind's font-size namespace, so

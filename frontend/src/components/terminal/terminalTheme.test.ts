@@ -67,6 +67,7 @@ const THEMES: { id: string; mode: "dark" | "light" }[] = [
   { id: "nord", mode: "dark" },
   { id: "dracula", mode: "dark" },
   { id: "one-dark", mode: "dark" },
+  { id: "burn-in", mode: "dark" },
 ];
 
 const ROOT = termDeclarations(indexCss, ":root");
@@ -90,8 +91,8 @@ function resolve(theme: { id: string; mode: "dark" | "light" }): TermTokens {
 }
 
 describe("the shipped terminal palettes", () => {
-  it("covers all ten themes", () => {
-    expect(THEMES).toHaveLength(10);
+  it("covers all eleven themes", () => {
+    expect(THEMES).toHaveLength(11);
   });
 
   it.each(THEMES)("$id declares every palette token", (theme) => {

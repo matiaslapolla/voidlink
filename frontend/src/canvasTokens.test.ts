@@ -112,6 +112,7 @@ const SURFACES: { name: string; css: string; selector: string; mode: "dark" | "l
   { name: "nord", css: themesCss, selector: ':root.dark[data-theme="nord"]', mode: "dark" },
   { name: "dracula", css: themesCss, selector: ':root.dark[data-theme="dracula"]', mode: "dark" },
   { name: "one-dark", css: themesCss, selector: ':root.dark[data-theme="one-dark"]', mode: "dark" },
+  { name: "burn-in", css: themesCss, selector: ':root.dark[data-theme="burn-in"]', mode: "dark" },
 ];
 
 /// Below this, two surfaces separated only by lightness read as one surface.

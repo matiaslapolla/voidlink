@@ -675,3 +675,167 @@
   --term-bright-cyan: #56b6c2;
   --term-bright-white: #ffffff;
 }
+
+/* ── Burn-In ────────────────────────────────────────────────────────────────
+ * The hacker theme, and the first theme to override more than colour: it
+ * retargets radius, island geometry, spacing, motion budgets and the UI
+ * typeface (`--font-ui`), all of which are tokens precisely so a theme block
+ * at 0-3-0 can win them. Every other theme inherits the `:root` defaults for
+ * these, so this block is the only place the "mega-theme" exists.
+ *
+ * Palette: derived, not recalled. Anchor: a P1-phosphor terminal left running
+ * overnight — the prompt burned into the glass, still glowing through the
+ * anti-glare mesh at 3 a.m. Primary sits at hue 115 (acid chartreuse, off the
+ * stock matrix-emerald band); neutrals carry that hue at the light end and
+ * drift +60° to cold glass (hue ~175) at the dark end, so the blacks read as
+ * powered-down CRT rather than neutral grey. Second accent is the near-miss
+ * P3-amber at hue 85, clearly darker. Checked against monokai's #a6e22e —
+ * the nearest neighbour in the app — at ΔE(OK) ≈ 0.13, outside collision
+ * range. */
+:root.dark[data-theme="burn-in"] {
+  color-scheme: dark;
+
+  --background: oklch(0.165 0.016 175);
+  --foreground: oklch(0.930 0.030 115);
+  --card: oklch(0.190 0.016 172);
+  --card-foreground: oklch(0.930 0.030 115);
+  --popover: oklch(0.205 0.017 170);
+  --popover-foreground: oklch(0.930 0.030 115);
+
+  --primary: oklch(0.740 0.170 115);
+  --primary-foreground: oklch(0.130 0.020 175);
+
+  --secondary: oklch(0.225 0.020 165);
+  --secondary-foreground: oklch(0.900 0.030 115);
+
+  --muted: oklch(0.210 0.016 170);
+  --muted-foreground: oklch(0.720 0.050 118);
+
+  --accent: oklch(0.235 0.025 160);
+  --accent-foreground: oklch(0.930 0.030 115);
+
+  --destructive: oklch(0.670 0.190 30);
+  --success: oklch(0.720 0.160 135);
+  --warning: oklch(0.760 0.140 80);
+  --info: oklch(0.710 0.120 230);
+  --notify: oklch(0.780 0.120 195);
+
+  /* Phosphor hairlines: the border is the accent at low alpha, not a grey.
+   * 25% keeps it ≥ 2.5:1 against the island — measured, not eyeballed. */
+  --border: oklch(0.740 0.150 115 / 25%);
+  --input: oklch(0.740 0.150 115 / 30%);
+  --ring: oklch(0.740 0.170 115);
+
+  --chart-1: oklch(0.740 0.150 115);
+  --chart-2: oklch(0.620 0.120 85);
+  --chart-3: oklch(0.720 0.120 190);
+  --chart-4: oklch(0.710 0.120 230);
+  --chart-5: oklch(0.670 0.190 30);
+
+  --sidebar: oklch(0.180 0.016 173);
+  --sidebar-foreground: oklch(0.930 0.030 115);
+  --sidebar-primary: oklch(0.740 0.170 115);
+  --sidebar-primary-foreground: oklch(0.130 0.020 175);
+  --sidebar-accent: oklch(0.245 0.025 160);
+  --sidebar-accent-foreground: oklch(0.930 0.030 115);
+  --sidebar-border: oklch(0.740 0.150 115 / 18%);
+  --sidebar-ring: oklch(0.740 0.170 115);
+
+  /* ── Geometry: machined, not rounded ─────────────────────────────────
+   * `--radius: 0` flows into `--island-radius` and every `rounded-*`
+   * utility (they compile to `calc(var(--radius) * n)`); the inner radius
+   * is a literal in `:root`, so it is restated here. `rounded-full` stays
+   * untouched — the status LEDs are round in every theme. */
+  --radius: 0rem;
+  --island-radius-inner: 0px;
+
+  /* Denser street: the island gap narrows and the chrome paddings tighten
+   * one step. Row rhythm (`data-density`) is orthogonal and untouched. */
+  --island-gap: 4px;
+  --island-inset: 6px;
+  --space-md: 10px;
+  --space-lg: 14px;
+
+  /* ── Type: the terminal face everywhere ──────────────────────────────
+   * See `--font-ui` in index.css for the indirection that makes this bind. */
+  --font-ui: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* ── Motion: everything lands like a keystroke ───────────────────────
+   * The budgets shrink to ~60%; nothing is set to 0ms, so transitionend
+   * still fires everywhere it is awaited. */
+  --dur-tint: 30ms;
+  --dur-micro: 70ms;
+  --dur-short: 110ms;
+  --dur-long: 150ms;
+  --dur-short-out: 80ms;
+  --dur-long-out: 110ms;
+  --delay-tooltip: 400ms;
+
+  /* The text caret is a phosphor trace in every input. */
+  caret-color: oklch(0.740 0.170 115);
+}
+
+/* Burn-In terminal — the one surface the theme is named after. Hand-tuned to
+ * the palette rather than derived from it (see the ANSI contract note in
+ * index.css): red stays red, blue stays blue, but every slot is pulled toward
+ * phosphor warmth so the grid and the shell read as one machine. */
+:root.dark[data-theme="burn-in"] {
+  --term-fg: #d6e8c0;
+  --term-cursor: #b9e84e;
+  --term-selection: #31452e;
+
+  --term-black: #1a231e;
+  --term-red: #f07862;
+  --term-green: #a5d94c;
+  --term-yellow: #d9c355;
+  --term-blue: #7fb4d9;
+  --term-magenta: #cf9bd9;
+  --term-cyan: #5fd0cf;
+  --term-white: #cfe0c2;
+
+  --term-bright-black: #4e5c50;
+  --term-bright-red: #f79c8a;
+  --term-bright-green: #c3ef75;
+  --term-bright-yellow: #e8d982;
+  --term-bright-blue: #a6cde8;
+  --term-bright-magenta: #e0bce8;
+  --term-bright-cyan: #8fe6dd;
+  --term-bright-white: #eef5e4;
+}
+
+/* Burn-In micro-interactions and iconography. Scoped rules, not tokens —
+ * these are the pieces of the theme no custom property can carry. */
+
+/* Selection glows phosphor instead of the browser default. */
+:root.dark[data-theme="burn-in"] ::selection {
+  background: oklch(0.740 0.170 115 / 28%);
+  color: oklch(0.950 0.030 115);
+}
+
+/* Lucide draws with round caps; CSS presentation properties outrank the
+ * SVG attributes, so one rule re-cuts every icon in the app to square caps
+ * and mitred joins — machined to match the zero-radius chrome. (Zero-length
+ * dot strokes still render: square caps paint on empty subpaths, as square
+ * dots, which is exactly the right accident.) */
+:root.dark[data-theme="burn-in"] svg.lucide {
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 1.75;
+}
+
+/* The signature: CRT scanlines over the whole shell. Static (no motion to
+ * pause or reduce), pointer-transparent, and at 4% per 3px — texture at
+ * reading distance, an artifact only when looked for. Above `--z-menu` and
+ * `--z-drag` deliberately: it is the glass, and everything is behind glass. */
+:root.dark[data-theme="burn-in"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483647;
+  background: repeating-linear-gradient(
+    to bottom,
+    oklch(0 0 0 / 4%) 0 1px,
+    transparent 1px 3px
+  );
+}

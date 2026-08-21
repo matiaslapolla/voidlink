@@ -201,6 +201,7 @@ describe("the light and dark definitions can never invert", () => {
         ["nord", "dark"],
         ["dracula", "dark"],
         ["one-dark", "dark"],
+        ["burn-in", "dark"],
       ] as const
     ).map(([id, mode]) => ({
       id,
@@ -220,8 +221,8 @@ describe("the light and dark definitions can never invert", () => {
     return ((n >> 16) + ((n >> 8) & 0xff) + (n & 0xff)) / (3 * 255);
   }
 
-  it("covers all ten themes", () => {
-    expect(ALL_THEMES).toHaveLength(10);
+  it("covers all eleven themes", () => {
+    expect(ALL_THEMES).toHaveLength(11);
   });
 
   it.each(ALL_THEMES)(
